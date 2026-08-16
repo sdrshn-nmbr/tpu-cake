@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Optimize for inference too, not just training FLOPs | MatX</title>
+    <meta name="description" content="We discuss the importance of and strategies to balance training and inference costs when selecting LLM architectures.">
+    <meta property="og:title" content="Optimize for inference too, not just training FLOPs | MatX">
+    <meta property="og:description" content="We discuss the importance of and strategies to balance training and inference costs when selecting LLM architectures.">
+    <meta property="og:image" content="https://matx.com/images/lifetime-cost-cover.png">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="MatX">
+    <meta property="og:url" content="https://matx.com/research/lifetime_llm_cost">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@MatXComputing">
+    <meta name="twitter:title" content="Optimize for inference too, not just training FLOPs | MatX">
+    <meta name="twitter:description" content="We discuss the importance of and strategies to balance training and inference costs when selecting LLM architectures.">
+    <meta name="twitter:image" content="https://matx.com/images/lifetime-cost-cover.png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <script defer data-domain="matx.com" src="https://plausible.io/js/script.js"></script>
+    <link rel="stylesheet" href="../static/katex.min.css">
+</head>
+<body>
+    <div class="layout">
+        <nav class="sidebar">
+            <div class="logo">
+                <a href="/"><img src="../images/logo-site.svg" alt="MatX" class="logo-default"><img src="../images/logo-site-hover.svg" alt="" class="logo-hover"></a>
+            </div>
+            <div class="menu">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+            <button class="mobile-menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+                <div class="hamburger">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </button>
+        </nav>
+
+        <div class="mobile-menu-overlay">
+            <div class="mobile-menu-content">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+        </div>
+
+        <main class="main-content text-content">
+            <article class="blog-content">
+                <header class="blog-header">
+                    <h1>Optimize for inference too, not just training FLOPs</h1>
+                </header>
+
+                
+<div class="blogmetadata"><div class="blog-date">
+January 8, 2025
+</div><div class="blog-author">
+MatX ML team
+</div></div>
+<div id="abstract">
+<p>Large Language Models (LLMs) have been shaped by the scaling laws, as
+established by <a href="https://arxiv.org/abs/2001.08361">Kaplan et al.,
+2020</a> and <a href="https://arxiv.org/abs/2203.15556">Hoffmann et al.,
+2022</a>. They guide us to design models that optimize for training cost
+but often overlook inference costs. Although training and inference
+costs are highly related, they diverge sharply in one critical area:
+attention key-value (KV) computation. During training, KV computation is
+usually cheaper than the rest of the model, but during inference,
+loading the KV cache becomes the dominant expense. This disconnect has
+led to models with ~70% efficiency during training but only ~10%
+efficiency during inference.</p>
+<p>Perhaps a methodology that considers <em>both</em> inference and
+training cost would lead to more balanced models? This post sketches out
+some options in this direction.</p>
+</div>
+<h2 id="scaling-laws-and-model-size-selection">Scaling Laws and Model
+Size Selection</h2>
+<p><a href="https://arxiv.org/abs/2001.08361">Kaplan et al., 2020</a>
+demonstrated that transformer model quality improves predictably with
+increasing model parameters <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>N</mi></mrow><annotation encoding="application/x-tex">N</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span></span></span></span> and
+training tokens <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>D</mi></mrow><annotation encoding="application/x-tex">D</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">D</span></span></span></span>. They estimated the
+compute cost of training a transformer model at <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>6</mn><mi>N</mi><mi>D</mi></mrow><annotation encoding="application/x-tex">6ND</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">6</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span><span class="mord mathnormal" style="margin-right:0.02778em;">D</span></span></span></span> floating-point operations (FLOPs). Other
+resource requirements, such as loading weight matrices from memory, are
+amortized by using large training batches. Since training is
+compute-bound, the training FLOPs budget effectively determines the
+optimal model size and the number of training tokens needed to maximize
+model performance.</p>
+<h2 id="inference-and-the-memory-bottleneck">Inference and the Memory
+Bottleneck</h2>
+<p>During inference, we distinguish between two phases: prefill and
+decode.</p>
+<p><strong>Prefill</strong> initializes the KV cache by processing
+continuous input text, such as a question or background information. In
+this phase, the model processes all input tokens in parallel, similar to
+training. As a result, the cost of loading weight matrices is amortized
+over the sequence, and computation remains the dominant cost. The
+compute cost per token is approximately <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>2</mn><mi>N</mi></mrow><annotation encoding="application/x-tex">2N</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">2</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span></span></span></span> FLOPs, since only the forward pass is
+performed.</p>
+<p>In contrast, the <strong>decode</strong> phase generates text one
+token at a time. For each generated token, the model still requires
+<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>2</mn><mi>N</mi></mrow><annotation encoding="application/x-tex">2N</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">2</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span></span></span></span> FLOPs for the forward pass.
+Furthermore, for each generated token, the model needs to load all
+parameters and the KV cache associated with all previous tokens. While
+the loading of model parameters can be amortized by using larger batch
+sizes, the KV cache grows both with the <strong>batch size</strong> and
+the <strong>sequence length</strong>, making memory bandwidth a
+potential bottleneck <span class="citation">(<a href="https://proceedings.mlsys.org/paper_files/paper/2023/hash/c4be71ab8d24cdfb45e3d06dbfca2780-Abstract-mlsys2023.html">Pope
+et al., 2022</a>)</span>.</p>
+<p>Consider decoding using a transformer model with multi-head attention
+(MHA) <span class="citation">(<a href="https://papers.nips.cc/paper_files/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html">Vaswani
+et al., 2017</a>)</span>, a batch size of 128, a context length of 8,192, and
+using a 1-byte numeric type. A typical model with 8 billion parameters
+will require loading 280 GB of KV cache, i.e., 30 times larger than the
+model parameters themselves! When running such a model on typical
+hardware, the arithmetic logic will spend much of its time waiting for
+the KV cache to load.</p>
+<h2 id="llama-3-models-and-grouped-query-attention">Llama 3 Models and
+Grouped Query Attention</h2>
+<p>The Llama 3 models <span class="citation">(<a href="https://arxiv.org/abs/2407.21783">Llama
+Team, 2024</a>)</span> address the inference memory bottleneck by incorporating
+Grouped Query Attention <span class="citation">(GQA; <a href="https://aclanthology.org/2023.emnlp-main.298.pdf">Ainslie et al.,
+2023</a>)</span>, which significantly reduces the KV cache size by sharing key
+and value projections across multiple attention heads. For instance, in
+the 8B model, the KV cache size drops from 280 GB with MHA to 69 GB with
+GQA. While GQA may cause a slight decrease in model quality compared to
+MHA, this trade-off is acceptable given the substantial gain in
+inference speed. The use of GQA in Llama 3 models illustrates how
+architectural choices can balance compute and memory demands.</p>
+<p>The size of the KV cache for different model sizes is shown in the
+following table:</p>
+<div id="name_div" class="styled" style="font-size: 1.4em;">
+<table>
+<thead>
+<tr>
+<th>
+</th>
+<th colspan="3" style="text-align: center;">
+KV Cache Size
+</th>
+</tr>
+<tr>
+<th>
+Model Configuration
+</th>
+<th style="text-align: right;">
+8B Model
+</th>
+<th style="text-align: right;">
+70B Model
+</th>
+<th style="text-align: right;">
+405B Model
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+Transformer with MHA
+</td>
+<td style="text-align: right;">
+280 GB
+</td>
+<td style="text-align: right;">
+1,400 GB
+</td>
+<td style="text-align: right;">
+4,300 GB
+</td>
+</tr>
+<tr>
+<td>
+Llama 3 (with GQA)
+</td>
+<td style="text-align: right;">
+69 GB
+</td>
+<td style="text-align: right;">
+170 GB
+</td>
+<td style="text-align: right;">
+270 GB
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<h2 id="flop-equivalent">FLOP-Equivalent</h2>
+<p>To compare computational FLOPs and memory accesses on equal footing,
+we use the <strong>Hardware Operational Intensity (HOI)</strong>:</p>
+<p><span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mtext>HOI</mtext><mo>=</mo><mfrac><mtext>Peak&nbsp;Compute&nbsp;Performance&nbsp;(FLOPs/s)</mtext><mtext>Peak&nbsp;Memory&nbsp;Bandwidth&nbsp;(Bytes/s)</mtext></mfrac></mrow><annotation encoding="application/x-tex">\text{HOI} = \frac{\text{Peak Compute Performance (FLOPs/s)}}{\text{Peak Memory Bandwidth (Bytes/s)}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord text"><span class="mord">HOI</span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.363em;vertical-align:-0.936em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.427em;"><span style="top:-2.314em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord text"><span class="mord">Peak&nbsp;Memory&nbsp;Bandwidth&nbsp;(Bytes/s)</span></span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord text"><span class="mord">Peak&nbsp;Compute&nbsp;Performance&nbsp;(FLOPs/s)</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.936em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span></span></span></span></span></p>
+<p>HOI indicates the hardware’s computational capacity relative to its
+memory bandwidth—it tells us how many floating-point operations can be
+performed per byte of memory access. By multiplying the KV cache size
+(in bytes) by HOI, we obtain the <strong>FLOP-equivalent</strong> cost
+required to load the KV cache, allowing us to directly compare memory
+operations with compute operations. An important aspect of HOI is that
+it tends to remain relatively stable across hardware generations.</p>
+<p>For an Nvidia H100 GPU using FP8 arithmetic, HOI is approximately 600
+FLOPs/byte. Let’s revisit the Llama 3 8B model, and consider the cost of
+decoding the next token in each of 128 sequences with a context length
+of 8192:</p>
+<ul>
+<li>Forward pass computation cost: <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>128</mn><mo>×</mo><mn>2</mn><mi>N</mi><mo>≈</mo><mn>2</mn><mtext>&nbsp;TFLOPs</mtext></mrow><annotation encoding="application/x-tex">128 \times 2N \approx 2\ \text{TFLOPs}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">128</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">2</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">2</span><span class="mspace">&nbsp;</span><span class="mord text"><span class="mord">TFLOPs</span></span></span></span></span></li>
+<li>Cost to load the full KV cache: <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>69</mn><mtext> </mtext><mtext>GB</mtext><mo>×</mo><mtext>HOI</mtext><mo>≈</mo><mn>41</mn><mtext>&nbsp;TFLOPs</mtext></mrow><annotation encoding="application/x-tex">69\, \text{GB} \times \text{HOI} \approx 41\ \text{TFLOPs}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7667em;vertical-align:-0.0833em;"></span><span class="mord">69</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord text"><span class="mord">GB</span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord text"><span class="mord">HOI</span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">41</span><span class="mspace">&nbsp;</span><span class="mord text"><span class="mord">TFLOPs</span></span></span></span></span></li>
+</ul>
+<p>In this case, the cost of loading the KV cache in FLOP-equivalents is
+20 times greater than the compute cost of performing the forward pass.
+This indicates that the 8B model is memory-bound during decoding in this
+setting.</p>
+<p>For the Llama 3 405B model, the ratio of KV cache load cost to
+compute cost is approximately 1.5, indicating a closer balance between
+compute and memory demands. However, if we increase the context length,
+the KV cache size grows proportionally, making decode memory-bound
+again.</p>
+<h2 id="rethinking-model-selection-total-cost-optimization">Rethinking
+Model Selection: Total Cost Optimization</h2>
+<p>Traditional model selection focuses on training FLOPs, defined by the
+cost <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>C</mi><mtext>train</mtext></msub><mo>=</mo><mn>6</mn><mi>N</mi><msub><mi>D</mi><mtext>train</mtext></msub></mrow><annotation encoding="application/x-tex">C_{\text{train}} = 6N D_{\text{train}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3175em;"><span style="top:-2.55em;margin-left:-0.0715em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">train</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord">6</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.02778em;">D</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3175em;"><span style="top:-2.55em;margin-left:-0.0278em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">train</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span>, but this approach overlooks the significant
+costs associated with inference. To achieve a model of the same quality
+that is cheaper over its lifetime, we consider the <strong>total
+estimated lifetime cost</strong>, which includes the training, prefill,
+and decode phases:</p>
+<p><span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>C</mi><mtext>total</mtext></msub><mo>=</mo><munder><munder><mrow><mn>6</mn><mi>N</mi><msub><mi>D</mi><mtext>train</mtext></msub></mrow><mo stretchy="true">⏟</mo></munder><mtext>Training&nbsp;cost</mtext></munder><mtext>&nbsp;</mtext><mo>+</mo><mtext>&nbsp;</mtext><munder><munder><mrow><mn>2</mn><mi>N</mi><msub><mi>D</mi><mtext>prefill</mtext></msub></mrow><mo stretchy="true">⏟</mo></munder><mtext>Prefill&nbsp;cost</mtext></munder><mtext>&nbsp;</mtext><mo>+</mo><mtext>&nbsp;</mtext><munder><munder><mrow><mi>max</mi><mo>⁡</mo><mo stretchy="false">(</mo><munder><munder><mrow><mn>2</mn><mi>N</mi><mo separator="true">,</mo></mrow><mo stretchy="true">⏟</mo></munder><mtext>Forward&nbsp;pass</mtext></munder><munder><munder><mrow><mtext>KV&nbsp;cache&nbsp;size</mtext><mo>×</mo><mtext>HOI</mtext></mrow><mo stretchy="true">⏟</mo></munder><mtext>KV&nbsp;cache&nbsp;loading</mtext></munder><mo stretchy="false">)</mo><mo>×</mo><msub><mi>D</mi><mtext>decode</mtext></msub></mrow><mo stretchy="true">⏟</mo></munder><mtext>Decode&nbsp;cost</mtext></munder></mrow><annotation encoding="application/x-tex">C_{\text{total}} = \underbrace{6N D_{\text{train}}}_{\text{Training cost}} \ +\ \underbrace{2N D_{\text{prefill}}}_{\text{Prefill cost}} \ +\ \underbrace{\max( \underbrace{2N,}_{\text{Forward pass}} \underbrace{\text{KV cache size} \times \text{HOI}}_{\text{KV cache loading}} ) \times D_{\text{decode}}}_{\text{Decode cost}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.07153em;">C</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:-0.0715em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">total</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:2.2958em;vertical-align:-1.6124em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6833em;"><span style="top:-1.5237em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">Training&nbsp;cost</span></span></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6833em;"><span class="svg-align" style="top:-2.202em;"><span class="pstrut" style="height:3em;"></span><span class="stretchy" style="height:0.548em;min-width:1.6em;"><span class="brace-left" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMinYMin slice"><path d="M0 6l6-6h17c12.688 0 19.313.3 20 1 4 4 7.313 8.3 10 13
+ 35.313 51.3 80.813 93.8 136.5 127.5 55.688 33.7 117.188 55.8 184.5 66.5.688
+ 0 2 .3 4 1 18.688 2.7 76 4.3 172 5h399450v120H429l-6-1c-124.688-8-235-61.7
+-331-161C60.687 138.7 32.312 99.3 7 54L0 41V6z"></path></svg></span><span class="brace-center" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMidYMin slice"><path d="M199572 214
+c100.7 8.3 195.3 44 280 108 55.3 42 101.7 93 139 153l9 14c2.7-4 5.7-8.7 9-14
+ 53.3-86.7 123.7-153 211-199 66.7-36 137.3-56.3 212-62h199568v120H200432c-178.3
+ 11.7-311.7 78.3-403 201-6 8-9.7 12-11 12-.7.7-6.7 1-18 1s-17.3-.3-18-1c-1.3 0
+-5-4-11-12-44.7-59.3-101.3-106.3-170-141s-145.3-54.3-229-60H0V214z"></path></svg></span><span class="brace-right" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMaxYMin slice"><path d="M399994 0l6 6v35l-6 11c-56 104-135.3 181.3-238 232-57.3
+ 28.7-117 45-179 50H-300V214h399897c43.3-7 81-15 113-26 100.7-33 179.7-91 237
+-174 2.7-5 6-9 10-13 .7-1 7.3-1 20-1h17z"></path></svg></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">6</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.02778em;">D</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3175em;"><span style="top:-2.55em;margin-left:-0.0278em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">train</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.798em;"><span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.6124em;"><span></span></span></span></span></span><span class="mspace">&nbsp;</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace">&nbsp;</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:2.3035em;vertical-align:-1.6202em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6833em;"><span style="top:-1.3798em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">Prefill&nbsp;cost</span></span></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6833em;"><span class="svg-align" style="top:-2.0659em;"><span class="pstrut" style="height:3em;"></span><span class="stretchy" style="height:0.548em;min-width:1.6em;"><span class="brace-left" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMinYMin slice"><path d="M0 6l6-6h17c12.688 0 19.313.3 20 1 4 4 7.313 8.3 10 13
+ 35.313 51.3 80.813 93.8 136.5 127.5 55.688 33.7 117.188 55.8 184.5 66.5.688
+ 0 2 .3 4 1 18.688 2.7 76 4.3 172 5h399450v120H429l-6-1c-124.688-8-235-61.7
+-331-161C60.687 138.7 32.312 99.3 7 54L0 41V6z"></path></svg></span><span class="brace-center" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMidYMin slice"><path d="M199572 214
+c100.7 8.3 195.3 44 280 108 55.3 42 101.7 93 139 153l9 14c2.7-4 5.7-8.7 9-14
+ 53.3-86.7 123.7-153 211-199 66.7-36 137.3-56.3 212-62h199568v120H200432c-178.3
+ 11.7-311.7 78.3-403 201-6 8-9.7 12-11 12-.7.7-6.7 1-18 1s-17.3-.3-18-1c-1.3 0
+-5-4-11-12-44.7-59.3-101.3-106.3-170-141s-145.3-54.3-229-60H0V214z"></path></svg></span><span class="brace-right" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMaxYMin slice"><path d="M399994 0l6 6v35l-6 11c-56 104-135.3 181.3-238 232-57.3
+ 28.7-117 45-179 50H-300V214h399897c43.3-7 81-15 113-26 100.7-33 179.7-91 237
+-174 2.7-5 6-9 10-13 .7-1 7.3-1 20-1h17z"></path></svg></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">2</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.02778em;">D</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:-0.0278em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">prefill</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.9341em;"><span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.6202em;"><span></span></span></span></span></span><span class="mspace">&nbsp;</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace">&nbsp;</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:3.7488em;vertical-align:-2.9988em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.75em;"><span style="top:-0.0012em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">Decode&nbsp;cost</span></span></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.75em;"><span class="svg-align" style="top:-0.6873em;"><span class="pstrut" style="height:3em;"></span><span class="stretchy" style="height:0.548em;min-width:1.6em;"><span class="brace-left" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMinYMin slice"><path d="M0 6l6-6h17c12.688 0 19.313.3 20 1 4 4 7.313 8.3 10 13
+ 35.313 51.3 80.813 93.8 136.5 127.5 55.688 33.7 117.188 55.8 184.5 66.5.688
+ 0 2 .3 4 1 18.688 2.7 76 4.3 172 5h399450v120H429l-6-1c-124.688-8-235-61.7
+-331-161C60.687 138.7 32.312 99.3 7 54L0 41V6z"></path></svg></span><span class="brace-center" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMidYMin slice"><path d="M199572 214
+c100.7 8.3 195.3 44 280 108 55.3 42 101.7 93 139 153l9 14c2.7-4 5.7-8.7 9-14
+ 53.3-86.7 123.7-153 211-199 66.7-36 137.3-56.3 212-62h199568v120H200432c-178.3
+ 11.7-311.7 78.3-403 201-6 8-9.7 12-11 12-.7.7-6.7 1-18 1s-17.3-.3-18-1c-1.3 0
+-5-4-11-12-44.7-59.3-101.3-106.3-170-141s-145.3-54.3-229-60H0V214z"></path></svg></span><span class="brace-right" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMaxYMin slice"><path d="M399994 0l6 6v35l-6 11c-56 104-135.3 181.3-238 232-57.3
+ 28.7-117 45-179 50H-300V214h399897c43.3-7 81-15 113-26 100.7-33 179.7-91 237
+-174 2.7-5 6-9 10-13 .7-1 7.3-1 20-1h17z"></path></svg></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mop">max</span><span class="mopen">(</span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6833em;"><span style="top:-1.4715em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">Forward&nbsp;pass</span></span></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6833em;"><span class="svg-align" style="top:-2.1576em;"><span class="pstrut" style="height:3em;"></span><span class="stretchy" style="height:0.548em;min-width:1.6em;"><span class="brace-left" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMinYMin slice"><path d="M0 6l6-6h17c12.688 0 19.313.3 20 1 4 4 7.313 8.3 10 13
+ 35.313 51.3 80.813 93.8 136.5 127.5 55.688 33.7 117.188 55.8 184.5 66.5.688
+ 0 2 .3 4 1 18.688 2.7 76 4.3 172 5h399450v120H429l-6-1c-124.688-8-235-61.7
+-331-161C60.687 138.7 32.312 99.3 7 54L0 41V6z"></path></svg></span><span class="brace-center" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMidYMin slice"><path d="M199572 214
+c100.7 8.3 195.3 44 280 108 55.3 42 101.7 93 139 153l9 14c2.7-4 5.7-8.7 9-14
+ 53.3-86.7 123.7-153 211-199 66.7-36 137.3-56.3 212-62h199568v120H200432c-178.3
+ 11.7-311.7 78.3-403 201-6 8-9.7 12-11 12-.7.7-6.7 1-18 1s-17.3-.3-18-1c-1.3 0
+-5-4-11-12-44.7-59.3-101.3-106.3-170-141s-145.3-54.3-229-60H0V214z"></path></svg></span><span class="brace-right" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMaxYMin slice"><path d="M399994 0l6 6v35l-6 11c-56 104-135.3 181.3-238 232-57.3
+ 28.7-117 45-179 50H-300V214h399897c43.3-7 81-15 113-26 100.7-33 179.7-91 237
+-174 2.7-5 6-9 10-13 .7-1 7.3-1 20-1h17z"></path></svg></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">2</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span><span class="mpunct">,</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.8424em;"><span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.6647em;"><span></span></span></span></span></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6944em;"><span style="top:-1.5826em;"><span class="pstrut" style="height:3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">KV&nbsp;cache&nbsp;loading</span></span></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord munder"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.6944em;"><span class="svg-align" style="top:-2.2687em;"><span class="pstrut" style="height:3em;"></span><span class="stretchy" style="height:0.548em;min-width:1.6em;"><span class="brace-left" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMinYMin slice"><path d="M0 6l6-6h17c12.688 0 19.313.3 20 1 4 4 7.313 8.3 10 13
+ 35.313 51.3 80.813 93.8 136.5 127.5 55.688 33.7 117.188 55.8 184.5 66.5.688
+ 0 2 .3 4 1 18.688 2.7 76 4.3 172 5h399450v120H429l-6-1c-124.688-8-235-61.7
+-331-161C60.687 138.7 32.312 99.3 7 54L0 41V6z"></path></svg></span><span class="brace-center" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMidYMin slice"><path d="M199572 214
+c100.7 8.3 195.3 44 280 108 55.3 42 101.7 93 139 153l9 14c2.7-4 5.7-8.7 9-14
+ 53.3-86.7 123.7-153 211-199 66.7-36 137.3-56.3 212-62h199568v120H200432c-178.3
+ 11.7-311.7 78.3-403 201-6 8-9.7 12-11 12-.7.7-6.7 1-18 1s-17.3-.3-18-1c-1.3 0
+-5-4-11-12-44.7-59.3-101.3-106.3-170-141s-145.3-54.3-229-60H0V214z"></path></svg></span><span class="brace-right" style="height:0.548em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="0.548em" viewBox="0 0 400000 548" preserveAspectRatio="xMaxYMin slice"><path d="M399994 0l6 6v35l-6 11c-56 104-135.3 181.3-238 232-57.3
+ 28.7-117 45-179 50H-300V214h399897c43.3-7 81-15 113-26 100.7-33 179.7-91 237
+-174 2.7-5 6-9 10-13 .7-1 7.3-1 20-1h17z"></path></svg></span></span></span><span style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord text"><span class="mord">KV&nbsp;cache&nbsp;size</span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord text"><span class="mord">HOI</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.7313em;"><span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:1.5535em;"><span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.02778em;">D</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:-0.0278em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">decode</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:2.3127em;"><span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:2.9988em;"><span></span></span></span></span></span></span></span></span></span></p>
+<ul>
+<li><p>Training cost: The number of FLOPs performed during training,
+including forward and backward passes.</p></li>
+<li><p>Prefill cost: The number of FLOPs performed during the prefill
+phase of inference, forward pass only.</p></li>
+<li><p>Decode cost: The dominant cost between computation and memory
+accesses during the decode phase, multiplied by the number of decode
+tokens.</p></li>
+</ul>
+<p>Including inference costs in the total model cost alters the optimal
+balance between model size and training data. <a href="https://proceedings.mlr.press/v235/sardana24a.html">Sardana et
+al., 2023</a> showed that when inference costs are considered, it
+results in recommending smaller models trained on more data compared to
+the Chinchilla scaling laws <span class="citation">(<a href="https://arxiv.org/abs/2203.15556">Hoffmann et al., 2022</a>)</span>,
+which suggest <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>D</mi><mtext>train</mtext></msub><mo>≈</mo><mn>20</mn><mi>N</mi></mrow><annotation encoding="application/x-tex">D_{\text{train}} \approx 20N</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.02778em;">D</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3175em;"><span style="top:-2.55em;margin-left:-0.0278em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">train</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">≈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">20</span><span class="mord mathnormal" style="margin-right:0.10903em;">N</span></span></span></span>. Besides training on more tokens, our approximation of the
+total computational cost can be used to explore architectural changes to
+the transformer model that spend more FLOPs to decrease memory bandwidth
+cost during inference.</p>
+<h2 id="strategies-to-spend-flops-to-save-memory-bandwidth">Strategies
+to Spend FLOPs to Save Memory Bandwidth</h2>
+<p>Our proposed cost metric allows for a comparison of transformer
+variants by considering both computational and memory-bandwidth demands.
+While memory-efficient attention mechanisms have been extensively
+researched, these techniques are designed to save both on FLOPs and on
+memory. Such free lunches are hard to find; we propose approaches which
+increase FLOPs cost in order to save memory, so long as the total
+lifetime cost of the model is improved. Our research agenda includes the
+following:</p>
+<ol type="1">
+<li><strong>KV Cache Compression Techniques</strong></li>
+</ol>
+<div style="margin-left: 40px;">
+<p>Extreme compression techniques for the KV cache, such as Multi-Query
+Attention <span class="citation">(<a href="https://arxiv.org/abs/1911.02150">Shazeer,
+2019</a>)</span>, cross-layer KV cache sharing <span class="citation">(<a href="https://arxiv.org/abs/2405.12981">Brandon et al., 2024</a>; <a href="https://research.character.ai/optimizing-inference">Character
+AI</a>)</span>, and cross-token KV cache sharing <span class="citation">(<a href="https://arxiv.org/abs/2304.08467">Mu et al., 2023</a>)</span> are often
+rejected due to quality degradations when compared on a FLOPs-neutral
+basis. However, on a total-cost-neutral basis, these are very likely
+massively profitable. Further techniques in this direction are worth
+exploring.</p>
+</div>
+<ol start="2" type="1">
+<li><strong>Changing Model Shape</strong></li>
+</ol>
+<div style="margin-left: 40px;">
+<p>The typical practice for model shape (depth vs width; <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>d</mi><mtext>model</mtext></msub></mrow><annotation encoding="application/x-tex">d_{\text{model}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">d</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">model</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span> vs <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>d</mi><mtext>ff</mtext></msub></mrow><annotation encoding="application/x-tex">d_{\text{ff}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">d</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">ff</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span> vs <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>n</mi><mtext>heads</mtext></msub></mrow><annotation encoding="application/x-tex">n_{\text{heads}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.5806em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">n</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">heads</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span>) is optimized for quality
+given a training budget. When optimizing for quality given a
+<em>lifetime</em> budget, the optimal shape is likely different:</p>
+<ul>
+<li><p>It likely grows the feedforward network and shrinks the attention
+network, reducing the KV-cache memory bandwidth.</p></li>
+<li><p>It likely grows the width (especially <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>d</mi><mtext>ff</mtext></msub></mrow><annotation encoding="application/x-tex">d_{\text{ff}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">d</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">ff</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span>) and decreases the depth. This
+saves memory capacity: while keeping high efficiency, you can run a
+smaller batch size on the same number of chips—or equivalently, run the
+same batch size on a larger number of chips.</p></li>
+</ul>
+</div>
+<ol start="3" type="1">
+<li><strong>Speculative Decoding for Large Batches and
+Contexts</strong></li>
+</ol>
+<div style="margin-left: 40px;">
+<p>While Speculative Decoding <span class="citation">(<a href="https://arxiv.org/abs/2302.01318">Chen et al., 2023</a>; <a href="https://icml.cc/virtual/2023/oral/25546">Leviathan et al.,
+2023</a>)</span> is traditionally considered a small-batch-size optimization,
+it becomes beneficial for large batch sizes when considering KV cache
+memory bandwidth <span class="citation">(<a href="https://www.together.ai/blog/speculative-decoding-for-high-throughput-long-context-inference">Chen
+et al., 2024</a>)</span>. Techniques that incorporate Speculative Decoding
+during pretraining, rather than as a post-training optimization, seem
+promising.</p>
+</div>
+<ol start="4" type="1">
+<li><strong>Enhanced Query-Key Interactions</strong></li>
+</ol>
+<div style="margin-left: 40px;">
+<p>Dot-Product Attention is designed to make each query-key interaction
+highly computationally efficient, thus keeping training costs low.
+However, for inference, where memory fetches are more expensive than
+computation in query-key interactions, more computationally complex
+query-key interactions may be profitable. This could include
+algebraically different interactions <span class="citation">(<a href="https://aclanthology.org/2020.emnlp-main.574.pdf">Kobayashi et
+al., 2020</a>)</span>, or even deeper neural networks for these
+interactions.</p>
+</div>
+<p>By optimizing for a cost metric that aligns more closely with what we
+truly care about, we can pursue model designs that pay sufficient
+respect to the significant cost of the KV cache. Models which are 1.5x
+more expensive to train and 10x cheaper to inference might easily be
+possible.</p>
+<p><link href="../static/katex.min.css" rel="stylesheet"></p>
+
+            </article>
+
+            <footer class="minimal-footer">
+                <span class="footer-copy">© MatX</span>
+                <div class="footer-links">
+                    <a href="mailto:founders@matx.com">Contact</a>
+                    <a href="https://www.linkedin.com/company/matxcomputing/" target="_blank" rel="noopener" aria-label="LinkedIn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+                    </a>
+                    <a href="https://x.com/matxcomputing" target="_blank" rel="noopener" aria-label="X">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                    </a>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        (function() {
+            const toggle = document.querySelector('.mobile-menu-toggle');
+            const overlay = document.querySelector('.mobile-menu-overlay');
+            if (!toggle || !overlay) return;
+
+            function closeMenu() {
+                overlay.classList.remove('active');
+                toggle.setAttribute('aria-expanded', 'false');
+                document.body.classList.remove('menu-open');
+            }
+
+            toggle.addEventListener('click', function() {
+                const isOpen = overlay.classList.toggle('active');
+                toggle.setAttribute('aria-expanded', isOpen);
+                document.body.classList.toggle('menu-open', isOpen);
+            });
+
+            // Close when tapping anywhere on overlay (including whitespace)
+            overlay.addEventListener('click', closeMenu);
+        })();
+    </script>
+</body>
+</html>

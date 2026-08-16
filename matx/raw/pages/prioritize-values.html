@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prioritize values over keys: faster attention with many sparsely accessed value heads | MatX</title>
+    <meta name="description" content="During Transformer decoding, KV cache size and memory bandwidth requirements can limit overall throughput. Multi Query Attention is a powerful technique to miti">
+    <meta property="og:title" content="Prioritize values over keys: faster attention with many sparsely accessed value heads | MatX">
+    <meta property="og:description" content="During Transformer decoding, KV cache size and memory bandwidth requirements can limit overall throughput. Multi Query Attention is a powerful technique to miti">
+    <meta property="og:image" content="https://matx.com/images/smva-cover.png">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="MatX">
+    <meta property="og:url" content="https://matx.com/research/smva">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@MatXComputing">
+    <meta name="twitter:title" content="Prioritize values over keys: faster attention with many sparsely accessed value heads | MatX">
+    <meta name="twitter:description" content="During Transformer decoding, KV cache size and memory bandwidth requirements can limit overall throughput. Multi Query Attention is a powerful technique to miti">
+    <meta name="twitter:image" content="https://matx.com/images/smva-cover.png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <script defer data-domain="matx.com" src="https://plausible.io/js/script.js"></script>
+    <link rel="stylesheet" href="../static/katex.min.css">
+</head>
+<body>
+    <div class="layout">
+        <nav class="sidebar">
+            <div class="logo">
+                <a href="/"><img src="../images/logo-site.svg" alt="MatX" class="logo-default"><img src="../images/logo-site-hover.svg" alt="" class="logo-hover"></a>
+            </div>
+            <div class="menu">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+            <button class="mobile-menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+                <div class="hamburger">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </button>
+        </nav>
+
+        <div class="mobile-menu-overlay">
+            <div class="mobile-menu-content">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+        </div>
+
+        <main class="main-content text-content">
+            <article class="blog-content">
+                <header class="blog-header">
+                    <h1>Prioritize values over keys: faster attention with many sparsely accessed value heads</h1>
+                </header>
+
+                
+<div class="blogmetadata"><div class="blog-date">
+April 08, 2025
+</div><div class="blog-author">
+Daniel Heinlein, Vaclav Cvicek, Akshay Mishra, Mahdi Nazemi, Sanjit
+Neelam, and Reiner Pope
+</div></div>
+<div id="abstract">
+<p>During Transformer decoding, KV cache size and memory bandwidth
+requirements can <a href="/research/lifetime_llm_cost#inference-and-the-memory-bottleneck">limit
+overall throughput</a>. Multi Query Attention <span class="citation" data-cites="shazeer_fast_2019">(<a href="https://arxiv.org/abs/1911.02150">Shazeer, 2019</a>)</span>
+is a powerful technique to mitigate this, but some models such as the
+Llama family have not deployed it due to quality concerns, opting for
+the less aggressive Grouped Query Attention instead <span class="citation" data-cites="dubey2024llama">(<a href="https://arxiv.org/abs/2407.21783">Dubey et al., 2024</a>)</span>.
+An alternative approach is to sparsely access the attention values <span class="citation" data-cites="sheng_flexgen_2023">(<a href="https://proceedings.mlr.press/v202/sheng23a.html">Sheng et al., 2023</a>)</span>
+but this has not been widely adopted—perhaps because the dense access to
+attention keys limits the memory bandwidth savings to “only” a factor of
+2. We propose a way to combine Multi Query Attention with sparsification
+by using multiple sparsely-accessed value heads and a single
+densely-accessed key head. Additionally, we present an approach to
+sparsifying the value heads that is more computationally efficient and
+can also achieve higher sparsity levels. Our approach achieves the
+quality of Grouped Query Attention with the memory bandwidth of Multi
+Query Attention, thus reducing memory bandwidth costs by up to a factor
+of 8 for common model architectures.</p>
+</div>
+<div id="fig:1" class="blogfigurelike">
+<p><img src="../static/smva_tensorsizes.svg" style="width:90.0%"></p>
+<div class="blogfigurelikecaption">
+<p>Figure 1: Comparison of sizes of tensors, the white area of the KV
+cache is not loaded. We propose SMVA which uses one K head and many V
+heads whose KV cache entries are accessed sparsely.</p>
+</div>
+</div>
+<h2 id="introduction">Introduction</h2>
+<p>The key-value (KV) cache is the state that is kept between forward
+passes of large language models (LLMs), to allow incremental decoding
+without repeated computations. We propose two methods to reduce the
+bandwidth demands of loading entries from the KV cache.</p>
+<ul>
+<li><p><em>Multi Value Attention (MVA)</em> allows for different numbers
+of K heads and V heads and hence, can be used to reduce the number of K
+heads compared to Multi Head Attention (MHA <span class="citation" data-cites="vaswani_attention_2017">(<a href="https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf">Vaswani et al., 2017</a>)</span>).
+Typically, we set the number of K heads to 1 and the number of V heads
+equal to the number of Q heads.</p></li>
+<li><p><em>Sparse V</em> decreases the bandwidth usage of loading
+entries from the KV cache by loading only the most impactful entries in
+the V part of the KV cache.</p></li>
+</ul>
+<p>These techniques work very well together. Ultimately, we propose
+<em>Sparse Multi Value Attention (SMVA)</em>: use one K head, as many V
+heads as possible (equal to the number of Q heads), and access the V
+heads sparsely.</p>
+<div id="fig:2" class="blogfigurelike">
+<p><img src="../static/smva_mechanism.svg" style="width:90.0%"></p>
+<div class="blogfigurelikecaption">
+<p>Figure 2: Example of SMVA with 2 Q heads and 2 V heads. The Sparse V
+threshold is 20% and V’s with dotted boxes are not loaded.</p>
+</div>
+</div>
+<h2 id="multi-value-attention">Multi Value Attention</h2>
+<p>We decouple the number of K heads from the number of V heads, partly
+because V heads are more important for quality than K heads, and also
+because V heads are more easily accessed sparsely. Decoupling the number
+of heads is straightforward when the ratio of V heads to K heads is an
+integer. We also show how to do it in general, based on an approach
+which forms partitions of heads based on the greatest common divisor of
+K and V. For implementation details see the pseudocode <a href="#implementation">below</a>.</p>
+<p>We differ from GQA <span class="citation" data-cites="ainslie_gqa_2023">(<a href="https://doi.org/10.18653/v1/2023.emnlp-main.298">Ainslie et al., 2023</a>)</span>,
+MQA <span class="citation" data-cites="shazeer_fast_2019">(<a href="https://arxiv.org/abs/1911.02150">Shazeer, 2019</a>)</span>,
+and MHA <span class="citation" data-cites="vaswani_attention_2017">(<a href="https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf">Vaswani et al., 2017</a>)</span>
+in decoupling the number of K heads and V heads. MVA combines the high
+throughput of using fewer K heads, as in MQA, with the quality benefits
+of many sparsely accessed (and therefore cheaper) V heads, as in
+MHA.</p>
+<h2 id="sparse-v">Sparse V</h2>
+<p>We sparsify the reads of V by setting a fixed threshold and zeroing
+out any attention probabilities lower than that threshold. This is
+equivalent to loading only a subset of the entries in the V part of the
+KV cache and fixing the others to zero.</p>
+<p>We differ from <span class="citation" data-cites="sheng_flexgen_2023">(<a href="https://proceedings.mlr.press/v202/sheng23a.html">Sheng et al., 2023</a>)</span>
+in two ways:</p>
+<ul>
+<li><p>We introduce V-sparsity during training, rather than after
+training. We find this allows us to achieve 4x greater sparsity at the
+same quality levels. We found that enabling sparsity upon reaching 60%
+of the training steps works best but any value in the range 20%-70% also
+works well.</p></li>
+<li><p>Rather than inducing sparsity via a top-k computation, we induce
+it by comparing the attention probabilities to a fixed threshold. We
+find this achieves the same sparsity and quality levels, while allowing
+us to replace an expensive <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi mathvariant="script">O</mi><mo stretchy="false">(</mo><mi>n</mi><msup><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>2</mn></msup><mo stretchy="false">(</mo><mi>k</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\mathcal{O}(n \log^2(k))</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1.1484em;vertical-align:-0.25em;"></span><span class="mord mathcal" style="margin-right:0.02778em;">O</span><span class="mopen">(</span><span class="mord mathnormal">n</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mop"><span class="mop">lo<span style="margin-right:0.01389em;">g</span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8984em;"><span style="top:-3.1473em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right:0.03148em;">k</span><span class="mclose">))</span></span></span></span> sorting network implementation of top-k with a much
+cheaper <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi mathvariant="script">O</mi><mo stretchy="false">(</mo><mi>n</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\mathcal{O}(n)</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathcal" style="margin-right:0.02778em;">O</span><span class="mopen">(</span><span class="mord mathnormal">n</span><span class="mclose">)</span></span></span></span> threshold
+computation.</p></li>
+</ul>
+<p>Sparse V is incompatible with fused K/V attention implementations
+such as Flash Attention <span class="citation" data-cites="dao2022flashattention">(<a href="https://proceedings.neurips.cc/paper_files/paper/2022/file/67d57c32e20fd0a7a302cb81d36e40d5-Paper-Conference.pdf">Dao et al., 2022</a>)</span>
+for two reasons. First, the probability-based threshold requires fully
+normalized probabilities, defeating the online softmax optimization at
+the heart of Flash Attention. Second, the pattern of memory fetches for
+V is dependent on the results of the K computation, defeating the
+ability to prefetch the K and V tensors in lockstep. Nevertheless, the
+memory bandwidth saved by Sparse V far exceeds the memory bandwidth
+spent by losing K/V fusion.</p>
+<h2 id="implementation">Implementation</h2>
+<p>We implemented a modified attention mechanism that allows for
+flexible reshaping of the Q, K, and V heads to implement our techniques.
+The following pseudocode based on our <a href="https://github.com/MatX-inc/seqax/tree/SMVA">seqax</a> codebase
+demonstrates this variation. Sparse V is activated by providing a
+non-zero <code>p_threshold</code>. For brevity, we have omitted details
+such as sharding, RoPE embedding, the causal mask, and batch processing.
+Also for simplicity, we fetch the V tensor densely rather than sparsely,
+even though it is multiplied by sparse <code>probs</code>.</p>
+<div id="alg:1" style="margin-left: 10px; margin-top: 40px; margin-bottom: 40px;">
+<div class="sourceCode" id="cb1" style="font-size: 13.5px;"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>q <span class="op">=</span> einsum(<span class="st">"Qlen M, M Q K V G D -&gt; Qlen Q K V G D"</span>, x, w_q)</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>k <span class="op">=</span> einsum(<span class="st">"Klen M, M K G D -&gt; Klen K G D"</span>, x, w_k)</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>v <span class="op">=</span> einsum(<span class="st">"Klen M, M V G D -&gt; Klen V G D"</span>, x, w_v)</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>logits <span class="op">=</span> einsum(<span class="st">"Qlen Q K V G D, Klen K G D -&gt; Qlen Klen Q K V G"</span>, q, k)</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>probs <span class="op">=</span> softmax(logits, axis <span class="op">=</span> <span class="st">"Klen"</span>)</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>pt <span class="op">=</span> p_threshold <span class="op">*</span> (p_threshold_steps_fraction <span class="op">*</span> max_steps <span class="op">&lt;=</span> step)</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>probs <span class="op">=</span> where(probs <span class="op">&lt;</span> pt, <span class="dv">0</span>, probs)</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>attn_out <span class="op">=</span> einsum(<span class="st">"Qlen Klen Q K V G, Klen V G D -&gt; Qlen Q K V G D"</span>, probs, v)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>y <span class="op">=</span> einsum(<span class="st">"Qlen Q K V G D, M Q K V G D -&gt; Qlen M"</span>, attn_out, w_o)</span></code></pre></div>
+<div class="blogfigurelikecaption">
+<p>Algorithm 1: Sparse Multi Value Attention (SMVA).</p>
+</div>
+</div>
+<h2 id="experiments">Experiments</h2>
+<p>To evaluate our methods, we trained multiple variants of a 101
+million parameter model using the <a href="https://github.com/MatX-inc/seqax/blob/SMVA/configs/101m150.yaml">seqax</a>
+codebase. We trained the model for 150,000 steps (9.8B tokens, batch 32,
+sequence length 2048), approximately five times the number of tokens
+suggested by the Chinchilla scaling laws <span class="citation" data-cites="hoffmann_training_2024">(<a href="https://papers.nips.cc/paper_files/paper/2022/hash/c1e2faff6f588870935f114ebe04a3e5-Abstract-Conference.html">Hoffmann et al., 2024</a>,
+Table 3)</span>. Similarly to Llama 3 <span class="citation" data-cites="dubey2024llama">(<a href="https://arxiv.org/abs/2407.21783">Dubey et al., 2024</a>)</span>,
+we prioritized a longer training duration to optimize the model for
+inference.</p>
+<p>Our training dataset is the Allen Institute for AI’s version of the
+<a href="https://huggingface.co/datasets/allenai/c4">C4/en</a> dataset,
+tokenized using <a href="https://huggingface.co/meta-llama/Llama-2-7b-hf">Llama 2’s
+tokenizer</a>. The reported loss is the training loss averaged over the
+last 1,024 training steps (67 million tokens).</p>
+<p>To minimize noise in our experiments, all experiments visit the
+training data in the same random order, and all models are initialized
+using the same random seed. Thanks to JAX’s hash-based randomization,
+changing to the shape of one weight matrix does not affect the random
+initialization of other weight matrices. As a result, changes in loss
+even as small as 0.03% are consistently reproducible.</p>
+<p>In addition to measuring the loss, we also compute a <a href="/research/lifetime_llm_cost" id="flops-equivalent-cost"><em>FLOP-equivalent cost</em></a> with a
+roofline model that estimates the decoding cost as the maximum of the KV
+cache fetch time and computation time.</p>
+<h3 id="experiments-with-different-attention-types">Experiments with
+different attention types</h3>
+<p>We compared different attention mechanisms in the table below. For
+each model, we report the loss, FLOPs, and KV cache requirements, all
+relative to MHA.</p>
+<div id="tab:1" class="blogfigurelike">
+<div class="styled" style="font-size: 0.8em;">
+<table>
+<thead>
+<tr class="header">
+<th style="text-align: right;">Attention</th>
+<th style="text-align: right;">Q,K,V Heads</th>
+<th style="text-align: right;"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>d</mi><mtext>ff</mtext></msub></mrow><annotation encoding="application/x-tex">d_{\text{ff}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">d</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">ff</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span></th>
+<th style="text-align: right;">Sparsity</th>
+<th style="text-align: right;">Loss</th>
+<th style="text-align: right;">Sparse FLOPs</th>
+<th style="text-align: right;">Dense FLOPs</th>
+<th style="text-align: right;">KV Size</th>
+<th style="text-align: right;">KV Fetched</th>
+<th style="text-align: right;"><a href="/research/lifetime_llm_cost">FLOP-Equivalent Cost</a></th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">MHA</td>
+<td style="text-align: right;">8,8,8</td>
+<td style="text-align: right;">4096</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;"><strong>2.862 (+0.0%)</strong></td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;">1.00</td>
+<td style="text-align: right;">1.00</td>
+<td style="text-align: right;">1.00</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">GQA</td>
+<td style="text-align: right;">8,4,4</td>
+<td style="text-align: right;">4437</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;">2.866 (+0.1%)</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;">0.50</td>
+<td style="text-align: right;">0.50</td>
+<td style="text-align: right;">0.50</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">GQA</td>
+<td style="text-align: right;">8,2,2</td>
+<td style="text-align: right;">4608</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;">2.870 (+0.3%)</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;">0.25</td>
+<td style="text-align: right;">0.25</td>
+<td style="text-align: right;">0.25</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">MQA</td>
+<td style="text-align: right;">8,1,1</td>
+<td style="text-align: right;">4694</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;">2.879 (+0.6%)</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;"><strong>0.13</strong></td>
+<td style="text-align: right;">0.13</td>
+<td style="text-align: right;">0.13</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">MQA</td>
+<td style="text-align: right;">15,1,1</td>
+<td style="text-align: right;">4096</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;">2.874 (+0.4%)</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;">1.29</td>
+<td style="text-align: right;"><strong>0.13</strong></td>
+<td style="text-align: right;">0.13</td>
+<td style="text-align: right;">0.13</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">MVA</td>
+<td style="text-align: right;">8,1,8</td>
+<td style="text-align: right;">4395</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;">2.863 (+0.0%)</td>
+<td style="text-align: right;">-</td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;">0.56</td>
+<td style="text-align: right;">0.56</td>
+<td style="text-align: right;">0.56</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">MHA</td>
+<td style="text-align: right;">8,8,8</td>
+<td style="text-align: right;">4096</td>
+<td style="text-align: right;">Sparse V</td>
+<td style="text-align: right;">2.868 (+0.2%)</td>
+<td style="text-align: right;"><strong>0.84</strong></td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;">1.00</td>
+<td style="text-align: right;">0.55</td>
+<td style="text-align: right;">0.58</td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">MHA</td>
+<td style="text-align: right;">8,8,8</td>
+<td style="text-align: right;">4096</td>
+<td style="text-align: right;">top-k</td>
+<td style="text-align: right;">2.868 (+0.2%)</td>
+<td style="text-align: right;"><strong>0.84</strong></td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;">1.00</td>
+<td style="text-align: right;">0.55</td>
+<td style="text-align: right;">0.58</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">MQA</td>
+<td style="text-align: right;">15,1,1</td>
+<td style="text-align: right;">4096</td>
+<td style="text-align: right;">Sparse V</td>
+<td style="text-align: right;">2.879 (+0.6%)</td>
+<td style="text-align: right;">0.99</td>
+<td style="text-align: right;">1.29</td>
+<td style="text-align: right;"><strong>0.13</strong></td>
+<td style="text-align: right;">0.12</td>
+<td style="text-align: right;"><strong>0.12</strong></td>
+</tr>
+<tr class="even">
+<td style="text-align: right;">SMVA</td>
+<td style="text-align: right;">10,1,10</td>
+<td style="text-align: right;">4096</td>
+<td style="text-align: right;">Sparse V</td>
+<td style="text-align: right;">2.868 (+0.2%)</td>
+<td style="text-align: right;">0.88</td>
+<td style="text-align: right;">1.08</td>
+<td style="text-align: right;">0.69</td>
+<td style="text-align: right;">0.12</td>
+<td style="text-align: right;">0.17</td>
+</tr>
+<tr class="odd">
+<td style="text-align: right;">SMVA</td>
+<td style="text-align: right;">8,1,8</td>
+<td style="text-align: right;">4395</td>
+<td style="text-align: right;">Sparse V</td>
+<td style="text-align: right;">2.868 (+0.2%)</td>
+<td style="text-align: right;"><strong>0.84</strong></td>
+<td style="text-align: right;"><strong>1.00</strong></td>
+<td style="text-align: right;">0.56</td>
+<td style="text-align: right;"><strong>0.11</strong></td>
+<td style="text-align: right;">0.15</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="blogfigurelikecaption">
+<p>Table 1: Comparison of normalized quality and costs of different
+attention mechanisms with fixed parameter count. Our proposed model,
+SMVA with 8,1,8 heads beats the quality of GQA with 2 KV heads while
+having 40% less FLOP-equivalent cost.</p>
+</div>
+</div>
+<p>GQA reduces the number of KV heads compared to MHA, decreasing the KV
+cache size and memory bandwidth requirements but slightly increasing the
+loss. To ensure a fair comparison and maintain a constant number of
+parameters across models, we adjusted the feed-forward dimension <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>d</mi><mtext>ff</mtext></msub></mrow><annotation encoding="application/x-tex">d_{\text{ff}}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8444em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal">d</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">ff</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span> accordingly.</p>
+<p>MQA reduces the number of KV heads all the way down to one,
+significantly decreasing the KV cache size. However, we observed a
+slight deterioration in model quality, as indicated by an increase in
+loss.</p>
+<p>To recover the original loss, we increased the number of V heads to 8
+while keeping the number of K heads at 1, implementing our proposed MVA.
+This adjustment restored the model’s quality close to that of MHA but
+increased the total KV cache size again.</p>
+<p>Finally, we applied Sparse V by accessing the V part of the KV cache
+sparsely, considering only entries of the attention probabilities larger
+than 0.01. Further details on our sparsity approach are provided
+below.</p>
+<p>Our two proposed changes (SMVA with 8 Q heads) achieved better
+quality than GQA with 2 KV heads (0.2% vs.&nbsp;0.3%), required less
+FLOP-equivalent cost than GQA with 2 KV heads (84% vs.&nbsp;100%), had a
+smaller KV cache than MHA (56% vs.&nbsp;100%), and required less KV cache
+bandwidth than MQA (11% vs.&nbsp;13%) and hence resulted in 15%
+FLOP-equivalent cost in parameter-controlled experiments, which is on
+par with MQA (13%).</p>
+<p>In summary, among all experiments with loss within 0.2% of MHA, SMVA
+(with 8 Q heads) achieved the lowest amount of FLOPs needed for the
+forward pass, reduced the KV cache size by half compared to MHA, and had
+the smallest KV cache bandwidth requirements. Consequently, it had the
+smallest FLOP-equivalent cost.</p>
+<h3 id="sparse-v-experiments">Sparse V experiments</h3>
+<p>To evaluate various Sparse V approaches, we experimented with
+different values of the probability threshold <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>p</mi><mtext>threshold</mtext></msub><mo>∈</mo><mo stretchy="false">{</mo><mn>0.001</mn><mo separator="true">,</mo><mn>0.01</mn><mo separator="true">,</mo><mn>0.1</mn><mo stretchy="false">}</mo></mrow><annotation encoding="application/x-tex">p_{\text{threshold}} \in \{0.001, 0.01, 0.1\}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7335em;vertical-align:-0.1944em;"></span><span class="mord"><span class="mord mathnormal">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">threshold</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mopen">{</span><span class="mord">0.001</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">0.01</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">0.1</span><span class="mclose">}</span></span></span></span>
+and the threshold activation step proportion <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>p</mi><mtext>threshold,&nbsp;steps,&nbsp;fraction</mtext></msub><mo>∈</mo><mo stretchy="false">{</mo><mn>0.0</mn><mo separator="true">,</mo><mn>0.3</mn><mo separator="true">,</mo><mn>0.6</mn><mo separator="true">,</mo><mn>0.9</mn><mo stretchy="false">}</mo></mrow><annotation encoding="application/x-tex">p_{\text{threshold, steps, fraction}} \in \{0.0, 0.3, 0.6, 0.9\}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.8252em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">threshold,&nbsp;steps,&nbsp;fraction</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mopen">{</span><span class="mord">0.0</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">0.3</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">0.6</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord">0.9</span><span class="mclose">}</span></span></span></span>. Across various model sizes and various multiples
+of Chinchilla optimal training, we found that setting <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>p</mi><mtext>threshold</mtext></msub><mo>=</mo><mn>0.01</mn></mrow><annotation encoding="application/x-tex">p_{\text{threshold}} = 0.01</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord"><span class="mord mathnormal">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">threshold</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.01</span></span></span></span> and <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>p</mi><mtext>threshold,&nbsp;steps,&nbsp;fraction</mtext></msub><mo>=</mo><mn>0.6</mn></mrow><annotation encoding="application/x-tex">p_{\text{threshold, steps, fraction}} = 0.6</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.7167em;vertical-align:-0.2861em;"></span><span class="mord"><span class="mord mathnormal">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">threshold,&nbsp;steps,&nbsp;fraction</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.6</span></span></span></span>
+achieves a loss comparable to MHA (within 0.2%). Therefore, we fix these
+parameters throughout this blog post.</p>
+<p>We compared our threshold-based Sparse V approach with the top-k
+Sparse V method presented in <span class="citation" data-cites="sheng_flexgen_2023">(<a href="https://proceedings.mlr.press/v202/sheng23a.html">Sheng et al., 2023</a>)</span>,
+where MHA is augmented post-training by sparsely accessing the V part of
+the KV cache using top-k selection.</p>
+<p>Setting <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>p</mi><mtext>threshold</mtext></msub><mo>=</mo><mn>0.01</mn></mrow><annotation encoding="application/x-tex">p_{\text{threshold}} = 0.01</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord"><span class="mord mathnormal">p</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">threshold</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">0.01</span></span></span></span>
+allows up to 100 elements of the attention matrix (along the
+<code>Klen</code> axis) to be nonzero. Therefore, comparing with top-k
+where <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>k</mi><mo>=</mo><mn>100</mn></mrow><annotation encoding="application/x-tex">k = 100</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal" style="margin-right:0.03148em;">k</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">100</span></span></span></span> offers a direct
+comparison.</p>
+<p>In our reproductions, when sparsifying post-training with top-k and
+<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>k</mi><mo>=</mo><mn>100</mn></mrow><annotation encoding="application/x-tex">k = 100</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal" style="margin-right:0.03148em;">k</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">100</span></span></span></span>, the loss increased
+significantly (by 1.5%). To achieve a loss increase of only 0.2%
+compared to MHA, <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>k</mi></mrow><annotation encoding="application/x-tex">k</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal" style="margin-right:0.03148em;">k</span></span></span></span> needed to be about
+400, resulting in about four times less sparsity than our Sparse V
+method at similar quality levels.</p>
+<p>However, when sparsification was applied already during part of the
+training, MHA with top-k and <span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>k</mi><mo>=</mo><mn>100</mn></mrow><annotation encoding="application/x-tex">k = 100</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal" style="margin-right:0.03148em;">k</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6444em;"></span><span class="mord">100</span></span></span></span>
+achieved the low loss increase of 0.2%. This indicates that sparsifying
+during training is very advantageous. Additionally, sparsifying with a
+threshold is simpler and faster than using full top-k selection.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>We have proposed two new methods, Sparse V and Multi Value Attention
+(MVA), and combine both into a single method, Sparse Multi Value
+Attention (SMVA), to address the bandwidth and memory challenges of KV
+caching in Transformer models. Sparse V loads only the most important
+values, while MVA decreases the number of K heads, both leading to
+savings in memory, compute, and bandwidth. Our experiments show that
+these methods maintain similar model quality to Grouped Query Attention
+(GQA) but with lower resource demands. These improvements could help
+make large language models (LLMs) more efficient and scalable,
+especially for real-time applications. Future work can focus on further
+optimizing these techniques and exploring their impact on even larger
+models.</p>
+<h2 id="acknowledgments">Acknowledgments</h2>
+<p>Research supported with Cloud TPUs from Google’s TPU Research Cloud
+(TRC).</p>
+<p><link href="../static/katex.min.css" rel="stylesheet"></p>
+
+            </article>
+
+            <footer class="minimal-footer">
+                <span class="footer-copy">© MatX</span>
+                <div class="footer-links">
+                    <a href="mailto:founders@matx.com">Contact</a>
+                    <a href="https://www.linkedin.com/company/matxcomputing/" target="_blank" rel="noopener" aria-label="LinkedIn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+                    </a>
+                    <a href="https://x.com/matxcomputing" target="_blank" rel="noopener" aria-label="X">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                    </a>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        (function() {
+            const toggle = document.querySelector('.mobile-menu-toggle');
+            const overlay = document.querySelector('.mobile-menu-overlay');
+            if (!toggle || !overlay) return;
+
+            function closeMenu() {
+                overlay.classList.remove('active');
+                toggle.setAttribute('aria-expanded', 'false');
+                document.body.classList.remove('menu-open');
+            }
+
+            toggle.addEventListener('click', function() {
+                const isOpen = overlay.classList.toggle('active');
+                toggle.setAttribute('aria-expanded', isOpen);
+                document.body.classList.toggle('menu-open', isOpen);
+            });
+
+            // Close when tapping anywhere on overlay (including whitespace)
+            overlay.addEventListener('click', closeMenu);
+        })();
+    </script>
+</body>
+</html>

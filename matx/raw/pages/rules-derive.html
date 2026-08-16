@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple and fast Rust deriving using macro_rules | MatX</title>
+    <meta name="description" content="We have released a Rust library called rules_derive, which lets you define derivers with much simpler code, using macro_rules instead of procedural macros.">
+    <meta property="og:title" content="Simple and fast Rust deriving using macro_rules | MatX">
+    <meta property="og:description" content="We have released a Rust library called rules_derive, which lets you define derivers with much simpler code, using macro_rules instead of procedural macros.">
+    <meta property="og:image" content="https://matx.com/images/macro-rules-cover.png">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="MatX">
+    <meta property="og:url" content="https://matx.com/research/rules_derive">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@MatXComputing">
+    <meta name="twitter:title" content="Simple and fast Rust deriving using macro_rules | MatX">
+    <meta name="twitter:description" content="We have released a Rust library called rules_derive, which lets you define derivers with much simpler code, using macro_rules instead of procedural macros.">
+    <meta name="twitter:image" content="https://matx.com/images/macro-rules-cover.png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <script defer data-domain="matx.com" src="https://plausible.io/js/script.js"></script>
+    
+</head>
+<body>
+    <div class="layout">
+        <nav class="sidebar">
+            <div class="logo">
+                <a href="/"><img src="../images/logo-site.svg" alt="MatX" class="logo-default"><img src="../images/logo-site-hover.svg" alt="" class="logo-hover"></a>
+            </div>
+            <div class="menu">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+            <button class="mobile-menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+                <div class="hamburger">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </button>
+        </nav>
+
+        <div class="mobile-menu-overlay">
+            <div class="mobile-menu-content">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+        </div>
+
+        <main class="main-content text-content">
+            <article class="blog-content">
+                <header class="blog-header">
+                    <h1>Simple and fast Rust deriving using macro_rules</h1>
+                </header>
+
+                
+<div class="blogmetadata"><div class="blog-date">
+July 28, 2025
+</div><div class="blog-author">
+Reiner Pope and Andrew Pritchard
+</div></div>
+<p>Rust’s <code>#[derive]</code> saves a ton of boilerplate, but custom
+derive implementations typically require complicated procedural macros—a
+high-friction process that limits adoption. We have released a library
+called <a href="https://github.com/MatX-inc/rules_derive">rules_derive</a>, which
+lets you define derivers with much simpler code, using
+<code>macro_rules</code> instead of procedural macros. We have
+experience using it internally for &gt;20 traits, and we no longer use
+proc-macro deriving.</p>
+<p>Find it on <a href="https://github.com/MatX-inc/rules_derive">GitHub</a> and <a href="https://crates.io/crates/rules_derive">crates.io</a>.</p>
+<h2 id="why-use-rules_derive">Why use rules_derive?</h2>
+<p><em>Low friction</em>: Derivers are short—<code>Clone</code> takes 40
+lines—and can be defined in the same file as they are used in. For
+comparison, proc-macro derivers need to be in a separate crate and often
+take a few hundred lines.</p>
+<p><em>High quality</em>: Derivers handle all tricky cases, like generic
+parameters, all struct/enum flavors, and error attribution correctly by
+default.</p>
+<p><em>Composable</em>: Unlike proc-macros, <code>macro_rules</code>
+derivers can call other derivers, enabling <a href="#advanced-features">some new usage patterns</a>.</p>
+<p><em>Fast compiles</em>: <code>rules_derive</code> is 900 lines vs
+<code>syn</code>/<code>proc_macro2</code>/<code>quote</code>’s 45k
+lines. Clean builds are 6x faster than the standard proc-macro
+stack.</p>
+<h2 id="quick-start">Quick start</h2>
+<p>Define a deriving macro with <code>macro_rules!()</code>:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="pp">macro_rules!</span> MyTrait <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  (<span class="co">/* accept parsed type definition... */</span>) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Generate impl</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">impl</span> <span class="op">$</span>(<span class="op">$</span>generics_bindings)<span class="op">*</span> MyTrait <span class="cf">for</span> <span class="op">$</span>ty <span class="kw">where</span> <span class="op">$</span>(<span class="op">$</span>generics_where)<span class="op">*</span> <span class="op">{</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>      <span class="co">// implementation here</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">}</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Then use it under the <code>rules_derive</code> attribute:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>rules_derive<span class="at">(</span>MyTrait<span class="at">)]</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> MyType <span class="op">{</span> x<span class="op">:</span> <span class="dt">u32</span><span class="op">,</span> y<span class="op">:</span> <span class="dt">String</span> <span class="op">}</span></span></code></pre></div>
+<p>The macro definition can be in the same crate or file as its use.</p>
+<h2 id="how-it-works">How it works</h2>
+<p><code>rules_derive</code> parses type definitions and transforms them
+into a uniform format that <code>macro_rules</code> can easily process.
+Two key transformations make this possible:</p>
+<h3 id="uniform-type-syntax">Uniform type syntax</h3>
+<p>Rust has six syntaxes for defining types, and a deriver should
+support all of them:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> NamedFieldsStruct <span class="op">{</span> x<span class="op">:</span> <span class="dt">u8</span><span class="op">,</span> y<span class="op">:</span> <span class="dt">u16</span> <span class="op">}</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> TupleStruct(<span class="dt">u8</span><span class="op">,</span> <span class="dt">u16</span>)<span class="op">;</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> UnitStruct<span class="op">;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> NamedFieldsEnum <span class="op">{</span> Variant <span class="op">{</span> x<span class="op">:</span> <span class="dt">u8</span><span class="op">,</span> y<span class="op">:</span> <span class="dt">u16</span> <span class="op">}</span> <span class="op">}</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> TupleEnum <span class="op">{</span> Variant(<span class="dt">u8</span><span class="op">,</span> <span class="dt">u16</span>) <span class="op">}</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> UnitEnum <span class="op">{</span> Variant <span class="op">}</span></span></code></pre></div>
+<p>Among these syntaxes, <code>NamedFieldsEnum</code> is the most
+general: you can express structs as enums with a single variant, and you
+can express types with unnamed fields as types with named fields by
+using 0,1,2,… as names.</p>
+<p><code>rules_derive</code> converts all of Rust’s type definition
+syntaxes to this most general format, and also keeps around the
+necessary information to undo that transformation. For example, here is
+what <code>TupleStruct</code> and <code>NamedFieldsEnum</code> get
+internally transformed to<a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a>:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>(<span class="co">/* any attributes */</span>)</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> TupleStruct(<span class="co">/* some details elided */</span>)</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="op">{</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  TupleStruct unnamed (TupleStruct) <span class="op">{</span> </span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    field__0 <span class="op">@</span> <span class="dv">0</span> <span class="op">:</span> <span class="dt">u8</span><span class="op">,</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    field__1 <span class="op">@</span> <span class="dv">1</span> <span class="op">:</span> <span class="dt">u16</span><span class="op">,</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">}</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>(<span class="co">/* any attributes */</span>)</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> NamedFieldsEnum(<span class="co">/* some details elided */</span>)</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="op">{</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>  Variant named (<span class="pp">NamedFieldsEnum::</span>Variant) <span class="op">{</span> </span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>    field__x <span class="op">@</span> x <span class="op">:</span> <span class="dt">u8</span><span class="op">,</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>    field__y <span class="op">@</span> y <span class="op">:</span> <span class="dt">u16</span><span class="op">,</span> </span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>  <span class="op">}</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Using <code>rules_derive</code>, derivers work with this unified
+syntax and automatically handle all six type definition forms. Authors
+should always use <em>named field</em> syntax inside macros: construct
+<code>TupleStruct</code> as
+<code>TupleStruct { 0: field__0, 1: field__1 }</code> rather than
+<code>TupleStruct(field__0, field__1)</code>.</p>
+<h3 id="simple-generics-handling">Simple generics handling</h3>
+<p>Correctly handling generic parameters is often a tedious topic for
+authors of derivers. Given a type definition</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Foo<span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Clone</span> <span class="op">=</span> <span class="dt">u8</span><span class="op">&gt;</span> <span class="kw">where</span> <span class="dt">u8</span><span class="op">:</span> <span class="bu">Into</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span> <span class="op">...</span> <span class="op">}</span></span></code></pre></div>
+<p>you typically need to generate an instance something like this:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Clone</span><span class="op">&gt;</span> SomeTrait <span class="cf">for</span> Foo<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="kw">where</span> <span class="dt">u8</span><span class="op">:</span> <span class="bu">Into</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span> <span class="op">...</span> <span class="op">}</span> </span></code></pre></div>
+<p>Note that the original <code>&lt;T: Clone = u8&gt;</code> has been
+transformed in two ways: first into <code>&lt;T: Clone&gt;</code> and
+second into <code>&lt;T&gt;</code>. Authors of derivers typically need
+to parse the generic parameters and create these modified syntax
+forms.</p>
+<p>Applying these transformations in <code>macro_rules</code> is
+difficult because of <a href="https://doc.rust-lang.org/stable/reference/macros-by-example.html#follow-set-ambiguity-restrictions">certain
+Rust restrictions</a>. To assist, <code>rules_derive</code> inserts
+parentheses at appropriate places to simplify parsing and provides both
+transformed versions of the generic parameters.</p>
+<p>For <code>Foo</code>, <code>rules_derive</code> transforms the
+generic parameters to:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Foo((Foo<span class="op">&lt;</span>T<span class="op">&gt;</span>) (<span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Clone</span><span class="op">&gt;</span>) <span class="kw">where</span> (<span class="dt">u8</span><span class="op">:</span> <span class="bu">Into</span> <span class="op">&lt;</span>T<span class="op">&gt;,</span> )) <span class="op">{</span> <span class="op">...</span> <span class="op">}</span></span></code></pre></div>
+<p>When defining a deriver you can pick the relevant parts of this
+transformed syntax to paste into your <code>impl</code> definitions.</p>
+<h3 id="complete-example-clone-deriver">Complete example: Clone
+deriver</h3>
+<p>Here’s a complete <code>Clone</code> implementation showing the full
+pattern:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="pp">macro_rules!</span> <span class="bu">Clone</span> <span class="op">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  (</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Accept the parsed type definition (mostly boilerplate)</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    (<span class="op">$</span>( (<span class="op">$</span>(<span class="op">$</span>attr<span class="op">:</span>tt)<span class="op">*</span>) )<span class="op">*</span>)</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    <span class="op">$</span>vis<span class="op">:</span>vis <span class="op">$</span>tystyle<span class="op">:</span>ident <span class="op">$</span>name<span class="op">:</span>ident ((<span class="op">$</span>ty<span class="op">:</span>ty)</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    (<span class="op">$</span>(<span class="op">$</span>generics_bindings<span class="op">:</span>tt)<span class="op">*</span>) <span class="kw">where</span> (<span class="op">$</span>(<span class="op">$</span>generics_where<span class="op">:</span>tt)<span class="op">*</span>)) <span class="op">{</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>      <span class="op">$</span>(</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">$</span>variant_name<span class="op">:</span>ident (<span class="op">$</span>variant_style<span class="op">:</span>ident <span class="op">$</span>(<span class="op">$</span>qualified_variant<span class="op">:</span>tt)<span class="op">*</span>)</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>            <span class="op">$</span>(<span class="op">=</span> (<span class="op">$</span>discriminant<span class="op">:</span>expr))<span class="op">?</span> <span class="op">{</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>          <span class="op">$</span>(</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>            <span class="op">$</span>fieldvis<span class="op">:</span>vis <span class="op">$</span>fieldnameident<span class="op">:</span>ident <span class="op">@</span> <span class="op">$</span>fieldname<span class="op">:</span>tt <span class="op">:</span> <span class="op">$</span>fieldty<span class="op">:</span>ty<span class="op">,</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>          )<span class="op">*</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>      )<span class="op">*</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>  ) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>    <span class="pp">with_spans!</span> <span class="op">{</span></span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>      <span class="co">// Generate the impl</span></span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a>      <span class="kw">impl</span> <span class="op">$</span>(<span class="op">$</span>generics_bindings)<span class="op">*</span> <span class="pp">::std::clone::</span><span class="bu">Clone</span> <span class="cf">for</span> <span class="op">$</span>ty <span class="kw">where</span></span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>        <span class="op">$</span>(<span class="op">$</span>generics_where)<span class="op">*</span></span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>        <span class="op">$</span>(</span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>          <span class="op">$</span>(</span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Require all field types implement Clone</span></span>
+<span id="cb8-24"><a href="#cb8-24" aria-hidden="true" tabindex="-1"></a>            <span class="pp">spanned!</span>(<span class="op">$</span>fieldty <span class="op">=&gt;</span> <span class="op">$</span>fieldty<span class="op">:</span> <span class="pp">::std::clone::</span><span class="bu">Clone</span><span class="op">,</span>)</span>
+<span id="cb8-25"><a href="#cb8-25" aria-hidden="true" tabindex="-1"></a>          )<span class="op">*</span></span>
+<span id="cb8-26"><a href="#cb8-26" aria-hidden="true" tabindex="-1"></a>        )<span class="op">*</span></span>
+<span id="cb8-27"><a href="#cb8-27" aria-hidden="true" tabindex="-1"></a>      <span class="op">{</span></span>
+<span id="cb8-28"><a href="#cb8-28" aria-hidden="true" tabindex="-1"></a>        <span class="kw">fn</span> clone(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Self</span> <span class="op">{</span></span>
+<span id="cb8-29"><a href="#cb8-29" aria-hidden="true" tabindex="-1"></a>          <span class="cf">match</span> <span class="kw">self</span> <span class="op">{</span></span>
+<span id="cb8-30"><a href="#cb8-30" aria-hidden="true" tabindex="-1"></a>            <span class="op">$</span>(</span>
+<span id="cb8-31"><a href="#cb8-31" aria-hidden="true" tabindex="-1"></a>              <span class="co">// Pattern match and clone each variant</span></span>
+<span id="cb8-32"><a href="#cb8-32" aria-hidden="true" tabindex="-1"></a>              <span class="op">$</span>(<span class="op">$</span>qualified_variant)<span class="op">*</span> <span class="op">{</span> <span class="op">$</span>(<span class="op">$</span>fieldname<span class="op">:</span> (<span class="op">$</span>fieldnameident)<span class="op">,</span>)<span class="op">*</span> <span class="op">}</span> <span class="op">=&gt;</span></span>
+<span id="cb8-33"><a href="#cb8-33" aria-hidden="true" tabindex="-1"></a>                <span class="op">$</span>(<span class="op">$</span>qualified_variant)<span class="op">*</span> <span class="op">{</span> <span class="op">$</span>(<span class="op">$</span>fieldname<span class="op">:</span> <span class="op">$</span>fieldnameident<span class="op">.</span>clone()<span class="op">,</span>)<span class="op">*</span> <span class="op">},</span></span>
+<span id="cb8-34"><a href="#cb8-34" aria-hidden="true" tabindex="-1"></a>            )<span class="op">*</span></span>
+<span id="cb8-35"><a href="#cb8-35" aria-hidden="true" tabindex="-1"></a>          <span class="op">}</span></span>
+<span id="cb8-36"><a href="#cb8-36" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb8-37"><a href="#cb8-37" aria-hidden="true" tabindex="-1"></a>      <span class="op">}</span></span>
+<span id="cb8-38"><a href="#cb8-38" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb8-39"><a href="#cb8-39" aria-hidden="true" tabindex="-1"></a>  <span class="op">}</span></span>
+<span id="cb8-40"><a href="#cb8-40" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>For <code>TupleStruct(u8, u16)</code>, this generates:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span> <span class="pp">::std::clone::</span><span class="bu">Clone</span> <span class="cf">for</span> TupleStruct <span class="kw">where</span> </span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">u8</span><span class="op">:</span> <span class="pp">::std::clone::</span><span class="bu">Clone</span><span class="op">,</span> <span class="dt">u16</span><span class="op">:</span> <span class="pp">::std::clone::</span><span class="bu">Clone</span><span class="op">,</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="op">{</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>  <span class="kw">fn</span> clone(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Self</span> <span class="op">{</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">match</span> <span class="kw">self</span> <span class="op">{</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>      TupleStruct <span class="op">{</span> <span class="dv">0</span><span class="op">:</span> field__0<span class="op">,</span> <span class="dv">1</span><span class="op">:</span> field__1<span class="op">,</span> <span class="op">}</span> <span class="op">=&gt;</span> </span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>        TupleStruct <span class="op">{</span> <span class="dv">0</span><span class="op">:</span> field__0<span class="op">.</span>clone()<span class="op">,</span> <span class="dv">1</span><span class="op">:</span> field__1<span class="op">.</span>clone()<span class="op">,</span> <span class="op">}</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>  <span class="op">}</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>You can see many more complete examples in the <a href="https://github.com/MatX-inc/rules_derive/tree/main/examples">/examples
+directory on GitHub</a>.</p>
+<h3 id="error-attribution-with-spanned...">Error attribution with
+<code>spanned!(...)</code></h3>
+<p>When there is a type error in the code generated by a macro, we want
+the Rust compiler to annotate those type errors usefully. In the
+<code>Clone</code> deriver above, we required that every field’s
+type—<code>$fieldty</code>—must itself implement <code>Clone</code>:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="op">$</span>fieldty<span class="op">:</span> <span class="pp">::std::clone::</span><span class="bu">Clone</span></span></code></pre></div>
+<p>If there is a type error in this code, the error message shouldn’t be
+attached to the macro implementation: it should be attached to the field
+of the underlying type definition. We use the macro
+<code>spanned!</code>, also provided by <code>rules_derive</code>, to
+tell Rust to attribute errors in exactly this way:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="pp">spanned!</span>(<span class="op">$</span>fieldty <span class="op">=&gt;</span> <span class="op">$</span>fieldty<span class="op">:</span> <span class="pp">::std::clone::</span><span class="bu">Clone</span><span class="op">,</span>)</span></code></pre></div>
+<h2 id="advanced-features">Advanced features</h2>
+<h3 id="composable-derivers">Composable derivers</h3>
+<p><code>macro_rules</code> derivers can call other derivers, enabling
+new patterns like bundling multiple derivers into one:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode rust"><code class="sourceCode rust"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="pp">macro_rules!</span> ValueTypeTraits <span class="op">{</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>  (<span class="op">$</span>(<span class="op">$</span>tt<span class="op">:</span>tt)<span class="op">*</span>) <span class="op">=&gt;</span> <span class="op">{</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="bu">Copy</span><span class="op">!</span>(<span class="op">$</span>(<span class="op">$</span>tt)<span class="op">*</span>)<span class="op">;</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    <span class="bu">Clone</span><span class="op">!</span>(<span class="op">$</span>(<span class="op">$</span>tt)<span class="op">*</span>)<span class="op">;</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>    <span class="bu">PartialEq</span><span class="op">!</span>(<span class="op">$</span>(<span class="op">$</span>tt)<span class="op">*</span>)<span class="op">;</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    <span class="bu">Eq</span><span class="op">!</span>(<span class="op">$</span>(<span class="op">$</span>tt)<span class="op">*</span>)<span class="op">;</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>    <span class="bu">Debug</span><span class="op">!</span>(<span class="op">$</span>(<span class="op">$</span>tt)<span class="op">*</span>)<span class="op">;</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    <span class="bu">Hash</span><span class="op">!</span>(<span class="op">$</span>(<span class="op">$</span>tt)<span class="op">*</span>)<span class="op">;</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>  <span class="op">}</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>rules_derive<span class="at">(</span>ValueTypeTraits<span class="at">)]</span></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Point <span class="op">{</span> x<span class="op">:</span> <span class="dt">f32</span><span class="op">,</span> y<span class="op">:</span> <span class="dt">f32</span> <span class="op">}</span></span></code></pre></div>
+<h3 id="external-derivers">External derivers</h3>
+<p>Proc-macro derivers don’t allow downstream crates to derive traits
+for upstream types. For example, <code>serde</code> must manually
+implement <code>Serialize</code> for <code>std::result::Result</code>
+rather than using <code>#[derive(Serialize)]</code>.</p>
+<p><code>rules_derive</code> can enable types to expose their
+definitions to downstream crates for external derivation. We plan to add
+this functionality in a future release.</p>
+<h2 id="whats-next">What’s next</h2>
+<p>The first public version of <code>rules_derive</code> meets our
+internal needs, but has some known limitations that we would like to
+improve on:</p>
+<ul>
+<li>Attribute support. To reach approximate parity with proc-macro
+deriving, we’d like to allow macros to define their own attributes, and
+to provide some assistance in parsing attributes. An interesting
+challenge arises in how to detect unused attributes. We have some ideas
+on piggybacking Rust’s dead code warnings to additionally detect unused
+attributes.</li>
+<li>Versioning. If the dependencies of an application use different
+versions of the <code>rules_derive</code> library, users currently have
+to be careful to use the correct version of <code>rules_derive</code>
+with the appropriate macros. This problem is solvable with some
+work.</li>
+<li>“External” derivers, as discussed above: allow a downstream crate to
+derive traits for upstream types. This could be made easy with some
+work. In particular, we think it would be helpful to offer a crate which
+provides external deriving support for the <code>std</code> types with
+public fields, such as <code>Option</code>, <code>Result</code>, and
+tuples.</li>
+</ul>
+<p>We are excited about the possibility of a Rust ecosystem that
+provides derivers much more readily than we do today. Check out
+rules_derive <a href="https://github.com/MatX-inc/rules_derive">on
+GitHub</a>!</p>
+<section id="footnotes" class="footnotes footnotes-end-of-document" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1"><p>The names <code>field__0</code>/<code>field__x</code>
+are identifiers that macro authors can use when assigning fields to
+variables. This is needed because <em>fields</em> can have name
+<code>0</code> but <em>variables</em> can’t.<a href="#fnref1" class="footnote-back" role="doc-backlink">⤴</a></p></li>
+</ol>
+</section>
+
+            </article>
+
+            <footer class="minimal-footer">
+                <span class="footer-copy">© MatX</span>
+                <div class="footer-links">
+                    <a href="mailto:founders@matx.com">Contact</a>
+                    <a href="https://www.linkedin.com/company/matxcomputing/" target="_blank" rel="noopener" aria-label="LinkedIn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+                    </a>
+                    <a href="https://x.com/matxcomputing" target="_blank" rel="noopener" aria-label="X">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                    </a>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        (function() {
+            const toggle = document.querySelector('.mobile-menu-toggle');
+            const overlay = document.querySelector('.mobile-menu-overlay');
+            if (!toggle || !overlay) return;
+
+            function closeMenu() {
+                overlay.classList.remove('active');
+                toggle.setAttribute('aria-expanded', 'false');
+                document.body.classList.remove('menu-open');
+            }
+
+            toggle.addEventListener('click', function() {
+                const isOpen = overlay.classList.toggle('active');
+                toggle.setAttribute('aria-expanded', isOpen);
+                document.body.classList.toggle('menu-open', isOpen);
+            });
+
+            // Close when tapping anywhere on overlay (including whitespace)
+            overlay.addEventListener('click', closeMenu);
+        })();
+    </script>
+</body>
+</html>

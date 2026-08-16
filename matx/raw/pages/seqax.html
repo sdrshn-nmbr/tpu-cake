@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Introducing seqax: A Simple and Efficient LLM Research Codebase | MatX</title>
+    <meta name="description" content="We're excited to announce seqax, a research-focused LLM codebase that is simple, efficient, and performs well on up to 100 GPUs or TPUs. Everything you need to ">
+    <meta property="og:title" content="Introducing seqax: A Simple and Efficient LLM Research Codebase | MatX">
+    <meta property="og:description" content="We're excited to announce seqax, a research-focused LLM codebase that is simple, efficient, and performs well on up to 100 GPUs or TPUs. Everything you need to ">
+    <meta property="og:image" content="https://matx.com/images/seqax-cover.png">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="MatX">
+    <meta property="og:url" content="https://matx.com/research/seqax">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:site" content="@MatXComputing">
+    <meta name="twitter:title" content="Introducing seqax: A Simple and Efficient LLM Research Codebase | MatX">
+    <meta name="twitter:description" content="We're excited to announce seqax, a research-focused LLM codebase that is simple, efficient, and performs well on up to 100 GPUs or TPUs. Everything you need to ">
+    <meta name="twitter:image" content="https://matx.com/images/seqax-cover.png">
+    <link rel="icon" href="/favicon.ico" sizes="32x32">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <script defer data-domain="matx.com" src="https://plausible.io/js/script.js"></script>
+    
+</head>
+<body>
+    <div class="layout">
+        <nav class="sidebar">
+            <div class="logo">
+                <a href="/"><img src="../images/logo-site.svg" alt="MatX" class="logo-default"><img src="../images/logo-site-hover.svg" alt="" class="logo-hover"></a>
+            </div>
+            <div class="menu">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+            <button class="mobile-menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+                <div class="hamburger">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </button>
+        </nav>
+
+        <div class="mobile-menu-overlay">
+            <div class="mobile-menu-content">
+                <a href="/">Company</a>
+                <a href="/research" class="active">Research</a>
+                <a href="/jobs">Jobs</a>
+            </div>
+        </div>
+
+        <main class="main-content text-content">
+            <article class="blog-content">
+                <header class="blog-header">
+                    <h1>Introducing seqax: A Simple and Efficient LLM Research Codebase</h1>
+                </header>
+
+                
+<div class="blogmetadata"><div class="blog-date">
+May 6, 2024
+</div><div class="blog-author">
+MatX ML team
+</div></div>
+<div id="abstract">
+<p>We’re excited to announce <a href="https://github.com/MatX-inc/seqax">seqax</a>, a research-focused
+LLM codebase that is simple, efficient, and performs well on up to 100
+GPUs or TPUs. Everything you need to edit, from the math, to
+parallelism, to memory footprint, is all there in 500 lines of JAX
+code.</p>
+</div>
+<h2 id="introduction">Introduction</h2>
+<p>Mature LLM codebases are often weighed down by excessive
+configurability, making it hard to understand which code path is taken.
+At MatX, we’ve developed <strong>seqax</strong>—a minimalist codebase
+designed for small-to-medium scale LLM pretraining research. In seqax,
+we avoid most configuration: no if statements, no inheritance. We run
+experiments by directly editing the code.</p>
+<h2 id="key-features">Key Features</h2>
+<ul>
+<li><strong>Simplicity</strong>: The entire training loop and model are
+500 lines of code in one file.</li>
+<li><strong>Explicit Math</strong>: All operations for neural network
+layers are explicit, rather than calling external libraries.</li>
+<li><strong>Explicit Memory Usage</strong>: All tensors that go into a
+model checkpoint on disk are explicit. All tensors that occupy a lot of
+memory, including activations saved for the backward pass, are
+explicit.</li>
+<li><strong>Explicit Parallelism</strong>: All parallel communication is
+explicit, with sharding expressed using Python type annotations.</li>
+<li><strong>Scalability</strong>: Performs well on up to 100 GPUs or
+TPUs, making it suitable for small-to-medium scale research. Includes
+robust implementations for multihost partitioning, checkpointing,
+deterministic data loading, and profiling.</li>
+</ul>
+<h2 id="explicit-parallelism">Explicit Parallelism</h2>
+<p>In seqax, parallelism is made explicit, allowing you to fully
+understand and control how computations are distributed across devices.
+Sharding notation is expressed using Python type annotations, making the
+code both readable and concise.</p>
+<p>For example, here’s how multihost Fully Sharded Data Parallel (FSDP)
+and Tensor Parallelism (TP) are implemented for a feedforward network.
+There are two sharding axes: <code>d</code> for FSDP and <code>t</code>
+for TP. In our annotation style, <code>F/t</code> indicates that
+dimension <code>F</code> is sharded over <code>t</code> chips, and
+<code>F/t</code> is the size per chip.</p>
+<div class="sourceCode" id="cb1" style="font-size: 13px;"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Pre-FFN RMSNorm</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>ln2 <span class="op">=</span> shardops.all_gather(<span class="st">'M/t/d -&gt; M'</span>, layer_weights.ln2)</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>gx <span class="op">=</span> shardops.all_gather(<span class="st">'B/d L M/t -&gt; B/d L M'</span>, x)</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>nx <span class="op">=</span> rms_norm(gx) <span class="op">*</span> ln2</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="co"># FFN, using SwiGLU</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>w_gate <span class="op">=</span> shardops.all_gather(<span class="st">'M/d F/t -&gt; M F/t'</span>, layer_weights.w_gate)</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>gate_proj <span class="op">=</span> shardops.einsum_unreduced(<span class="st">'B/d L M, M F/t -&gt; B/d L F/t'</span>, nx, w_gate)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>w_up <span class="op">=</span> shardops.all_gather(<span class="st">'M/d F/t -&gt; M F/t'</span>, layer_weights.w_up)</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>up_proj <span class="op">=</span> shardops.einsum_unreduced(<span class="st">'B/d L M, M F/t -&gt; B/d L F/t'</span>, nx, w_up)</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>y <span class="op">=</span> jax.nn.swish(gate_proj) <span class="op">*</span> up_proj</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>w_down <span class="op">=</span> shardops.all_gather(<span class="st">'M/d F/t -&gt; M F/t'</span>, layer_weights.w_down)</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>ffn_out <span class="op">=</span> shardops.einsum_unreduced(<span class="st">'B/d L F/t, M F/t -&gt; B/d L M'</span>, y, w_down)</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>ffn_out <span class="op">=</span> shardops.psum_scatter(<span class="st">'B/d L M -&gt; B/d L M/t'</span>, ffn_out)</span></code></pre></div>
+<h2 id="scalability-features">Scalability Features</h2>
+<p>Seqax isn’t just a prototyping tool; it includes several features
+essential for experiments of any size:</p>
+<ul>
+<li><strong>Multihost Partitioning</strong>: Efficiently run experiments
+across multiple hosts.</li>
+<li><strong>Checkpointing</strong>: Save and restore model checkpoints
+using the <a href="https://zarr.readthedocs.io/en/stable/">Zarr</a>
+format, which supports various compression and chunk size settings.</li>
+<li><strong>Deterministic Data Loading</strong>: A data loader that
+ensures deterministic behavior, including resuming training at an
+arbitrary step number.</li>
+<li><strong>Profiling</strong>: Profiling is always enabled during the
+first few training steps to help identify bottlenecks early.</li>
+</ul>
+<h2 id="get-started">Get Started</h2>
+<p>Seqax is open source and available on GitHub.</p>
+<ul>
+<li><strong>Repository</strong>: <a href="https://github.com/MatX-inc/seqax" class="uri">https://github.com/MatX-inc/seqax</a></li>
+<li><strong>Download</strong>: <a href="https://github.com/MatX-inc/seqax/archive/refs/heads/main.zip">Zip
+Archive</a></li>
+</ul>
+<h2 id="conclusion">Conclusion</h2>
+<p>We’ve been using seqax internally at MatX for several months and are
+excited to share it with the community. Stay tuned for our upcoming <a href="/research">research</a> publications.</p>
+<p>If you’re passionate about working on one of the cleanest LLM
+codebases and want to be part of a team that values open research,
+consider joining us at MatX: <a href="https://matx.com/jobs" class="uri">https://matx.com/jobs</a>.</p>
+
+            </article>
+
+            <footer class="minimal-footer">
+                <span class="footer-copy">© MatX</span>
+                <div class="footer-links">
+                    <a href="mailto:founders@matx.com">Contact</a>
+                    <a href="https://www.linkedin.com/company/matxcomputing/" target="_blank" rel="noopener" aria-label="LinkedIn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+                    </a>
+                    <a href="https://x.com/matxcomputing" target="_blank" rel="noopener" aria-label="X">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                    </a>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        (function() {
+            const toggle = document.querySelector('.mobile-menu-toggle');
+            const overlay = document.querySelector('.mobile-menu-overlay');
+            if (!toggle || !overlay) return;
+
+            function closeMenu() {
+                overlay.classList.remove('active');
+                toggle.setAttribute('aria-expanded', 'false');
+                document.body.classList.remove('menu-open');
+            }
+
+            toggle.addEventListener('click', function() {
+                const isOpen = overlay.classList.toggle('active');
+                toggle.setAttribute('aria-expanded', isOpen);
+                document.body.classList.toggle('menu-open', isOpen);
+            });
+
+            // Close when tapping anywhere on overlay (including whitespace)
+            overlay.addEventListener('click', closeMenu);
+        })();
+    </script>
+</body>
+</html>

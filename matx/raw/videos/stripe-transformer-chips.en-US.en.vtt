@@ -1,0 +1,4690 @@
+WEBVTT
+Kind: captions
+Language: en
+
+00:00:01.396 --> 00:00:03.680
+Reiner Pope is the co-founder
+and CEO of MatX.
+
+00:00:03.680 --> 00:00:06.200
+He's a former math whiz and Haskell
+programmer who became
+
+00:00:06.200 --> 00:00:07.680
+a TPU architect for Google.
+
+00:00:07.880 --> 00:00:10.960
+Now he's teamed up with Google's former
+chief chip architect to design
+
+00:00:10.960 --> 00:00:12.137
+a better chip for AI.
+
+00:00:16.160 --> 00:00:20.320
+A year ago, everyone was saying
+Google is canceled.
+
+00:00:21.320 --> 00:00:22.720
+AI is going to eat their search.
+
+00:00:22.880 --> 00:00:26.640
+No one's going to search for things,
+and therefore, the business won't do well.
+
+00:00:26.800 --> 00:00:30.160
+Obviously, that sentiment has really
+shifted, in part helped by
+
+00:00:30.720 --> 00:00:32.080
+Gemini 3 is really good.
+
+00:00:32.600 --> 00:00:34.240
+Then also it's really fast.
+
+00:00:34.240 --> 00:00:36.800
+It's powered by the custom
+chip hardware Google has.
+
+00:00:37.200 --> 00:00:41.124
+You were inside Google for a lot
+of the foundational period,
+
+00:00:42.480 --> 00:00:44.000
+laying the groundwork for that stuff.
+
+00:00:44.080 --> 00:00:48.400
+What do people not
+appreciate about what Google did right
+
+00:00:49.040 --> 00:00:52.040
+to lay all the groundwork
+for their current AI success?
+
+00:00:52.552 --> 00:00:53.880
+They started with the research.
+
+00:00:54.280 --> 00:00:55.800
+The transformers came from there.
+
+00:00:55.847 --> 00:00:59.880
+Pretty much anyone who's
+over 30 and at a large lab has
+
+00:00:59.880 --> 00:01:01.580
+been at Google Brain at some point.
+
+00:01:02.520 --> 00:01:05.941
+I think there was and has
+been a lot of talent there.
+
+00:01:06.441 --> 00:01:09.240
+TPUs are pretty good.
+
+00:01:11.880 --> 00:01:14.600
+We think there's better you can do,
+of course, but they at least had
+
+00:01:14.600 --> 00:01:19.920
+the option, the opportunity to design
+the TPUs for neural nets at least, rather
+
+00:01:19.920 --> 00:01:22.040
+than graphics applications like NVIDIA.
+
+00:01:23.960 --> 00:01:27.000
+The overall architecture,
+starting with single core doing
+
+00:01:27.400 --> 00:01:30.720
+what was at the time reasonably large
+systolic arrays, by today's standards,
+
+00:01:30.720 --> 00:01:34.594
+nowhere near as much, but I think those
+were a lot of really good decisions.
+
+00:01:35.095 --> 00:01:36.760
+When did the TPU project start?
+
+00:01:37.097 --> 00:01:40.840
+TPU v1 was announced in 2016, I think.
+
+00:01:41.320 --> 00:01:46.200
+That was what led to the creation
+of all of those 2016–2017 startups.
+
+00:01:46.200 --> 00:01:49.609
+Cerebras, Groq, Graphcore,
+SambaNova, all of those.
+
+00:01:50.600 --> 00:01:53.120
+TPU v1 is a really impressive project.
+
+00:01:53.120 --> 00:01:55.560
+It was done on a very short timeline.
+
+00:01:56.320 --> 00:01:58.600
+I don't know the full details,
+but maybe about a year or so,
+
+00:01:58.600 --> 00:02:03.040
+maybe a year and a half,
+with a skeleton team of 20-30 people.
+
+00:02:03.920 --> 00:02:06.126
+Really, really minimal viable product.
+
+00:02:06.710 --> 00:02:09.360
+More recent TPUs and more recent AI chips
+in general
+
+00:02:10.160 --> 00:02:15.880
+can't do that because the market has
+moved, and the table
+
+00:02:15.880 --> 00:02:16.800
+stakes are much higher.
+
+00:02:17.840 --> 00:02:19.840
+The first-generation product, they just…
+
+00:02:20.160 --> 00:02:23.640
+One big systolic array,
+stick a memory next to it, we're done.
+
+00:02:24.000 --> 00:02:26.647
+It was really simple,
+nice, elegant product.
+
+00:02:26.730 --> 00:02:29.960
+Obviously, TPU v1
+predates the Transformer.
+
+00:02:29.960 --> 00:02:34.560
+Is that just a coincidence that they
+happened at very similar times, or
+
+00:02:35.200 --> 00:02:39.600
+are they related in some way?
+There was a period of maybe about four
+
+00:02:39.600 --> 00:02:46.920
+years of a lot of ML research, or neural
+
+00:02:46.920 --> 00:02:48.880
+net research, prior to Transformer.
+
+00:02:49.440 --> 00:02:50.160
+What was popular?
+
+00:02:50.160 --> 00:02:54.716
+LSTMs and ConvNets
+and ResNet and Inception.
+
+00:02:54.800 --> 00:03:00.880
+The big thinking at the time was
+to adapt it to be used for LSTMs.
+
+00:03:02.560 --> 00:03:04.351
+It's a reasonable fit there.
+
+00:03:04.434 --> 00:03:07.520
+But I think there was just
+a huge flurry of activity.
+
+00:03:09.080 --> 00:03:10.440
+Why did it all happen then and not later?
+
+00:03:10.440 --> 00:03:13.193
+It's probably just because
+people stopped publishing.
+
+00:03:13.240 --> 00:03:17.800
+2022 was about the time when Google
+completely stopped
+
+00:03:17.800 --> 00:03:18.840
+publishing its research.
+
+00:03:20.160 --> 00:03:22.300
+All the good papers are
+from before that as a result.
+
+00:03:22.320 --> 00:03:26.720
+But is there some hand-wavy story you can
+tell about parallelization where both
+
+00:03:26.720 --> 00:03:29.800
+Transformers and TPUs are
+
+00:03:31.560 --> 00:03:33.960
+about really internalizing
+
+00:03:34.120 --> 00:03:35.640
+the importance of parallelization?
+
+00:03:37.000 --> 00:03:40.480
+Definitely,
+I put it somewhat on people, actually.
+
+00:03:42.280 --> 00:03:45.120
+It is just true.
+Hardware is massively parallel.
+
+00:03:45.320 --> 00:03:49.520
+You've got tens of billions,
+hundreds of billions of transistors
+
+00:03:49.520 --> 00:03:53.760
+on your chip, and it takes
+maybe 100 clock cycles to get from one
+
+00:03:53.760 --> 00:03:55.120
+side of the chip to the other.
+
+00:03:55.120 --> 00:03:58.200
+You can't do a sequential computation
+involving transistors
+
+00:03:58.200 --> 00:03:59.080
+on both sides of the chip.
+
+00:03:59.080 --> 00:04:01.860
+The hardware is just fundamentally
+parallel, and you have to
+
+00:04:02.360 --> 00:04:03.080
+take advantage of that.
+
+00:04:03.118 --> 00:04:06.360
+TPU v1 and all later TPUs
+naturally took advantage of that.
+
+00:04:08.040 --> 00:04:10.760
+Matrix Multiply is really nice
+because it is so parallel.
+
+00:04:12.120 --> 00:04:14.760
+I think on the hardware side
+that's generally understood.
+
+00:04:15.130 --> 00:04:18.920
+I think most ML researchers,
+especially of the time,
+
+00:04:21.560 --> 00:04:25.080
+were not super deep in what
+hardware wants, and what is…
+
+00:04:25.360 --> 00:04:28.060
+Mechanical sympathy is sometimes
+a term that's used for that.
+
+00:04:29.728 --> 00:04:32.360
+What is the term?
+It kind of— It speaks for itself.
+
+00:04:34.080 --> 00:04:36.320
+Think about the poor machine
+and what does it want?
+
+00:04:37.736 --> 00:04:39.060
+What does it want?
+
+00:04:39.196 --> 00:04:44.320
+The term actually, I think,
+originates in maybe high-frequency trading
+
+00:04:44.320 --> 00:04:46.120
+in areas like that, which is,
+I haven't worked in.
+
+00:04:46.120 --> 00:04:48.920
+I've just,
+I like reading about the software
+
+00:04:48.920 --> 00:04:50.420
+that people have built from there.
+
+00:04:51.000 --> 00:04:52.600
+It's like, for them,
+what does the machine want?
+
+00:04:52.600 --> 00:04:54.360
+It wants a lot
+of instruction-level parallelism.
+
+00:04:54.360 --> 00:04:56.004
+This is CPUs, not TPUs.
+
+00:04:56.087 --> 00:05:02.880
+Once a lot don't branch, so unpredictable
+
+00:05:02.880 --> 00:05:04.120
+branches kill your performance.
+
+00:05:04.640 --> 00:05:07.240
+Think about the things that CPUs
+do and how to use them best.
+
+00:05:07.240 --> 00:05:09.000
+Can I get to peak performance on a CPU?
+
+00:05:09.000 --> 00:05:10.060
+It's that idea.
+
+00:05:10.560 --> 00:05:15.320
+I think the whole idea of peak
+performance on a CPU is kind of crazy.
+
+00:05:15.560 --> 00:05:17.000
+No one even says,
+"What is peak performance?
+
+00:05:17.000 --> 00:05:21.000
+What is my percentage of peak
+on a CPU?" Because the performance
+
+00:05:21.000 --> 00:05:25.160
+of software running on CPUs is really bad,
+but running on GPUs, or TPUs,
+
+00:05:25.160 --> 00:05:27.640
+or AI chips in general,
+actually that is the main focus.
+
+00:05:27.640 --> 00:05:28.960
+It's like, "What is my percentage of peak?
+
+00:05:28.960 --> 00:05:32.920
+Can I get 70% or 80%?"
+I feel like many people listening to this
+
+00:05:33.000 --> 00:05:38.200
+know that GPUs perform better
+for AI workloads than CPUs.
+
+00:05:38.360 --> 00:05:41.720
+It's a funny history when you think about
+it, where just
+
+00:05:42.520 --> 00:05:47.640
+one day we woke up with all these very
+mathematically intensive workloads,
+
+00:05:47.640 --> 00:05:52.920
+first crypto mining, and then AI,
+so then NVIDIA is extremely
+
+00:05:52.920 --> 00:05:56.640
+well-positioned because they've been
+making GPUs for gamers
+
+00:05:56.640 --> 00:05:57.760
+that you would plug into...
+
+00:05:57.760 --> 00:06:01.903
+You'd buy your
+Dell PC back in the day and maybe upgrade
+
+00:06:02.404 --> 00:06:07.080
+the graphics card by plugging in a better
+NVIDIA graphics card than the one
+
+00:06:07.080 --> 00:06:09.440
+the stock Dell computer came with.
+
+00:06:10.480 --> 00:06:12.960
+They were incredibly
+well-positioned to capture that.
+
+00:06:13.200 --> 00:06:14.240
+I think people know that.
+
+00:06:14.249 --> 00:06:19.640
+What is the intuitive explanation
+as to why GPUs are better
+
+00:06:19.640 --> 00:06:21.280
+for AI workloads than CPUs?
+
+00:06:22.120 --> 00:06:26.160
+People say, "They're better for these
+mathematical computations." But that's
+
+00:06:26.360 --> 00:06:28.840
+a tautological answer, basically.
+
+00:06:28.840 --> 00:06:31.680
+Is there some way you can have a mental
+model for why that is the case?
+
+00:06:31.680 --> 00:06:35.562
+Because software instruction
+sets also involve doing math.
+
+00:06:38.480 --> 00:06:39.960
+Intuitions, I'm not sure.
+
+00:06:39.960 --> 00:06:44.880
+Let me try and just go to
+some of the big differences, which is,
+
+00:06:45.720 --> 00:06:50.280
+really wide vector instructions is
+the hallmark of a GPU,
+
+00:06:51.320 --> 00:06:54.372
+which I think it's maybe…
+
+00:06:54.760 --> 00:06:58.720
+If you want some intuition, it's like how
+much is spent on controlling the thing?
+
+00:06:59.000 --> 00:07:01.960
+Maybe control means,
+if I'm driving a truck, how much…
+
+00:07:02.120 --> 00:07:03.720
+Is the driver versus the payload?
+
+00:07:04.200 --> 00:07:06.280
+A truck has a huge payload in it.
+
+00:07:06.280 --> 00:07:09.840
+That's more like the GPU, whereas
+maybe a motorcycle is more
+
+00:07:09.840 --> 00:07:11.500
+like the CPU, where you've got…
+
+00:07:11.880 --> 00:07:15.800
+Actually just processing the instructions,
+reading, "What do I have to do next?
+
+00:07:16.160 --> 00:07:19.760
+How do I do that?"
+That is most of the cost on a CPU, whereas
+
+00:07:21.360 --> 00:07:24.920
+if you just keep the same instructions
+but make the payload 100 times bigger,
+
+00:07:24.920 --> 00:07:29.280
+then you can shift most of the cost to be
+in the actual work that you want to do.
+
+00:07:31.120 --> 00:07:35.920
+CPUs have been optimized for very complex
+instruction sets, whereas
+
+00:07:37.040 --> 00:07:40.200
+GPU is optimized for—
+Complex instruction sets and
+
+00:07:42.840 --> 00:07:44.860
+fine-grained changing what you want to do.
+
+00:07:46.280 --> 00:07:49.480
+Like steering, in this analogy,
+a CPU can steer an obstacle course,
+
+00:07:49.640 --> 00:07:52.920
+no problem, whereas,
+on a GPU, you're just going to go
+
+00:07:52.920 --> 00:07:54.808
+straight line for a really long time.
+
+00:07:55.400 --> 00:07:56.860
+This is getting us into...
+
+00:07:58.120 --> 00:07:59.320
+What is MatX?
+
+00:07:59.320 --> 00:08:01.800
+How did you guys start it,
+and which part of this
+
+00:08:01.800 --> 00:08:02.760
+space are you attacking?
+
+00:08:02.816 --> 00:08:08.520
+MatX is making the best chips
+physically possible for LLMs.
+
+00:08:13.520 --> 00:08:16.040
+What led us into MatX…
+
+00:08:16.040 --> 00:08:17.800
+Mike is the other founder.
+
+00:08:18.040 --> 00:08:19.720
+Mike and I were both working at Google.
+
+00:08:22.080 --> 00:08:28.120
+I was working on the inference stack
+for running LLMs, and I was saying,
+
+00:08:28.280 --> 00:08:34.400
+"How can we make the best software on TPUs
+for running LLMs?" Then what we really
+
+00:08:34.400 --> 00:08:37.040
+wanted out of hardware was support much,
+much larger matrices.
+
+00:08:37.040 --> 00:08:41.240
+The matrices have grown from maybe 128
+in dimension into the many thousands.
+
+00:08:41.240 --> 00:08:45.960
+Truck goes to many trailers.
+
+00:08:48.520 --> 00:08:53.000
+Much larger matrices and
+much lower precision arithmetic.
+
+00:08:55.480 --> 00:08:57.880
+We tried to move the TPUs
+in this direction.
+
+00:08:58.040 --> 00:09:00.800
+TPUs have been moving in this direction,
+but they're constrained
+
+00:09:00.800 --> 00:09:03.200
+by a lot of other workloads.
+
+00:09:03.200 --> 00:09:05.040
+There was a big ads workload at the time.
+
+00:09:06.838 --> 00:09:12.800
+Back in '22, before ChatGPT was released,
+there was this idea that LLMs were going
+
+00:09:12.800 --> 00:09:18.400
+to be a big thing, but not conviction,
+and really hard to make a big bet on that.
+
+00:09:19.120 --> 00:09:22.560
+I think a startup is more of the right
+place to make a big bet on a workload.
+
+00:09:23.120 --> 00:09:24.355
+If you fail, it's fine.
+
+00:09:25.520 --> 00:09:26.800
+Another startup will succeed.
+
+00:09:26.800 --> 00:09:31.960
+Whereas I think a company like Google or
+NVIDIA, the next chip
+
+00:09:31.960 --> 00:09:33.300
+has to work for sure.
+
+00:09:34.365 --> 00:09:37.440
+You can take more technical
+risks as they turn up.
+
+00:09:37.440 --> 00:09:40.800
+Actually, I would say we were taking
+product risks rather than technical risks.
+
+00:09:41.200 --> 00:09:42.800
+But is there actually product risk?
+
+00:09:42.800 --> 00:09:45.293
+Because it seems like
+LLMs are going to work.
+
+00:09:45.877 --> 00:09:47.440
+I think now we understand it.
+
+00:09:47.680 --> 00:09:51.000
+Two or three years ago,
+I think it was just like a— And when
+
+00:09:51.000 --> 00:09:52.400
+you say the best chips for LLMs...
+
+00:09:52.400 --> 00:09:54.640
+I can think of multiple
+ways to measure best.
+
+00:09:54.640 --> 00:09:56.200
+It could be the best performance per watt.
+
+00:09:56.200 --> 00:09:59.000
+It could be the lowest latency,
+capable of handling the largest models.
+
+00:09:59.000 --> 00:09:59.641
+What is best?
+
+00:09:59.724 --> 00:10:04.760
+In general, there are two metrics which
+LLM workloads care about, which is
+
+00:10:05.560 --> 00:10:07.800
+throughput, which is really
+just an economics thing.
+
+00:10:08.040 --> 00:10:13.080
+I buy a chip for $30,000,
+and then can I do 10,000 tokens a second
+
+00:10:13.080 --> 00:10:15.400
+or 100,000 tokens per
+second of throughput?
+
+00:10:15.480 --> 00:10:17.400
+That determines the dollars per token.
+
+00:10:18.320 --> 00:10:21.287
+Throughput and then latency,
+how fast does a thing respond?
+
+00:10:21.371 --> 00:10:25.720
+As I see the market, the economics
+seems to be most important.
+
+00:10:28.280 --> 00:10:31.680
+Ultimately,
+the quality of the AI you can train
+
+00:10:31.680 --> 00:10:35.560
+and serve is constrained by,
+"I have only a $10 billion budget,
+
+00:10:35.640 --> 00:10:41.000
+and I want to train and serve the best
+model I can on that budget." If I can have
+
+00:10:41.800 --> 00:10:44.600
+more tokens per dollar,
+then I can get a better quality out.
+
+00:10:47.640 --> 00:10:51.560
+The product we aim to build is far ahead
+on throughput,
+
+00:10:52.400 --> 00:10:56.160
+but then, actually,
+the surprising thing is we're competitive
+
+00:10:56.160 --> 00:10:57.600
+with the best on latency as well.
+
+00:10:58.080 --> 00:11:01.140
+I think that is a unique thing
+in offering both in the same place.
+
+00:11:01.160 --> 00:11:01.720
+Is this for…
+
+00:11:01.720 --> 00:11:03.800
+Obviously in AI,
+there's training the models and then
+
+00:11:03.800 --> 00:11:05.206
+running the models' inference.
+
+00:11:05.290 --> 00:11:09.160
+Is this most interesting for inference,
+or is there any training angle?
+
+00:11:09.520 --> 00:11:14.280
+Incidentally, is it useful for trading,
+but you are trying to win inference,
+
+00:11:14.280 --> 00:11:15.680
+is that how you think about it?
+
+00:11:15.680 --> 00:11:17.200
+I think that's a reasonable
+way to look at it.
+
+00:11:17.200 --> 00:11:23.080
+I think the best inference chip today will
+be a really good training chip as well.
+
+00:11:24.280 --> 00:11:27.320
+Our product is both training
+and inference, but I think the first
+
+00:11:27.320 --> 00:11:28.520
+sales will be an inference.
+
+00:11:28.520 --> 00:11:33.000
+That's mostly just a market effect where
+it's easier to buy,
+
+00:11:33.320 --> 00:11:37.572
+it's not as big of a risk to go to buy an
+inference cluster as a training cluster.
+
+00:11:38.072 --> 00:11:40.520
+I think the product is really
+compelling for training as well.
+
+00:11:40.520 --> 00:11:42.744
+I think it should be
+the best training product.
+
+00:11:43.120 --> 00:11:45.705
+You guys just raised a big
+new round of financing.
+
+00:11:46.600 --> 00:11:47.540
+That's right.
+
+00:11:49.760 --> 00:11:54.720
+We've raised a series B round, it's led
+by Jane Street&lt;b&gt; and&lt;/b&gt; Situational Awareness.
+
+00:11:56.720 --> 00:11:59.677
+Situational Awareness, that is,
+Leopold Aschenbrenner's fund.
+
+00:11:59.761 --> 00:12:03.680
+He wrote the definitive book on
+AGI and where it's going.
+
+00:12:04.680 --> 00:12:07.040
+Then Jane Street, they're
+real technical experts.
+
+00:12:07.040 --> 00:12:09.200
+They understand all
+the details really well.
+
+00:12:09.200 --> 00:12:11.380
+Very happy to be having
+them lead the round.
+
+00:12:13.680 --> 00:12:18.800
+It's a $500 million round, helps us
+actually ramp the manufacturing and supply
+
+00:12:18.800 --> 00:12:21.720
+chain for our chip so we can
+bring our chip to market.
+
+00:12:21.720 --> 00:12:23.120
+That's a lot of money.
+It is.
+
+00:12:24.400 --> 00:12:28.920
+I think
+roughly, I would say it costs a ballpark
+
+00:12:28.920 --> 00:12:31.960
+$100 million to produce
+a chip in small volumes.
+
+00:12:32.460 --> 00:12:37.640
+But then you see the orders that are going
+around, like OpenAI, Anthropic, Google.
+
+00:12:37.640 --> 00:12:40.360
+They're going around buying
+multi-gigawatt clusters, they cost
+
+00:12:41.080 --> 00:12:44.520
+tens of billions of dollars of chips,
+and you want to deploy all
+
+00:12:44.520 --> 00:12:46.120
+of that in a year or so.
+
+00:12:46.520 --> 00:12:49.268
+You just need a massive
+supply chain behind you.
+
+00:12:50.040 --> 00:12:55.520
+Assuming everything works technically,
+what rate of production
+
+00:12:55.520 --> 00:12:56.440
+could you start to see?
+
+00:12:57.560 --> 00:12:59.900
+We have some estimates of where
+we would like to be on this.
+
+00:13:02.120 --> 00:13:05.840
+Ramping to very large volumes
+is a huge challenge for anyone.
+
+00:13:06.200 --> 00:13:08.560
+Obviously, for the large players,
+they've had some practice at it.
+
+00:13:08.560 --> 00:13:11.520
+Getting to a very large
+volume for a startup is hard.
+
+00:13:12.880 --> 00:13:16.212
+We would like to be at a place where
+we're shipping multiple gigawatts a year.
+
+00:13:16.295 --> 00:13:17.840
+Multiple gigawatts per year?
+
+00:13:18.640 --> 00:13:18.840
+Speaking of the metrics,
+you talked about tokens per second.
+
+00:13:18.840 --> 00:13:19.340
+Yeah.
+
+00:13:21.680 --> 00:13:24.560
+We used to measure chips in FLOPS,
+and I guess there's some kind
+
+00:13:24.560 --> 00:13:26.640
+of custom FLOP thing for AI chips.
+
+00:13:26.640 --> 00:13:28.960
+But is everyone just using
+tokens per second these days?
+
+00:13:28.960 --> 00:13:31.728
+Is the industry aligning
+on that as the chip metric?
+
+00:13:32.520 --> 00:13:37.120
+I guess it's like an application
+metric versus the chip itself.
+
+00:13:37.280 --> 00:13:40.240
+FLOPS of the chip is the key chip metric.
+
+00:13:42.000 --> 00:13:44.640
+There's a little bit of,
+if I go and say,
+
+00:13:44.640 --> 00:13:50.200
+"I've got an exaFLOP chip," to you then
+the appropriate suspicion is to say,
+
+00:13:50.480 --> 00:13:54.800
+"But can I actually use those FLOPS
+effectively?" Then you need
+
+00:13:54.800 --> 00:13:56.080
+to map the application to that.
+
+00:13:56.920 --> 00:14:00.715
+This is kind of telling you the usable
+FLOPS for your purposes.
+
+00:14:00.798 --> 00:14:05.320
+As a consumer of AI,
+we have known for a long time
+
+00:14:05.720 --> 00:14:08.440
+that lower latency products succeed.
+
+00:14:10.680 --> 00:14:17.040
+Google talked about their internal testing
+where the differences were down to…
+
+00:14:17.040 --> 00:14:18.840
+Was it 50 milliseconds?
+Something like that.
+
+00:14:19.320 --> 00:14:23.080
+In result times where they noticed more
+Google engagement, the faster the results
+
+00:14:23.080 --> 00:14:27.680
+were, and you'd think that 50
+milliseconds is imperceptible to a human.
+
+00:14:27.880 --> 00:14:29.400
+It almost is, but turns out it's not.
+
+00:14:30.520 --> 00:14:33.880
+I think Amazon has,
+certainly, they've optimized the latency
+
+00:14:33.880 --> 00:14:35.560
+of the Amazon experience quite a lot.
+
+00:14:35.640 --> 00:14:39.400
+I don't know if they've talked about this
+stuff publicly, but you know that their
+
+00:14:39.400 --> 00:14:42.880
+internal metrics similarly show
+that the faster the product page loads,
+
+00:14:42.880 --> 00:14:47.400
+the more people buy it.
+Yet in AI, Google has carved out a
+
+00:14:48.440 --> 00:14:53.960
+meaningful advantage via Gemini just being
+
+00:14:53.960 --> 00:14:56.600
+really fast for its level of intelligence.
+
+00:14:57.880 --> 00:15:01.080
+As far as I can tell,
+ahead of most of the other labs
+
+00:15:01.400 --> 00:15:05.320
+at a latency, at a fixed
+high level of intelligence.
+
+00:15:06.040 --> 00:15:12.760
+Why have you guys or Groq or better chips
+not been adopted faster
+
+00:15:12.760 --> 00:15:14.240
+to give this product latency?
+
+00:15:14.240 --> 00:15:18.840
+It's just that this will happen and you
+guys will be powering all the AI products,
+
+00:15:18.840 --> 00:15:22.213
+but I note that Google has
+an interesting lead there.
+
+00:15:22.296 --> 00:15:23.880
+I think there's ultimately…
+
+00:15:24.520 --> 00:15:27.920
+At least for existing chips in the market,
+there's a really uncomfortable trade-off
+
+00:15:27.920 --> 00:15:29.280
+between latency and throughput.
+
+00:15:29.280 --> 00:15:32.600
+The chips that are best at throughput have
+historically been the chips
+
+00:15:32.600 --> 00:15:35.000
+that are based on HBM as the memory.
+
+00:15:35.680 --> 00:15:39.000
+That is Google, Amazon, NVIDIA.
+
+00:15:39.000 --> 00:15:44.280
+In order to have very large throughput,
+you need a lot of inferences
+
+00:15:44.280 --> 00:15:45.320
+in flight simultaneously.
+
+00:15:45.800 --> 00:15:47.000
+That needs the large memory.
+
+00:15:47.071 --> 00:15:48.600
+But that hasn't been so good at latency.
+
+00:15:48.600 --> 00:15:51.280
+Then, there's the Groq and Cerebras
+that are much better at latency because
+
+00:15:51.280 --> 00:15:55.320
+they've got this, the SRAM,
+weights are in SRAM, very low latency.
+
+00:15:56.120 --> 00:15:59.680
+The problem is, and the challenge
+when you go to a Groq or Cerebras system
+
+00:15:59.680 --> 00:16:03.280
+is that the throughput you get there,
+it just is not very good.
+
+00:16:04.280 --> 00:16:08.920
+The fundamental dollars per token is just
+not competitive with Google
+
+00:16:09.960 --> 00:16:11.262
+or NVIDIA or Amazon.
+
+00:16:11.345 --> 00:16:13.720
+It is actually possible
+to do both in the same chip.
+
+00:16:15.000 --> 00:16:16.040
+It's kind of an obvious thing.
+
+00:16:16.040 --> 00:16:17.520
+You say you take the HBM,
+you take the SRAM,
+
+00:16:17.520 --> 00:16:20.700
+put them together on the same chip,
+you put the weights in SRAM, and you put
+
+00:16:21.400 --> 00:16:23.800
+all of the inference data in HBM.
+
+00:16:24.920 --> 00:16:26.720
+That is what we are doing, in fact.
+
+00:16:26.720 --> 00:16:29.600
+I think that actually hits a really nice
+sweet spot where you can get low
+
+00:16:29.600 --> 00:16:31.000
+latency and also be very cheap.
+
+00:16:32.040 --> 00:16:33.760
+I think that's a really
+attractive point to be.
+
+00:16:33.760 --> 00:16:36.880
+It hasn't happened in the market yet,
+just because of product decisions that
+
+00:16:36.880 --> 00:16:38.873
+have been made by the different chips.
+
+00:16:38.956 --> 00:16:43.040
+But we should expect
+all the AIs we're using to get
+
+00:16:43.040 --> 00:16:45.160
+significantly faster over
+the coming 3–5 years?
+
+00:16:45.160 --> 00:16:47.020
+Order of magnitude faster, I'd say.
+
+00:16:47.760 --> 00:16:52.640
+Generally, HBM-based chips tend to be
+about 10 milliseconds or 20 milliseconds
+
+00:16:52.640 --> 00:16:55.200
+per— I'm sorry, HBM-based
+chips are things like TPUs?
+
+00:16:55.200 --> 00:16:56.020
+That's right.
+
+00:16:57.720 --> 00:17:00.400
+There's just some simple math of,
+how long does it take you
+
+00:17:00.400 --> 00:17:02.800
+to read through all of HBM?
+It takes about 20 milliseconds.
+
+00:17:02.800 --> 00:17:06.280
+That's the amount of time per token it
+runs, whereas the amount of time to read
+
+00:17:06.280 --> 00:17:08.060
+through all of SRAM is much faster.
+
+00:17:08.520 --> 00:17:11.120
+You get about 1 millisecond,
+so they are managed pretty faster.
+
+00:17:11.360 --> 00:17:15.480
+Famously, software used to be…
+
+00:17:15.800 --> 00:17:19.200
+Old-fashioned deterministic software,
+the kind that's now out of favor,
+
+00:17:20.160 --> 00:17:22.960
+used to be very easy and quick to scale.
+
+00:17:23.320 --> 00:17:26.120
+You had a social networks that have some
+Southwest, Northwest moment,
+
+00:17:26.120 --> 00:17:32.240
+and they can scale through 10, 100,
+1,000 orders of magnitude of adding users
+
+00:17:32.400 --> 00:17:35.720
+because it's just a few rows
+in a database, and it's
+
+00:17:35.720 --> 00:17:37.431
+a very underutilized CPU.
+
+00:17:37.800 --> 00:17:39.560
+What's interesting about the AI world
+
+00:17:39.800 --> 00:17:45.080
+is there are very real bottlenecks.
+
+00:17:45.400 --> 00:17:48.320
+Elon spent lots of time talking about
+power, but it's not just
+
+00:17:48.320 --> 00:17:51.960
+bringing power online.
+You mentioned HBM is reminding me of…
+
+00:17:51.960 --> 00:17:56.040
+It seems like there's a view that maybe
+there's going to be some HBM
+
+00:17:56.760 --> 00:17:58.040
+supply chain crunch.
+
+00:17:59.662 --> 00:18:00.920
+Where do you see…
+
+00:18:01.560 --> 00:18:05.960
+Are we in for just a crunched world where
+some limiter is
+
+00:18:07.240 --> 00:18:11.400
+pacing the rate of AI buildout over
+the coming few years, where
+
+00:18:11.960 --> 00:18:14.440
+the economics work,
+and the products and everything like that,
+
+00:18:14.440 --> 00:18:17.400
+but ultimately,
+we just can't bring the components online
+
+00:18:17.400 --> 00:18:20.300
+fast enough because we have to build
+out the factories, things like that.
+
+00:18:20.520 --> 00:18:22.852
+What are those crunched components?
+
+00:18:24.120 --> 00:18:24.800
+I think so.
+
+00:18:24.960 --> 00:18:29.040
+I'll just comment, by the way, this is a
+great time to be a supplier in this place.
+
+00:18:29.800 --> 00:18:31.840
+Or just really— You should
+have started an HBM company.
+
+00:18:31.840 --> 00:18:32.340
+I know.
+
+00:18:33.000 --> 00:18:36.120
+I think it's also just a fun time
+to be someone who optimizes software.
+
+00:18:36.760 --> 00:18:38.120
+That's always what I like doing.
+
+00:18:38.680 --> 00:18:41.640
+Always the challenge is,
+"Why am I optimizing this if no one
+
+00:18:41.640 --> 00:18:46.680
+cares?" But finally,
+there's a place where you can…
+
+00:18:46.680 --> 00:18:49.260
+It's actually very meaningful
+in a very tangible sense.
+
+00:18:49.320 --> 00:18:54.520
+If I can make this 20% more efficient,
+then it can save that 20% of the buildout.
+
+00:18:54.520 --> 00:18:57.840
+The supply chain,
+we're going to have crunches
+
+00:18:57.840 --> 00:18:59.280
+on all of the supply chain really.
+
+00:18:59.880 --> 00:19:05.000
+If you look at the big components of what
+any company, like us for example,
+
+00:19:05.000 --> 00:19:08.680
+build out,
+there is dependency on logic ties
+
+00:19:08.680 --> 00:19:13.960
+from typically TSMC, maybe Samsung, or
+HBM, which are the big three HBM vendors.
+
+00:19:13.960 --> 00:19:16.040
+Hynix, Samsung, and Micron.
+
+00:19:17.680 --> 00:19:20.360
+Then there's also just the whole rack
+manufacturing, which includes
+
+00:19:22.120 --> 00:19:24.680
+literally just sheet metal and so
+on that builds the rack,
+
+00:19:24.680 --> 00:19:28.640
+but also cables and connectors because
+of all the high-speed interconnect.
+
+00:19:29.440 --> 00:19:31.320
+That's what we—Racks don't sound hard.
+
+00:19:31.320 --> 00:19:32.480
+Are they sneaky hard?
+
+00:19:33.297 --> 00:19:37.080
+The big challenge is that you want
+to bring in a huge amount of power,
+
+00:19:37.080 --> 00:19:41.880
+get a huge amount of heat out,
+and also have phenomenal interconnect,
+
+00:19:41.880 --> 00:19:44.080
+which has very high signal
+integrity requirements.
+
+00:19:44.960 --> 00:19:46.520
+Pack a lot of cables in with…
+
+00:19:46.520 --> 00:19:49.640
+The cables don't bend too much,
+they have to have enough copper in them,
+
+00:19:49.640 --> 00:19:53.000
+and so on, that you don't lose
+data rate on the interconnect.
+
+00:19:54.640 --> 00:19:56.220
+If you push it to a limit, it's sound.
+
+00:19:56.320 --> 00:19:58.823
+Wafers, racks, HBM.
+What else?
+
+00:19:59.824 --> 00:20:03.800
+Data centers, which I think is power,
+primarily a little bit of buildout,
+
+00:20:03.800 --> 00:20:07.248
+but primarily power
+and good infrastructure there.
+
+00:20:08.600 --> 00:20:12.440
+How do you then,
+as a startup that is looking to acquire
+
+00:20:12.440 --> 00:20:17.240
+all these components,
+elbow your way in amongst the giants
+
+00:20:17.480 --> 00:20:20.760
+of the Googles and the NVIDIAs and all
+these people who
+
+00:20:21.720 --> 00:20:24.960
+have long-running relationships
+and have been buying for much longer?
+
+00:20:27.440 --> 00:20:31.400
+Ultimately what all of these suppliers
+care about, they do somewhat care about
+
+00:20:31.400 --> 00:20:33.440
+a diversity of their own customers.
+
+00:20:34.000 --> 00:20:35.800
+It's not a great position to be in.
+
+00:20:35.800 --> 00:20:37.760
+They don't want monotony.
+That's right, yeah.
+
+00:20:39.800 --> 00:20:43.400
+But then, what is their hesitation?
+
+00:20:43.400 --> 00:20:46.400
+Or the calculus for one of these large
+suppliers is,
+
+00:20:47.320 --> 00:20:51.120
+if I reserve some of my capacity for you,
+a startup, are you going
+
+00:20:51.120 --> 00:20:53.680
+to be around in a year?
+Is anyone going to even buy your product?
+
+00:20:53.752 --> 00:20:59.520
+Our approach has been to
+just actually find buyers for the product,
+
+00:20:59.840 --> 00:21:02.970
+and then the buyers answer
+that question, ultimately.
+
+00:21:04.040 --> 00:21:08.000
+If you show up with a bunch of fairly
+ironclad contracts to a supplier,
+
+00:21:08.400 --> 00:21:09.960
+then that has helped.
+
+00:21:09.960 --> 00:21:11.040
+That's the nature of it, yeah.
+
+00:21:11.040 --> 00:21:15.240
+I presume also
+the round you just raised really helps
+
+00:21:15.240 --> 00:21:20.880
+there, where showing that you are
+incredibly well-capitalized and not going
+
+00:21:20.880 --> 00:21:24.492
+anywhere also helps from a supplier
+validation point of view.
+
+00:21:25.120 --> 00:21:25.640
+Absolutely.
+
+00:21:26.640 --> 00:21:28.640
+It helps just to say that we are around.
+
+00:21:28.880 --> 00:21:30.400
+We, in some cases, are actually…
+
+00:21:31.280 --> 00:21:34.900
+It depends on which part of the supply
+chain, but some parts of the supply chain,
+
+00:21:35.200 --> 00:21:38.080
+some are fungible.
+Logic ties are typically pretty fungible.
+
+00:21:38.560 --> 00:21:42.480
+But other parts of manufacturing,
+you actually need something
+
+00:21:42.480 --> 00:21:43.940
+specifically set up for you.
+
+00:21:44.320 --> 00:21:46.960
+We're also able to cover
+the capital costs of that.
+
+00:21:47.056 --> 00:21:48.100
+That makes sense.
+
+00:21:48.320 --> 00:21:50.840
+Coming back to the MatX architecture.
+
+00:21:51.280 --> 00:21:54.640
+You want to build the best chip for LLMs.
+What is that?
+
+00:21:54.640 --> 00:21:57.480
+Yeah, exactly.
+Sounds great.
+
+00:21:58.984 --> 00:22:00.240
+There's a few aspects to that.
+
+00:22:00.240 --> 00:22:04.520
+I think the first one is
+pick your memory system right.
+
+00:22:05.560 --> 00:22:08.600
+I said, we've seen this HBM family,
+we've got the SRAM family,
+
+00:22:08.600 --> 00:22:12.160
+put them both together is actually,
+the most obvious idea,
+
+00:22:12.160 --> 00:22:13.480
+but you can actually do it.
+
+00:22:14.560 --> 00:22:16.240
+There are a lot of details
+to make that work well.
+
+00:22:16.240 --> 00:22:17.120
+We've done that work.
+
+00:22:17.280 --> 00:22:20.360
+One of the things that shows up there is
+you've spent all of this
+
+00:22:20.360 --> 00:22:22.174
+area on your chip on SRAM.
+
+00:22:22.258 --> 00:22:25.080
+How do you fit in the matrix multipliers,
+which are the other big thing you really
+
+00:22:25.080 --> 00:22:28.600
+need to do,
+and somehow create a much more
+
+00:22:28.600 --> 00:22:30.400
+efficient matrix multiply engine?
+
+00:22:31.280 --> 00:22:32.520
+There is a gold standard for that.
+
+00:22:32.520 --> 00:22:33.760
+That is called the systolic array.
+
+00:22:33.760 --> 00:22:35.080
+Make a really large systolic array.
+
+00:22:35.080 --> 00:22:37.440
+You can't beat that in area
+or power efficiency.
+
+00:22:37.898 --> 00:22:39.520
+Provably so?
+Practically?
+
+00:22:39.600 --> 00:22:42.320
+Practically.
+It has not known a better approach there.
+
+00:22:43.040 --> 00:22:45.840
+The main thing is,
+where are the inefficiencies typically?
+
+00:22:45.840 --> 00:22:48.760
+The inefficiencies show up when
+you leave the systolic array.
+
+00:22:49.880 --> 00:22:54.240
+If you make a systolic array really big,
+then you just don't leave it as often.
+
+00:22:54.800 --> 00:22:55.600
+That's the idea.
+
+00:22:56.240 --> 00:22:57.720
+Make a really big systolic array.
+
+00:22:57.720 --> 00:23:04.480
+That is sort of the theme of several
+of the 2023-era startups, including us.
+
+00:23:06.080 --> 00:23:10.440
+But one of the challenges there is, now,
+there is this part of the neural network,
+
+00:23:10.440 --> 00:23:13.520
+as part of the Transformer,
+which is this attention that doesn't
+
+00:23:13.520 --> 00:23:16.240
+map well onto a large systolic array.
+That's the tension.
+
+00:23:18.000 --> 00:23:21.200
+The mixture of expert layer maps really
+well, but the attention does not.
+
+00:23:23.040 --> 00:23:25.280
+What we came up with,
+which is quite different than some
+
+00:23:25.280 --> 00:23:29.000
+of the other startups in this space,
+is say, take a really large historical
+
+00:23:29.000 --> 00:23:32.400
+array, but have a way to split it up
+into pieces without losing efficiency.
+
+00:23:34.200 --> 00:23:36.960
+That is the core of the design for us.
+
+00:23:37.840 --> 00:23:39.400
+Then, the third component.
+
+00:23:39.640 --> 00:23:42.800
+First was HBM and SRAM,
+second is the systolic array,
+
+00:23:42.880 --> 00:23:48.240
+third component is an interesting new
+approach on low-precision arithmetic.
+
+00:23:48.240 --> 00:23:51.920
+Low-precision arithmetic, in general,
+we've seen number formats
+
+00:23:51.920 --> 00:23:53.040
+get narrower and narrower.
+
+00:23:53.600 --> 00:23:57.102
+They get faster and faster as
+you make them less precise.
+
+00:23:57.186 --> 00:23:59.688
+Number formats get narrower.
+What does that mean?
+
+00:24:00.000 --> 00:24:04.109
+Float32 was how people
+used to train neural nets.
+
+00:24:04.600 --> 00:24:06.240
+That's just too much precision.
+It's wasteful.
+
+00:24:06.240 --> 00:24:07.120
+Too much precision, yeah.
+
+00:24:07.120 --> 00:24:12.320
+It's like saying,
+"I've got an image with a billion
+
+00:24:12.320 --> 00:24:14.200
+color bit depth." It's too many colors.
+
+00:24:15.880 --> 00:24:18.160
+You'd rather have more
+pixels and fewer colors.
+
+00:24:18.160 --> 00:24:22.840
+That trend seems to go
+almost all the way down to one bit even,
+
+00:24:23.400 --> 00:24:28.360
+where just have very few colors
+but a huge number of pixels.
+
+00:24:30.200 --> 00:24:35.099
+In net seems to be a better,
+just more efficient way to train models.
+
+00:24:35.683 --> 00:24:41.800
+Sorry, literally what precision
+are you dealing with in this sense?
+
+00:24:42.400 --> 00:24:43.160
+We have a range.
+
+00:24:48.920 --> 00:24:52.040
+We actually have an ML team who we hired
+specifically to research
+
+00:24:52.520 --> 00:24:56.360
+different forms of numerics and how to
+make them all work together really well.
+
+00:24:58.200 --> 00:24:59.960
+We have a range of precisions.
+
+00:24:59.960 --> 00:25:01.400
+It's not just one precision.
+
+00:25:01.400 --> 00:25:04.680
+We think probably the main thing will be
+similar to where NVIDIA is at,
+
+00:25:04.680 --> 00:25:05.720
+which is 4-bit precision.
+
+00:25:06.280 --> 00:25:10.160
+But I think a mix of different precisions
+is useful for just when you look
+
+00:25:10.160 --> 00:25:12.600
+at the research, sometimes you want some
+layers in higher precision or
+
+00:25:12.600 --> 00:25:15.320
+lower precision, and so on.
+4-bit is 16.
+
+00:25:15.800 --> 00:25:17.280
+Yeah, you get 16 choices.
+That's it.
+
+00:25:17.600 --> 00:25:19.560
+That's it.
+It's pretty imprecise.
+
+00:25:21.160 --> 00:25:21.880
+That's really interesting.
+
+00:25:21.880 --> 00:25:24.080
+I didn't know about that dynamic,
+but it makes sense.
+
+00:25:24.080 --> 00:25:26.340
+Half of them are positive,
+half of them are negative.
+
+00:25:26.760 --> 00:25:31.640
+It's even— How do you design a chip?
+
+00:25:33.640 --> 00:25:34.680
+Is that a whiteboard?
+
+00:25:34.880 --> 00:25:37.440
+What software are you working in?
+I'd just love to know…
+
+00:25:37.440 --> 00:25:40.280
+I understand how you design software
+and what that process looks like.
+
+00:25:40.280 --> 00:25:42.916
+I have actually no sense
+for what chip design looks like.
+
+00:25:43.480 --> 00:25:47.320
+The way that you actually type a chip
+into a computer is similar to software.
+
+00:25:47.520 --> 00:25:48.440
+You write Verilog.
+
+00:25:49.480 --> 00:25:50.880
+Verilog is a programming language.
+
+00:25:50.880 --> 00:25:53.320
+It is a very parallel programming
+language, which makes it different
+
+00:25:53.320 --> 00:25:55.560
+than C or Python or something.
+
+00:25:56.440 --> 00:25:58.640
+But it is a programming language.
+
+00:25:59.560 --> 00:26:02.600
+The mechanics of how you express
+the design are the same as software,
+
+00:26:02.680 --> 00:26:05.480
+and we have continuous integration,
+Git, all of those things.
+
+00:26:05.522 --> 00:26:07.640
+But a program executes...
+
+00:26:07.880 --> 00:26:09.320
+Like your Verilog program...
+
+00:26:09.985 --> 00:26:11.620
+We don't really run it.
+
+00:26:11.720 --> 00:26:12.920
+Exactly.
+How does it run?
+
+00:26:13.405 --> 00:26:15.000
+We synthesize it.
+
+00:26:15.000 --> 00:26:17.910
+Synopsys and Cadence provide EDA tools.
+EDA?
+
+00:26:18.410 --> 00:26:23.832
+You have to remember, I'm just—
+I don't even know what it means, really.
+
+00:26:24.416 --> 00:26:26.560
+I think it's Electronic Design Automation.
+
+00:26:27.040 --> 00:26:29.280
+It takes the Verilog and says…
+
+00:26:30.880 --> 00:26:33.960
+First turns it into a description of what
+are the logic gates that are involved,
+
+00:26:33.960 --> 00:26:36.720
+ANDs, ORs, NOTs, and then
+the wires between them.
+
+00:26:37.720 --> 00:26:42.851
+Then it runs for days doing some really
+difficult algorithms,
+
+00:26:42.935 --> 00:26:45.120
+and then eventually produces…
+
+00:26:46.520 --> 00:26:48.360
+Gates are the first thing,
+and then even below that,
+
+00:26:48.360 --> 00:26:50.440
+it literally just produces polygons.
+
+00:26:50.440 --> 00:26:53.040
+It says like,
+P-type semiconductor here, N-type
+
+00:26:53.040 --> 00:26:55.239
+semiconductor here, and polysilicon.
+
+00:26:57.400 --> 00:27:02.600
+You write Verilog,
+and then that compiles down into gates
+
+00:27:02.600 --> 00:27:06.760
+and ultimately the Minecraft 3D.
+
+00:27:07.960 --> 00:27:09.960
+"This is where your elements should go."
+
+00:27:11.400 --> 00:27:16.160
+But then, what is the iteration loop?
+
+00:27:16.320 --> 00:27:20.000
+When we write code at Stripe,
+we build a first version of something,
+
+00:27:20.480 --> 00:27:24.977
+and then we try it out, and then we
+refine it, and we add more
+
+00:27:25.060 --> 00:27:26.000
+functionality over time.
+
+00:27:26.000 --> 00:27:27.680
+We're going to write
+some tests at some point.
+
+00:27:27.680 --> 00:27:31.200
+We'll ship that, we'll find product market
+fit, and then we'll refine it in market.
+
+00:27:32.640 --> 00:27:35.700
+Do you just sit down and write the
+completed chip, and it works really well?
+
+00:27:35.840 --> 00:27:37.800
+Every year we tape-out a chip,
+and if there's a bug,
+
+00:27:37.800 --> 00:27:38.800
+we just wait till next year.
+
+00:27:38.800 --> 00:27:40.740
+It's not really how we do it.
+What's the iterative process?
+
+00:27:41.200 --> 00:27:44.000
+How do we actually do it?
+It's much more waterfall than software is.
+
+00:27:44.720 --> 00:27:47.220
+Waterfall is almost a bad
+word in software development.
+
+00:27:47.280 --> 00:27:48.960
+But it's a fact of life in general.
+
+00:27:51.280 --> 00:27:57.280
+The waterfall goes from architects to
+logic designers who are writing Verilog.
+
+00:27:57.800 --> 00:28:00.560
+Then, there's this design verification,
+and then physical design.
+
+00:28:02.040 --> 00:28:05.000
+There's this really big architecture phase
+which happens before even writing any
+
+00:28:05.000 --> 00:28:10.800
+Verilog,
+which is, "What do I want the organization
+
+00:28:10.800 --> 00:28:13.680
+of my chip to be?" In some sense…
+
+00:28:13.680 --> 00:28:17.600
+I came to hardware after doing
+almost 10 years in software.
+
+00:28:18.400 --> 00:28:20.880
+I really like the blank
+slate you get in hardware.
+
+00:28:21.200 --> 00:28:23.600
+You've got all of the raw materials,
+you have a much more
+
+00:28:24.560 --> 00:28:26.340
+varied in what you have available.
+
+00:28:27.520 --> 00:28:28.840
+What is the organization of your chip?
+
+00:28:28.840 --> 00:28:30.800
+Do I have 100 cores?
+Do I have one core?
+
+00:28:31.360 --> 00:28:33.800
+Do I have systolic arrays?
+Do I have vector units?
+
+00:28:33.800 --> 00:28:34.980
+All of those things.
+
+00:28:36.080 --> 00:28:38.760
+Then we spend a long time coming up
+with that general principle
+
+00:28:39.240 --> 00:28:42.320
+and then saying, "Okay, now I've got
+these applications I want to run.
+
+00:28:42.320 --> 00:28:44.240
+I want to run a transformer
+of a particular shape.
+
+00:28:44.240 --> 00:28:47.400
+I want to map that onto this architecture
+that I've got in my head."
+
+00:28:48.680 --> 00:28:49.720
+We do a lot of iteration.
+
+00:28:50.120 --> 00:28:51.680
+Well, I've got this
+architecture in my head.
+
+00:28:51.680 --> 00:28:53.800
+I write it down to communicate to other
+people, but that's just
+
+00:28:53.800 --> 00:28:54.840
+like a markdown file.
+
+00:28:57.800 --> 00:29:01.200
+Then, still actually a lot in my head,
+but maybe with Python simulation and so
+
+00:29:01.200 --> 00:29:04.760
+on, I'll see,
+do my applications map well to it?
+
+00:29:05.200 --> 00:29:06.536
+Can I run LLMs?
+
+00:29:07.680 --> 00:29:12.880
+You have a simulator where you
+write your chip, you can then simulate its
+
+00:29:12.880 --> 00:29:15.600
+performance,
+and you have some battery of tests
+
+00:29:15.840 --> 00:29:18.240
+that you see how this chip design works.
+
+00:29:18.400 --> 00:29:20.560
+Is it like an industry standard...
+
+00:29:22.160 --> 00:29:24.972
+Is it the X-Plane of chip testing?
+
+00:29:28.280 --> 00:29:31.640
+There's an industry standard thing for
+the Verilog once you've done the design.
+
+00:29:32.360 --> 00:29:34.760
+They're just Verilog simulators
+that you can test against.
+
+00:29:37.160 --> 00:29:39.680
+But you've already invested a huge amount
+of work by the time you've got
+
+00:29:39.680 --> 00:29:43.340
+to that point, and so you sure hope you
+haven't made a big mistake at that point.
+
+00:29:44.840 --> 00:29:47.880
+The thing that everyone does
+prior to that is,
+
+00:29:49.000 --> 00:29:52.600
+we'll write our own performance simulator,
+which, I mean,
+
+00:29:53.000 --> 00:29:56.080
+it is very specific to your particular
+architecture, and you can write it quite
+
+00:29:56.080 --> 00:29:58.440
+concisely in just a normal
+programming language.
+
+00:29:59.160 --> 00:30:01.240
+That is where most of the
+architecture work is done.
+
+00:30:01.240 --> 00:30:03.880
+Then the simulation on Verilog is more,
+"I know what I'm doing.
+
+00:30:03.880 --> 00:30:07.400
+I just want to make sure I didn't have any
+bugs when I implemented it." But I presume
+
+00:30:07.400 --> 00:30:10.000
+it's a game of inches where different
+people are trying different
+
+00:30:10.000 --> 00:30:11.800
+things, and then you...
+
+00:30:13.800 --> 00:30:18.440
+Do you simulate it to see if it runs
+1% better across the battery of tests?
+
+00:30:18.440 --> 00:30:19.820
+Or is that not how it works?
+
+00:30:20.027 --> 00:30:21.400
+In this space, not so much.
+
+00:30:22.480 --> 00:30:27.840
+Just to characterize what performance
+of an AI chip is, it is how many, really…
+
+00:30:29.000 --> 00:30:30.520
+First thing you care about is FLOPS.
+
+00:30:31.160 --> 00:30:32.480
+How many FLOPS have I got?
+
+00:30:32.480 --> 00:30:37.120
+That's a product of how many multiplies,
+like, "I've got a grid of a certain size,
+
+00:30:37.120 --> 00:30:41.160
+1000 by 1000." Can do a million
+multiplies in a clock cycle.
+
+00:30:41.440 --> 00:30:43.560
+Then I have a certain clock
+frequency, a gigahertz.
+
+00:30:43.880 --> 00:30:45.960
+I multiply them out.
+That is the speed of it.
+
+00:30:47.000 --> 00:30:50.600
+I don't even need to write
+that and test it to see how fast it is.
+
+00:30:50.600 --> 00:30:51.160
+It just is.
+
+00:30:52.680 --> 00:30:55.000
+What I plan in advance is
+it's going to be this fast.
+
+00:30:55.560 --> 00:30:58.480
+What I can then optimize on,
+maybe a little bit, is clock speed.
+
+00:30:58.480 --> 00:31:00.220
+There's not a lot I can do there.
+
+00:31:00.960 --> 00:31:02.920
+Then, I can optimize
+a bit on area as well.
+
+00:31:03.200 --> 00:31:06.300
+There is some room for optimization,
+but actually a lot of it gets set.
+
+00:31:06.600 --> 00:31:10.035
+Actually, just the speed of the chip
+gets set very much upfront.
+
+00:31:11.000 --> 00:31:13.600
+Then how many chips do you fab?
+
+00:31:13.600 --> 00:31:19.160
+Is it only the ones going into production,
+or is it just build a few to throw away,
+
+00:31:19.160 --> 00:31:20.120
+or how does it work?
+
+00:31:21.000 --> 00:31:24.480
+The ideal, which companies tend to hit
+about 50% of the time,
+
+00:31:24.480 --> 00:31:27.040
+is that your first tape-out…
+
+00:31:27.040 --> 00:31:28.680
+Tape-out costs $30 million.
+
+00:31:28.845 --> 00:31:30.800
+Your first— Tape-out
+is just production run?
+
+00:31:30.800 --> 00:31:31.740
+That's right.
+
+00:31:33.080 --> 00:31:37.000
+The actual manual, the first chip costs
+$30 million, the second chip costs $1,000.
+
+00:31:37.000 --> 00:31:37.500
+Yes.
+
+00:31:38.600 --> 00:31:40.600
+Tape-out is that first chip.
+Okay.
+
+00:31:40.600 --> 00:31:44.120
+The ideal is that your first tape-out
+is actually your production thing.
+
+00:31:44.600 --> 00:31:48.080
+You do a tape-out, you
+make maybe a thousand chips and test them,
+
+00:31:48.080 --> 00:31:49.560
+and then you do production volume.
+
+00:31:50.920 --> 00:31:57.160
+In the unlucky 50% of the time, you need
+to redo some or all of your tape-out.
+
+00:31:58.120 --> 00:32:02.160
+In good cases, and in many cases,
+you can redo just the metal layers
+
+00:32:02.160 --> 00:32:04.600
+which costs you only like $100,000.
+
+00:32:05.240 --> 00:32:08.120
+As opposed to the—
+Pay the $30 million again.
+
+00:32:09.520 --> 00:32:12.240
+But in bad cases,
+if you've made something serious and you
+
+00:32:12.240 --> 00:32:14.720
+can't fix it at the metal layers,
+you have to do the whole thing again.
+
+00:32:15.058 --> 00:32:17.040
+Why can't that be solved?
+
+00:32:18.240 --> 00:32:21.600
+Is that definitionally an error
+in simulation, where it turns out these
+
+00:32:21.600 --> 00:32:27.120
+two gates were too close together, and
+it just led to some reliability issues?
+
+00:32:30.640 --> 00:32:30.800
+Yeah.
+
+00:32:30.800 --> 00:32:35.920
+What you're describing is physical,
+the physical implementation
+
+00:32:35.920 --> 00:32:37.960
+of the chip is wrong.
+That's one class.
+
+00:32:38.040 --> 00:32:41.501
+The other class is that the logical
+specification of the chip is wrong.
+
+00:32:41.560 --> 00:32:44.120
+But shouldn't that be—
+Shouldn't you have caught that before?
+
+00:32:44.680 --> 00:32:44.840
+Yeah.
+
+00:32:44.840 --> 00:32:46.920
+Before you spent $30
+million on manufacturing it.
+
+00:32:46.920 --> 00:32:47.580
+Yeah.
+
+00:32:49.560 --> 00:32:52.520
+We do a lot of testing.
+We try not to ship these things.
+
+00:32:53.720 --> 00:32:56.080
+I hear software companies also
+ship bugs to production as well.
+
+00:32:56.080 --> 00:32:56.700
+Fair.
+
+00:32:57.480 --> 00:33:00.000
+Sometimes things— It's a very good retort.
+
+00:33:00.000 --> 00:33:01.400
+Shouldn't you not be shipping bugs?
+
+00:33:03.600 --> 00:33:06.280
+But there is a real trade-off in,
+you can spend more and more
+
+00:33:06.280 --> 00:33:07.520
+time on design verification.
+
+00:33:10.000 --> 00:33:12.699
+There's always this question of,
+when do you stop?
+
+00:33:14.240 --> 00:33:18.400
+You stop when your coverage metrics ever
+hit a certain point, but maybe not 100%.
+
+00:33:19.160 --> 00:33:19.840
+Then if
+
+00:33:22.720 --> 00:33:27.920
+Apple has to discretize the iPhone release
+
+00:33:27.920 --> 00:33:31.800
+cycle, and they have settled on once per
+year, they'll decide,
+
+00:33:31.800 --> 00:33:34.400
+"We've got this better camera,
+but it's got to wait for the next
+
+00:33:34.400 --> 00:33:38.640
+version," or, "We're going to improve
+the waterproofing, but that's got to wait
+
+00:33:38.640 --> 00:33:42.800
+for the iPhone 8 or whatever."
+They have taken a continuous process
+
+00:33:42.800 --> 00:33:46.320
+of always coming up with ways to make
+the iPhone better and discretized
+
+00:33:46.320 --> 00:33:48.240
+it into annual iPhone releases.
+
+00:33:48.640 --> 00:33:51.821
+What will your discrete cadence be?
+What's our vision of that?
+
+00:33:52.080 --> 00:33:52.322
+Yeah.
+
+00:33:52.322 --> 00:33:56.240
+Many chip vendors have this sort
+of tick-tock model, which is
+
+00:33:56.880 --> 00:34:00.480
+you'll do on one generation,
+maybe you're trying to release every year.
+
+00:34:01.880 --> 00:34:05.320
+On even numbered years,
+you'll do a physical technology upgrade,
+
+00:34:05.320 --> 00:34:09.080
+so new transistor technology, new
+memory technology, and you interconnect.
+
+00:34:09.680 --> 00:34:12.600
+Then on odd numbered years,
+you might do an architecture overhaul.
+
+00:34:12.600 --> 00:34:16.640
+I think that's a pretty good fit because
+you have different parts of your company
+
+00:34:16.640 --> 00:34:19.760
+that are skilled at different areas,
+and it allows you to keep both of them
+
+00:34:19.760 --> 00:34:25.600
+occupied without having instead every
+2 years doing a massive risk release.
+
+00:34:25.600 --> 00:34:26.220
+Yeah.
+
+00:34:26.640 --> 00:34:28.040
+So you think that's
+probably likely for you?
+
+00:34:28.040 --> 00:34:28.940
+That's right.
+
+00:34:29.960 --> 00:34:31.500
+You mentioned interconnect.
+
+00:34:31.880 --> 00:34:34.320
+There's a narrative out there
+that in NVIDIA,
+
+00:34:34.320 --> 00:34:37.520
+a huge part of the defensibility comes not
+from the chips, which are good,
+
+00:34:37.520 --> 00:34:42.600
+but from the software layer,
+and the ability for engineers to write
+
+00:34:42.600 --> 00:34:46.680
+these really parallel workloads,
+and the fact that they've been refining
+
+00:34:46.680 --> 00:34:49.240
+CUDA for whatever number of years.
+A decade or so.
+
+00:34:49.240 --> 00:34:51.160
+Exactly, a long time.
+
+00:34:52.120 --> 00:34:56.469
+How do you think about parallelization,
+and is that narrative true?
+
+00:34:56.553 --> 00:34:57.900
+It's true for sure.
+
+00:34:58.200 --> 00:35:02.040
+It's true in many areas of the market.
+
+00:35:03.160 --> 00:35:06.840
+I think,
+and especially where you look at where
+
+00:35:06.840 --> 00:35:09.480
+NVIDIA entered the market, they're doing
+
+00:35:11.320 --> 00:35:15.000
+PC devices, lots of gaming, and so on.
+
+00:35:15.000 --> 00:35:18.760
+There are thousands of games,
+maybe tens of thousands of games released,
+
+00:35:19.080 --> 00:35:22.320
+and they all need to be programmed against
+CUDA, and so
+
+00:35:23.640 --> 00:35:27.040
+there's such a huge investment
+in the software that this is really
+
+00:35:27.040 --> 00:35:28.120
+important, the compatibility.
+
+00:35:28.585 --> 00:35:30.320
+There are not thousands of LLMs.
+
+00:35:30.320 --> 00:35:33.800
+There's one LLM per frontier lab,
+and there's maybe five frontier
+
+00:35:33.800 --> 00:35:35.300
+labs or something like that.
+
+00:35:37.720 --> 00:35:39.600
+Just the economics of that is different.
+
+00:35:39.846 --> 00:35:45.360
+The calculation for a frontier lab roughly
+goes as, I just bought a $10 billion
+
+00:35:45.840 --> 00:35:49.760
+compute cluster,
+I have hired 50 of the best
+
+00:35:50.240 --> 00:35:55.195
+people who can write optimized GPU,
+or TPU, or Trainium software.
+
+00:35:56.960 --> 00:35:59.440
+I pay them less than
+$10 billion, a lot less.
+
+00:36:01.680 --> 00:36:05.200
+Let's put them to work
+optimizing the compute.
+
+00:36:07.440 --> 00:36:10.360
+Good work there,
+depends on what your baseline is,
+
+00:36:10.360 --> 00:36:13.760
+but it can very easily double
+the performance of the software you write.
+
+00:36:15.080 --> 00:36:18.680
+There is a huge amount of custom software
+written for every generation of chip.
+
+00:36:19.080 --> 00:36:22.640
+When a new chip comes out, software is
+substantially rewritten
+
+00:36:22.640 --> 00:36:24.280
+to optimize for that specific chip.
+
+00:36:24.560 --> 00:36:27.880
+That's just the right trade-off given
+the relative costs of these things.
+
+00:36:28.440 --> 00:36:32.840
+What that means for us is
+that ecosystem already exists,
+
+00:36:33.640 --> 00:36:37.320
+and that way of operating, where you say,
+"I'm just going to staff a 50-person team
+
+00:36:39.240 --> 00:36:42.840
+to write software for this chip,"
+works really well if you're
+
+00:36:42.840 --> 00:36:44.540
+trying to sell to frontier labs.
+
+00:36:44.600 --> 00:36:49.240
+You're saying CUDA is way more important
+for the games environment,
+
+00:36:49.240 --> 00:36:55.800
+where it just does a lot of games
+than this top-heavy AI market that we're
+
+00:36:55.800 --> 00:37:02.000
+in, where
+if people say, "You need to then customize
+
+00:37:02.000 --> 00:37:06.599
+your workload for a MatX chip," it's like,
+"Well, fine, do that." Cost of business.
+
+00:37:07.100 --> 00:37:09.400
+Yeah, that makes a lot of sense.
+
+00:37:11.080 --> 00:37:13.600
+Where will you fab the chips?
+TSMC.
+
+00:37:16.520 --> 00:37:20.600
+Why is TSMC so durable?
+
+00:37:22.200 --> 00:37:23.200
+It's interesting.
+
+00:37:23.200 --> 00:37:24.800
+They don't charge a lot as well.
+
+00:37:24.800 --> 00:37:26.880
+You'd think that if they're a monopoly
+provider, they should
+
+00:37:26.880 --> 00:37:28.760
+charge a lot of money.
+They don't.
+
+00:37:29.640 --> 00:37:32.280
+I think that is a big aspect
+of why they're so durable.
+
+00:37:32.625 --> 00:37:36.400
+It's like this
+cyclical conservatism
+
+00:37:36.880 --> 00:37:41.080
+crossed with Taiwanese business
+conservatism, means you're at the most
+
+00:37:41.080 --> 00:37:43.600
+conservative part of the matrix.
+
+00:37:43.920 --> 00:37:45.096
+But I mean, it does…
+
+00:37:48.480 --> 00:37:51.280
+I mean, an American capitalist might say,
+"Well, they're just screwing up.
+
+00:37:51.280 --> 00:37:54.120
+They could have extracted more money
+from the market." But you could also say
+
+00:37:54.120 --> 00:37:59.800
+that this is actually the long-term
+sustaining advantage because they will
+
+00:37:59.800 --> 00:38:01.120
+just stay ahead for a really long time.
+
+00:38:01.120 --> 00:38:03.060
+They don't incur
+the creation of competitors.
+
+00:38:03.360 --> 00:38:06.920
+But isn't the creation of competitors
+priced in because
+
+00:38:06.920 --> 00:38:08.040
+of the geopolitical risk?
+
+00:38:10.160 --> 00:38:13.800
+It's not like everyone's fat, dumb,
+and happy with their TSMC dependence.
+
+00:38:13.800 --> 00:38:15.420
+They're actually thinking a lot about it.
+
+00:38:15.480 --> 00:38:17.760
+So there is real technical
+advantage there as well.
+
+00:38:17.760 --> 00:38:19.320
+It's not just the discouragement.
+
+00:38:19.589 --> 00:38:23.840
+But designing chips seems really hard,
+building airplanes seems really hard.
+
+00:38:23.920 --> 00:38:30.520
+There are so many areas where competitive
+market forces create multiple options.
+
+00:38:31.800 --> 00:38:33.478
+Yet, that has not occurred here.
+
+00:38:34.080 --> 00:38:35.240
+There are multiple options.
+
+00:38:35.480 --> 00:38:37.000
+You can buy from Intel or Samsung.
+
+00:38:37.720 --> 00:38:38.960
+But at leading-edge nodes.
+
+00:38:40.320 --> 00:38:42.480
+What do we even care about
+in leading-edge nodes, I guess?
+
+00:38:42.480 --> 00:38:43.800
+The big advantage is on power.
+
+00:38:44.440 --> 00:38:46.280
+The advantage on area is smaller.
+
+00:38:46.440 --> 00:38:49.800
+The leading edge nodes, the density
+doesn't go up as much as it used to.
+
+00:38:52.120 --> 00:38:54.880
+When you are really,
+really sensitive to power, it is a good
+
+00:38:54.880 --> 00:38:56.120
+idea to be on leading edge nodes.
+
+00:38:56.120 --> 00:38:57.880
+That is AI chips and mobile phone chips.
+
+00:38:59.320 --> 00:39:02.360
+But there's a lot of the market where you
+don't actually like
+
+00:39:02.360 --> 00:39:03.740
+the devices in your car.
+Sure.
+
+00:39:04.040 --> 00:39:05.320
+Car chips, yeah, that's fine.
+
+00:39:05.960 --> 00:39:09.138
+But you're saying,
+if you exclude the two most interesting
+
+00:39:09.222 --> 00:39:16.160
+parts of the market— That's true.
+
+00:39:16.160 --> 00:39:17.480
+For this super high-growth area
+of the market, it's interesting to me,
+
+00:39:17.480 --> 00:39:22.120
+again, there's a lot of other
+really complex business problems out
+
+00:39:22.120 --> 00:39:25.600
+there that competition has solved.
+Chip design is a…
+
+00:39:25.600 --> 00:39:28.720
+Like, why has someone not left
+TSMC and gone and built a new fab?
+
+00:39:29.960 --> 00:39:30.800
+I don't know.
+
+00:39:32.400 --> 00:39:35.280
+The cost of a fab is extremely expensive.
+
+00:39:35.360 --> 00:39:38.640
+I recognize that also the cost
+of a lab is extremely expensive, too.
+
+00:39:41.840 --> 00:39:44.560
+I don't really understand the technical
+details of why it's so hard.
+
+00:39:45.440 --> 00:39:49.920
+I mean, there is some amount of just a $10
+billion fab versus $100 million
+
+00:39:51.280 --> 00:39:52.680
+tape-out and chip development.
+
+00:39:52.680 --> 00:39:53.680
+There's a huge difference there.
+
+00:39:53.680 --> 00:39:55.040
+But beyond that, I'm not sure.
+
+00:39:55.351 --> 00:39:58.000
+What's TSMC like to deal with?
+They're very big.
+
+00:39:58.440 --> 00:40:03.360
+As a startup, we tend to work with,
+not directly with TSMC, but with
+
+00:40:04.240 --> 00:40:07.560
+an ASIC vendor who,
+firstly, does a huge amount of the actual
+
+00:40:07.560 --> 00:40:10.840
+backend work for us to interface
+with them, but then also has their
+
+00:40:10.840 --> 00:40:12.580
+existing relationships with them.
+
+00:40:13.440 --> 00:40:16.960
+TSMC cares a lot about diversity
+of their customer pool.
+
+00:40:18.124 --> 00:40:20.160
+It gets back to that conservatism.
+Yeah.
+
+00:40:21.120 --> 00:40:23.060
+They're great to work
+with from that perspective.
+
+00:40:24.160 --> 00:40:26.100
+They want to encourage startups.
+That's right.
+
+00:40:26.240 --> 00:40:29.120
+That's very cool.
+Why don't the labs design their own chips?
+
+00:40:29.480 --> 00:40:30.720
+Google does.
+Google does.
+
+00:40:31.040 --> 00:40:32.597
+OpenAI is starting.
+
+00:40:32.960 --> 00:40:35.560
+It's really a trade-off of how much
+advantage do you get from vertical
+
+00:40:35.560 --> 00:40:40.080
+integration versus how much advantage
+do you get by concentration of R&amp;D work.
+
+00:40:41.440 --> 00:40:43.840
+You take the five labs,
+and if they all buy from one player,
+
+00:40:43.840 --> 00:40:46.560
+then you can put five times
+as much R&amp;D into that chip.
+
+00:40:48.000 --> 00:40:51.840
+Does that beat the advantage you get from
+saying, "I know exactly what my model is"?
+
+00:40:52.825 --> 00:40:57.200
+Because of the several-years delay
+from designing a chip to being
+
+00:40:57.200 --> 00:40:59.960
+in production,
+you can't actually say,
+
+00:40:59.960 --> 00:41:04.560
+"I know exactly what my model is," because
+models change much faster than that.
+
+00:41:06.080 --> 00:41:09.040
+Even the labs are forced into this
+position where they have to make
+
+00:41:09.040 --> 00:41:11.480
+predictions, and they have to hedge
+against what they might
+
+00:41:11.480 --> 00:41:12.400
+do two years from now.
+
+00:41:12.480 --> 00:41:16.200
+The calculus is, what is the probability
+distribution of what my model might look
+
+00:41:16.200 --> 00:41:20.840
+like and then
+design a chip that gets 90% of that
+
+00:41:20.840 --> 00:41:22.540
+probability distribution or something?
+
+00:41:23.200 --> 00:41:26.360
+Elon is excited about
+data centers in space.
+
+00:41:27.040 --> 00:41:33.320
+The two criticisms I've heard are that
+cooling is very hard and then
+
+00:41:34.360 --> 00:41:36.520
+repairing the chips is hard.
+
+00:41:37.120 --> 00:41:39.497
+But I know nothing about chips.
+You do.
+
+00:41:41.040 --> 00:41:42.520
+The repair is really interesting.
+
+00:41:43.880 --> 00:41:47.480
+When you look at how NVIDIA deploys their
+racks, how we do something pretty
+
+00:41:47.480 --> 00:41:48.680
+similar to what NVIDIA does.
+
+00:41:50.160 --> 00:41:52.880
+In general, you always need to design
+for the fact that some of your
+
+00:41:52.880 --> 00:41:53.600
+chips are going to be down.
+
+00:41:53.600 --> 00:41:57.240
+Mean time between failure
+of chips is not that large.
+
+00:41:58.120 --> 00:42:01.000
+In a cluster of 100,000 chips,
+there are going to be chips
+
+00:42:01.000 --> 00:42:02.380
+that are down all the time.
+
+00:42:02.520 --> 00:42:07.358
+One way you can do that is you can make a
+rack where one rack has spare chips in it.
+
+00:42:07.442 --> 00:42:11.280
+NVIDIA has eight spare
+chips in a rack of 64.
+
+00:42:13.040 --> 00:42:14.220
+That's pretty good.
+
+00:42:15.040 --> 00:42:17.080
+The combinatorics works
+really well for you there.
+
+00:42:20.480 --> 00:42:27.000
+Because you can pick which ones to avoid,
+you can with very high probability
+
+00:42:27.000 --> 00:42:27.960
+tolerate a lot of failures.
+
+00:42:27.960 --> 00:42:31.480
+And then the other just for the other
+family of things is to say my rack has to
+
+00:42:31.480 --> 00:42:33.660
+work, but I have some spare racks as well.
+
+00:42:35.200 --> 00:42:38.400
+You can math that out with
+the tax of reliability here is
+
+00:42:38.400 --> 00:42:39.760
+only like 10%, that's pretty good.
+
+00:42:41.760 --> 00:42:45.920
+But that relies on someone coming
+and servicing the part within
+
+00:42:45.920 --> 00:42:46.960
+a day or something like that.
+
+00:42:46.960 --> 00:42:49.440
+If you say they're going to service it
+never, then
+
+00:42:50.160 --> 00:42:53.440
+I think you actually can get where you
+want to be, but maybe with 100%
+
+00:42:53.440 --> 00:42:55.040
+tax on reliability rather than 10%.
+
+00:42:55.760 --> 00:42:59.600
+For example, if you think the average
+lifetime of a chip is in the range
+
+00:42:59.600 --> 00:43:00.980
+of three to five years.
+
+00:43:01.560 --> 00:43:05.120
+That means if I deploy twice as many
+chips, then three to five years from now,
+
+00:43:05.120 --> 00:43:06.580
+half of them will still work.
+
+00:43:06.880 --> 00:43:10.840
+Also, the burn-in is
+particularly failure-y.
+
+00:43:10.840 --> 00:43:12.840
+How about the cooling?
+Most of the challenge...
+
+00:43:14.200 --> 00:43:17.080
+I guess this is actually really
+a data center design aspect.
+
+00:43:18.680 --> 00:43:20.880
+At the rack level,
+the challenge of cooling is just getting
+
+00:43:20.880 --> 00:43:24.760
+the heat out as quickly as possible out
+of the rack into the cooling network.
+
+00:43:26.520 --> 00:43:30.280
+How you get it out of the spaceship,
+other people would know
+
+00:43:30.280 --> 00:43:31.567
+that better than I do.
+
+00:43:33.080 --> 00:43:36.989
+That seems to be the main
+objection, but I don't know.
+
+00:43:37.573 --> 00:43:40.680
+I think it's
+if you think the cost of repair is
+
+00:43:40.680 --> 00:43:43.720
+that you need to have deployed twice as
+many chips, then it's a trade-off
+
+00:43:43.720 --> 00:43:46.499
+of the capital of the chips
+versus the power saving.
+
+00:43:46.582 --> 00:43:51.000
+Exactly, the repair thing, it feels like,
+can be solved, because also,
+
+00:43:51.720 --> 00:43:54.360
+I think part of the bet,
+part of Elon's claim,
+
+00:43:54.360 --> 00:43:58.720
+is that we will just be so power-limited
+that you have no option
+
+00:43:58.720 --> 00:43:59.960
+but to go to space.
+
+00:44:00.280 --> 00:44:05.480
+People can argue about that,
+but were that to be the case, then yes,
+
+00:44:05.480 --> 00:44:08.560
+it's like you can get power in space,
+and you cannot on Earth,
+
+00:44:08.840 --> 00:44:10.560
+so you might as well go there.
+
+00:44:10.560 --> 00:44:13.480
+Whereas like the cooling is a more
+fundamental, "Does the product actually
+
+00:44:13.480 --> 00:44:19.280
+work at all?" Reiner thinks about AI
+
+00:44:19.280 --> 00:44:20.960
+the unglamorous way: compute,
+
+00:44:20.960 --> 00:44:24.320
+systems architecture, and what it
+takes to run models reliably at scale.
+
+00:44:24.680 --> 00:44:27.920
+If you're building an AI product,
+the business model similarly has
+
+00:44:27.920 --> 00:44:29.680
+a ton of unglamorous complexity.
+
+00:44:29.680 --> 00:44:32.400
+You're not just selling AI,
+you're monetizing consumption across
+
+00:44:32.400 --> 00:44:35.520
+API calls, tokens processed, GPU hours.
+
+00:44:36.240 --> 00:44:39.240
+Stripe Billing is a scalable
+system for usage-based billing.
+
+00:44:39.240 --> 00:44:41.920
+It lets you launch token-based pricing,
+subscriptions, credits,
+
+00:44:41.920 --> 00:44:43.280
+hybrid models, whatever you want.
+
+00:44:43.800 --> 00:44:46.960
+You can create revenue models based
+on usage without rebuilding your
+
+00:44:46.960 --> 00:44:48.400
+pricing system every six months.
+
+00:44:48.800 --> 00:44:51.981
+If you're building an AI product,
+Stripe Billing is worth a look.
+
+00:44:55.067 --> 00:44:57.695
+What are your AI predictions for 2026?
+
+00:44:58.279 --> 00:45:03.040
+What I'm really excited about is
+just being able to…
+
+00:45:04.080 --> 00:45:05.940
+I'm still excited about the coding.
+
+00:45:06.160 --> 00:45:07.600
+This is what we do as a company.
+
+00:45:07.600 --> 00:45:09.440
+It's what many others
+do as a company as well.
+
+00:45:10.960 --> 00:45:14.880
+The one aspect of this is
+expanding into more domains.
+
+00:45:16.160 --> 00:45:18.720
+For example, in where we spend our time.
+
+00:45:21.440 --> 00:45:24.640
+We as a company, we write Rust,
+we write Verilog, we write Python.
+
+00:45:26.080 --> 00:45:28.000
+No Haskell?
+No, there's a story there.
+
+00:45:28.880 --> 00:45:30.160
+I used to love Haskell.
+
+00:45:30.320 --> 00:45:31.680
+Rust is my current favorite.
+
+00:45:32.160 --> 00:45:33.200
+Mutation is good.
+
+00:45:36.560 --> 00:45:40.640
+The models are extremely
+good at Rust and Python.
+
+00:45:40.720 --> 00:45:42.160
+They've done a lot of RL on them.
+
+00:45:42.960 --> 00:45:45.920
+They have not done as much RL on Verilog.
+
+00:45:46.560 --> 00:45:51.880
+They've done almost none on,
+"Write me a markdown file that describes
+
+00:45:51.880 --> 00:45:55.080
+a chip architecture."
+How do you even RL on that?
+
+00:45:55.080 --> 00:45:58.600
+You have to say,
+what is a good chip architecture?
+
+00:45:58.600 --> 00:46:01.180
+You have to somehow say whether
+that's a good result or not.
+
+00:46:02.000 --> 00:46:05.680
+I think one of the things the labs are
+doing is trying to broaden what they've
+
+00:46:05.680 --> 00:46:08.680
+done RL on, source it from customers
+
+00:46:08.680 --> 00:46:15.523
+and so on in order to make it less spiky,
+
+00:46:15.640 --> 00:46:17.200
+fill out the gaps between the spikes.
+
+00:46:17.200 --> 00:46:22.000
+I presume the labs would love to work
+with you on improving the models
+
+00:46:23.760 --> 00:46:28.160
+by doing RL on this specific task.
+
+00:46:28.244 --> 00:46:29.600
+However, it's also special.
+
+00:46:29.600 --> 00:46:31.000
+How does that make sense for us?
+
+00:46:31.000 --> 00:46:32.000
+You're a special sauce.
+
+00:46:33.120 --> 00:46:38.320
+Do you want to come up with some AI
+approaches but keep them proprietary?
+
+00:46:40.480 --> 00:46:42.320
+We've looked at a few
+different aspects here.
+
+00:46:42.320 --> 00:46:42.960
+There's the…
+
+00:46:43.640 --> 00:46:46.480
+What we're able to do by ourselves,
+our business is not training models.
+
+00:46:46.480 --> 00:46:50.360
+We do it in order to do the research
+on numerics, but actual
+
+00:46:50.360 --> 00:46:52.020
+production models we don't do.
+
+00:46:54.020 --> 00:46:59.200
+The biggest mileage is on the RL, and it's
+not something we can really do ourselves.
+
+00:46:59.200 --> 00:47:02.800
+We'd love it if we could have a custom
+model just for us, but that doesn't
+
+00:47:02.800 --> 00:47:05.280
+seem to be— Well you could, right?
+
+00:47:05.280 --> 00:47:08.659
+The terms we've been offered by labs so
+far have not been on those terms, but—
+
+00:47:08.680 --> 00:47:10.280
+Because you have to share the IP back.
+
+00:47:10.578 --> 00:47:15.480
+The way they prefer to do it is that
+they put it into their mainstream
+
+00:47:15.480 --> 00:47:17.000
+model because it's good for them.
+
+00:47:17.400 --> 00:47:19.180
+Which, obviously, you don't want to do.
+
+00:47:19.960 --> 00:47:20.840
+How do you think…
+
+00:47:21.720 --> 00:47:25.080
+What does you using AI to design
+a model do you think look like?
+
+00:47:25.080 --> 00:47:29.520
+Because this is actually an interesting
+sight glass into a weak version
+
+00:47:29.520 --> 00:47:34.320
+of recursive self-improvement where we're
+using the AIs to develop better AIs.
+
+00:47:35.080 --> 00:47:37.480
+I'm curious,
+what you think that looks like?
+
+00:47:37.480 --> 00:47:40.520
+Is it your own proprietary
+recursive models?
+
+00:47:40.600 --> 00:47:41.320
+What else?
+
+00:47:41.560 --> 00:47:44.695
+Is there day-to-day AI
+usage that's load-bearing?
+
+00:47:45.800 --> 00:47:48.840
+The stuff that is available today and I
+think will become even better,
+
+00:47:49.480 --> 00:47:53.640
+very quickly is just
+the stuff that looks most like software.
+
+00:47:54.120 --> 00:47:57.240
+Writing Verilog, running tests,
+running continuous integration, and so on.
+
+00:48:00.720 --> 00:48:03.240
+That is a big fraction
+of the development time in a chip.
+
+00:48:03.240 --> 00:48:05.240
+It's probably 9, 12, 15 months.
+
+00:48:05.240 --> 00:48:10.440
+There's some stuff that's downstream
+of that, which is physical design,
+
+00:48:10.680 --> 00:48:16.519
+which is, you take that Verilog and
+you generate the gates and the polygons.
+
+00:48:17.120 --> 00:48:18.520
+We don't have a clear path for…
+
+00:48:19.760 --> 00:48:23.440
+It's not at least the most obvious thing
+is not clear for how to compress that.
+
+00:48:24.880 --> 00:48:26.560
+The goal, can you tape-out
+a chip in one month?
+
+00:48:26.560 --> 00:48:28.100
+One month would be the goal.
+
+00:48:28.400 --> 00:48:30.800
+In theory, you could compress all
+of the logic design and design
+
+00:48:30.800 --> 00:48:35.000
+verification down to a short amount
+of time just by continuing
+
+00:48:35.000 --> 00:48:36.720
+on the same path we're doing now.
+
+00:48:36.720 --> 00:48:39.520
+But if you wanted to take
+the physical design down,
+
+00:48:39.600 --> 00:48:42.840
+that has to leave code,
+you're now doing like graphical interfaces
+
+00:48:42.840 --> 00:48:45.047
+and saying I want to play stuff and so on.
+
+00:48:45.548 --> 00:48:47.680
+Actually, there has been work on this even
+
+00:48:47.680 --> 00:48:52.720
+prior to LLMs, which is a specific
+
+00:48:53.600 --> 00:48:55.520
+model trained for that particular problem.
+
+00:48:56.360 --> 00:48:59.360
+I think the vendors,
+which is like Synopsys and Cadence,
+
+00:49:00.400 --> 00:49:02.640
+probably should move in that direction.
+
+00:49:03.200 --> 00:49:05.560
+Most of the focus has not been,
+do it faster; it's been,
+
+00:49:05.560 --> 00:49:06.640
+do it with higher quality.
+
+00:49:08.480 --> 00:49:12.400
+But that is a big bottleneck on,
+can I have a new chip every month?
+
+00:49:13.000 --> 00:49:16.200
+There's just the practical thing of a new
+chip every month doesn't really make
+
+00:49:16.200 --> 00:49:17.760
+sense because then if I'm deploying...
+
+00:49:19.200 --> 00:49:21.760
+If it takes me a year to populate a data
+center, that means I'm going to have
+
+00:49:21.760 --> 00:49:23.680
+different chips in different
+corners of the data center.
+
+00:49:23.680 --> 00:49:24.180
+Yes.
+
+00:49:24.480 --> 00:49:28.480
+When you talk about one month to tapeout,
+so you do all this work
+
+00:49:28.480 --> 00:49:31.200
+to ultimately produce a file.
+
+00:49:34.000 --> 00:49:38.480
+Everything TSMC then does,
+it's not entirely in software.
+
+00:49:38.720 --> 00:49:42.360
+Is there some type-setting that has
+to happen of moving stuff around?
+
+00:49:42.360 --> 00:49:44.680
+But what happens when you
+send your files to TSMC?
+
+00:49:45.080 --> 00:49:47.080
+Then what?
+They create a mask.
+
+00:49:47.520 --> 00:49:50.440
+That is where the ASML tools come in.
+
+00:49:52.440 --> 00:49:55.000
+A mask is really just a stencil.
+
+00:49:55.000 --> 00:49:59.000
+You shoot the lasers through the mask or
+the x-rays through the mask and then
+
+00:50:00.040 --> 00:50:04.640
+that produces the different
+P-type and N-type semiconductors.
+
+00:50:05.560 --> 00:50:08.020
+They produced the mask.
+That is the expensive part.
+
+00:50:11.040 --> 00:50:13.600
+They're building up these
+15 or so metal layers.
+
+00:50:14.240 --> 00:50:17.220
+They placed on the silicon and then
+there are different layers of metals
+
+00:50:17.360 --> 00:50:19.280
+which connect all
+the transistors together.
+
+00:50:20.960 --> 00:50:22.080
+They do that on a wafer.
+
+00:50:22.480 --> 00:50:24.960
+It happens on a stepping basis.
+
+00:50:25.760 --> 00:50:28.840
+There's a maximum size of chip you can
+build which is constrained
+
+00:50:28.840 --> 00:50:29.760
+by this machinery.
+
+00:50:30.528 --> 00:50:34.031
+The wafer stepper is part
+of the ASML special sauce, right?
+
+00:50:34.120 --> 00:50:37.451
+There are probably some important
+alignment requirement there.
+
+00:50:38.035 --> 00:50:41.440
+I think I remember that being quite like
+the classic manufacturing
+
+00:50:41.440 --> 00:50:42.360
+throughput problem.
+
+00:50:42.360 --> 00:50:44.620
+I think they've done a lot
+of work on optimizing that.
+
+00:50:45.680 --> 00:50:49.560
+They tape that, so then you just
+produce hundreds of copies of your chip.
+
+00:50:49.960 --> 00:50:52.280
+You have to test it
+because there are defects.
+
+00:50:52.920 --> 00:50:58.040
+You typically, I think the average rates
+really depends on process and so on,
+
+00:50:58.040 --> 00:51:01.400
+but small single digit
+number of defects per chip.
+
+00:51:03.320 --> 00:51:05.800
+You test the chip and see
+whether it has any defects in it.
+
+00:51:06.520 --> 00:51:10.040
+Many chips are designed to be able
+to tolerate a few defects, and so you need
+
+00:51:10.040 --> 00:51:11.980
+to configure it to tolerate the defects.
+
+00:51:12.000 --> 00:51:13.960
+Now you have a die that by itself works.
+
+00:51:15.200 --> 00:51:16.120
+Then you need to package it.
+
+00:51:16.120 --> 00:51:19.680
+You put it
+in a package together with memories,
+
+00:51:19.680 --> 00:51:24.520
+typically that's the HBM, and then maybe
+you escape the wires
+
+00:51:24.520 --> 00:51:25.920
+to connect to other chips.
+
+00:51:25.920 --> 00:51:27.860
+How long does it take to make a mask?
+
+00:51:29.800 --> 00:51:34.000
+What we see is time from tape-out
+to first chips back.
+
+00:51:34.720 --> 00:51:37.440
+Again, depends on node,
+but it's ballpark four or five months.
+
+00:51:37.553 --> 00:51:40.764
+So tape-out is just sending the file?
+
+00:51:42.280 --> 00:51:45.080
+We consider tape-out as sending the file,
+and then there's a whole process of you
+
+00:51:45.080 --> 00:51:48.731
+make the masks for all the layers, and
+then, actually just producing the chips.
+
+00:51:49.080 --> 00:51:51.520
+Producing the masks and producing
+the chips happens after tape-out.
+
+00:51:51.520 --> 00:51:52.480
+That's right.
+I see.
+
+00:51:53.680 --> 00:51:56.880
+Is the term tape-out from like you send
+a magnetic tape with the
+
+00:51:56.880 --> 00:51:58.560
+instructions or something?
+It could be.
+
+00:51:58.560 --> 00:52:01.360
+I was in software when the
+software was created.
+
+00:52:02.120 --> 00:52:04.000
+I was curious about
+the tape actually means.
+
+00:52:04.000 --> 00:52:04.680
+It feels like…
+
+00:52:04.680 --> 00:52:09.440
+When I think about AI predictions,
+one thing I'm really struck by is how,
+
+00:52:11.840 --> 00:52:15.280
+still in 2026, every time you open a
+
+00:52:16.320 --> 00:52:18.960
+chat window, it's contextless.
+
+00:52:19.600 --> 00:52:20.360
+It's got no memory.
+
+00:52:20.640 --> 00:52:22.880
+Now, to be fair, it's like,
+guys, it's been four years.
+
+00:52:23.760 --> 00:52:25.920
+Not even four years.
+It's been three and a half years.
+
+00:52:25.920 --> 00:52:27.440
+Just calm down, we'll get there.
+
+00:52:27.600 --> 00:52:32.440
+But I also interpret
+a lot of the current enthusiasm
+
+00:52:32.440 --> 00:52:35.520
+for OpenClaw and all that stuff as
+
+00:52:36.360 --> 00:52:40.520
+this super hacky backdoor into state
+
+00:52:40.520 --> 00:52:45.320
+management where your little claw will
+write a markdown file of what it's doing
+
+00:52:45.320 --> 00:52:48.320
+and then look at that markdown file
+the next time and things like that.
+
+00:52:48.400 --> 00:52:53.080
+But it just feels like
+state management and memory is going to be
+
+00:52:53.080 --> 00:52:57.600
+a huge deal and that will really
+change the character of AI products.
+
+00:52:58.175 --> 00:52:59.460
+It's really interesting.
+
+00:53:01.600 --> 00:53:08.120
+Long context is one of the biggest
+bottlenecks on speed of the model.
+
+00:53:09.800 --> 00:53:12.800
+Every single token you generate,
+it reads through all of the previous
+
+00:53:12.800 --> 00:53:15.960
+tokens, or maybe it reads through a subset
+of them, but reads through a lot
+
+00:53:15.960 --> 00:53:17.660
+of the previous tokens you've written.
+
+00:53:19.200 --> 00:53:21.448
+Memory bandwidth for that is
+really constraining.
+
+00:53:21.532 --> 00:53:25.800
+You can think of model-level ways to solve
+that problem, which is to say
+
+00:53:26.360 --> 00:53:29.000
+maybe I can compress it into fewer
+bytes or something like that.
+
+00:53:29.480 --> 00:53:33.920
+But it's interesting that the most
+effective way to solve it has been—it's
+
+00:53:33.920 --> 00:53:36.200
+really a combination of everything—but
+the most effective way to solve it has
+
+00:53:36.200 --> 00:53:39.760
+been
+once you hit your 300,000 token limit,
+
+00:53:40.400 --> 00:53:42.400
+have the model go back
+through it and compact.
+
+00:53:44.800 --> 00:53:46.080
+This is kind of what OpenClaw is doing.
+
+00:53:46.080 --> 00:53:48.267
+It's compacting everything you've done.
+
+00:53:49.520 --> 00:53:52.187
+But it's funny that it's so manual.
+
+00:53:53.120 --> 00:53:55.400
+I think— Manual is the wrong word.
+
+00:53:55.720 --> 00:53:57.025
+It's so primitive.
+
+00:53:57.080 --> 00:53:58.720
+It's maybe because it's so controllable.
+
+00:54:00.520 --> 00:54:04.360
+If you want to iterate on how you compact,
+you give a different prompt, and you say,
+
+00:54:04.360 --> 00:54:06.960
+"Compact this way, compact that way." You
+can iterate that on that
+
+00:54:06.960 --> 00:54:08.200
+in seconds or minutes.
+
+00:54:08.840 --> 00:54:11.440
+Whereas if you're trying to do some
+iteration on the model level,
+
+00:54:11.440 --> 00:54:14.000
+where you say, "Now I've got a different
+model architecture," it's going to take
+
+00:54:14.000 --> 00:54:16.720
+you months to train and launch something.
+Yes.
+
+00:54:17.080 --> 00:54:18.505
+Any other AI predictions?
+
+00:54:18.589 --> 00:54:22.920
+I'm generally just interested in what
+makes models cheaper and faster.
+
+00:54:25.600 --> 00:54:28.760
+Just at the model architecture level,
+really tied into this context thing.
+
+00:54:28.760 --> 00:54:32.000
+I think the context size will stay
+ballpark the same where it is,
+
+00:54:32.000 --> 00:54:35.880
+maybe a few times larger,
+but the parameter count will go up.
+
+00:54:36.040 --> 00:54:38.960
+Parameter count should grow much faster
+than context length actually,
+
+00:54:38.960 --> 00:54:41.680
+just because of the underlying
+physics of what's available.
+
+00:54:42.112 --> 00:54:45.520
+Though, has that been the story?
+
+00:54:46.080 --> 00:54:48.280
+Would that be a reacceleration
+of parameter count?
+
+00:54:48.280 --> 00:54:52.560
+Because it feels like we've leveled off
+slightly in the last year or two,
+
+00:54:52.560 --> 00:54:55.501
+and instead we've been
+focusing on more and better RL.
+
+00:54:56.680 --> 00:54:59.560
+Parameter count or
+thinking tokens, I guess.
+
+00:55:00.600 --> 00:55:06.011
+Those are available, but the context
+length is struggling to grow.
+
+00:55:07.480 --> 00:55:08.200
+But you think we…
+
+00:55:08.600 --> 00:55:10.760
+When you say context length is struggling
+to grow, but you're saying we
+
+00:55:10.760 --> 00:55:12.040
+keep context the same length.
+
+00:55:12.040 --> 00:55:13.200
+Keep context the same length.
+
+00:55:13.200 --> 00:55:15.040
+But we're better at working
+with large context.
+
+00:55:15.040 --> 00:55:16.300
+Is that what you're saying?
+
+00:55:17.280 --> 00:55:22.400
+Just have application-level interventions
+to manage large context, like compacting.
+
+00:55:22.800 --> 00:55:24.340
+Because I think everyone's had
+the experience
+
+00:55:24.840 --> 00:55:28.784
+currently of the chat conversation
+and the further down in the chat you get.
+
+00:55:28.867 --> 00:55:30.760
+It just gets looser and—Yeah, sloppy.
+
+00:55:30.760 --> 00:55:33.920
+It's just like really sloppy by the end,
+and it's like making mistakes, whatever.
+
+00:55:33.920 --> 00:55:36.360
+You're saying we start to do
+better with large contacts.
+
+00:55:36.880 --> 00:55:37.668
+I buy that.
+
+00:55:37.751 --> 00:55:43.520
+When will I be typing into a chat window,
+and it is a MatX chip
+
+00:55:43.600 --> 00:55:45.133
+underneath it, powering it?
+
+00:55:45.720 --> 00:55:47.060
+Tape-out in under a year.
+
+00:55:47.480 --> 00:55:49.440
+That means chips available end of year.
+Ballpark.
+
+00:55:52.000 --> 00:55:52.800
+That's exciting.
+
+00:55:52.800 --> 00:55:56.360
+So in 2027, I will be seeing very high
+performing chats as
+
+00:55:56.360 --> 00:55:57.520
+a result of your chips.
+
+00:55:57.520 --> 00:56:00.065
+In the 1% experiment of the users
+or something like that.
+
+00:56:00.148 --> 00:56:00.880
+Exactly.
+
+00:56:00.880 --> 00:56:04.080
+I need to find a way to finagle
+myself into the A/B test.
+
+00:56:04.080 --> 00:56:08.480
+MatX is 100 people?
+That's right.
+
+00:56:09.440 --> 00:56:13.880
+How have you gone about
+building the team, the culture?
+
+00:56:16.560 --> 00:56:20.640
+What we have on the team is hardware,
+mostly hardware, but a big software
+
+00:56:20.640 --> 00:56:22.200
+team and also a big ML team.
+
+00:56:23.480 --> 00:56:27.240
+I think the ML team is quite
+unusual in what we ask them to do.
+
+00:56:27.560 --> 00:56:32.920
+When you look at a typical ML team
+in an AI chip company, it will be
+
+00:56:33.960 --> 00:56:36.640
+what I might say ML
+engineering or ML performance.
+
+00:56:37.360 --> 00:56:43.000
+They're writing kernels that actually
+just use your hardware
+
+00:56:43.000 --> 00:56:44.280
+as well on a given model.
+
+00:56:44.280 --> 00:56:45.760
+There's a missed opportunity there.
+
+00:56:45.760 --> 00:56:48.440
+If you're saying all we do is we take
+other people's models,
+
+00:56:48.440 --> 00:56:52.000
+and we write kernels for them,
+you're optimizing this, but you
+
+00:56:52.000 --> 00:56:53.480
+can't optimize this at the same time.
+
+00:56:53.480 --> 00:56:57.400
+We want to optimize the whole thing
+at the same time, real code design.
+
+00:56:57.497 --> 00:57:00.080
+Our ML team is actual real ML research.
+
+00:57:00.720 --> 00:57:07.440
+What they do every day is they train
+small LLMs from scratch focusing
+
+00:57:07.440 --> 00:57:10.280
+on numerics and attention.
+
+00:57:12.120 --> 00:57:17.400
+This has really, really helped us
+make an interesting product.
+
+00:57:18.120 --> 00:57:20.520
+It's shown up most
+strongly in our numerics.
+
+00:57:23.640 --> 00:57:26.280
+Often what you see when people design
+numerics is they say,
+
+00:57:27.560 --> 00:57:30.920
+back when Float32 was popular,
+it would be, "I'm going to follow the IEEE
+
+00:57:30.920 --> 00:57:34.320
+standard." Now it is like,
+follow the Open Compute standard.
+
+00:57:34.320 --> 00:57:38.163
+There are lots of little details where you
+say things like
+
+00:57:38.960 --> 00:57:41.300
+maybe, "What's the rounding mode I'm going
+to use?" Like,
+
+00:57:41.440 --> 00:57:44.020
+"Round to the nearest even," or something
+like that, which is like
+
+00:57:45.040 --> 00:57:46.720
+the best known standard for how to round.
+
+00:57:46.880 --> 00:57:48.640
+We want to cut corners anywhere we can.
+
+00:57:49.920 --> 00:57:54.080
+Maybe don't do the best rounding, maybe
+don't do the…
+
+00:57:54.160 --> 00:57:56.020
+Don't get all the corner cases correctly.
+
+00:57:56.080 --> 00:57:59.280
+That's a very scary proposition if you're
+just making those choices blind,
+
+00:57:59.280 --> 00:58:03.480
+but if you have the benefit of a research
+team who can back you up as you do that,
+
+00:58:05.160 --> 00:58:07.900
+it's really powerful,
+and it's really interesting that we can
+
+00:58:08.440 --> 00:58:10.862
+make some sloppy choices in these cases.
+
+00:58:11.880 --> 00:58:17.000
+I feel like often technical advances
+come through better iteration loops.
+
+00:58:17.320 --> 00:58:20.960
+A favorite example of this I found
+recently was that the Wright brothers
+
+00:58:20.960 --> 00:58:24.680
+actually had a failed
+season before first flight.
+
+00:58:25.040 --> 00:58:29.040
+First flight was in 1904,
+and they were down in Kitty Hawk in 1903
+
+00:58:29.200 --> 00:58:30.720
+and not making that much progress.
+
+00:58:31.000 --> 00:58:34.720
+They went back
+to Ohio, and they had a wind tunnel,
+
+00:58:34.880 --> 00:58:37.160
+and they were testing their
+design in the wind tunnel.
+
+00:58:37.160 --> 00:58:41.040
+You can imagine not a lot
+of wind tunnels in 1904.
+
+00:58:42.200 --> 00:58:46.565
+They did a lot of wind tunnel testing and
+their successful flight was after that.
+
+00:58:46.648 --> 00:58:50.080
+Is this something you're focused on where,
+to get better chips,
+
+00:58:50.080 --> 00:58:53.600
+you allow for a better
+testing and iteration loop,
+
+00:58:53.600 --> 00:58:55.320
+and what does that look like?
+
+00:58:56.440 --> 00:59:01.160
+I think this mostly happens in the
+architecture and product definition stage.
+
+00:59:02.200 --> 00:59:06.120
+Maybe even more generally, I think
+AI chips seem to live or die
+
+00:59:06.120 --> 00:59:07.720
+by product definition and architecture.
+
+00:59:08.545 --> 00:59:11.480
+What is the most extreme form of fast
+iteration is doing it in your head.
+
+00:59:12.840 --> 00:59:15.040
+Can you map a model
+to hardware in your head?
+
+00:59:15.040 --> 00:59:17.720
+Can you estimate the performance
+of what it is in your head?
+
+00:59:18.840 --> 00:59:21.120
+You're not going to be 100% perfect,
+but maybe you can prove some
+
+00:59:21.120 --> 00:59:22.460
+lower bound in performance.
+
+00:59:24.640 --> 00:59:30.520
+The simplest possible thing is my model
+has a trillion parameters, my device
+
+00:59:31.640 --> 00:59:34.440
+can do a billion multipliers per second,
+so it takes 1,000 seconds to run or
+
+00:59:34.440 --> 00:59:36.940
+something like that,
+just to do that simple division.
+
+00:59:37.000 --> 00:59:39.960
+But then there are much more complicated
+things like we tend to look at
+
+00:59:40.920 --> 00:59:43.560
+resource balances,
+like how many memory fetches do I need
+
+00:59:43.560 --> 00:59:45.680
+to do per a multiplier
+or something like that.
+
+00:59:49.320 --> 00:59:54.720
+At least the way I like to do design
+and architecture and optimization is to
+
+00:59:55.280 --> 00:59:58.560
+be able to estimate the performance
+to within about 30-40%
+
+00:59:59.840 --> 01:00:01.840
+before even typing anything in at all.
+
+01:00:02.640 --> 01:00:04.100
+We've tried to do that a lot.
+
+01:00:05.680 --> 01:00:07.780
+A lot of our architecture
+comes from there.
+
+01:00:08.960 --> 01:00:10.960
+Then the next stage of iteration is…
+
+01:00:11.800 --> 01:00:13.000
+That's on the performance side.
+
+01:00:13.000 --> 01:00:16.120
+This also happens
+on the circuit design side as well.
+
+01:00:16.280 --> 01:00:19.000
+Can you take a circuit and say
+what is the gate count on that?
+
+01:00:20.992 --> 01:00:24.440
+A 16-bit multiplier has approximately 16
+squared mini-gates,
+
+01:00:24.760 --> 01:00:28.680
+and you can do that for more complicated
+things by sorting networks and so on.
+
+01:00:29.640 --> 01:00:33.040
+We already have a pretty good idea
+of the costs and speeds of things at that
+
+01:00:33.040 --> 01:00:34.940
+point after doing these calculations.
+
+01:00:36.200 --> 01:00:39.560
+Then what we tend to do as
+the next step of iteration is
+
+01:00:40.160 --> 01:00:42.320
+on the ML side, we run model experiments.
+
+01:00:42.320 --> 01:00:44.880
+You get iteration speed just
+by having small models mostly.
+
+01:00:48.880 --> 01:00:53.080
+On the hardware side,
+we use performance simulators to do
+
+01:00:53.080 --> 01:00:55.360
+the next level of detail to make sure
+we're seeing all
+
+01:00:55.360 --> 01:00:56.660
+the things we want to see.
+
+01:00:56.800 --> 01:01:01.720
+This idea that the best iteration is
+in your head is reminding
+
+01:01:01.720 --> 01:01:03.076
+me of Jeff Dean's numbers...
+
+01:01:04.160 --> 01:01:06.640
+Do you have your equivalent
+of that numbers every MatX?
+
+01:01:06.960 --> 01:01:11.320
+We have go/gates in our company,
+which says, what is the cost of an XOR
+
+01:01:11.320 --> 01:01:15.672
+gate, an AND gate, a full adder,
+SRAM bitcell, and so on.
+
+01:01:15.960 --> 01:01:17.880
+You want people to be working
+with that stuff in their head and have
+
+01:01:17.880 --> 01:01:22.280
+an intuitive sense for it because
+it leads to better iteration.
+
+01:01:22.360 --> 01:01:25.599
+What is the pitch to someone joining MatX?
+
+01:01:26.182 --> 01:01:30.200
+I think if you are someone who likes
+optimizing,
+
+01:01:30.440 --> 01:01:36.120
+just optimize something—software,
+hardware, factorial,
+
+01:01:36.120 --> 01:01:41.200
+whatever—if you're trying to fit something
+into the smallest budget possible, I
+
+01:01:41.200 --> 01:01:43.060
+think it's a pretty exciting place to be.
+
+01:01:44.960 --> 01:01:50.080
+I think hardware companies in general are
+really exciting because you have such a
+
+01:01:50.640 --> 01:01:52.760
+broad range of skills
+of people on the team.
+
+01:01:52.760 --> 01:01:54.120
+You have software people,
+you have hardware people,
+
+01:01:54.120 --> 01:01:57.480
+you've got physical design,
+you've got people who are just looking at
+
+01:01:57.480 --> 01:02:00.640
+the insertion force of a card into a rack.
+
+01:02:02.000 --> 01:02:05.040
+So there's so much discussion
+and learning you can do.
+
+01:02:06.000 --> 01:02:11.800
+I think MatX in particular,
+we really care about this and I think we
+
+01:02:11.800 --> 01:02:13.600
+extended it all the way up
+into the application
+
+01:02:13.600 --> 01:02:14.920
+and the machine learning as well.
+
+01:02:20.480 --> 01:02:23.680
+Really, really interesting technical
+problems, and I think just generally
+
+01:02:25.360 --> 01:02:26.920
+there's lots of interesting
+people to talk to.
+
+01:02:26.920 --> 01:02:27.420
+Yes.
+
+01:02:27.480 --> 01:02:32.120
+Presumably in terms of impact,
+if you can design a meaningfully higher
+
+01:02:32.120 --> 01:02:37.400
+throughput chip, a 20% higher throughput
+chip means 20% more AI is happening.
+
+01:02:37.560 --> 01:02:41.320
+If the bottleneck is elsewhere, like
+power or something like that or cost,
+
+01:02:41.800 --> 01:02:44.600
+you actually just are
+meaningfully increasing the amount
+
+01:02:44.600 --> 01:02:48.098
+of intelligence in the world,
+which is presumably exciting to people.
+
+01:02:49.000 --> 01:02:54.640
+I think this shows up both as just
+can it apply in more applications,
+
+01:02:54.640 --> 01:02:57.565
+as well as just how smart is the model.
+Yes.
+
+01:02:57.840 --> 01:02:58.880
+How about Rust?
+
+01:02:59.526 --> 01:03:03.360
+A previous project I worked on at Google,
+we did a lot of Haskell.
+
+01:03:04.320 --> 01:03:08.560
+I did Haskell when I was at school.
+I loved it.
+
+01:03:08.880 --> 01:03:10.800
+Very principled, very interesting.
+
+01:03:10.800 --> 01:03:12.960
+I like Haskell, but I also
+like making stuff fast.
+
+01:03:14.120 --> 01:03:17.440
+The question is,
+what is the first thing you want to do?
+
+01:03:17.440 --> 01:03:19.320
+You want to be able to modify your memory.
+
+01:03:19.320 --> 01:03:21.160
+Haskell, you jump
+through hoops to do that.
+
+01:03:21.720 --> 01:03:24.720
+Maybe I just want a language that is
+functional programming
+
+01:03:24.720 --> 01:03:26.380
+that lets me modify my memory.
+
+01:03:26.680 --> 01:03:31.599
+I think Rust has a lot of the nice things
+which are like type classes or traits
+
+01:03:32.840 --> 01:03:34.520
+and a rich type system.
+
+01:03:35.480 --> 01:03:40.400
+One of the things that we have done,
+interesting ways we use it at MatX are
+
+01:03:41.160 --> 01:03:44.840
+the range of data types
+that you express on software.
+
+01:03:45.240 --> 01:03:46.320
+What are the integer types?
+
+01:03:46.560 --> 01:03:49.920
+Int32, int64, int8,
+maybe that's all you care about.
+
+01:03:50.560 --> 01:03:55.040
+But it turns out in hardware,
+you care about every single bit, and so
+
+01:03:55.280 --> 01:03:58.160
+you want to use 17, 18, 19-bit integers.
+
+01:04:01.120 --> 01:04:06.134
+That is quite natural to express,
+and we build up a whole ecosystem of
+
+01:04:07.760 --> 01:04:10.600
+rich hardware data types in Rust as well.
+
+01:04:11.181 --> 01:04:17.240
+Has Rust beaten Go for the position
+of performant type programming language
+
+01:04:17.240 --> 01:04:19.640
+with modern features or do they
+actually address different?
+
+01:04:22.320 --> 01:04:28.560
+There's what the Rust marketing will say,
+which is "safe without a garbage
+
+01:04:28.560 --> 01:04:31.640
+collection," which I think is a real…
+
+01:04:31.640 --> 01:04:37.040
+It is the objective thing that you can say
+is different, but sort of buries the lead,
+
+01:04:37.040 --> 01:04:41.628
+which is also just it's got nice type
+system features that Go doesn't have.
+
+01:04:42.720 --> 01:04:44.040
+Why is garbage collection…
+
+01:04:44.040 --> 01:04:45.200
+Why does it matter at all?
+
+01:04:46.680 --> 01:04:49.400
+People often focus on the time it takes
+to run a garbage collector,
+
+01:04:49.400 --> 01:04:52.920
+but the other thing is that every time you
+allocate an object, you've got the object,
+
+01:04:52.920 --> 01:04:55.600
+and then you've got the garbage
+collector header at the beginning.
+
+01:04:55.600 --> 01:04:57.400
+It uses a lot more memory as well.
+
+01:04:57.400 --> 01:05:01.320
+If you want to design some,
+I don't know, data structure that uses
+
+01:05:01.320 --> 01:05:04.275
+the right amount of memory
+rather than a bit more than…
+
+01:05:04.800 --> 01:05:07.560
+I hadn't realized that in Rust you're
+allocating your memory manually
+
+01:05:07.560 --> 01:05:09.680
+versus in Go you have— That's right.
+
+01:05:10.782 --> 01:05:12.826
+I didn't realize that.
+And you prefer that for what you're doing.
+
+01:05:13.200 --> 01:05:15.400
+I just really like
+dealing with the details.
+
+01:05:15.400 --> 01:05:16.760
+Like, you give me a puzzle,
+and I'll be like,
+
+01:05:16.760 --> 01:05:20.320
+"Let me solve every single piece of it."
+That tickles that part
+
+01:05:20.320 --> 01:05:21.520
+of my mind with Rust.
+
+01:05:21.520 --> 01:05:24.160
+It seems like you're a fan
+of optimization generally.
+
+01:05:24.160 --> 01:05:26.120
+Is that a fair characterization?
+Yeah.
+
+01:05:26.120 --> 01:05:27.000
+Where else have you…
+
+01:05:27.240 --> 01:05:31.010
+Chip optimization is one
+domain, where else?
+
+01:05:36.120 --> 01:05:39.240
+When one of the really exciting things I
+found about working at Google is
+
+01:05:39.400 --> 01:05:42.520
+that the whole Google code base is
+available, and you can look at
+
+01:05:43.080 --> 01:05:46.600
+how does a memory allocator work,
+how does a mutex work,
+
+01:05:46.600 --> 01:05:49.640
+how does a HashMap work,
+any of those things, and you can go
+
+01:05:49.640 --> 01:05:51.400
+and look inside the implementations.
+
+01:05:51.400 --> 01:05:56.440
+Google has excellent implementations of
+those, some of the best you could write.
+
+01:05:59.320 --> 01:06:02.920
+One of the things I did on my nights
+and weekends when I was at Google was just
+
+01:06:02.920 --> 01:06:07.080
+to go find those implementations,
+write a benchmark.
+
+01:06:07.080 --> 01:06:10.280
+How many nanoseconds does it take
+to allocate eight bytes of memory?
+
+01:06:11.520 --> 01:06:12.520
+Can I make that faster?
+
+01:06:13.960 --> 01:06:15.480
+Can I maybe I inline this function?
+
+01:06:15.560 --> 01:06:18.120
+Maybe I look at the assembly and say,
+"It looks like
+
+01:06:18.840 --> 01:06:21.720
+there's a few memory moves here or
+there are some registers that are being
+
+01:06:21.720 --> 01:06:24.920
+used that I don't need in the
+fast path and in the slow path.
+
+01:06:25.080 --> 01:06:28.680
+Can I do something there?"
+I don't know, that was always my
+
+01:06:30.360 --> 01:06:32.030
+just fun and learning activity.
+
+01:06:32.113 --> 01:06:36.640
+Being outside of Google, I feel,
+I probably could have done this inside
+
+01:06:36.640 --> 01:06:41.640
+of Google as well, but outside of Google,
+I felt the luxury to be able to talk about
+
+01:06:42.280 --> 01:06:43.400
+these results as well.
+
+01:06:43.875 --> 01:06:49.880
+One of the things I've looked at recently
+is just hash tables are used so much.
+
+01:06:51.880 --> 01:06:57.120
+One prompt for me was,
+if I wanted to design custom CPU
+
+01:06:57.120 --> 01:06:58.640
+instructions for accelerating hash tables…
+
+01:06:58.640 --> 01:07:00.120
+Hash tables are one
+of the most common things.
+
+01:07:00.120 --> 01:07:02.040
+I'm looking at them up
+and writing them all the time.
+
+01:07:02.040 --> 01:07:04.200
+What would the optimal CPU be for that?
+
+01:07:07.523 --> 01:07:12.480
+Following down that chain is like,
+what is the best hash table
+
+01:07:12.480 --> 01:07:14.140
+implementation in the first place?
+
+01:07:14.360 --> 01:07:18.240
+I spent some time looking at
+different SIMD implementations.
+
+01:07:18.440 --> 01:07:21.440
+There's this really cool technique called
+'cuckoo hashing' where you
+
+01:07:22.038 --> 01:07:26.800
+hash into two different locations,
+and then you use the bucket
+
+01:07:26.800 --> 01:07:27.600
+which is less full.
+
+01:07:30.160 --> 01:07:35.040
+It's been in the literature for decades
+and yet the best hash table
+
+01:07:35.040 --> 01:07:38.320
+implementations don't use it
+because it's somehow not practical.
+
+01:07:39.640 --> 01:07:40.560
+Why is it not practical?
+
+01:07:40.682 --> 01:07:45.040
+Practical hash tables are
+these days considered to be ones that use
+
+01:07:46.560 --> 01:07:51.040
+SIMD vector instructions to scan
+eight buckets at a time.
+
+01:07:54.800 --> 01:07:57.720
+The way cuckoo hashing is normally
+described is I look up one
+
+01:07:57.720 --> 01:07:59.325
+bucket here and one bucket there.
+
+01:07:59.409 --> 01:08:00.960
+I'm not using the vector instructions.
+
+01:08:00.960 --> 01:08:03.720
+Vector instructions are much faster than
+scalar instructions and so
+
+01:08:03.720 --> 01:08:05.120
+there's a missed opportunity.
+
+01:08:05.760 --> 01:08:08.520
+Again, just
+take the two good ideas and stick them
+
+01:08:08.520 --> 01:08:10.795
+together, do vector
+instructions on cuckoo hashing.
+
+01:08:13.120 --> 01:08:15.360
+You have to be careful to get the details
+right, but if you get it right,
+
+01:08:15.360 --> 01:08:16.680
+you can actually just wing it.
+
+01:08:16.884 --> 01:08:22.280
+Sorry, is your claim that one could design
+a custom CPU that has way better hash
+
+01:08:22.280 --> 01:08:26.280
+table performance,
+or even on current chips, you could
+
+01:08:26.280 --> 01:08:28.020
+get way better hash table performance?
+
+01:08:28.560 --> 01:08:29.060
+Both.
+
+01:08:31.280 --> 01:08:33.720
+I'm interested in what you can design
+in custom hardware,
+
+01:08:33.720 --> 01:08:35.080
+but MatX doesn't make CPUs.
+
+01:08:35.080 --> 01:08:36.960
+We're not going to make CPUs.
+You could.
+
+01:08:36.960 --> 01:08:38.323
+New line of business.
+
+01:08:39.840 --> 01:08:43.411
+We just want to focus on shipping
+one product well for the time being.
+
+01:08:43.840 --> 01:08:44.640
+Fair.
+Good answer.
+
+01:08:45.204 --> 01:08:49.680
+I think it's an interesting exercise,
+but I don't get to feel the endorphins
+
+01:08:49.680 --> 01:08:51.360
+of seeing the number go down.
+
+01:08:52.040 --> 01:08:54.720
+I first did this on just Intel CPUs.
+
+01:08:55.520 --> 01:08:59.480
+You can get better performance
+than some of the best hash table
+
+01:08:59.480 --> 01:09:03.473
+implementations available
+using cuckoo hashing on Intel CPUs.
+
+01:09:05.080 --> 01:09:11.120
+What are examples of workloads that are
+really hash table read intensive?
+
+01:09:11.600 --> 01:09:15.040
+I know everything,
+JavaScript, I guess, but…
+
+01:09:18.488 --> 01:09:22.520
+It's a tricky exercise because when you
+really think about it, you're like,
+
+01:09:22.520 --> 01:09:23.840
+"Did I really need a hash table there?
+
+01:09:23.840 --> 01:09:26.560
+I probably didn't, but I just reach for it
+all the time." But you can go
+
+01:09:26.560 --> 01:09:30.520
+to the Google JavaScript team and probably
+help them eke out better performance
+
+01:09:30.520 --> 01:09:32.800
+in the Chrome JavaScript engine?
+Potentially.
+
+01:09:33.760 --> 01:09:35.200
+I'm not going to spend my time on that.
+
+01:09:35.200 --> 01:09:38.720
+If they're listening to this podcast,
+just a free idea from Reiner.
+
+01:09:39.120 --> 01:09:40.400
+Explain the dragon.
+
+01:09:41.480 --> 01:09:44.440
+This is from a book that,
+when I was working on the JAX team…
+
+01:09:44.600 --> 01:09:47.720
+The JAX team is one of the ML
+infrastructure teams at Google.
+
+01:09:47.720 --> 01:09:50.000
+I was there as the most
+recent team before I left.
+
+01:09:50.720 --> 01:09:52.360
+I'm sorry, what does the JAX team do?
+
+01:09:52.960 --> 01:09:54.399
+The JAX team develops…
+
+01:09:54.982 --> 01:10:00.040
+This is Google's new, more modern version
+of TensorFlow or a competitor to PyTorch.
+
+01:10:00.280 --> 01:10:03.408
+It's how you write models
+in Python to run on TPUs.
+
+01:10:03.491 --> 01:10:07.560
+A big part of the JAX team, however, is to
+say, we have JAX, the technical artifact.
+
+01:10:08.440 --> 01:10:13.626
+Can we help enable users to actually use
+it really well and get high performance?
+
+01:10:14.920 --> 01:10:17.040
+Ultimately that became, who are the users?
+
+01:10:17.040 --> 01:10:18.200
+It's people writing LLMs.
+
+01:10:18.200 --> 01:10:20.220
+How do you get good performance on LLMs?
+
+01:10:20.842 --> 01:10:24.600
+Really, really strong team,
+the JAX team at Google,
+
+01:10:24.600 --> 01:10:27.400
+although as with a lot of brain
+people are now elsewhere as well.
+
+01:10:28.040 --> 01:10:31.320
+We developed a lot of the different
+techniques for how to lay out
+
+01:10:31.320 --> 01:10:33.040
+models efficiently on many chips.
+
+01:10:34.280 --> 01:10:38.440
+Ultimately, some people at Google—and I
+contributed after I left Google—wrote this
+
+01:10:39.320 --> 01:10:43.240
+guide called How&lt;i&gt; To Scale Your Model,&lt;/i&gt;
+how to run an LLM as fast as possible.
+
+01:10:44.040 --> 01:10:47.840
+It is the main reference for how
+to get high performance on TPUs.
+
+01:10:47.840 --> 01:10:49.960
+There is now also a GPU
+version of this as well.
+
+01:10:49.960 --> 01:10:52.040
+It's a dragon because it's
+How&lt;i&gt; to Train Your Dragon.&lt;/i&gt;
+
+01:10:52.920 --> 01:10:53.420
+I see.
+
+01:10:55.560 --> 01:10:56.200
+Last question.
+
+01:10:57.800 --> 01:11:02.520
+People might not have thought that
+there's room for new chip companies.
+
+01:11:02.520 --> 01:11:04.440
+It might have seemed unusual or very hard.
+
+01:11:05.520 --> 01:11:08.840
+You guys, it seems like a very
+good approach with that.
+
+01:11:09.080 --> 01:11:14.120
+Where do you think are other opportunities
+for companies to be started here in 2026?
+
+01:11:14.520 --> 01:11:17.640
+Where do you think people should be
+looking for entrepreneurial opportunities
+
+01:11:17.640 --> 01:11:21.194
+or just technical challenges
+that haven't been properly addressed?
+
+01:11:21.560 --> 01:11:23.400
+More labs, I think, is still interesting.
+
+01:11:24.720 --> 01:11:27.640
+Just can we do more on model
+architecture is always interesting.
+
+01:11:27.640 --> 01:11:30.328
+You think we have not fully
+explored model architecture space?
+
+01:11:30.760 --> 01:11:33.900
+The Frontier Labs have done a pretty good
+job of exploring it, but I think,
+
+01:11:36.840 --> 01:11:40.421
+as the hardware changes, the shape
+of the model should change for sure.
+
+01:11:41.360 --> 01:11:43.920
+Presumably you're not thinking like,
+yet another Frontier Lab
+
+01:11:44.280 --> 01:11:45.720
+pursuing the same architecture.
+
+01:11:45.720 --> 01:11:49.280
+You think there's probably off the wall
+looking architectures that will actually
+
+01:11:49.280 --> 01:11:53.392
+make a lot of— I think there's
+a little bit off the wall for sure.
+
+01:11:53.760 --> 01:11:55.760
+Do you have a specific
+architecture in mind?
+
+01:11:55.760 --> 01:11:58.440
+My mentality is always sticking within
+the transformer family, but
+
+01:12:00.040 --> 01:12:01.940
+what are the constraints that are
+currently available,
+
+01:12:02.040 --> 01:12:04.600
+currently imposed that you could lift?
+
+01:12:05.920 --> 01:12:09.920
+For example, one of the things is there's
+this idea, when you're doing transformer
+
+01:12:10.120 --> 01:12:13.600
+inference, you do
+pre-fill that is processing what the user
+
+01:12:13.600 --> 01:12:16.840
+said to you, and then there's decode
+which is generating the response to that.
+
+01:12:17.250 --> 01:12:22.040
+Those are totally different in pretty much
+every aspect of how they actually run.
+
+01:12:22.360 --> 01:12:25.080
+One runs a step at a time,
+the other one runs really in parallel.
+
+01:12:26.120 --> 01:12:29.440
+There is this somewhat artificial
+constraint today that those are
+
+01:12:29.440 --> 01:12:31.100
+the same model that's doing both.
+
+01:12:31.480 --> 01:12:32.680
+Maybe lift that constraint.
+
+01:12:33.560 --> 01:12:36.520
+Another example would be,
+there's this idea that the model that you…
+
+01:12:37.800 --> 01:12:40.320
+This is more fundamental constraint
+that you have to train
+
+01:12:40.320 --> 01:12:41.860
+the same model as you serve.
+
+01:12:42.720 --> 01:12:44.880
+But again, training is very
+different from serving.
+
+01:12:45.440 --> 01:12:47.320
+At training, it's very compute intensive.
+
+01:12:47.320 --> 01:12:49.440
+At serving, it's more
+memory bandwidth intensive.
+
+01:12:50.200 --> 01:12:54.880
+Maybe, is there a way you can make a model
+that when you use it at inference time, it
+
+01:12:56.000 --> 01:12:59.360
+increases the amount of computing it does
+to use some of the available resources?
+
+01:12:59.880 --> 01:13:01.680
+Makes sense.
+Reiner, thank you.
+
+01:13:01.840 --> 01:13:02.400
+Pleasure.
+

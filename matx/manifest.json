@@ -1,0 +1,348 @@
+{
+  "records": [
+    {
+      "bytes": "363238",
+      "kind": "code-snapshot",
+      "path": "raw/code/seqax-main-b418a2d.zip",
+      "sha256": "5be4470fd90144690dd27a7f1c2d866c87384ce632fdae126c5e994b5fe108c5",
+      "source": "https://github.com/MatX-inc/seqax/archive/b418a2d9059a1bfcff801d22b7088cc444257703.zip"
+    },
+    {
+      "bytes": "537506",
+      "kind": "code-snapshot",
+      "path": "raw/code/seqax-nsa-e2c8151.zip",
+      "sha256": "c48dec33553e7d82010e120361d5a38defb6f4080b9ac0498db927006953d422",
+      "source": "https://github.com/MatX-inc/seqax/archive/e2c8151532c12569385375f3177f212dc96fa7ac.zip"
+    },
+    {
+      "bytes": "356211",
+      "kind": "code-snapshot",
+      "path": "raw/code/seqax-smva-7fe01d0.zip",
+      "sha256": "fc4346c14db97258ba95bb74430e4dd1f07e2d4ab259f141d893599002029da7",
+      "source": "https://github.com/MatX-inc/seqax/archive/7fe01d0a443f5f15504653e180515f5112a9c281.zip"
+    },
+    {
+      "bytes": "1261120",
+      "kind": "code-snapshot",
+      "path": "raw/code/seqax-spire-a0656fa.zip",
+      "sha256": "65fd5041fc7284edf4257e7b5fd9d931c7a1021e79a4a4c7df3e9eb4990be2c6",
+      "source": "https://github.com/MatX-inc/seqax/archive/a0656fa3cbdb952a877307dcd0a5ca71d5187006.zip"
+    },
+    {
+      "bytes": "74360",
+      "kind": "page-html",
+      "path": "raw/pages/future-leakage.html",
+      "sha256": "aa1dce175379957693cbfa6fb5bf04ac7a83baca1a6380194a78e3fb1975c423",
+      "source": "https://matx.com/research/leaky_quantization"
+    },
+    {
+      "bytes": "51439",
+      "kind": "page-html",
+      "path": "raw/pages/lifetime-llm-cost.html",
+      "sha256": "bc309619a3ba829556a9e1e2695a8362bf58c4f3d391a5b1ac3dbe562681f969",
+      "source": "https://matx.com/research/lifetime_llm_cost"
+    },
+    {
+      "bytes": "7591",
+      "kind": "page-html",
+      "path": "raw/pages/matx-one.html",
+      "sha256": "d4af8ba8fd1d11e506d5d65d9477f182147e46714c104f67b83a88abdfe3c99a",
+      "source": "https://matx.com/research/series_b"
+    },
+    {
+      "bytes": "42320",
+      "kind": "page-html",
+      "path": "raw/pages/prioritize-values.html",
+      "sha256": "637a1c56c168a5828311798a814dd712215473db157e37674a08606bd45d3226",
+      "source": "https://matx.com/research/smva"
+    },
+    {
+      "bytes": "7421",
+      "kind": "page-html",
+      "path": "raw/pages/research-index.html",
+      "sha256": "dfd5319fcc6be1bb69d0f774bdc645ace2e96ab7e67e51883814e4fed291ca23",
+      "source": "https://matx.com/research"
+    },
+    {
+      "bytes": "35289",
+      "kind": "page-html",
+      "path": "raw/pages/rules-derive.html",
+      "sha256": "e73437005a406c59618d7489da6626293c874199cc4dc1ad0b6189a67deeaaf0",
+      "source": "https://matx.com/research/rules_derive"
+    },
+    {
+      "bytes": "12238",
+      "kind": "page-html",
+      "path": "raw/pages/seqax.html",
+      "sha256": "9965b43e1ff9d35e59029155ae6e25b2f1f36e09301725081617f7432742433b",
+      "source": "https://matx.com/research/seqax"
+    },
+    {
+      "bytes": "89057",
+      "kind": "page-html",
+      "path": "raw/pages/speculative-decoding-nsa.html",
+      "sha256": "f0a7ff96c6f27726ec161e523ffa6234b95977a105bd1baa48348f0d8f2a403c",
+      "source": "https://matx.com/research/sd_nsa"
+    },
+    {
+      "bytes": "225114",
+      "kind": "page-html",
+      "path": "raw/pages/spire.html",
+      "sha256": "a6ecfb164be9033b7eb12324421343e4a48cbc2d891b0f6773e31d9a9ecc63d3",
+      "source": "https://matx.com/research/sd"
+    },
+    {
+      "bytes": "1299950",
+      "kind": "paper",
+      "path": "raw/papers/spire-2504.06419.pdf",
+      "sha256": "9460c19b45d565e44b189cff6483b1033ed287dd9161d1de35c04891f5b29e67",
+      "source": "https://arxiv.org/pdf/2504.06419"
+    },
+    {
+      "bytes": "474166",
+      "kind": "transcript-html",
+      "path": "raw/transcripts/chip-design-bottom-up.html",
+      "sha256": "b1046de85aaaa61083b52e3a7833dd622ec6b5ce25976c0724e436d2d76575bf",
+      "source": "https://www.dwarkesh.com/p/reiner-pope-2"
+    },
+    {
+      "bytes": "276302",
+      "kind": "transcript-html",
+      "path": "raw/transcripts/stripe-transformer-chips.html",
+      "sha256": "e2a3d7ab68fa2d73c9bde26d7a156231c306e76fae67600b350bf76eac45255d",
+      "source": "https://cheekypint.substack.com/p/reiner-pope-of-matx-on-accelerating"
+    },
+    {
+      "bytes": "753624",
+      "kind": "video-caption",
+      "path": "raw/videos/chip-design-bottom-up.en-US.en-orig.vtt",
+      "sha256": "06c58f4e497526aa89caa7d9095832793583f5a257a120ae63c6885774de4d10",
+      "source": "https://www.youtube.com/watch?v=oIk3R-sMX5o"
+    },
+    {
+      "bytes": "91788",
+      "kind": "video-caption",
+      "path": "raw/videos/chip-design-bottom-up.en-US.en.vtt",
+      "sha256": "9519e42f1a41a2da4d416b5be6240d5bd338a76aa9145865c388e4ecfd31f4d0",
+      "source": "https://www.youtube.com/watch?v=oIk3R-sMX5o"
+    },
+    {
+      "bytes": "5704",
+      "kind": "video-metadata",
+      "path": "raw/videos/chip-design-bottom-up.metadata.json",
+      "sha256": "7d1a386351129b274383f872ea8054bf5c01f52024e588b69fafdb43c8e6a0c8",
+      "source": "https://www.youtube.com/watch?v=oIk3R-sMX5o"
+    },
+    {
+      "bytes": "318389",
+      "kind": "video-caption",
+      "path": "raw/videos/hardware-software-codesign.en-US.en-orig.vtt",
+      "sha256": "858c7bd7a294f93efff9263f05a46488d2767521f171b908d322c85bef29d63e",
+      "source": "https://www.youtube.com/watch?v=zrMYIhmuXEo"
+    },
+    {
+      "bytes": "318389",
+      "kind": "video-caption",
+      "path": "raw/videos/hardware-software-codesign.en-US.en.vtt",
+      "sha256": "858c7bd7a294f93efff9263f05a46488d2767521f171b908d322c85bef29d63e",
+      "source": "https://www.youtube.com/watch?v=zrMYIhmuXEo"
+    },
+    {
+      "bytes": "4169",
+      "kind": "video-metadata",
+      "path": "raw/videos/hardware-software-codesign.metadata.json",
+      "sha256": "1cb4caf0e54f1053ca5a23ce446102d24cf74092f2e57c57c9e1c120adf9dabe",
+      "source": "https://www.youtube.com/watch?v=zrMYIhmuXEo"
+    },
+    {
+      "bytes": "1187429",
+      "kind": "video-caption",
+      "path": "raw/videos/llm-training-and-serving.en.en-orig.vtt",
+      "sha256": "cbf7a60aeeff7fcd497ed46d019f0169766d3a90b7c20f6967066d363be74f06",
+      "source": "https://www.youtube.com/watch?v=xmkSf5IS-zw"
+    },
+    {
+      "bytes": "171524",
+      "kind": "video-caption",
+      "path": "raw/videos/llm-training-and-serving.en.en.vtt",
+      "sha256": "bcb8d71b03f2e4b19e2259baceaaac04dea5b171b038cf96166cc2fb9c26af2d",
+      "source": "https://www.youtube.com/watch?v=xmkSf5IS-zw"
+    },
+    {
+      "bytes": "6413",
+      "kind": "video-metadata",
+      "path": "raw/videos/llm-training-and-serving.metadata.json",
+      "sha256": "8e98f28f51fd8145f621e8209a326a320172e83e289845b2de4f44351ad83fa0",
+      "source": "https://www.youtube.com/watch?v=xmkSf5IS-zw"
+    },
+    {
+      "bytes": "789810",
+      "kind": "video-caption",
+      "path": "raw/videos/silicon-for-llms.en-US.en-orig.vtt",
+      "sha256": "73d6dbc9e6b5932941e9218f03ce4e226046b95143324b3933c93d653db69801",
+      "source": "https://www.youtube.com/watch?v=gm3parYIMqA"
+    },
+    {
+      "bytes": "789810",
+      "kind": "video-caption",
+      "path": "raw/videos/silicon-for-llms.en-US.en.vtt",
+      "sha256": "73d6dbc9e6b5932941e9218f03ce4e226046b95143324b3933c93d653db69801",
+      "source": "https://www.youtube.com/watch?v=gm3parYIMqA"
+    },
+    {
+      "bytes": "4329",
+      "kind": "video-metadata",
+      "path": "raw/videos/silicon-for-llms.metadata.json",
+      "sha256": "3a31d27c13fc48d11cf2148336cf3d12c6d2abf235171b9ea18ffe5149fa55b6",
+      "source": "https://www.youtube.com/watch?v=gm3parYIMqA"
+    },
+    {
+      "bytes": "737359",
+      "kind": "video-caption",
+      "path": "raw/videos/stripe-transformer-chips.en-US.en-orig.vtt",
+      "sha256": "961148cbd4270d5ea002e9a72553577f117c021362be3f5315141285fc0b973c",
+      "source": "https://www.youtube.com/watch?v=qvrdCpLPbuQ"
+    },
+    {
+      "bytes": "106342",
+      "kind": "video-caption",
+      "path": "raw/videos/stripe-transformer-chips.en-US.en.vtt",
+      "sha256": "b013593a039f61bf02b2f7ed63fbbd8f12cceaec852c6d0c76e09096c6021673",
+      "source": "https://www.youtube.com/watch?v=qvrdCpLPbuQ"
+    },
+    {
+      "bytes": "4662",
+      "kind": "video-metadata",
+      "path": "raw/videos/stripe-transformer-chips.metadata.json",
+      "sha256": "7b478cdc2609d59f24efb239d905e1be6234f238cbf65b8573a996992d9cf733",
+      "source": "https://www.youtube.com/watch?v=qvrdCpLPbuQ"
+    },
+    {
+      "bytes": "7374",
+      "kind": "page-text",
+      "path": "text/pages/future-leakage.md",
+      "sha256": "7d37819a62721e1c2a0b7365ef4f7a3172c417f370fbf2b7bb5d0c3b23aad057",
+      "source": "https://matx.com/research/leaky_quantization"
+    },
+    {
+      "bytes": "11828",
+      "kind": "page-text",
+      "path": "text/pages/lifetime-llm-cost.md",
+      "sha256": "e13cb6f8f90a523a46a5235d05c18dd4b6c236c04eb31f1041b0b01ff877bf90",
+      "source": "https://matx.com/research/lifetime_llm_cost"
+    },
+    {
+      "bytes": "2412",
+      "kind": "page-text",
+      "path": "text/pages/matx-one.md",
+      "sha256": "c8fb1ab6389250cffc272d265841445b04683dd45867b7fd70f912b31dc56140",
+      "source": "https://matx.com/research/series_b"
+    },
+    {
+      "bytes": "14770",
+      "kind": "page-text",
+      "path": "text/pages/prioritize-values.md",
+      "sha256": "ac5ed5daef1323955b79bebbfbd96b7121780c64989878a55f4c95961887b3e1",
+      "source": "https://matx.com/research/smva"
+    },
+    {
+      "bytes": "870",
+      "kind": "page-text",
+      "path": "text/pages/research-index.md",
+      "sha256": "9e25e6abf5abdd031c503b29ff59d72be55d3ef582756f6230ed919701e70843",
+      "source": "https://matx.com/research"
+    },
+    {
+      "bytes": "9478",
+      "kind": "page-text",
+      "path": "text/pages/rules-derive.md",
+      "sha256": "c7a6043769ccc97988eb7fc961d873a6d8fcf0598524ce1a6d6ea65c3c67737f",
+      "source": "https://matx.com/research/rules_derive"
+    },
+    {
+      "bytes": "4151",
+      "kind": "page-text",
+      "path": "text/pages/seqax.md",
+      "sha256": "de2ed7489b3bee1079b5672042e8c6cecc79d46883d38a512dba49617ad65fd6",
+      "source": "https://matx.com/research/seqax"
+    },
+    {
+      "bytes": "13860",
+      "kind": "page-text",
+      "path": "text/pages/speculative-decoding-nsa.md",
+      "sha256": "69cecad484233ebb1e1813219909288f5cf8e4ffd699cc97c9a326b99dadf0bf",
+      "source": "https://matx.com/research/sd_nsa"
+    },
+    {
+      "bytes": "33031",
+      "kind": "page-text",
+      "path": "text/pages/spire.md",
+      "sha256": "f4564213cfb88a88bc9ff02c47065909a4b943decc13165377e2efe6bf5e2716",
+      "source": "https://matx.com/research/sd"
+    },
+    {
+      "bytes": "34384",
+      "kind": "paper-text",
+      "path": "text/papers/spire-2504.06419.txt",
+      "sha256": "28f3797e5ae87f4884f32213292352d6b35cc974b92e05a82653ad14e589f8a8",
+      "source": "https://arxiv.org/pdf/2504.06419"
+    },
+    {
+      "bytes": "71075",
+      "kind": "derived-transcript",
+      "path": "text/transcripts/chip-design-bottom-up-youtube.md",
+      "sha256": "8aaa6a0297ccd867934daf9c3f0e0cf5f9c97bea1349a3f7d7023d4a625ee221",
+      "source": "https://www.youtube.com/watch?v=oIk3R-sMX5o"
+    },
+    {
+      "bytes": "70956",
+      "kind": "official-transcript",
+      "path": "text/transcripts/chip-design-bottom-up.md",
+      "sha256": "1ac28a6e600df4bd0285cc312b475d7cac44fac4c00cec325c73214ee2cf3db3",
+      "source": "https://www.dwarkesh.com/p/reiner-pope-2"
+    },
+    {
+      "bytes": "44594",
+      "kind": "derived-transcript",
+      "path": "text/transcripts/hardware-software-codesign-youtube.md",
+      "sha256": "4f7d09735e8f97d64f045c1b199f978fa12c491bbb92bb3c983b73b7c342438b",
+      "source": "https://www.youtube.com/watch?v=zrMYIhmuXEo"
+    },
+    {
+      "bytes": "129858",
+      "kind": "derived-transcript",
+      "path": "text/transcripts/llm-training-and-serving-youtube.md",
+      "sha256": "93e271308de553d050267b5f438c3c041b8ff7eebb8a3bf6db351c7961bc4018",
+      "source": "https://www.youtube.com/watch?v=xmkSf5IS-zw"
+    },
+    {
+      "bytes": "111460",
+      "kind": "official-transcript",
+      "path": "text/transcripts/llm-training-and-serving.md",
+      "sha256": "559aed7330f56cbe7ecce31c646ab8cad96f0407883bb693121bf3c0b89c1a61",
+      "source": "https://gist.githubusercontent.com/dwarkeshsp/79100f0fdeed69d76241903bb0604dbe/raw"
+    },
+    {
+      "bytes": "109748",
+      "kind": "derived-transcript",
+      "path": "text/transcripts/silicon-for-llms-youtube.md",
+      "sha256": "6937688e45b006eafc7524de355045ccfc9b88e9f34b8c955f18dc42dbdeac5b",
+      "source": "https://www.youtube.com/watch?v=gm3parYIMqA"
+    },
+    {
+      "bytes": "81920",
+      "kind": "derived-transcript",
+      "path": "text/transcripts/stripe-transformer-chips-youtube.md",
+      "sha256": "52ad27532564c3ff2149dee3397bfb7567d38b880829435eb515687b3ff39f5e",
+      "source": "https://www.youtube.com/watch?v=qvrdCpLPbuQ"
+    },
+    {
+      "bytes": "77648",
+      "kind": "official-transcript",
+      "path": "text/transcripts/stripe-transformer-chips.md",
+      "sha256": "7ecac7534b17d7fe297a49cd903d002fb5c6cd010016919c573e6647826b349c",
+      "source": "https://cheekypint.substack.com/p/reiner-pope-of-matx-on-accelerating"
+    }
+  ],
+  "schema_version": 1
+}

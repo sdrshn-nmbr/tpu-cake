@@ -1,0 +1,167 @@
+{
+  "records": [
+    {
+      "bytes": 1103565,
+      "kind": "code-archive",
+      "path": "code/accelerator-agents-c4f3b17.zip",
+      "sha256": "b6a90bb76b8f989e6d3e6b397cf5aabf4c042dce845c6966f09990ddbd5f0dfb",
+      "source": "https://github.com/AI-Hypercomputer/accelerator-agents/archive/c4f3b17ba3e034d7f148f47c3e6cbe3905f5e386.zip"
+    },
+    {
+      "bytes": 1249052,
+      "kind": "code-archive",
+      "path": "code/tokamax-5802a3d.zip",
+      "sha256": "d21a9a79cb173e9de6d9ef83b1e3bc0b49b915e8762e65de3a4dd3fa3eb8d5a1",
+      "source": "https://github.com/openxla/tokamax/archive/5802a3d225c661be603cefbea9843c7e928f6dd0.zip"
+    },
+    {
+      "bytes": 2873559,
+      "kind": "paper",
+      "path": "papers/ragged-paged-attention-2604.15464.pdf",
+      "sha256": "6b546d2af7bd3673cdfedc2d4efb17e3ebc149d1cfa28e893f45cae9b7aca578",
+      "source": "https://arxiv.org/pdf/2604.15464"
+    },
+    {
+      "bytes": 1468028,
+      "kind": "paper",
+      "path": "papers/cake-2608.12629.pdf",
+      "sha256": "41c74b241c37cb259724d558002254bdc1c6d151665b5eb14235931a8738ea7c",
+      "source": "https://arxiv.org/pdf/2608.12629"
+    },
+    {
+      "bytes": 86430,
+      "kind": "paper-text",
+      "path": "text/papers/ragged-paged-attention-2604.15464.txt",
+      "sha256": "d4aaa0a0a0bba2ea934e7000c4cdf9ac0d48effd8167975c5c75afa3c3b330e5",
+      "source": "https://arxiv.org/pdf/2604.15464"
+    },
+    {
+      "bytes": 75316,
+      "kind": "paper-text",
+      "path": "text/papers/cake-2608.12629.txt",
+      "sha256": "0d609b6f4ea95e1e4e8137460e1780f899dbb8c6f5edcbc05ae78b8a1adea76d",
+      "source": "https://arxiv.org/pdf/2608.12629"
+    },
+    {
+      "bytes": 8630,
+      "kind": "pinned-source",
+      "path": "source/jax/interpret_params.py",
+      "sha256": "5c73495ab188bb3a06cb53b4e462c7bae7708dff4bbb77513dcc30f848282290",
+      "source": "https://raw.githubusercontent.com/jax-ml/jax/a66f606f34ea176a1b75d0428bbbb2930303665c/jax/_src/pallas/mosaic/interpret/params.py"
+    },
+    {
+      "bytes": 6246,
+      "kind": "pinned-source",
+      "path": "source/jax/race_detection_state.py",
+      "sha256": "dbee1f52697c144a2b8c41129e58c729022a748077feff5af811c68e787aea2d",
+      "source": "https://raw.githubusercontent.com/jax-ml/jax/a66f606f34ea176a1b75d0428bbbb2930303665c/jax/_src/pallas/mosaic/interpret/race_detection_state.py"
+    },
+    {
+      "bytes": 31880,
+      "kind": "pinned-source",
+      "path": "source/jax/ragged_paged_attention.py",
+      "sha256": "2909eefbc109243395a83a4ae19a62b04e1db55ee05b64eda09316aeedbc8a3e",
+      "source": "https://raw.githubusercontent.com/jax-ml/jax/a66f606f34ea176a1b75d0428bbbb2930303665c/jax/experimental/pallas/ops/tpu/ragged_paged_attention/kernel.py"
+    },
+    {
+      "bytes": 97915,
+      "kind": "pinned-source",
+      "path": "source/jax/ragged_paged_attention_tuned_block_sizes.py",
+      "sha256": "ce49c76f455a0badeedc6de546be1646a9d1c03fd9a60020a5135a1a304a00c1",
+      "source": "https://raw.githubusercontent.com/jax-ml/jax/a66f606f34ea176a1b75d0428bbbb2930303665c/jax/experimental/pallas/ops/tpu/ragged_paged_attention/tuned_block_sizes.py"
+    },
+    {
+      "bytes": 79172,
+      "kind": "pinned-source",
+      "path": "source/jax/splash_attention_kernel.py",
+      "sha256": "616a255c3d731bed4f5d8432a72fd90dfe6de35325ab282f38a0377c3a19ed96",
+      "source": "https://raw.githubusercontent.com/jax-ml/jax/a66f606f34ea176a1b75d0428bbbb2930303665c/jax/experimental/pallas/ops/tpu/splash_attention/splash_attention_kernel.py"
+    },
+    {
+      "bytes": 5805,
+      "kind": "pinned-source",
+      "path": "source/tokamax/autotuning.md",
+      "sha256": "331bca50ca3cba02f5a03592e9419ff2fd50b821a6068bec2bb5942db17d858d",
+      "source": "https://raw.githubusercontent.com/openxla/tokamax/5802a3d225c661be603cefbea9843c7e928f6dd0/docs/autotuning.md"
+    },
+    {
+      "bytes": 7821,
+      "kind": "pinned-source",
+      "path": "source/tokamax/autotuner.py",
+      "sha256": "715dd6ed42fc0b3fe0ec1e98ba9d21b3f15e9e36e3aa9e619c93fd488ae2a971",
+      "source": "https://raw.githubusercontent.com/openxla/tokamax/5802a3d225c661be603cefbea9843c7e928f6dd0/tokamax/_src/autotuning/autotuner.py"
+    },
+    {
+      "bytes": 12506,
+      "kind": "pinned-source",
+      "path": "source/tokamax/ragged_dot_tpu_v2.py",
+      "sha256": "efc3f2e22bb014c447ad112f23e8cfb61fdfee01def82a2b6d605f28ded5c8ab",
+      "source": "https://raw.githubusercontent.com/openxla/tokamax/5802a3d225c661be603cefbea9843c7e928f6dd0/tokamax/_src/ops/ragged_dot/pallas_mosaic_tpu_v2.py"
+    },
+    {
+      "bytes": 1931,
+      "kind": "pinned-source",
+      "path": "source/tokamax/ragged_gather_reduce_tpu.py",
+      "sha256": "781cfd86d5306e16ac5ffcd2595bbae4fe163122dee60611a4e59d89133d559d",
+      "source": "https://raw.githubusercontent.com/openxla/tokamax/5802a3d225c661be603cefbea9843c7e928f6dd0/tokamax/_src/ops/ragged_gather_reduce/pallas_mosaic_tpu.py"
+    },
+    {
+      "bytes": 78299,
+      "kind": "pinned-source",
+      "path": "source/tokamax/tpu7x_ragged_dot.json",
+      "sha256": "ff439b0479cf647c3a3869af2cc05a932f36a31b57e450498aa5e9c167c4b78e",
+      "source": "https://raw.githubusercontent.com/openxla/tokamax/5802a3d225c661be603cefbea9843c7e928f6dd0/tokamax/data/autotuning/tpu7x/pallas_mosaic_tpu_ragged_dot.json"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://docs.jax.dev/en/latest/_autosummary/jax.experimental.pallas.tpu.InterpretParams.html"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://docs.jax.dev/en/latest/pallas/design/design.html"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://docs.jax.dev/en/latest/pallas/tpu/details.html"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://docs.jax.dev/en/latest/profiling.html"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://github.com/AI-Hypercomputer/accelerator-agents"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://github.com/AI-Hypercomputer/accelerator-microbenchmarks"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://github.com/AI-Hypercomputer/cloud-diagnostics-xprof"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://github.com/openxla/tokamax"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://openxla.org/xprof/custom_call_profiling"
+    },
+    {
+      "kind": "web-reference",
+      "path": "",
+      "source": "https://openxla.org/xprof/kernel-profiling"
+    }
+  ],
+  "schema_version": 1
+}

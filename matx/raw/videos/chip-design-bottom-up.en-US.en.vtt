@@ -1,0 +1,3024 @@
+WEBVTT
+Kind: captions
+Language: en
+
+00:00:00.080 --> 00:00:04.880
+I'm back with Reiner Pope, CEO&nbsp;
+of MatX, a new AI chip company.&nbsp;
+
+00:00:04.880 --> 00:00:07.440
+Last time we were talking about&nbsp;
+what happens inside a data center.&nbsp;
+
+00:00:07.440 --> 00:00:10.560
+Now I want to understand what&nbsp;
+happens inside an AI chip.&nbsp;
+
+00:00:10.560 --> 00:00:13.680
+How does a chip actually work?
+Full disclosure, by the way:&nbsp;&nbsp;
+
+00:00:13.680 --> 00:00:19.440
+I am an angel investor in MatX.
+So hopefully you have designed a good chip.&nbsp;
+
+00:00:19.440 --> 00:00:25.840
+Hope so. I'll start with the smallest&nbsp;
+fundamental unit of chip design, and we'll&nbsp;&nbsp;
+
+00:00:25.840 --> 00:00:30.880
+build up to what an actual production&nbsp;
+chip is and what its components are.&nbsp;
+
+00:00:30.880 --> 00:00:36.480
+At the very bottom level of a chip, the&nbsp;
+primitives we work with are logic gates,&nbsp;&nbsp;
+
+00:00:37.120 --> 00:00:42.640
+very simple things like AND, OR, and NOT.
+These are connected together by wires that have to&nbsp;&nbsp;
+
+00:00:42.640 --> 00:00:50.080
+be laid out physically as metal traces on a chip.
+The main function that AI chips want to compute&nbsp;&nbsp;
+
+00:00:50.080 --> 00:00:54.720
+is the multiplication of matrices.
+Inside that, the fundamental primitive&nbsp;&nbsp;
+
+00:00:54.720 --> 00:01:01.680
+is a multiply-accumulate of pairs of numbers.
+We're going to demonstrate what that calculation&nbsp;&nbsp;
+
+00:01:01.680 --> 00:01:07.280
+looks like by hand, and then infer what&nbsp;
+a circuit would look like for that.&nbsp;
+
+00:01:08.080 --> 00:01:17.360
+It'll be easiest if I do a multiply-accumulate of&nbsp;
+a four-bit number with another four-bit number.&nbsp;
+
+00:01:20.240 --> 00:01:24.080
+The clearest primitive is&nbsp;
+actually multiply-accumulate.&nbsp;
+
+00:01:24.080 --> 00:01:40.000
+So there's a multiply of these two terms, and&nbsp;
+then we're going to add in an eight-bit number.&nbsp;
+
+00:01:40.560 --> 00:01:47.840
+Can I ask a clarifying question?
+Why is this the natural primitive for&nbsp;&nbsp;
+
+00:01:49.280 --> 00:01:53.600
+whatever computation happens inside a computer?
+There are a few reasons.&nbsp;
+
+00:01:55.280 --> 00:02:00.960
+It's a little bit more efficient, but the&nbsp;
+reason it's natural for AI chips is that if&nbsp;&nbsp;
+
+00:02:00.960 --> 00:02:06.400
+you look at what's happening during a matrix&nbsp;
+multiply… What is a matrix multiply in short?&nbsp;
+
+00:02:09.200 --> 00:02:21.520
+There's a for-loop over i, over&nbsp;
+j, and over k, of output [i,&nbsp;&nbsp;
+
+00:02:21.520 --> 00:02:36.080
+k] += input [i, j] x other input [j, k].
+A multiply-accumulate happens at every&nbsp;&nbsp;
+
+00:02:36.080 --> 00:02:40.640
+single step of a matrix multiply.
+The other observation is that the&nbsp;&nbsp;
+
+00:02:40.640 --> 00:02:45.520
+precision will almost always be higher in the&nbsp;
+accumulation step than in the multiplication step.&nbsp;
+
+00:02:45.520 --> 00:02:49.840
+This is specific to AI chips.
+You're multiplying low-precision numbers,&nbsp;&nbsp;
+
+00:02:49.840 --> 00:02:54.240
+and then when you accumulate, errors accumulate&nbsp;
+quickly, so you need more precision there.&nbsp;
+
+00:02:54.240 --> 00:02:58.240
+This is why we've chosen to do a four-bit&nbsp;
+multiplication and an eight-bit addition.&nbsp;
+
+00:02:58.240 --> 00:03:01.440
+Let me make sure I understood that.
+There are two ways to understand that.&nbsp;
+
+00:03:01.440 --> 00:03:06.000
+One is that the value will&nbsp;
+be larger than the inputs.&nbsp;
+
+00:03:06.000 --> 00:03:10.800
+The other is that if it was a&nbsp;
+floating-point number it would be…&nbsp;&nbsp;
+
+00:03:10.800 --> 00:03:14.160
+Maybe that part is less intuitive to me.
+But maybe it's the same principle?&nbsp;
+
+00:03:14.160 --> 00:03:20.400
+It really is the same principle.
+The separate principle is that as&nbsp;&nbsp;
+
+00:03:20.400 --> 00:03:23.680
+you're summing up this number, you're summing&nbsp;
+up a whole bunch of numbers, so you've got a&nbsp;&nbsp;
+
+00:03:23.680 --> 00:03:28.000
+lot of rounding errors accumulating.
+Whereas in this case, there's only&nbsp;&nbsp;
+
+00:03:28.000 --> 00:03:30.560
+one multiplication in the chain,&nbsp;
+so there aren't a lot of rounding&nbsp;&nbsp;
+
+00:03:30.560 --> 00:03:33.920
+errors accumulating in the multiplication.
+Why are you summing up a whole bunch of numbers?&nbsp;
+
+00:03:33.920 --> 00:03:39.280
+There’s just two numbers there.
+This summation is repeated j many times.&nbsp;
+
+00:03:39.280 --> 00:03:44.480
+Any errors accumulate. I see.
+So how would we perform this calculation by hand?&nbsp;
+
+00:03:45.040 --> 00:03:48.240
+As a human, we would probably&nbsp;
+separate it into two, but we can do&nbsp;&nbsp;
+
+00:03:48.240 --> 00:03:55.760
+it all in one using long multiplication.
+For the multiplication term first, we're&nbsp;&nbsp;
+
+00:03:55.760 --> 00:04:03.120
+going to multiply this four-bit number by every&nbsp;
+single bit position in the other four-bit number.&nbsp;
+
+00:04:03.120 --> 00:04:08.720
+We write that out. First, 1001&nbsp;
+multiplied by this bit position.&nbsp;
+
+00:04:10.240 --> 00:04:14.800
+That is the number itself.
+Then shifted across by one,&nbsp;&nbsp;
+
+00:04:14.800 --> 00:04:20.720
+we're multiplying by 0.
+That gives us an all-0 number.&nbsp;
+
+00:04:20.720 --> 00:04:28.800
+Shifted across one more to&nbsp;
+multiply by this one, we get 1001.&nbsp;
+
+00:04:28.800 --> 00:04:33.440
+Finally, for this last bit position,&nbsp;
+we get an all-0 number again.&nbsp;
+
+00:04:37.120 --> 00:04:42.960
+This gives us a bunch of terms that&nbsp;
+we have to add for the multiplication.&nbsp;
+
+00:04:43.920 --> 00:04:50.160
+While we're doing that summation, we might as&nbsp;
+well add in the actual accumulator term as well.&nbsp;
+
+00:04:50.160 --> 00:05:00.000
+So we just copy that directly across.
+So this is the sum.&nbsp;
+
+00:05:00.000 --> 00:05:02.720
+It's a five-way sum that we want to compute.&nbsp;
+
+00:05:07.520 --> 00:05:12.160
+What logic gates did it take us&nbsp;
+to get to this intermediate step?&nbsp;
+
+00:05:12.160 --> 00:05:16.960
+We needed to produce all 16&nbsp;
+of these partial products.&nbsp;
+
+00:05:17.920 --> 00:05:23.920
+How do I produce one of these partial products?
+Let's take this number 1, for example here.&nbsp;
+
+00:05:26.080 --> 00:05:30.720
+We produce it by multiplying this&nbsp;
+number by this one over here.&nbsp;
+
+00:05:31.440 --> 00:05:35.600
+We can produce that with an AND gate.
+This number is 1 if both this bit&nbsp;&nbsp;
+
+00:05:35.600 --> 00:05:37.920
+is 1 and this bit is 1.
+If either of them is 0,&nbsp;&nbsp;
+
+00:05:37.920 --> 00:05:45.600
+then the multiplication of 0 times anything is 0.
+To produce all of this, we ended up&nbsp;&nbsp;
+
+00:05:45.600 --> 00:05:50.880
+consuming 16 AND gates.
+In the general case,&nbsp;&nbsp;
+
+00:05:50.880 --> 00:06:06.560
+if I were doing a p bit multiply times a q bit&nbsp;
+multiply, this will be p times q many ANDs.&nbsp;
+
+00:06:10.160 --> 00:06:15.040
+Finally, I sum them. Most of the work&nbsp;
+is going to happen in the summing.&nbsp;
+
+00:06:15.680 --> 00:06:20.480
+Let me describe the other&nbsp;
+logic gate that we use here.&nbsp;
+
+00:06:20.480 --> 00:06:23.200
+AND is almost the simplest logic&nbsp;
+gate that exists on a chip.&nbsp;
+
+00:06:23.200 --> 00:06:30.480
+It's almost the smallest. At the other extreme,&nbsp;
+the very largest logic gate you'll typically use&nbsp;&nbsp;
+
+00:06:30.480 --> 00:06:39.040
+is something called a full adder.
+Coming from software, you might think&nbsp;&nbsp;
+
+00:06:39.040 --> 00:06:43.680
+that a full adder adds 32-bit numbers together.
+In this case, it just adds three single-bit&nbsp;&nbsp;
+
+00:06:43.680 --> 00:06:48.320
+numbers together, so you can think&nbsp;
+of it as adding 0, 1, and 1 together.&nbsp;
+
+00:06:50.400 --> 00:06:54.320
+When I add these together, the result can&nbsp;
+be 0, 1, 2, or 3, so I can express that&nbsp;&nbsp;
+
+00:06:54.320 --> 00:06:58.880
+in binary using just two bits.
+As input, it has three bits.&nbsp;
+
+00:06:58.880 --> 00:07:04.960
+As output, it has two bits.
+The number 2 in binary is 10.&nbsp;
+
+00:07:06.880 --> 00:07:17.600
+This is also known as a 3→2 compressor&nbsp;
+because it takes three bits of input&nbsp;&nbsp;
+
+00:07:17.600 --> 00:07:19.520
+and produces two bits of output.
+Just to make sure I understood: the&nbsp;&nbsp;
+
+00:07:19.520 --> 00:07:25.200
+two inputs are an X and a Y value&nbsp;
+and then some carry that came in…&nbsp;
+
+00:07:27.120 --> 00:07:34.320
+The three inputs are all bits in the same bit&nbsp;
+position, like three bits in a column here.&nbsp;
+
+00:07:35.120 --> 00:07:41.360
+The two outputs, I've drawn them vertically&nbsp;
+here and horizontally here to match this&nbsp;&nbsp;
+
+00:07:41.360 --> 00:07:45.920
+vertical versus horizontal layout.
+This expresses that things in the same&nbsp;&nbsp;
+
+00:07:45.920 --> 00:07:50.160
+column are in the same bit position, whereas&nbsp;
+things in adjacent columns are different.&nbsp;
+
+00:07:50.160 --> 00:07:56.800
+This is a carry out, whereas this was the sum.
+So if the inputs in the full adder were, say,&nbsp;&nbsp;
+
+00:07:56.800 --> 00:07:59.280
+101, then the output would be 10.
+If it were 111, it'd be 11.&nbsp;
+
+00:07:59.280 --> 00:08:06.800
+If it were 000, it'd be 00.
+If it were 010, it'd still be 01.&nbsp;
+
+00:08:06.800 --> 00:08:09.440
+Got it.
+Yeah. It's essentially just counting the&nbsp;&nbsp;
+
+00:08:09.440 --> 00:08:17.120
+number of things and expressing that in binary.
+This circuit captures what we as humans naturally&nbsp;&nbsp;
+
+00:08:17.120 --> 00:08:24.960
+do when we're summing along a column.
+I'll show one iteration of using&nbsp;&nbsp;
+
+00:08:24.960 --> 00:08:27.840
+the full adder to sum.
+The way I sum here is going&nbsp;&nbsp;
+
+00:08:27.840 --> 00:08:31.760
+to be a little unnatural for humans.
+We would sum along the column and then&nbsp;&nbsp;
+
+00:08:31.760 --> 00:08:38.160
+remember the carry, but instead of remembering&nbsp;
+the carry, we'll explicitly write it out.&nbsp;
+
+00:08:39.120 --> 00:08:42.160
+We proceed from the rightmost&nbsp;
+column toward the left.&nbsp;
+
+00:08:42.160 --> 00:08:51.360
+On the rightmost column, we sum the 1 and the 1,&nbsp;
+and that produces a zero here and a carry of one.&nbsp;
+
+00:08:51.360 --> 00:08:59.200
+We've used this full adder circuit on this pair&nbsp;
+of bits and produced a pair of bits as output.&nbsp;
+
+00:08:59.200 --> 00:09:04.880
+Now we can do the same thing with this column.
+We have a column of four numbers, so we'll take&nbsp;&nbsp;
+
+00:09:04.880 --> 00:09:11.520
+the first three of them, run a full adder on&nbsp;
+them, and that gives us a 0 and a 0 as output.&nbsp;
+
+00:09:12.320 --> 00:09:18.720
+The sum of these is 00.
+That's the full adder applied to all these bits.&nbsp;
+
+00:09:18.720 --> 00:09:25.840
+As I've used up bits, I'll cross them&nbsp;
+out to indicate that I've handled them.&nbsp;
+
+00:09:25.840 --> 00:09:31.200
+Let's keep going a little bit more.
+I take these three numbers, I add&nbsp;&nbsp;
+
+00:09:31.200 --> 00:09:36.880
+them, and that gives me a 1 and a 0.
+I've dealt with these three numbers.&nbsp;
+
+00:09:36.880 --> 00:09:44.160
+Now I take these three numbers and add&nbsp;
+them, and that gives me a 1 and a 0,&nbsp;&nbsp;
+
+00:09:44.160 --> 00:09:51.840
+and I've dealt with these numbers.
+The way to view this is that I have&nbsp;&nbsp;
+
+00:09:51.840 --> 00:09:57.120
+this whole grid of numbers that need to be added.
+I'm going to keep applying full adders to all the&nbsp;&nbsp;
+
+00:09:57.120 --> 00:10:03.600
+bits here, constantly removing three numbers from&nbsp;
+a column and writing out two numbers as output.&nbsp;
+
+00:10:03.600 --> 00:10:09.200
+Keep going over and over again until I&nbsp;
+eventually get just one single number coming out.&nbsp;
+
+00:10:16.640 --> 00:10:30.800
+This approach is called a Dadda multiplier.
+This is the standard for how you do&nbsp;&nbsp;
+
+00:10:31.520 --> 00:10:38.400
+area-efficient multipliers using full adders.
+Let's try to quantify the circuit size of&nbsp;&nbsp;
+
+00:10:38.400 --> 00:10:43.440
+this so we have a sense of how big&nbsp;
+things are and can compare them later.&nbsp;
+
+00:10:44.720 --> 00:10:49.360
+How many full adders did I use?
+How many numbers did I start with?&nbsp;
+
+00:10:50.080 --> 00:10:57.200
+I have the 16 partial products, which is a product&nbsp;
+of all of these terms with all of these terms,&nbsp;&nbsp;
+
+00:10:57.200 --> 00:11:06.480
+plus the eight terms that I'm adding here.
+I started off with 24 bits.&nbsp;
+
+00:11:06.480 --> 00:11:14.480
+Eventually I produced eight bits on the output.
+In every step, I was crossing off three numbers&nbsp;&nbsp;
+
+00:11:14.480 --> 00:11:20.080
+and writing two numbers out as a result.
+Every single use of a full adder eliminates&nbsp;&nbsp;
+
+00:11:20.080 --> 00:11:23.840
+one of the bits here.
+So how many full adders?&nbsp;
+
+00:11:23.840 --> 00:11:28.800
+It must be 24 minus 8, so there&nbsp;
+were 16 full adders in this circuit.&nbsp;
+
+00:11:30.000 --> 00:11:34.000
+This is true in the general case as well.
+There will be p times q many&nbsp;&nbsp;
+
+00:11:34.000 --> 00:11:38.400
+full adders in this circuit.
+Let me make sure I understand the logic of that.&nbsp;
+
+00:11:39.520 --> 00:11:42.407
+The input bits, 24, is p x q, plus p + q.
+The output bits are just p + q.&nbsp;
+
+00:11:42.407 --> 00:12:00.080
+So p x q plus p + q, minus p + q equals p x q.
+That's right. I think this explains,&nbsp;&nbsp;
+
+00:12:00.720 --> 00:12:06.400
+or at least hints at, the second reason&nbsp;
+we chose to do a multiply-accumulate.&nbsp;
+
+00:12:06.400 --> 00:12:10.960
+The first reason is that it's what&nbsp;
+shows up in matrix multiplication.&nbsp;
+
+00:12:10.960 --> 00:12:16.080
+The second is that it gave us this very&nbsp;
+slick, simple p x q, very simple algebra.&nbsp;
+
+00:12:17.600 --> 00:12:22.480
+We've described this whole procedure.
+Every single atomic step that I took&nbsp;&nbsp;
+
+00:12:22.480 --> 00:12:26.640
+here becomes a logic gate, and then&nbsp;
+the wires are connected together.&nbsp;
+
+00:12:26.640 --> 00:12:31.840
+When I had these three inputs that I used to&nbsp;
+produce these two outputs, if I think of mapping&nbsp;&nbsp;
+
+00:12:31.840 --> 00:12:38.560
+this to a physical device, there would be a wire&nbsp;
+connecting all three of these things together&nbsp;&nbsp;
+
+00:12:38.560 --> 00:12:46.720
+into a logic gate that produced this output.
+This is the main primitive, at different bit&nbsp;&nbsp;
+
+00:12:46.720 --> 00:12:54.000
+widths, that's inside an AI chip.
+We're going to build up from here&nbsp;&nbsp;
+
+00:12:54.000 --> 00:12:58.000
+to how you would use it to run all&nbsp;
+the other operations you might want.&nbsp;
+
+00:12:58.000 --> 00:13:02.800
+This might be the wrong time to ask, but&nbsp;
+whenever Nvidia reports that this chip&nbsp;&nbsp;
+
+00:13:02.800 --> 00:13:11.120
+can do X many FP4 or half as many FP8, it&nbsp;
+seems to imply those circuits are fungible,&nbsp;&nbsp;
+
+00:13:11.680 --> 00:13:17.760
+that there's not a dedicated FP4 versus FP8.
+But the way you're mapping it out here, it seems&nbsp;&nbsp;
+
+00:13:17.760 --> 00:13:27.440
+like if it has to be mapped out in the logic, you&nbsp;
+would need a dedicated FP4 multiply-accumulate and&nbsp;&nbsp;
+
+00:13:27.440 --> 00:13:33.040
+then a dedicated FP8 accumulate.
+Can you "funge" them?&nbsp;
+
+00:13:33.040 --> 00:13:37.920
+As drawn, they're not particularly fungible.
+This is actually one of the main choices you&nbsp;&nbsp;
+
+00:13:37.920 --> 00:13:42.560
+have to make when designing a chip: how&nbsp;
+much of FP4 and how much of FP8 do I have?&nbsp;
+
+00:13:42.560 --> 00:13:47.760
+Sometimes I'll make that consideration from&nbsp;
+the point of view of the customer requirement.&nbsp;
+
+00:13:47.760 --> 00:13:55.280
+Another angle is to equalize the&nbsp;
+power budget between FP4 and FP8.&nbsp;
+
+00:13:55.280 --> 00:14:02.000
+When they report those numbers and it just happens&nbsp;
+to be the case that it does 2x as many FP4 as FP8,&nbsp;&nbsp;
+
+00:14:02.000 --> 00:14:08.320
+they're just choosing to give equivalent&nbsp;
+die areas to all the floating points,&nbsp;&nbsp;
+
+00:14:08.320 --> 00:14:12.160
+and as a result it ends up being…?
+Why is the ratio exactly 2x?&nbsp;
+
+00:14:13.680 --> 00:14:18.480
+Part of it is that surely it won't&nbsp;
+be exactly equivalent to die area.&nbsp;
+
+00:14:20.400 --> 00:14:23.520
+There's a data movement reason.
+We'll maybe come back to this when we&nbsp;&nbsp;
+
+00:14:24.080 --> 00:14:28.800
+look at how it goes into and out of memories.
+There's something really nice from a software&nbsp;&nbsp;
+
+00:14:28.800 --> 00:14:32.080
+level about the fact that I can pack&nbsp;
+two four-bit numbers into the same&nbsp;&nbsp;
+
+00:14:32.080 --> 00:14:34.640
+storage as an eight-bit number.
+When I store that to memory,&nbsp;&nbsp;
+
+00:14:36.960 --> 00:14:44.960
+the sizing of the buses that I wire out within&nbsp;
+the chip makes that work out really nicely.&nbsp;
+
+00:14:44.960 --> 00:14:52.160
+Come to think of it, it's not just 2x.
+The amount of area it takes sounds like&nbsp;&nbsp;
+
+00:14:54.160 --> 00:15:00.240
+it's quadratic with the bit length.
+That's why smaller precision is even&nbsp;&nbsp;
+
+00:15:00.240 --> 00:15:02.960
+more favorable than you might think.
+This is a really big reason.&nbsp;
+
+00:15:04.160 --> 00:15:10.640
+In fact, Nvidia made a change.
+Historically, up until B100 or&nbsp;&nbsp;
+
+00:15:10.640 --> 00:15:16.400
+B200, every time you halved the bit&nbsp;
+precision, you doubled the FLOP count.&nbsp;
+
+00:15:18.160 --> 00:15:21.680
+For the reason you said, because of this quadratic&nbsp;
+scaling, that ratio is actually slightly wrong.&nbsp;
+
+00:15:21.680 --> 00:15:26.480
+You should get an even bigger speedup&nbsp;
+than you might otherwise think.&nbsp;
+
+00:15:28.080 --> 00:15:34.960
+Nvidia’s product specs have started acknowledging&nbsp;
+that in B300 and beyond, where the FP4 is three&nbsp;&nbsp;
+
+00:15:34.960 --> 00:15:38.560
+times faster than the FP8.
+Though it should be 4x.&nbsp;
+
+00:15:38.560 --> 00:15:42.160
+Yeah. What I've shown here is the&nbsp;
+simplest case of integer multiply.&nbsp;
+
+00:15:42.880 --> 00:15:48.480
+When you're dealing with floating point, as&nbsp;
+you do in FP4 and FP8, there's this other term,&nbsp;&nbsp;
+
+00:15:49.520 --> 00:15:54.880
+the exponent, that complicates the calculation.
+What can we see already from this?&nbsp;
+
+00:15:54.880 --> 00:15:58.560
+I think the big observation you've made is that&nbsp;
+there's this quadratic scaling with bit width,&nbsp;&nbsp;
+
+00:16:00.000 --> 00:16:04.640
+which is very effective and is&nbsp;
+the single reason low-precision&nbsp;&nbsp;
+
+00:16:04.640 --> 00:16:11.280
+arithmetic has worked so well for neural nets.
+The other thing we're going to do now is compare&nbsp;&nbsp;
+
+00:16:11.280 --> 00:16:17.360
+the area spent on the multiplication&nbsp;
+itself with all the circuitry around it.&nbsp;
+
+00:16:20.800 --> 00:16:27.760
+We'll walk back in time a little bit and&nbsp;
+see how GPUs prior to Tensor Cores worked,&nbsp;&nbsp;
+
+00:16:28.320 --> 00:16:34.560
+which is in fact the same way CPUs worked.
+Where do we stick this multiply-accumulate unit?&nbsp;
+
+00:16:37.120 --> 00:16:47.840
+Generically, I'll describe a CUDA core or a CPU.
+You'll have some register file which stores some&nbsp;&nbsp;
+
+00:16:47.840 --> 00:16:58.480
+number of entries, maybe eight entries of, in this&nbsp;
+case, 4-bit numbers, but typically 32-bit numbers.&nbsp;
+
+00:17:03.440 --> 00:17:06.800
+Inside the CUDA core, I'll have&nbsp;
+some register file of some depth,&nbsp;&nbsp;
+
+00:17:06.800 --> 00:17:18.000
+and then I'll have my multiply-accumulate circuit.
+What it's going to do is take three arbitrary&nbsp;&nbsp;
+
+00:17:18.000 --> 00:17:21.280
+registers from this register file,&nbsp;
+perform the multiply-accumulate,&nbsp;&nbsp;
+
+00:17:21.280 --> 00:17:25.920
+and then write back to the register file.
+It's going to write to this one,&nbsp;&nbsp;
+
+00:17:25.920 --> 00:17:31.440
+but it was able to read from this&nbsp;
+one, this one, and another random one.&nbsp;
+
+00:17:31.440 --> 00:17:39.920
+It will take three inputs like this.
+This is the core data path of many processors.&nbsp;
+
+00:17:39.920 --> 00:17:42.640
+Most processors look like this.
+You've got some set of registers, and&nbsp;&nbsp;
+
+00:17:42.640 --> 00:17:50.800
+then you've got some set of logic units, or ALUs.
+We want to analyze the cost of the data movement&nbsp;&nbsp;
+
+00:17:50.800 --> 00:17:58.320
+from the register file to the ALU and back.
+Ultimately, there's going to be some&nbsp;&nbsp;
+
+00:17:58.320 --> 00:18:01.040
+circuit that says, "Well, I don't&nbsp;
+always have to select this guy.&nbsp;
+
+00:18:01.040 --> 00:18:04.480
+I might select any of the&nbsp;
+registers at any point in time."&nbsp;
+
+00:18:04.480 --> 00:18:11.920
+The first question is: how can I build a circuit?
+The circuit I'm going to look for is a mux.&nbsp;
+
+00:18:13.040 --> 00:18:17.680
+In this case, it's going to have eight inputs,&nbsp;
+one from each entry of the register file,&nbsp;&nbsp;
+
+00:18:17.680 --> 00:18:25.120
+and it's going to have one output,&nbsp;
+which is actually producing this output.&nbsp;
+
+00:18:26.080 --> 00:18:32.960
+What is the cost of this thing?
+All we have to build it out of is AND and OR.&nbsp;
+
+00:18:32.960 --> 00:18:37.680
+How do we build it?
+We do the dumbest thing possible.&nbsp;
+
+00:18:37.680 --> 00:18:44.640
+We form a mask. When we want to read the&nbsp;
+third entry, we're going to AND every&nbsp;&nbsp;
+
+00:18:44.640 --> 00:18:48.000
+single entry with either 1 or 0 based&nbsp;
+on whether that's what we want to read,&nbsp;&nbsp;
+
+00:18:48.000 --> 00:18:52.240
+and then we're going to OR all of them together.
+Just to make sure I understand the basics.&nbsp;
+
+00:18:52.240 --> 00:18:59.360
+What the mux is doing is just selecting an input?
+Just selecting, invisible to software.&nbsp;
+
+00:18:59.360 --> 00:19:02.240
+You say "I want input number three,"&nbsp;
+and that means there's a mux here.&nbsp;
+
+00:19:02.240 --> 00:19:06.080
+So what is the cost of this mux?
+An n-input&nbsp;&nbsp;
+
+00:19:10.640 --> 00:19:21.120
+mux operating on p bits.
+I have n rows. That's just eight&nbsp;&nbsp;
+
+00:19:21.120 --> 00:19:25.600
+rows, and each row is p bits wide.
+I have to AND every single bit,&nbsp;&nbsp;
+
+00:19:25.600 --> 00:19:32.320
+so I get n x p many AND gates.
+For every single input I have to decide&nbsp;&nbsp;
+
+00:19:32.320 --> 00:19:37.680
+whether I'm going to mask it out or not.
+Then I'm going to OR them all together.&nbsp;
+
+00:19:38.960 --> 00:19:47.040
+There's going to be n – 1 times p many OR gates.
+I've got all of these different things,&nbsp;&nbsp;
+
+00:19:47.040 --> 00:19:53.600
+almost all of them are 0s, but I need to collapse&nbsp;
+them from my eight options down into one option.&nbsp;
+
+00:19:54.640 --> 00:19:58.560
+Every step, I need to OR one&nbsp;
+row into an existing row.&nbsp;
+
+00:19:59.440 --> 00:20:04.240
+It's actually funny that you don't&nbsp;
+think at the level of hardware.&nbsp;
+
+00:20:04.240 --> 00:20:09.760
+You just think, "Oh, I'll just select element&nbsp;
+three," and something as simple as that is&nbsp;&nbsp;
+
+00:20:11.440 --> 00:20:15.280
+in and of itself quite a complicated circuit.
+This is the first step of all of the hidden&nbsp;&nbsp;
+
+00:20:15.280 --> 00:20:22.480
+data movement costs that show up.
+We're just going to compare.&nbsp;
+
+00:20:23.200 --> 00:20:26.080
+I have to pay this cost.
+I've got one mux here, and in fact&nbsp;&nbsp;
+
+00:20:26.080 --> 00:20:30.960
+I have two more copies of that for each of the&nbsp;
+three inputs to my multiply-accumulate operation.&nbsp;
+
+00:20:30.960 --> 00:20:42.640
+I have this cost, which is 3 x n x p AND gates&nbsp;
+over here, compared to p x q gates in the actual&nbsp;&nbsp;
+
+00:20:42.640 --> 00:20:48.640
+circuit that is doing the thing I care about.
+If we plug in actual numbers, with n being&nbsp;&nbsp;
+
+00:20:49.760 --> 00:21:00.560
+eight, I get 24 x p gates just in the data&nbsp;
+movement, compared to—if q is four—4 x p&nbsp;&nbsp;
+
+00:21:00.560 --> 00:21:05.520
+gates just in the multiply-adder.
+Where is the three coming from?&nbsp;
+
+00:21:05.520 --> 00:21:14.720
+Three different inputs here. What I'm&nbsp;
+hinting at is that all of this work,&nbsp;&nbsp;
+
+00:21:14.720 --> 00:21:18.640
+which scales as the size of the register&nbsp;
+file—and this is a very small register&nbsp;&nbsp;
+
+00:21:18.640 --> 00:21:26.080
+file—all of this work just moving the data from&nbsp;
+the register file to the logic unit is many,&nbsp;&nbsp;
+
+00:21:26.080 --> 00:21:31.040
+many times more expensive than the logic unit.
+In the most recent ClusterMAX report, SemiAnalysis&nbsp;&nbsp;
+
+00:21:31.040 --> 00:21:36.480
+ranked almost 100 different GPU clouds. Crusoe&nbsp;
+was one of only five that made the gold tier.&nbsp;
+
+00:21:36.480 --> 00:21:41.120
+SemiAnalysis found that gold-tier providers&nbsp;
+like Crusoe had a total cost of ownership that&nbsp;&nbsp;
+
+00:21:41.120 --> 00:21:46.160
+was 5% to 15% lower than silver-tier ones,&nbsp;
+even when they had identical GPU pricing.&nbsp;
+
+00:21:46.160 --> 00:21:50.480
+This makes sense because total cost of ownership&nbsp;
+is downstream of a bunch of different things that&nbsp;&nbsp;
+
+00:21:50.480 --> 00:21:54.480
+don't necessarily show up in the sticker&nbsp;
+price, but that Crusoe has optimized.&nbsp;
+
+00:21:54.480 --> 00:21:58.400
+Things like how well you detect faults&nbsp;
+and how quickly you replace failed nodes.&nbsp;
+
+00:21:58.400 --> 00:22:04.080
+For example, Crusoe was one of the first clouds&nbsp;
+to adopt NVSentinel, NVIDIA's own GPU monitoring&nbsp;&nbsp;
+
+00:22:04.080 --> 00:22:09.440
+and self-healing software for enhanced&nbsp;
+GPU uptime, utilization, and reliability.&nbsp;
+
+00:22:09.440 --> 00:22:14.240
+This lets Crusoe make use of everything that&nbsp;
+NVIDIA has learned about why chips fail across all&nbsp;&nbsp;
+
+00:22:14.240 --> 00:22:18.880
+their different fleets and deployments, so that&nbsp;
+Crusoe can catch faults earlier in the process.&nbsp;
+
+00:22:18.880 --> 00:22:23.760
+And once they identify a failure, Crusoe can&nbsp;
+swap in a healthy node in less than 10 minutes.&nbsp;
+
+00:22:23.760 --> 00:22:27.200
+Because they’re not running bare metal, Crusoe&nbsp;
+doesn't have to spend time installing an&nbsp;&nbsp;
+
+00:22:27.200 --> 00:22:31.120
+operating system or configuring drivers.
+They can just spin up a new VM on an&nbsp;&nbsp;
+
+00:22:31.120 --> 00:22:34.800
+already running and pre-qualified host.
+If you want to learn more about this or&nbsp;&nbsp;
+
+00:22:34.800 --> 00:22:41.840
+the other reasons that Crusoe made&nbsp;
+gold tier, go to crusoe.ai/dwarkesh.&nbsp;
+
+00:22:41.840 --> 00:22:44.480
+It may be helpful to just&nbsp;
+see what a mux looks like,&nbsp;&nbsp;
+
+00:22:44.480 --> 00:22:53.600
+maybe a two-bit or a four-bit mux.
+We’ll do a two-way mux.&nbsp;
+
+00:22:53.600 --> 00:23:00.560
+We've got two different numbers,&nbsp;
+we’ve got these two inputs.&nbsp;
+
+00:23:03.120 --> 00:23:16.240
+These are the inputs that are being selected&nbsp;
+between, and the selector can either be "I want&nbsp;&nbsp;
+
+00:23:16.240 --> 00:23:24.080
+this one" or "I want the other one."
+This is a one-hot encoding.&nbsp;
+
+00:23:24.800 --> 00:23:34.160
+This is what we start with.
+Let's focus on this case.&nbsp;
+
+00:23:34.160 --> 00:23:40.480
+This is the actual input we got, and we&nbsp;
+want to produce this guy as the result.&nbsp;
+
+00:23:42.560 --> 00:23:47.840
+Very laboriously, we AND&nbsp;
+this bit with all of these.&nbsp;
+
+00:23:50.240 --> 00:23:55.200
+That produces ANDing this bit with this row.
+Likewise, we AND this bit with this row.&nbsp;
+
+00:23:55.200 --> 00:24:07.360
+That produces all 0s. There are four ANDs here.
+Finally,&nbsp;&nbsp;
+
+00:24:07.360 --> 00:24:09.440
+we OR these two together, and this gives a 1.
+We OR these two together, this gives a 1.&nbsp;
+
+00:24:09.440 --> 00:24:15.120
+We OR these two together, it gives a 0.
+We OR these two together and it gives a 1.&nbsp;
+
+00:24:15.680 --> 00:24:22.560
+Those are the four ORs.
+This actually ends up&nbsp;&nbsp;
+
+00:24:22.560 --> 00:24:27.280
+looking a little bit like addition.
+We did exactly the same set of ANDs.&nbsp;
+
+00:24:28.640 --> 00:24:34.080
+We've ANDed all of these things together,&nbsp;
+but then instead of collapsing it by using&nbsp;&nbsp;
+
+00:24:34.080 --> 00:24:38.560
+full adder circuits, we just get a&nbsp;
+very simple collapsing with OR gates.&nbsp;
+
+00:24:38.560 --> 00:24:46.480
+But that doesn't look like n times p.
+This was with n=2 inputs.&nbsp;
+
+00:24:48.320 --> 00:25:03.920
+In the general case, we will have n&nbsp;
+rows, and we'll have p bits per row.&nbsp;
+
+00:25:03.920 --> 00:25:11.680
+That gives us the n times p many AND gates.
+In this circuit I've described, almost all of&nbsp;&nbsp;
+
+00:25:11.680 --> 00:25:19.440
+the cost, seven-eighths of the cost, is in reading&nbsp;
+and writing the register file, and only a tiny&nbsp;&nbsp;
+
+00:25:19.440 --> 00:25:23.280
+fraction of the cost is in the logic unit itself.
+This is the problem to solve.&nbsp;
+
+00:25:24.720 --> 00:25:31.760
+This essentially was the state of play prior&nbsp;
+to the Volta generation of Nvidia GPUs.&nbsp;
+
+00:25:31.760 --> 00:25:36.720
+This kind of thing is what&nbsp;
+was inside the CUDA cores.&nbsp;
+
+00:25:37.360 --> 00:25:41.760
+This problem statement is what motivated&nbsp;
+the introduction of Tensor Cores,&nbsp;&nbsp;
+
+00:25:41.760 --> 00:25:46.240
+which are more generically called systolic arrays.
+Think about how we're going to solve this problem.&nbsp;
+
+00:25:46.240 --> 00:25:48.480
+We're spending almost all of our&nbsp;
+circuit area on something that we&nbsp;&nbsp;
+
+00:25:48.480 --> 00:25:52.080
+really don't care about and is hidden to the&nbsp;
+software programmer, and the thing that we&nbsp;&nbsp;
+
+00:25:52.080 --> 00:25:57.520
+actually care about is not much of the area.
+Make this one bigger somehow while keeping&nbsp;&nbsp;
+
+00:25:57.520 --> 00:25:59.440
+this at the same size.
+That's the goal.&nbsp;
+
+00:26:01.360 --> 00:26:06.320
+The evolution was that we had baked&nbsp;
+this much into hardware at this stage.&nbsp;
+
+00:26:06.320 --> 00:26:11.280
+This single line is a multiply-accumulate,&nbsp;
+and this single thing was baked into hardware.&nbsp;
+
+00:26:11.840 --> 00:26:17.920
+The idea of a systolic array is to go&nbsp;
+two levels of loops up and bake this&nbsp;&nbsp;
+
+00:26:17.920 --> 00:26:22.480
+entire loop out here into hardware.
+The idea is that if we have a much&nbsp;&nbsp;
+
+00:26:22.480 --> 00:26:27.280
+bigger granularity fixed-function&nbsp;
+piece of logic, maybe the taxes we&nbsp;&nbsp;
+
+00:26:27.280 --> 00:26:30.400
+pay on the input and output are much smaller.
+Interesting. It sounds like you're suggesting&nbsp;&nbsp;
+
+00:26:30.400 --> 00:26:41.520
+that if you go up one step in the matrix&nbsp;
+multiply loop, you can tilt the balance&nbsp;&nbsp;
+
+00:26:41.520 --> 00:26:46.080
+more towards compute than communication.
+That's right. There are two effects we're&nbsp;&nbsp;
+
+00:26:46.080 --> 00:26:49.280
+going to take advantage of here.
+One is that we can do more stuff&nbsp;&nbsp;
+
+00:26:49.840 --> 00:26:58.640
+per every trip through our register file.
+The other is that in some of this loop, we can&nbsp;&nbsp;
+
+00:26:58.640 --> 00:27:07.040
+take advantage of certain things staying fixed.
+Visually, we're going to look at this&nbsp;&nbsp;
+
+00:27:07.040 --> 00:27:09.840
+matrix multiplication.
+This portion of the loop&nbsp;&nbsp;
+
+00:27:09.840 --> 00:27:20.240
+corresponds to a matrix-vector multiplication.
+We'll take a matrix and multiply it by a vector.&nbsp;
+
+00:27:21.600 --> 00:27:23.760
+How do we do this?
+Every column gets&nbsp;&nbsp;
+
+00:27:23.760 --> 00:27:27.840
+multiplied by the vector and then summed.
+We're going to sum along columns.&nbsp;
+
+00:27:28.560 --> 00:27:32.960
+This 0 and 3 gets multiplied by the 3 and&nbsp;
+7 and gets summed, and then the 1 and 2&nbsp;&nbsp;
+
+00:27:32.960 --> 00:27:38.880
+gets multiplied by the 3 and 7 and gets summed.
+There is a multiply-accumulate associated with&nbsp;&nbsp;
+
+00:27:38.880 --> 00:27:47.200
+every single one of these entries in the matrix.
+We'll draw out these four multiply-accumulates.&nbsp;
+
+00:27:53.840 --> 00:28:01.600
+Just to make sure I understand why there are&nbsp;
+four multiply-accumulates: each entry in the&nbsp;&nbsp;
+
+00:28:01.600 --> 00:28:09.360
+column that corresponds to the output&nbsp;
+vector is a dot product, and in this&nbsp;&nbsp;
+
+00:28:09.360 --> 00:28:16.240
+case it will be two multiplications and then&nbsp;
+the addition of those two multiplications.&nbsp;
+
+00:28:16.240 --> 00:28:20.240
+You're accumulating...
+Really there's only one addition per&nbsp;&nbsp;
+
+00:28:20.240 --> 00:28:23.760
+dot product, but we like to start with zero.
+But it includes the initialization of zero.&nbsp;
+
+00:28:23.760 --> 00:28:30.240
+Yeah. We want to have quadratically more compute.&nbsp;
+
+00:28:30.240 --> 00:28:39.120
+We have x times y as much&nbsp;
+compute as we had before.&nbsp;
+
+00:28:41.360 --> 00:28:50.800
+But we want to aim for having only&nbsp;
+x times as much communication.&nbsp;
+
+00:28:52.000 --> 00:28:57.600
+The intention is to get this&nbsp;
+advantage term going as y.&nbsp;
+
+00:28:57.600 --> 00:29:06.080
+We've laid down the multiplications.
+We want to bring in a vector of size two, and&nbsp;&nbsp;
+
+00:29:06.080 --> 00:29:11.920
+that is already in line with our columns target.
+That's fine. However, we need to manage the&nbsp;&nbsp;
+
+00:29:11.920 --> 00:29:16.640
+communication of this matrix,&nbsp;
+which exceeds our budget of x.&nbsp;
+
+00:29:18.480 --> 00:29:26.080
+The idea is that in an AI context, this matrix&nbsp;
+is going to stay fixed for a long period of time.&nbsp;
+
+00:29:29.760 --> 00:29:36.480
+We've got some register files sitting over here.
+The amount of stuff coming out of this register&nbsp;&nbsp;
+
+00:29:36.480 --> 00:29:41.920
+file… this is the term that we&nbsp;
+want to go as x, in some sense.&nbsp;
+
+00:29:43.920 --> 00:29:47.360
+We don't want to bring this full matrix&nbsp;
+in from the register file every cycle,&nbsp;&nbsp;
+
+00:29:47.360 --> 00:29:52.320
+because that would cost too much in&nbsp;
+terms of wiring from the register file.&nbsp;
+
+00:29:55.200 --> 00:30:00.720
+Our key trick is that this matrix can&nbsp;
+be stored locally to the systolic array.&nbsp;
+
+00:30:04.080 --> 00:30:15.280
+We'll store these numbers 0, 1, 2, and 3&nbsp;
+in a gate called a register that physically&nbsp;&nbsp;
+
+00:30:15.280 --> 00:30:19.040
+stores these numbers, and we're going to&nbsp;
+reuse these numbers over and over again&nbsp;&nbsp;
+
+00:30:19.040 --> 00:30:23.840
+for a large number of different vectors.
+The optimization here is that the nature of&nbsp;&nbsp;
+
+00:30:23.840 --> 00:30:35.280
+matrix multiplication is that you can store this&nbsp;
+square quadratic thing directly where the logic is&nbsp;&nbsp;
+
+00:30:35.280 --> 00:30:45.520
+happening, which has an extra dimension compared&nbsp;
+to the inputs that you keep swapping in and out.&nbsp;
+
+00:30:45.520 --> 00:30:46.800
+That’s right.
+This is the nature of&nbsp;&nbsp;
+
+00:30:46.800 --> 00:30:52.080
+what a matrix multiplication is.
+You do a lot of multiplication&nbsp;&nbsp;
+
+00:30:52.080 --> 00:30:55.280
+to get one value out.
+A dot product is the&nbsp;&nbsp;
+
+00:30:55.280 --> 00:30:59.760
+result of a lot of multiplications.
+So that optimization means you can&nbsp;&nbsp;
+
+00:30:59.760 --> 00:31:03.040
+stuff a lot of multiplication in&nbsp;
+before you get some value out of it.&nbsp;
+
+00:31:03.040 --> 00:31:07.280
+That's right. Just to complete the&nbsp;
+picture of concretely how that looks:&nbsp;&nbsp;
+
+00:31:09.360 --> 00:31:17.440
+I swapped the 3 and the 2 here.
+Just like this 0 and 3 is going&nbsp;&nbsp;
+
+00:31:17.440 --> 00:31:25.120
+to multiply by the 3 and the 7, we're going&nbsp;
+to form a dot product along columns here.&nbsp;
+
+00:31:26.480 --> 00:31:35.200
+We're going to feed a 3 and a 7 in here.
+This feeds into this multiplication and also&nbsp;&nbsp;
+
+00:31:35.200 --> 00:31:39.360
+feeds into this multiplication.
+Likewise, the 3 feeds&nbsp;&nbsp;
+
+00:31:39.360 --> 00:31:48.400
+into here and also into here.
+Then we're going to sum along here.&nbsp;
+
+00:31:49.120 --> 00:31:53.680
+Starting at the top of a column, we feed in 0s,&nbsp;
+and then coming out the bottom we get results.&nbsp;
+
+00:31:55.840 --> 00:32:03.120
+Visually, there's a dot product performed along&nbsp;
+columns in a matrix, and that maps exactly to&nbsp;&nbsp;
+
+00:32:03.120 --> 00:32:09.040
+what is done spatially in the systolic array.
+This is one dot product summed vertically,&nbsp;&nbsp;
+
+00:32:09.040 --> 00:32:12.560
+and this is a second dot&nbsp;
+product also summed vertically.&nbsp;
+
+00:32:13.600 --> 00:32:17.040
+What is the data that needs to go&nbsp;
+into and out of the register file?&nbsp;
+
+00:32:17.040 --> 00:32:23.680
+We have x amount of data coming&nbsp;
+out on the output, and we also&nbsp;&nbsp;
+
+00:32:23.680 --> 00:32:33.840
+have x amount of data coming from the input.
+With respect to the input and output vectors&nbsp;&nbsp;
+
+00:32:33.840 --> 00:32:44.720
+at least, we've met our goal of having only x as&nbsp;
+much data going in and out of the register file.&nbsp;
+
+00:32:44.720 --> 00:32:51.120
+This leaves open the question: I said the&nbsp;
+weight matrix is stored locally in the systolic&nbsp;&nbsp;
+
+00:32:51.120 --> 00:32:56.800
+array, so how did it get there in the first place?
+At some point, you need to boot your chip and&nbsp;&nbsp;
+
+00:32:56.800 --> 00:33:02.240
+populate this data, so where did that come from?
+The trick is that we just do it very slowly.&nbsp;
+
+00:33:02.240 --> 00:33:05.760
+We very slowly trickle-feed&nbsp;
+it into the systolic array.&nbsp;
+
+00:33:07.200 --> 00:33:13.280
+The simplest strategy is that we run&nbsp;
+this daisy chain: feed a number in here,&nbsp;&nbsp;
+
+00:33:13.280 --> 00:33:18.000
+and on the next clock cycle it will move&nbsp;
+down to the next entry of the systolic array.&nbsp;
+
+00:33:18.000 --> 00:33:26.320
+We can do that in every column in parallel,&nbsp;
+this is also going to come from here,&nbsp;&nbsp;
+
+00:33:26.320 --> 00:33:32.160
+and that gives us another factor of&nbsp;
+approximately x units of bandwidth coming in.&nbsp;
+
+00:33:32.720 --> 00:33:34.960
+Would you mind repeating&nbsp;
+that sentence one more time?&nbsp;
+
+00:33:36.960 --> 00:33:40.720
+We know that we're going to be bringing&nbsp;
+numbers only rarely into the matrix.&nbsp;
+
+00:33:43.200 --> 00:33:47.520
+We just want to come up with any construction&nbsp;
+at all such that the amount of wiring that&nbsp;&nbsp;
+
+00:33:48.960 --> 00:33:56.720
+crosses the boundary of the systolic&nbsp;
+array is bounded to x and not go as xy.&nbsp;
+
+00:33:56.720 --> 00:34:03.440
+A particularly simple strategy is that&nbsp;
+we bring a number into the top row of&nbsp;&nbsp;
+
+00:34:03.440 --> 00:34:11.840
+the systolic array in one clock cycle.
+Then, for y consecutive clock cycles,&nbsp;&nbsp;
+
+00:34:11.840 --> 00:34:16.800
+we bring in the top row every time and&nbsp;
+shift all the other rows down by one.&nbsp;
+
+00:34:16.800 --> 00:34:22.080
+This keeps the wiring that needs to&nbsp;
+come from this expensive register file&nbsp;&nbsp;
+
+00:34:22.080 --> 00:34:27.360
+only down to a factor of x rather than xy.
+I see. There are two questions in terms&nbsp;&nbsp;
+
+00:34:27.360 --> 00:34:33.280
+of communication: communication&nbsp;
+time and communication bandwidth.&nbsp;
+
+00:34:33.840 --> 00:34:39.280
+You're saying that since we're only going to be&nbsp;
+loading this in once, let's minimize bandwidth,&nbsp;&nbsp;
+
+00:34:39.280 --> 00:34:45.760
+because bandwidth equals die area.
+We load it in slowly over smaller&nbsp;&nbsp;
+
+00:34:45.760 --> 00:34:48.640
+lanes because we're just going to&nbsp;
+keep this value in there for a while.&nbsp;
+
+00:34:48.640 --> 00:34:52.160
+Exactly.
+It's interesting to me that when we were talking&nbsp;&nbsp;
+
+00:34:52.160 --> 00:34:58.240
+last time about inference across many chips, the&nbsp;
+big high-level thing we're trying to optimize for&nbsp;&nbsp;
+
+00:34:58.240 --> 00:35:03.760
+is increasing the amount of compute per memory&nbsp;
+bandwidth, that is to say, per communication.&nbsp;
+
+00:35:03.760 --> 00:35:08.640
+Here also, we're trying to increase&nbsp;
+the amount of actual multiplies&nbsp;&nbsp;
+
+00:35:08.640 --> 00:35:16.400
+or additions relative to transporting&nbsp;
+information from registers to the logic.&nbsp;
+
+00:35:16.400 --> 00:35:19.680
+In both cases, you're trying to maximize&nbsp;
+compute relative to communication.&nbsp;
+
+00:35:20.480 --> 00:35:27.840
+This shows up all the way up and down the stack.
+This is close to the bottom, to the gates.&nbsp;
+
+00:35:28.400 --> 00:35:34.640
+There's a version that's maybe even closer&nbsp;
+to the gates in the precision of the number&nbsp;&nbsp;
+
+00:35:34.640 --> 00:35:39.040
+format that you choose to use.
+We saw that same effect.&nbsp;
+
+00:35:39.040 --> 00:35:47.280
+There's a squared versus linear term going&nbsp;
+on both purely in the precision of the ALU,&nbsp;&nbsp;
+
+00:35:47.280 --> 00:35:55.440
+but also in the size of the matrix.
+This unit is the next bigger unit.&nbsp;
+
+00:35:55.440 --> 00:36:01.840
+We had the multiplication circuit, and on top&nbsp;
+of that we have a pretty large systolic array.&nbsp;
+
+00:36:01.840 --> 00:36:11.040
+I drew it as 2x2, but older TPUs were described&nbsp;
+as 128x128 of this circuit shown here.&nbsp;
+
+00:36:12.240 --> 00:36:20.400
+This ends up being the most efficient known&nbsp;
+circuit for implementing a matrix multiply.&nbsp;
+
+00:36:21.360 --> 00:36:26.080
+We've talked about how it seems&nbsp;
+obvious that you should try to&nbsp;&nbsp;
+
+00:36:26.080 --> 00:36:31.120
+maximize compute relative to communication.
+What are non-obvious trade-offs that&nbsp;&nbsp;
+
+00:36:35.040 --> 00:36:39.520
+keep you up at night, about whether you should do&nbsp;
+X or Y and it's not obvious what the answer is?&nbsp;
+
+00:36:41.360 --> 00:36:46.800
+Most of the decisions in chip&nbsp;
+design are sizing decisions.&nbsp;
+
+00:36:48.640 --> 00:36:56.560
+Already in what we've drawn so far… AI&nbsp;
+chips all have this circuit in them.&nbsp;
+
+00:36:56.560 --> 00:37:02.240
+They have a systolic array, and somewhere near&nbsp;
+it a register file providing inputs and outputs.&nbsp;
+
+00:37:06.400 --> 00:37:11.120
+Even within this scope, the sizing questions you&nbsp;
+have are: how big should I make my systolic array,&nbsp;&nbsp;
+
+00:37:11.120 --> 00:37:23.200
+and how big should I make the register file?
+These two questions are coupled.&nbsp;
+
+00:37:25.280 --> 00:37:32.800
+One way to think of it is to set a&nbsp;
+budget for what percentage of chip&nbsp;&nbsp;
+
+00:37:32.800 --> 00:37:36.960
+area you want to spend on data movement.
+Maybe I say that I want this to be 10%&nbsp;&nbsp;
+
+00:37:36.960 --> 00:37:42.640
+and the systolic array to be 90%.
+Then I can size my register file.&nbsp;
+
+00:37:42.640 --> 00:37:47.520
+Bigger register files are more flexible.
+They allow me to get more application-level&nbsp;&nbsp;
+
+00:37:47.520 --> 00:37:54.160
+performance out, but they take away from&nbsp;
+the area spent on the systolic array.&nbsp;
+
+00:37:55.040 --> 00:37:59.520
+I recently ran an essay contest where I asked&nbsp;
+people to write about what I consider to be some&nbsp;&nbsp;
+
+00:37:59.520 --> 00:38:03.040
+of the biggest open questions about AI.
+The submission window closed last week,&nbsp;&nbsp;
+
+00:38:03.040 --> 00:38:07.680
+so I used Cursor to create a couple of different&nbsp;
+interfaces to help me review the entries.&nbsp;
+
+00:38:07.680 --> 00:38:10.800
+One interface anonymizes submissions&nbsp;
+and hides the necessary information.&nbsp;
+
+00:38:10.800 --> 00:38:14.640
+It lets me group responses by question,&nbsp;
+add notes, and record my scores.&nbsp;
+
+00:38:14.640 --> 00:38:17.760
+The other interface helps me review&nbsp;
+entrants who also want to be considered&nbsp;&nbsp;
+
+00:38:17.760 --> 00:38:21.920
+for the researcher role that I'm hiring for.
+The UI puts the applicant's essay right next&nbsp;&nbsp;
+
+00:38:21.920 --> 00:38:25.680
+to their resume and their personal website&nbsp;
+so that I can see everything at once.&nbsp;
+
+00:38:25.680 --> 00:38:29.600
+Cursor's harness is really good at helping&nbsp;
+these models see and improve their UIs.&nbsp;
+
+00:38:29.600 --> 00:38:33.840
+I watched it render these interfaces in&nbsp;
+the built-in browser, take screenshots,&nbsp;&nbsp;
+
+00:38:33.840 --> 00:38:36.800
+click through sections, and keep iterating.
+At this point,&nbsp;&nbsp;
+
+00:38:36.800 --> 00:38:40.320
+Cursor is where I do most of my work.
+Whether I'm reading and visualizing a bunch&nbsp;&nbsp;
+
+00:38:40.320 --> 00:38:45.360
+of research papers, or coding up an interface to&nbsp;
+review applications, or making flashcards for my&nbsp;&nbsp;
+
+00:38:45.360 --> 00:38:50.480
+blackboard lectures, Cursor just makes it very&nbsp;
+easy for an AI to look at whatever I'm looking at&nbsp;&nbsp;
+
+00:38:50.480 --> 00:38:54.720
+and help me understand it and work with me on it.
+So whatever you're working on,&nbsp;&nbsp;
+
+00:38:54.720 --> 00:39:00.720
+you should do it in Cursor.
+Go to cursor.com/dwarkesh.&nbsp;
+
+00:39:00.720 --> 00:39:08.000
+Where does the clock cycle of a chip come in?
+What determines what that is?&nbsp;
+
+00:39:08.000 --> 00:39:12.480
+And what is a clock cycle of a chip?
+At baseline, it's worth observing&nbsp;&nbsp;
+
+00:39:12.480 --> 00:39:16.880
+that chips are incredibly parallel.
+You've got 100 billion transistors in a chip.&nbsp;
+
+00:39:16.880 --> 00:39:21.200
+A key thing you need to do whenever you&nbsp;
+have massive parallelism is synchronize&nbsp;&nbsp;
+
+00:39:21.200 --> 00:39:27.360
+between the different parallel units.
+In software, typically you have these very&nbsp;&nbsp;
+
+00:39:27.360 --> 00:39:31.520
+expensive synchronization methods like a mutex.
+One thread will finish what it's doing,&nbsp;&nbsp;
+
+00:39:34.560 --> 00:39:38.640
+grab a lock stored somewhere in memory,&nbsp;
+and notify the other thread that it's done.&nbsp;
+
+00:39:39.600 --> 00:39:50.080
+On chips, we take a very different approach.
+Every nanosecond or so, all circuitry in the chip&nbsp;&nbsp;
+
+00:39:50.080 --> 00:39:57.360
+will pause for a moment and synchronize.
+That is the clock cycle.&nbsp;
+
+00:39:58.240 --> 00:40:06.000
+The entire chip typically goes in lockstep&nbsp;
+to the next operation in one fell swoop.&nbsp;
+
+00:40:06.000 --> 00:40:17.840
+What this looks like in circuitry is that&nbsp;
+the clock is mediated by registers, which&nbsp;&nbsp;
+
+00:40:17.840 --> 00:40:23.840
+are these storage devices we've drawn elsewhere.
+The way to think of it is: I have some storage&nbsp;&nbsp;
+
+00:40:24.400 --> 00:40:29.280
+holding a bit, which might be 0 or 1.
+Then I have some cloud of logic,&nbsp;&nbsp;
+
+00:40:29.280 --> 00:40:42.480
+which maybe is this systolic array or multiplier.
+I have a bunch of inputs feeding into this cloud&nbsp;&nbsp;
+
+00:40:42.480 --> 00:40:48.640
+of logic, and eventually there's going to&nbsp;
+be some output register that it writes to.&nbsp;
+
+00:40:48.640 --> 00:40:55.040
+There is a global clock signal&nbsp;
+driving all these registers.&nbsp;
+
+00:40:57.120 --> 00:41:05.120
+At a certain instance in time, when the clock&nbsp;
+strikes, whatever value happens to be on that&nbsp;&nbsp;
+
+00:41:05.120 --> 00:41:15.280
+wire at that instant is what gets stored.
+The challenge is that I would like to have&nbsp;&nbsp;
+
+00:41:15.280 --> 00:41:19.680
+my clock speed run as fast as possible.
+If I run at two gigahertz, I get twice as&nbsp;&nbsp;
+
+00:41:19.680 --> 00:41:23.760
+many operations done per second&nbsp;
+as if I run at one gigahertz.&nbsp;
+
+00:41:24.960 --> 00:41:30.400
+But what that ends up meaning is that I'm very&nbsp;
+sensitive to the delay through this cloud of&nbsp;&nbsp;
+
+00:41:30.400 --> 00:41:37.280
+logic, because any computation happening in there&nbsp;
+needs to finish before the next clock cycle hits.&nbsp;
+
+00:41:40.880 --> 00:41:53.200
+A major point of optimization on any chip&nbsp;
+is to make this delay as short as possible.&nbsp;
+
+00:41:53.200 --> 00:42:02.800
+Interesting. The constraint here seems&nbsp;
+to be that if you add too much logic,&nbsp;&nbsp;
+
+00:42:02.800 --> 00:42:07.760
+you might risk missing the clock cycle.
+But if you don't add enough, you're&nbsp;&nbsp;
+
+00:42:07.760 --> 00:42:15.840
+leaving potential compute on the table.
+Is there ever a situation where you take&nbsp;&nbsp;
+
+00:42:15.840 --> 00:42:23.440
+a probabilistic chance that a computation&nbsp;
+finishes, or is it strictly that it either&nbsp;&nbsp;
+
+00:42:23.440 --> 00:42:28.720
+finishes by the clock cycle or it doesn't?
+In standard chip design, you margin it such&nbsp;&nbsp;
+
+00:42:28.720 --> 00:42:34.640
+that there is a probability, but&nbsp;
+it's many standard deviations out.&nbsp;
+
+00:42:34.640 --> 00:42:38.880
+For all intents and purposes, it is a&nbsp;
+reliable part and will always meet the clock.&nbsp;
+
+00:42:40.720 --> 00:42:45.760
+There are some weird exceptions, like clock domain&nbsp;
+crossings where you go from one clock to another.&nbsp;
+
+00:42:45.760 --> 00:42:47.600
+Then you actually do have to&nbsp;
+reason about this probability.&nbsp;
+
+00:42:47.600 --> 00:42:55.760
+But in the main path, you margin it such that&nbsp;
+you'll get there 25% of the clock cycle in&nbsp;&nbsp;
+
+00:42:55.760 --> 00:43:07.520
+advance, making it very unlikely that it misses.
+Where the clocks synchronize, where the&nbsp;&nbsp;
+
+00:43:07.520 --> 00:43:11.360
+registers are, is this something&nbsp;
+you determine as a chip designer?&nbsp;
+
+00:43:11.360 --> 00:43:18.960
+Or is it an artifact where you want a certain&nbsp;
+sequence of logic, and the software you use to&nbsp;&nbsp;
+
+00:43:18.960 --> 00:43:25.120
+convert your Verilog into what you send to&nbsp;
+TSMC just determines that to make it work,&nbsp;&nbsp;
+
+00:43:25.120 --> 00:43:33.440
+you have to put a register here, here, and&nbsp;
+here, making sure no single step makes the&nbsp;&nbsp;
+
+00:43:33.440 --> 00:43:38.240
+whole chip's clock cycle longer than it has to be?
+Inserting them is actually a huge part of the&nbsp;&nbsp;
+
+00:43:38.240 --> 00:43:42.560
+work of designing a chip.
+It's done by a combination&nbsp;&nbsp;
+
+00:43:42.560 --> 00:43:48.960
+of manual and automatic methods.
+To show the very dumb version of&nbsp;&nbsp;
+
+00:43:48.960 --> 00:43:52.080
+what you can do here, you can take&nbsp;
+this logic and split it in half.&nbsp;
+
+00:43:53.680 --> 00:44:02.400
+Instead of just one cloud of logic, I can have two&nbsp;
+smaller clouds of logic that do the same thing,&nbsp;&nbsp;
+
+00:44:02.400 --> 00:44:13.120
+but split them up by a register.
+If you split it in the middle,&nbsp;&nbsp;
+
+00:44:13.120 --> 00:44:17.120
+you can hit twice the clock frequency.
+That's great, you get twice the performance,&nbsp;&nbsp;
+
+00:44:17.120 --> 00:44:22.080
+but at the cost of an extra&nbsp;
+register, which means more storage.&nbsp;
+
+00:44:22.080 --> 00:44:24.560
+Stepping back, why do we need&nbsp;
+to synchronize the whole chip?&nbsp;
+
+00:44:25.360 --> 00:44:28.949
+If you imagine playing Factorio or&nbsp;
+something, there's no global clock cycle.&nbsp;
+
+00:44:28.949 --> 00:44:31.760
+Things are just done when they're done.
+There's iron on the plate, and you can&nbsp;&nbsp;
+
+00:44:31.760 --> 00:44:36.640
+take it if you want.
+Taking that analogy,&nbsp;&nbsp;
+
+00:44:36.640 --> 00:44:41.840
+the thing you need to be mindful of is if I&nbsp;
+have two different paths through some logic.&nbsp;
+
+00:44:41.840 --> 00:44:47.520
+Say I have to do computation&nbsp;
+f here and computation g here,&nbsp;&nbsp;
+
+00:44:47.520 --> 00:44:58.400
+and they're going to meet for computation h.
+There's going to be manufacturing variance.&nbsp;
+
+00:44:59.440 --> 00:45:03.920
+In some chips f will take a little longer;&nbsp;
+in some chips g will take a little longer.&nbsp;
+
+00:45:03.920 --> 00:45:10.640
+If I have a signal propagating through, and&nbsp;
+the results from f and g have to meet up at h,&nbsp;&nbsp;
+
+00:45:12.400 --> 00:45:16.640
+what can go wrong is that f gets&nbsp;
+there early and it meets the previous&nbsp;&nbsp;
+
+00:45:16.640 --> 00:45:20.640
+value of g, or the next value of g.
+Ah. And h needs to know when to start,&nbsp;&nbsp;
+
+00:45:21.440 --> 00:45:24.320
+when the next iteration has…
+Exactly.&nbsp;
+
+00:45:24.320 --> 00:45:30.240
+This explains why different chips made&nbsp;
+at the same process node, the same TSMC&nbsp;&nbsp;
+
+00:45:32.080 --> 00:45:38.480
+technology, can have different clock cycles.
+Two chips made at 3 nm might have different clock&nbsp;&nbsp;
+
+00:45:38.480 --> 00:45:47.520
+cycles based on whether they were able to optimize&nbsp;
+to ensure no single critical path is so long that&nbsp;&nbsp;
+
+00:45:48.800 --> 00:45:53.600
+it slows down the whole chip's clock cycle.
+That's right. This optimization I showed here&nbsp;&nbsp;
+
+00:45:53.600 --> 00:45:59.040
+is called pipeline register insertion.
+We've inserted a register in the&nbsp;&nbsp;
+
+00:45:59.040 --> 00:46:02.400
+middle of the pipeline.
+This is a pure trade-off&nbsp;&nbsp;
+
+00:46:02.400 --> 00:46:08.000
+between clock speed and area.
+That is the easy case.&nbsp;
+
+00:46:08.000 --> 00:46:14.320
+There is a harder case too.
+I drew out a pipeline of logic,&nbsp;&nbsp;
+
+00:46:14.320 --> 00:46:21.360
+but in other cases you may have some calculation&nbsp;
+which actually feeds back in on itself.&nbsp;
+
+00:46:22.240 --> 00:46:26.320
+It runs some function f and&nbsp;
+then writes back to itself.&nbsp;
+
+00:46:27.760 --> 00:46:42.400
+For example, this might be an addition where&nbsp;
+you're adding a number every clock cycle.&nbsp;
+
+00:46:43.200 --> 00:46:49.920
+This little circuit essentially sums all the&nbsp;
+numbers presented on different clock cycles.&nbsp;
+
+00:46:49.920 --> 00:46:54.320
+The challenge is, if this plus&nbsp;
+takes too long, what can I do?&nbsp;
+
+00:46:54.320 --> 00:47:02.160
+If I try to put a pipeline register&nbsp;
+right in the middle of it, it&nbsp;&nbsp;
+
+00:47:05.600 --> 00:47:08.800
+changes the computation that's done.
+Instead of forming a running sum&nbsp;&nbsp;
+
+00:47:08.800 --> 00:47:12.880
+of everything that comes in, I will&nbsp;
+actually have two different running sums.&nbsp;
+
+00:47:12.880 --> 00:47:17.760
+I'll end up with a running sum of the even&nbsp;
+numbers and a running sum of the odd numbers.&nbsp;
+
+00:47:18.640 --> 00:47:25.760
+This constraint—where I have a loop in my logic,&nbsp;
+which all chips have somewhere—is the hardest&nbsp;&nbsp;
+
+00:47:25.760 --> 00:47:29.280
+thing to address and sets the clock cycle.
+I don't understand why it would be&nbsp;&nbsp;
+
+00:47:29.280 --> 00:47:30.960
+a problem to have that.
+I'm not even sure what it&nbsp;&nbsp;
+
+00:47:30.960 --> 00:47:36.000
+would mean to have a register there.
+Is it a sort of atomic operation?&nbsp;
+
+00:47:36.560 --> 00:47:41.040
+Well, plus is not really atomic.
+As you just demonstrated.&nbsp;
+
+00:47:41.040 --> 00:47:45.200
+It took a whole lot of work to do a summation.
+You can take the early parts of that work,&nbsp;&nbsp;
+
+00:47:45.840 --> 00:47:48.320
+stick a register in the middle, and&nbsp;
+then take the late parts of that work.&nbsp;
+
+00:47:48.320 --> 00:47:57.040
+Okay. TSMC offers a PDK which&nbsp;
+specifies the primitives of&nbsp;&nbsp;
+
+00:47:58.400 --> 00:48:03.920
+logic they can grant you in the chip.
+It's up to them to determine that no&nbsp;&nbsp;
+
+00:48:03.920 --> 00:48:10.240
+primitive is bigger than the clock cycle&nbsp;
+they're hoping a process node targets.&nbsp;
+
+00:48:10.240 --> 00:48:19.280
+But other than that, can't you just take&nbsp;
+all the primitives from TSMC and keep adding&nbsp;&nbsp;
+
+00:48:19.280 --> 00:48:24.160
+registers between them as much as needed&nbsp;
+until you get to your desired clock cycle?&nbsp;
+
+00:48:24.160 --> 00:48:27.520
+As a logic designer, the chip&nbsp;
+architect sets the clock cycle.&nbsp;
+
+00:48:28.240 --> 00:48:35.600
+For example, the primitives you get from TSMC&nbsp;
+are on the order of AND gates or full adders.&nbsp;
+
+00:48:36.800 --> 00:48:46.720
+It depends a lot on voltage and which library you&nbsp;
+choose, but generally you can have about 10, 20,&nbsp;&nbsp;
+
+00:48:46.720 --> 00:48:51.760
+or 30 of these sequentially in a clock cycle.
+These primitives are very fast,&nbsp;&nbsp;
+
+00:48:51.760 --> 00:48:57.840
+maybe 10 picoseconds.
+As a logic designer, in principle,&nbsp;&nbsp;
+
+00:48:57.840 --> 00:49:07.200
+if you just had a register and an AND gate in a&nbsp;
+loop, you could get an insanely fast clock speed,&nbsp;&nbsp;
+
+00:49:07.200 --> 00:49:16.720
+more than four, five, or six gigahertz.
+But if you take this really simple circuit&nbsp;&nbsp;
+
+00:49:16.720 --> 00:49:23.920
+and look at the area you're spending&nbsp;
+here… This is called one gate equivalent&nbsp;&nbsp;
+
+00:49:23.920 --> 00:49:28.400
+in size, so unit of one in area.
+This thing is maybe a unit of eight in area.&nbsp;
+
+00:49:31.520 --> 00:49:34.400
+Again, almost all your cost&nbsp;
+becomes synchronization or&nbsp;&nbsp;
+
+00:49:34.400 --> 00:49:40.800
+communication cost compared to the actual logic.
+This would be a case where you've gone too far.&nbsp;
+
+00:49:40.800 --> 00:49:43.840
+You've made your clock speed really&nbsp;
+fast at the cost of spending almost&nbsp;&nbsp;
+
+00:49:43.840 --> 00:49:50.480
+all of your area on pipeline registers.
+Interesting. So you're hinting at a dynamic&nbsp;&nbsp;
+
+00:49:50.480 --> 00:49:54.720
+where you can have a really fast clock speed&nbsp;
+but you're not getting that much work done.&nbsp;
+
+00:49:56.480 --> 00:50:04.560
+You can have low latency but low throughput.
+It hurts your throughput, in fact, because&nbsp;&nbsp;
+
+00:50:05.760 --> 00:50:11.680
+the throughput of your chip is the product of&nbsp;
+how much you get done per clock cycle—which&nbsp;&nbsp;
+
+00:50:11.680 --> 00:50:15.440
+is based on area efficiency—times&nbsp;
+how many clocks you get per second.&nbsp;
+
+00:50:15.440 --> 00:50:20.720
+This is actually so similar to the thing we&nbsp;
+were discussing last time about batch size,&nbsp;&nbsp;
+
+00:50:21.680 --> 00:50:28.960
+where if you have a low batch size, any one&nbsp;
+user can receive their next token really fast,&nbsp;&nbsp;
+
+00:50:28.960 --> 00:50:34.800
+but the total number of tokens processed in, say,&nbsp;
+an hour will be lower than it could otherwise be.&nbsp;
+
+00:50:34.800 --> 00:50:39.280
+Exactly. You get less parallelism out if&nbsp;
+you drive your clock speed up really high.&nbsp;
+
+00:50:39.280 --> 00:50:42.640
+Language models are starting to compete&nbsp;
+against the best human forecasters.&nbsp;
+
+00:50:42.640 --> 00:50:48.240
+I sat down with two senior Jane Streeters, Ron&nbsp;
+Minsky and Dan Pontecorvo, and asked: at some&nbsp;&nbsp;
+
+00:50:48.240 --> 00:50:52.160
+point, does AI just do what Jane Street does?
+There's a world that we should take seriously&nbsp;&nbsp;
+
+00:50:52.160 --> 00:50:56.720
+where, you know, we're going to build large&nbsp;
+language models or some other AI systems that&nbsp;&nbsp;
+
+00:50:56.720 --> 00:51:02.240
+are like strictly smarter than all humans on the&nbsp;
+planet and more capable at all cognitive tasks.&nbsp;
+
+00:51:02.240 --> 00:51:08.160
+Trading in particular feels to me as like kind&nbsp;
+of AGI complete, sort of like NP complete,&nbsp;&nbsp;
+
+00:51:08.160 --> 00:51:15.120
+because at the end of the day trading involves&nbsp;
+figuring out what things are worth, which means&nbsp;&nbsp;
+
+00:51:15.120 --> 00:51:18.480
+making predictions about the future.
+Jane Street isn't betting against AI.&nbsp;
+
+00:51:18.480 --> 00:51:20.560
+They just signed a six&nbsp;
+billion dollar compute deal.&nbsp;
+
+00:51:20.560 --> 00:51:25.360
+But Ron's view is that the edge keeps moving.
+I have never been more desperate to hire more&nbsp;&nbsp;
+
+00:51:25.360 --> 00:51:29.040
+engineers and more traders than I am today.
+You know, you have the usual thing of like&nbsp;&nbsp;
+
+00:51:29.040 --> 00:51:31.440
+the other hard parts that we&nbsp;
+don't yet know how to automate.&nbsp;
+
+00:51:31.440 --> 00:51:34.160
+Well, that ends up being where&nbsp;
+the competitive edge lies.&nbsp;
+
+00:51:34.160 --> 00:51:41.360
+You can find these open positions and watch&nbsp;
+the full interview at janestreet.com/dwarkesh.&nbsp;
+
+00:51:41.360 --> 00:51:48.400
+I remember talking to an FPGA engineer at&nbsp;
+Jane Street, Clark, who helped me prep for&nbsp;&nbsp;
+
+00:51:48.400 --> 00:51:52.640
+the previous interview we did together.
+He was explaining why they use FPGAs.&nbsp;
+
+00:51:55.200 --> 00:52:01.280
+I imagine that for high-frequency trading,&nbsp;
+throughput is less important than latency,&nbsp;&nbsp;
+
+00:52:01.280 --> 00:52:03.360
+so having very specific control over the clock&nbsp;&nbsp;
+
+00:52:03.360 --> 00:52:06.480
+cycle in a deterministic way&nbsp;
+is the most important thing.&nbsp;
+
+00:52:08.000 --> 00:52:14.240
+Maybe it'd be interesting to talk about why&nbsp;
+you can't just achieve that with an ASIC,&nbsp;&nbsp;
+
+00:52:14.240 --> 00:52:23.680
+or why you might use an FPGA to have deterministic&nbsp;
+clock cycles for high-frequency trading.&nbsp;
+
+00:52:25.920 --> 00:52:28.960
+Let's consider the business&nbsp;
+case for an FPGA versus an ASIC.&nbsp;
+
+00:52:31.200 --> 00:52:36.960
+FPGAs and ASICs use largely&nbsp;
+the same conceptual model.&nbsp;
+
+00:52:36.960 --> 00:52:48.000
+You have a series of gates built from small&nbsp;
+primitives—ANDs, ORs, XORs—connected together&nbsp;&nbsp;
+
+00:52:48.000 --> 00:52:53.120
+with wires running in a fixed clock cycle.
+Anything you can express in an FPGA you&nbsp;&nbsp;
+
+00:52:53.120 --> 00:52:55.600
+can express in an ASIC too.
+It will be about an order of&nbsp;&nbsp;
+
+00:52:55.600 --> 00:53:01.120
+magnitude cheaper and have better energy&nbsp;
+efficiency on an ASIC than an FPGA.&nbsp;
+
+00:53:01.760 --> 00:53:08.640
+The trade-off is that the first FPGA costs you&nbsp;
+$10,000, whereas the first ASIC you make costs $30&nbsp;&nbsp;
+
+00:53:08.640 --> 00:53:16.240
+million because it requires an entire tape-out.
+The business use case for an FPGA is when you want&nbsp;&nbsp;
+
+00:53:16.240 --> 00:53:21.760
+something that has very deterministic&nbsp;
+latency, fast runtime, and high parallelism,&nbsp;&nbsp;
+
+00:53:25.680 --> 00:53:29.760
+but you are going to change the&nbsp;
+workload frequently, maybe every month.&nbsp;
+
+00:53:29.760 --> 00:53:34.240
+You don't want to pay that&nbsp;
+tape-out cost every time.&nbsp;
+
+00:53:34.240 --> 00:53:42.320
+How does an FPGA actually emulate the ASIC&nbsp;
+programming model in a fixed piece of hardware?&nbsp;
+
+00:53:42.320 --> 00:53:54.480
+At its core, it has the two&nbsp;
+components we just talked about.&nbsp;
+
+00:53:54.480 --> 00:54:03.200
+It has registers as storage&nbsp;
+devices, and it has lookup tables&nbsp;&nbsp;
+
+00:54:03.200 --> 00:54:11.200
+(LUTs) which provide all of the gates.
+Then there's a third component.&nbsp;
+
+00:54:11.200 --> 00:54:30.880
+We have a swarm of these registers and LUTs,&nbsp;
+and they are connected by a big set of muxes.&nbsp;
+
+00:54:30.880 --> 00:54:39.520
+In front of every single one of these, we have a&nbsp;
+mux which selects an input from everywhere else.&nbsp;
+
+00:54:44.240 --> 00:54:51.040
+We have a whole bunch of different&nbsp;
+options feeding into all of these things.&nbsp;
+
+00:54:54.320 --> 00:55:01.200
+What this allows is essentially that when&nbsp;
+I program my FPGA, I can take all of these&nbsp;&nbsp;
+
+00:55:01.200 --> 00:55:10.080
+components and superimpose a particular wiring&nbsp;
+which goes through this LUT, feed it into another&nbsp;&nbsp;
+
+00:55:10.080 --> 00:55:14.720
+LUT, send it to this register, and then feed&nbsp;
+it into another LUT, or something like that.&nbsp;
+
+00:55:16.080 --> 00:55:22.560
+What I've drawn in orange is how you…&nbsp;
+FPGA means Field-Programmable Gate Array.&nbsp;
+
+00:55:22.560 --> 00:55:26.080
+The orange is what has been programmed in&nbsp;
+the field, whereas the white is all the&nbsp;&nbsp;
+
+00:55:26.080 --> 00:55:30.560
+wires that must exist in the FPGA in order to&nbsp;
+actually make the device in the first place.&nbsp;
+
+00:55:30.560 --> 00:55:34.800
+What does it mean to be programmed in the field?
+Programmed in the field means the device is&nbsp;&nbsp;
+
+00:55:34.800 --> 00:55:36.560
+being deployed in a data center.
+It's sitting out in the world,&nbsp;&nbsp;
+
+00:55:36.560 --> 00:55:39.680
+and then you can come and program it.
+Ah, not field as in like electric field.&nbsp;
+
+00:55:39.680 --> 00:55:48.800
+Field as in like out there in the world, ok.
+If I look at how the field programming comes&nbsp;&nbsp;
+
+00:55:48.800 --> 00:55:56.960
+out of the first lookup table and goes&nbsp;
+into a second one, how does that work?&nbsp;
+
+00:55:57.680 --> 00:56:03.040
+Where are the wires that make that happen?
+I got a little bit lazy in drawing all of these.&nbsp;
+
+00:56:03.040 --> 00:56:11.120
+Every single device here has a mux sitting in&nbsp;
+front of it, which can select from all of the&nbsp;&nbsp;
+
+00:56:11.120 --> 00:56:19.760
+nearby circuits that are available.
+The actual configuration of the&nbsp;&nbsp;
+
+00:56:19.760 --> 00:56:28.240
+FPGA amounts to the mux control.
+In this mux, we have the data inputs,&nbsp;&nbsp;
+
+00:56:28.240 --> 00:56:34.320
+and we have the control that selects.
+There's a little storage device sitting next&nbsp;&nbsp;
+
+00:56:34.320 --> 00:56:42.080
+to every single one of these muxes saying, "This&nbsp;
+is where you're going to source your input from."&nbsp;
+
+00:56:43.920 --> 00:56:47.600
+Programming it consists of configuring&nbsp;
+every single one of these muxes.&nbsp;
+
+00:56:47.600 --> 00:56:49.840
+That makes sense. What is happening&nbsp;
+inside of the lookup table?&nbsp;
+
+00:56:51.840 --> 00:56:56.160
+The lookup table is also going to have a&nbsp;
+little bit of control telling it what to do.&nbsp;
+
+00:56:56.160 --> 00:57:03.360
+Its purpose is to configurably&nbsp;
+take the role of an AND gate,&nbsp;&nbsp;
+
+00:57:03.360 --> 00:57:09.520
+OR gate, XOR, or any of those different things.
+There are many ways you could consider doing that.&nbsp;
+
+00:57:10.880 --> 00:57:25.920
+The way it's done in traditional&nbsp;
+FPGAs… A lookup table has four bits&nbsp;&nbsp;
+
+00:57:25.920 --> 00:57:31.440
+of input and one bit of output.
+How many different functions are&nbsp;&nbsp;
+
+00:57:31.440 --> 00:57:34.880
+there from four bits to one bit?
+There are 16 different functions.&nbsp;
+
+00:57:37.200 --> 00:57:49.280
+You can tabulate this as 16 different numbers.
+You've got a table of 0111001, 16 entries.&nbsp;
+
+00:57:52.080 --> 00:57:55.520
+This table is stored in&nbsp;
+this blue configuration bit.&nbsp;
+
+00:58:00.000 --> 00:58:08.080
+It views these four bits as binary, looks up the&nbsp;
+relevant row of the table, and emits that bit.&nbsp;
+
+00:58:08.080 --> 00:58:10.640
+This is essentially a truth-table&nbsp;
+view of lookup tables.&nbsp;
+
+00:58:11.360 --> 00:58:18.640
+Okay, so if you think about an AND gate, OR gate,&nbsp;
+NOR gate, XOR gate, these all take as input…&nbsp;
+
+00:58:18.640 --> 00:58:25.200
+Those are two-input functions. Sometimes we have&nbsp;
+a three-input function, like a three-way XOR,&nbsp;&nbsp;
+
+00:58:25.200 --> 00:58:27.440
+or a four-way XOR.
+In this case,&nbsp;&nbsp;
+
+00:58:27.440 --> 00:58:32.880
+does it just depend on how big it is?
+The typical size for LUTs is four inputs.&nbsp;
+
+00:58:32.880 --> 00:58:37.840
+It's sort of just a sweet spot.
+There’s another compute vs. communication&nbsp;&nbsp;
+
+00:58:37.840 --> 00:58:39.840
+trade-off here.
+If it has too&nbsp;&nbsp;
+
+00:58:39.840 --> 00:58:45.760
+few inputs, you need to use more LUTs.
+Basically the lookup table is a truth table.&nbsp;
+
+00:58:47.440 --> 00:58:49.520
+With a truth table, you can&nbsp;
+program in any gate you want.&nbsp;
+
+00:58:50.800 --> 00:58:53.920
+So instead of a lookup table, you can&nbsp;
+just think of it as a programmable gate.&nbsp;
+
+00:58:53.920 --> 00:58:59.520
+That's right. One of the things you can do&nbsp;
+here is you can see where the rule of thumb&nbsp;&nbsp;
+
+00:58:59.520 --> 00:59:04.000
+that an FPGA is an order of magnitude&nbsp;
+more expensive than an ASIC comes from.&nbsp;
+
+00:59:04.000 --> 00:59:07.440
+You count how many gates would&nbsp;
+be inside this lookup table.&nbsp;
+
+00:59:10.240 --> 00:59:13.600
+We can view this lookup table&nbsp;
+essentially as one of these muxes.&nbsp;
+
+00:59:14.240 --> 00:59:18.800
+It has to select between 16 different values,&nbsp;&nbsp;
+
+00:59:19.920 --> 00:59:37.600
+so it's a mux with n=16 options and p=1 bits.
+As we saw earlier, this circuit&nbsp;&nbsp;
+
+00:59:37.600 --> 00:59:45.360
+costs n times p many gates.
+So it costs np, which is 16,&nbsp;&nbsp;
+
+00:59:45.360 --> 00:59:52.080
+AND gates, and also 16 ORs.
+This circuit being the mux?&nbsp;
+
+00:59:52.080 --> 00:59:55.520
+Exactly, the mux.
+The mux that goes into the lookup table?&nbsp;
+
+00:59:56.240 --> 01:00:02.240
+The lookup table itself you can think of&nbsp;
+as being a big mux that selects from all 16&nbsp;&nbsp;
+
+01:00:02.240 --> 01:00:05.520
+rows down to one output.
+That's the lookup table.&nbsp;
+
+01:00:05.520 --> 01:00:08.720
+But the way you've drawn it here,&nbsp;
+there's a mux and then a lookup table.&nbsp;
+
+01:00:08.720 --> 01:00:12.720
+It's muxes all the way down.
+There is a second mux that is inside here.&nbsp;
+
+01:00:12.720 --> 01:00:18.880
+This mux is this mux.
+And the other mux is just saying…&nbsp;
+
+01:00:18.880 --> 01:00:23.600
+where it came from in this mess of gates.
+Right, and the second mux is, "Okay,&nbsp;&nbsp;
+
+01:00:23.600 --> 01:00:29.840
+now you have one value, but that&nbsp;
+value is still a four-bit value."&nbsp;
+
+01:00:29.840 --> 01:00:35.440
+Yeah, I've selected four bits from the soup.
+Then I use those four bits to select which&nbsp;&nbsp;
+
+01:00:35.440 --> 01:00:45.200
+entry in the lookup table I'm going to use.
+Suppose in the first mux you're pulling&nbsp;&nbsp;
+
+01:00:45.200 --> 01:00:52.080
+from eight nearby registers as input.
+That's a total of 32 bits going in.&nbsp;
+
+01:00:53.440 --> 01:00:58.640
+Out of that, four bits come out.
+Those four bits go into the second mux,&nbsp;&nbsp;
+
+01:00:58.640 --> 01:01:02.720
+which is inside the lookup table.
+In this case, these registers&nbsp;&nbsp;
+
+01:01:02.720 --> 01:01:06.400
+are single-bit registers.
+If there are eight nearby&nbsp;&nbsp;
+
+01:01:06.400 --> 01:01:11.440
+registers and lookup tables, then I&nbsp;
+have eight bits total coming in nearby.&nbsp;
+
+01:01:11.440 --> 01:01:21.760
+I select from eight down to four different values.
+There are actually four different muxes, a little&nbsp;&nbsp;
+
+01:01:21.760 --> 01:01:26.400
+mux associated with each of these input bits.
+Each of them is selecting one out of eight.&nbsp;
+
+01:01:26.400 --> 01:01:30.400
+Where are those eight coming from?
+Nearby registers and other LUTs.&nbsp;
+
+01:01:30.400 --> 01:01:32.320
+Each register is one bit.
+Yes.&nbsp;
+
+01:01:33.360 --> 01:01:40.720
+I guess AMD or whoever makes these FPGAs&nbsp;
+still has to be opinionated about which&nbsp;&nbsp;
+
+01:01:42.000 --> 01:01:47.680
+registers are connected to which registers.
+You can program in the actual gates,&nbsp;&nbsp;
+
+01:01:47.680 --> 01:01:52.080
+but they add a wire in the connect…&nbsp;
+the communication topology, right?&nbsp;
+
+01:01:53.760 --> 01:02:00.000
+You get flexibility at a local grain.
+There's a nearby neighborhood you can select from,&nbsp;&nbsp;
+
+01:02:00.000 --> 01:02:06.160
+but for more coarse, long-distance&nbsp;
+connections, they form an opinion on that.&nbsp;
+
+01:02:06.160 --> 01:02:11.360
+And the reason it's 10x slower is why?
+If you look at the cost of building this&nbsp;&nbsp;
+
+01:02:11.360 --> 01:02:17.120
+lookup table, it's 32 gates.
+It can give me the equivalent&nbsp;&nbsp;
+
+01:02:17.120 --> 01:02:21.280
+of—what’s an interesting thing I&nbsp;
+can do here—a four-way AND gate.&nbsp;
+
+01:02:26.960 --> 01:02:35.440
+A four-way AND means AND, AND,&nbsp;
+and then an AND of an AND.&nbsp;
+
+01:02:36.400 --> 01:02:40.720
+This is a circuit I could implement in&nbsp;
+an ASIC directly using three AND gates.&nbsp;
+
+01:02:41.520 --> 01:02:46.640
+Using a LUT, I can also implement it, but&nbsp;
+it's going to take 32 gates instead of three.&nbsp;
+
+01:02:47.200 --> 01:02:58.560
+So the overhead is really coming from&nbsp;
+the fact that there's a more concise&nbsp;&nbsp;
+
+01:02:58.560 --> 01:03:05.440
+way to describe a truth table than listing out&nbsp;
+every single possible combination of inputs,&nbsp;&nbsp;
+
+01:03:06.400 --> 01:03:11.360
+which is just to write out the gate.
+Yes, to place down the polysilicon&nbsp;&nbsp;
+
+01:03:11.360 --> 01:03:15.120
+and the wires and so on.
+Interesting. One important point you&nbsp;&nbsp;
+
+01:03:15.120 --> 01:03:21.600
+made to me is that the reason they prefer FPGAs to&nbsp;
+CPUs is that they get deterministic clock cycles.&nbsp;
+
+01:03:21.600 --> 01:03:28.720
+They know when a packet will come in and go out.
+Why isn't that a guarantee in CPUs?&nbsp;
+
+01:03:28.720 --> 01:03:32.400
+You can actually design a CPU that&nbsp;
+has deterministic latency as well.&nbsp;
+
+01:03:34.640 --> 01:03:40.480
+In fact, the processors inside a lot of&nbsp;
+AI chips also have deterministic latency.&nbsp;
+
+01:03:40.480 --> 01:03:43.120
+Groq has advertised this. TPUs&nbsp;
+have that in the core as well.&nbsp;
+
+01:03:46.080 --> 01:03:50.400
+The challenge is getting deterministic&nbsp;
+latency and high speed at the same time.&nbsp;
+
+01:03:53.280 --> 01:04:01.520
+Non-deterministic latency comes from&nbsp;
+specific design choices in a CPU.&nbsp;
+
+01:04:03.520 --> 01:04:08.640
+It's actually possible to remove those design&nbsp;
+choices and make a CPU with deterministic latency,&nbsp;&nbsp;
+
+01:04:08.640 --> 01:04:13.760
+but those are not very attractive in the&nbsp;
+market, so people don't make those CPUs anymore.&nbsp;
+
+01:04:16.960 --> 01:04:24.960
+In some sense, deterministic latency is a simpler&nbsp;
+starting point, and some chip designers have&nbsp;&nbsp;
+
+01:04:24.960 --> 01:04:33.440
+added things in to make it non-deterministic.
+To take a concrete example, probably the most&nbsp;&nbsp;
+
+01:04:33.440 --> 01:04:39.280
+important source of non-determinism&nbsp;
+on a CPU is the CPU cache itself.&nbsp;
+
+01:04:43.920 --> 01:04:50.640
+In a CPU, you have the CPU die itself,&nbsp;
+and then DDR memory off on the side.&nbsp;
+
+01:04:54.400 --> 01:05:07.120
+You have a cache system inside that remembers&nbsp;
+recent accesses to DDR and stores them.&nbsp;
+
+01:05:09.200 --> 01:05:11.600
+When I'm running through my&nbsp;
+CPU instructions, every time&nbsp;&nbsp;
+
+01:05:12.240 --> 01:05:17.600
+I have an instruction that accesses memory, it&nbsp;
+first checks if the data was stored in the cache.&nbsp;
+
+01:05:17.600 --> 01:05:23.840
+If not, it fetches it from DDR.
+This is a huge optimization.&nbsp;
+
+01:05:23.840 --> 01:05:27.200
+The cache is two orders of&nbsp;
+magnitude faster than the DDR.&nbsp;
+
+01:05:27.200 --> 01:05:33.600
+If you never used the cache, basically all&nbsp;
+programs would run a hundred times slower.&nbsp;
+
+01:05:34.160 --> 01:05:38.240
+The presence of a cache is absolutely necessary&nbsp;
+for a CPU to run at a reasonable speed.&nbsp;
+
+01:05:39.360 --> 01:05:45.760
+But whether or not you get a cache hit&nbsp;
+depends on the ambient environment of the CPU:&nbsp;&nbsp;
+
+01:05:45.760 --> 01:05:48.880
+what other programs are running, what has&nbsp;
+run recently, and what the random number&nbsp;&nbsp;
+
+01:05:48.880 --> 01:05:53.200
+generator inside the cache system is doing.
+That is a big source of non-determinism&nbsp;&nbsp;
+
+01:05:53.200 --> 01:05:58.800
+in the runtime of a CPU.
+That is the memory system for a CPU.&nbsp;
+
+01:06:01.600 --> 01:06:06.320
+The big thing you can do differently&nbsp;
+is, instead of having the hardware say,&nbsp;&nbsp;
+
+01:06:06.320 --> 01:06:10.720
+"I’m going to read memory" and then the&nbsp;
+hardware decides whether or not it comes&nbsp;&nbsp;
+
+01:06:11.280 --> 01:06:18.560
+from the cache, you can bake this decision&nbsp;
+into software, a different design philosophy.&nbsp;
+
+01:06:22.480 --> 01:06:28.640
+You see this in TPUs, for example.
+I'll draw the same diagram,&nbsp;&nbsp;
+
+01:06:28.640 --> 01:06:36.240
+but I'll call it a scratchpad.
+The main difference is… This would be a TPU,&nbsp;&nbsp;
+
+01:06:36.240 --> 01:06:41.680
+and you have HBM in this case rather than&nbsp;
+DDR, but it's still an off-chip memory.&nbsp;
+
+01:06:43.280 --> 01:06:48.480
+Instead of the software saying "first access&nbsp;
+memory" and letting the hardware decide,&nbsp;&nbsp;
+
+01:06:48.480 --> 01:06:53.280
+you have one kind of instruction that goes to&nbsp;
+the scratchpad and a totally different kind&nbsp;&nbsp;
+
+01:06:53.280 --> 01:06:58.160
+of instruction that goes to HBM.
+This style is generically known&nbsp;&nbsp;
+
+01:06:58.160 --> 01:07:04.160
+as scratchpad instead of cache.
+The key distinction is that you have&nbsp;&nbsp;
+
+01:07:04.160 --> 01:07:08.480
+one kind of instruction that says "read or write&nbsp;
+scratchpad," and a totally different instruction&nbsp;&nbsp;
+
+01:07:08.480 --> 01:07:12.880
+that says "read or write HBM."
+So scratchpad being the cache.&nbsp;
+
+01:07:12.880 --> 01:07:20.000
+Yeah, this thing here is the scratchpad.
+Stepping way back: people say computers have the&nbsp;&nbsp;
+
+01:07:22.320 --> 01:07:28.240
+"von Neumann architecture", where there's&nbsp;
+this serial processing of information.&nbsp;
+
+01:07:28.240 --> 01:07:30.400
+Maybe it's just because we've&nbsp;
+been talking about parallel&nbsp;&nbsp;
+
+01:07:30.400 --> 01:07:40.720
+accelerators, but the FPGA is super parallel.
+The AI accelerators, the TPUs, are super parallel.&nbsp;
+
+01:07:41.280 --> 01:07:44.960
+Even CPUs are super parallel if you&nbsp;
+think about all the cores they have.&nbsp;
+
+01:07:46.800 --> 01:07:50.080
+In what sense is modern hardware&nbsp;
+actually the von Neumann architecture?&nbsp;
+
+01:07:50.080 --> 01:07:52.560
+Is that actually a fair way&nbsp;
+to describe modern hardware?&nbsp;
+
+01:07:52.560 --> 01:07:58.480
+I think it's a fair way to describe CPUs.
+The amount of parallelism you get on a CPU is&nbsp;&nbsp;
+
+01:07:58.480 --> 01:08:05.680
+about 100 cores times maybe 16-way vector&nbsp;
+units, so about 1,000-way parallelism on a CPU.&nbsp;
+
+01:08:06.800 --> 01:08:15.280
+One question: there is a die being used for&nbsp;
+the CPU, and if there are fewer threads,&nbsp;&nbsp;
+
+01:08:15.280 --> 01:08:22.400
+just as a matter of transistor voltages&nbsp;
+switching on and off, is it that there's&nbsp;&nbsp;
+
+01:08:22.400 --> 01:08:26.240
+literally one control flow—a small part of the&nbsp;
+die—where voltages are switching on and off?&nbsp;
+
+01:08:28.240 --> 01:08:35.600
+How do you actually occupy the die area of a CPU…
+If there are so few cores, what are&nbsp;&nbsp;
+
+01:08:35.600 --> 01:08:37.360
+you spending all of the die on?
+Yeah, what is happening there?&nbsp;
+
+01:08:37.360 --> 01:08:39.840
+The cores are just much&nbsp;
+bigger and more complicated.&nbsp;
+
+01:08:44.240 --> 01:08:50.640
+We should compare a CPU core, which takes&nbsp;
+up one one-hundredth of the die, to a LUT.&nbsp;
+
+01:08:50.640 --> 01:08:54.720
+A LUT is only 16 gates.
+It's clear why there are so many&nbsp;&nbsp;
+
+01:08:54.720 --> 01:09:04.320
+more LUTs in an FPGA than cores in a CPU.
+But why are there more CUDA cores,&nbsp;&nbsp;
+
+01:09:04.320 --> 01:09:10.000
+for example, than CPU cores?
+What's the difference between a CPU and a GPU?&nbsp;
+
+01:09:13.600 --> 01:09:22.720
+Inside the CPU, one big use&nbsp;
+of the area is the cache.&nbsp;
+
+01:09:23.760 --> 01:09:28.240
+Very little is actually the ALUs.
+Mostly it's these register&nbsp;&nbsp;
+
+01:09:28.240 --> 01:09:36.320
+files rather than the logic units.
+Both of those have equivalents in a GPU,&nbsp;&nbsp;
+
+01:09:36.320 --> 01:09:39.040
+so that's not a big difference.
+But the thing that does not have&nbsp;&nbsp;
+
+01:09:39.040 --> 01:09:47.200
+an equivalent in a GPU is the branch predictor.
+There is a whole big area in the CPU which is&nbsp;&nbsp;
+
+01:09:49.120 --> 01:09:58.320
+just a bunch of predictors saying when the next&nbsp;
+branch will be and where the branch target is.&nbsp;
+
+01:09:58.320 --> 01:10:03.680
+Stripping a lot of that out, as well&nbsp;
+as making these register files tighter,&nbsp;&nbsp;
+
+01:10:06.400 --> 01:10:10.160
+drives a lot of the GPU gains over the CPU.
+What is the purpose of the branch predictor?&nbsp;
+
+01:10:10.160 --> 01:10:13.440
+To execute both branches at&nbsp;
+once, or what does it do?&nbsp;
+
+01:10:13.440 --> 01:10:22.000
+The issue is that when I've got a series&nbsp;
+of instructions, if I have a branch,&nbsp;&nbsp;
+
+01:10:27.920 --> 01:10:32.880
+the actual step of processing an&nbsp;
+instruction takes a really long time.&nbsp;
+
+01:10:32.880 --> 01:10:39.840
+It takes maybe five nanoseconds.
+The time to notice that I've got a branch,&nbsp;&nbsp;
+
+01:10:43.760 --> 01:10:49.920
+evaluate whether the Boolean is true, update&nbsp;
+the program counter to the new target,&nbsp;&nbsp;
+
+01:10:49.920 --> 01:10:56.960
+and then read from the instruction memory&nbsp;
+could take five nanoseconds to finish.&nbsp;
+
+01:10:56.960 --> 01:10:59.680
+So in reality, this may&nbsp;
+finish somewhere down here.&nbsp;
+
+01:11:03.600 --> 01:11:07.120
+I want to run a clock speed that is much&nbsp;
+faster than what five nanoseconds allows.&nbsp;
+
+01:11:07.920 --> 01:11:12.240
+Five nanoseconds is a 200 MHz clock speed.
+I would like to run at one or two gigahertz.&nbsp;
+
+01:11:13.200 --> 01:11:20.240
+So I need to run other instructions&nbsp;
+while the branch is being evaluated.&nbsp;
+
+01:11:21.360 --> 01:11:26.880
+I just want to keep running the&nbsp;
+instructions that happen after me.&nbsp;
+
+01:11:27.680 --> 01:11:30.480
+But that might have been wrong.
+If the branch ended up being taken, then&nbsp;&nbsp;
+
+01:11:30.480 --> 01:11:34.560
+I need to know that instead of evaluating these&nbsp;
+instructions, I actually need to jump to wherever&nbsp;&nbsp;
+
+01:11:34.560 --> 01:11:42.080
+the target is and run those instructions instead.
+The purpose of the branch predictor is to predict,&nbsp;&nbsp;
+
+01:11:42.080 --> 01:11:48.720
+five cycles earlier, that a branch is going to&nbsp;
+happen, before you even get to that instruction.&nbsp;
+
+01:11:49.520 --> 01:11:52.480
+If I think about how the brain works&nbsp;
+versus what you're describing here,&nbsp;&nbsp;
+
+01:11:52.480 --> 01:11:59.760
+at a high level the differences might be that&nbsp;
+while you can do structured sparsity in these&nbsp;&nbsp;
+
+01:11:59.760 --> 01:12:07.840
+accelerators and save yourself some area that you&nbsp;
+would have otherwise had to dedicate to gates,&nbsp;&nbsp;
+
+01:12:07.840 --> 01:12:12.800
+in the brain there's unstructured sparsity.
+Any neuron can connect to any other neuron, and&nbsp;&nbsp;
+
+01:12:12.800 --> 01:12:18.800
+not in ways where they have the column aligned.
+Then there's the fact that memory&nbsp;&nbsp;
+
+01:12:18.800 --> 01:12:22.000
+and compute are co-located.
+Although I guess you could say in a way the memory&nbsp;&nbsp;
+
+01:12:22.000 --> 01:12:25.360
+and compute are co-located on these dies too.
+This is exactly the co-location,&nbsp;&nbsp;
+
+01:12:25.360 --> 01:12:30.400
+in some sense, of the memory and compute.
+So maybe that isn't a big difference.&nbsp;
+
+01:12:30.400 --> 01:12:40.720
+Another big difference is that the clock cycle&nbsp;
+on the brain is much slower than on computers.&nbsp;
+
+01:12:40.720 --> 01:12:47.600
+Partly that's to preserve energy, because the&nbsp;
+faster the clock cycle, the bigger the voltage&nbsp;&nbsp;
+
+01:12:47.600 --> 01:12:54.880
+needs to be in order for the signal to settle&nbsp;
+and to identify what state a transistor is in.&nbsp;
+
+01:12:54.880 --> 01:12:56.160
+That’s right.
+I don't know if&nbsp;&nbsp;
+
+01:12:56.160 --> 01:13:05.440
+you have any commentary on what the brain&nbsp;
+might be doing versus how these chips work.&nbsp;
+
+01:13:06.720 --> 01:13:16.560
+Let's take the clock speed one first.
+The clock speed is quite high on a&nbsp;&nbsp;
+
+01:13:16.560 --> 01:13:26.000
+chip because that drives higher throughput.
+When we compare a GPU running some workload,&nbsp;&nbsp;
+
+01:13:26.000 --> 01:13:29.440
+it's running batch size 1,000.
+Whereas the brain is not running&nbsp;&nbsp;
+
+01:13:29.440 --> 01:13:35.760
+batch size 1,000, there's only one of me.
+You could imagine saying, "Take a GPU and&nbsp;&nbsp;
+
+01:13:35.760 --> 01:13:39.360
+instead of running at a gigahertz, run&nbsp;
+it at a megahertz," and that would start&nbsp;&nbsp;
+
+01:13:39.360 --> 01:13:45.600
+to look a little more like the equivalent&nbsp;
+things you're talking about in the brain.&nbsp;
+
+01:13:45.600 --> 01:13:56.720
+But in the way silicon works, that does not give&nbsp;
+you a 1,000x advantage in energy efficiency.&nbsp;
+
+01:13:58.480 --> 01:14:07.840
+What it ends up looking like is you just&nbsp;
+run this circuit once to stabilization,&nbsp;&nbsp;
+
+01:14:07.840 --> 01:14:10.720
+and then it will sit idle&nbsp;
+for a long period of time.&nbsp;
+
+01:14:10.720 --> 01:14:12.720
+It doesn't consume a lot of&nbsp;
+energy while it's sitting&nbsp;&nbsp;
+
+01:14:12.720 --> 01:14:18.720
+idle because most of the energy is consumed&nbsp;
+in toggling bits from zero to one and back.&nbsp;
+
+01:14:22.640 --> 01:14:26.560
+Let's talk about the energy&nbsp;
+consumption of a circuit like this.&nbsp;
+
+01:14:26.560 --> 01:14:32.560
+The way to think of a bit being stored is that&nbsp;
+you've deposited some charge in a capacitor&nbsp;&nbsp;
+
+01:14:32.560 --> 01:14:38.640
+sitting somewhere in the chip implicitly.
+It becomes charged when the bit becomes a one,&nbsp;&nbsp;
+
+01:14:38.640 --> 01:14:41.920
+and then it becomes discharged&nbsp;
+when it next goes to a zero.&nbsp;
+
+01:14:41.920 --> 01:14:45.120
+That cycle of charging the capacitor&nbsp;
+and then dumping that charge out&nbsp;&nbsp;
+
+01:14:45.120 --> 01:14:49.920
+to ground is where the energy is consumed.
+This is called the dynamic or switching power,&nbsp;&nbsp;
+
+01:14:49.920 --> 01:14:54.160
+and it's most of the energy consumption of a chip.
+There is some other energy consumption just&nbsp;&nbsp;
+
+01:14:54.160 --> 01:15:00.880
+coming from the fact that insulators&nbsp;
+aren't perfect, but we'll discard that.&nbsp;
+
+01:15:00.880 --> 01:15:07.120
+Most of the energy consumption comes from&nbsp;
+toggling from zero to one and back to zero.&nbsp;
+
+01:15:08.640 --> 01:15:12.080
+If you run a chip much slower and you only&nbsp;
+clock it once every thousand clock cycles,&nbsp;&nbsp;
+
+01:15:12.720 --> 01:15:16.240
+you will have 1,000 times fewer transitions.
+It will be about 1,000 times&nbsp;&nbsp;
+
+01:15:16.240 --> 01:15:20.960
+less energy consumption.
+But it's not a substantial&nbsp;&nbsp;
+
+01:15:20.960 --> 01:15:25.040
+advantage in energy efficiency.
+Okay, so you described how a TPU&nbsp;&nbsp;
+
+01:15:25.040 --> 01:15:29.040
+works at a high level.
+What is the difference&nbsp;&nbsp;
+
+01:15:29.040 --> 01:15:37.200
+at a high level between how a GPU and a TPU work?
+There is a high-level organization principle that&nbsp;&nbsp;
+
+01:15:37.200 --> 01:15:41.920
+is different, and then inside&nbsp;
+the cores things are different.&nbsp;
+
+01:15:41.920 --> 01:15:49.680
+Looking at the high level, we'll&nbsp;
+take a GPU and a TPU and see what&nbsp;&nbsp;
+
+01:15:50.320 --> 01:15:55.040
+the top-level block structure looks like.
+If you think of this as the whole chip&nbsp;&nbsp;
+
+01:15:55.040 --> 01:16:03.200
+in each case, the organization&nbsp;
+of the GPU is mostly a bunch of&nbsp;&nbsp;
+
+01:16:03.200 --> 01:16:12.080
+almost-identical units, which are the SMs.
+They've got an L2 memory in the middle,&nbsp;&nbsp;
+
+01:16:12.080 --> 01:16:21.520
+and then a bunch more of these SMs on the bottom.
+So there is a fairly regular grid of cores.&nbsp;
+
+01:16:24.000 --> 01:16:33.600
+If we look at a TPU in comparison, you end&nbsp;
+up with much coarser-grained units of logic.&nbsp;
+
+01:16:34.160 --> 01:16:48.400
+You end up with just a few matrix units,&nbsp;
+which are the big systolic arrays.&nbsp;
+
+01:16:48.400 --> 01:16:55.920
+In the middle you've got some vector unit, and&nbsp;
+then you've got your matrix units at the bottom.&nbsp;
+
+01:17:00.640 --> 01:17:06.240
+These matrix units with a vector unit in&nbsp;
+the middle make up the whole TPU chip.&nbsp;
+
+01:17:06.240 --> 01:17:10.480
+You can think of scaling this thing&nbsp;
+down into a really tiny unit with a&nbsp;&nbsp;
+
+01:17:10.480 --> 01:17:15.760
+smaller matrix unit and a smaller vector&nbsp;
+unit, and that is sort of what an SM is.&nbsp;
+
+01:17:16.400 --> 01:17:24.400
+From a very high-level point of view, the GPU has&nbsp;
+a lot of tiny TPUs tiled across the whole chip.&nbsp;
+
+01:17:24.400 --> 01:17:31.200
+Oh, interesting. You're suggesting the tensor&nbsp;
+core within a streaming SM is analogous to an MXU?&nbsp;
+
+01:17:31.200 --> 01:17:38.480
+Yeah, it's all very similar.
+I see. If you had more lack of structure,&nbsp;&nbsp;
+
+01:17:38.480 --> 01:17:44.080
+having a bunch of tiny TPUs makes a lot of sense.
+Whereas if you just have huge matrix&nbsp;&nbsp;
+
+01:17:44.080 --> 01:17:54.400
+multiplications, you might want to avoid the&nbsp;
+cost of having individual SMs with their own&nbsp;&nbsp;
+
+01:17:54.400 --> 01:17:58.400
+registers and warp schedulers.
+Why not just make a huge thing&nbsp;&nbsp;
+
+01:17:58.400 --> 01:18:04.320
+and amortize those costs across the whole thing?
+This shows up in how large you can grow things.&nbsp;
+
+01:18:04.320 --> 01:18:08.240
+We've seen this theme, especially with the&nbsp;
+systolic array, where a larger systolic&nbsp;&nbsp;
+
+01:18:08.240 --> 01:18:14.480
+array amortizes the register file costs better.
+This design allows you to have larger systolic&nbsp;&nbsp;
+
+01:18:14.480 --> 01:18:20.400
+arrays, whereas the GPU design constrains&nbsp;
+you to having small units of everything.&nbsp;
+
+01:18:21.600 --> 01:18:29.520
+There is a trade-off, however.
+Because of this coarse-grained&nbsp;&nbsp;
+
+01:18:29.520 --> 01:18:34.400
+separation of things, you need to move a lot of&nbsp;
+data from the vector unit to the matrix units,&nbsp;&nbsp;
+
+01:18:37.200 --> 01:18:46.320
+through just two lines of perimeter here.
+If you look at the equivalent thing&nbsp;&nbsp;
+
+01:18:46.320 --> 01:18:50.480
+in a GPU, you've got vector units everywhere, and&nbsp;
+you can move data through many different lines.&nbsp;
+
+01:18:55.520 --> 01:19:00.240
+The amount of data you can move between a&nbsp;
+vector unit and a matrix unit is actually&nbsp;&nbsp;
+
+01:19:00.240 --> 01:19:08.960
+much higher in a GPU than in a TPU.
+Instead of having to move all the data&nbsp;&nbsp;
+
+01:19:08.960 --> 01:19:16.720
+through just two lines, you're moving&nbsp;
+it through 16 lines of wiring in a GPU.&nbsp;
+
+01:19:16.720 --> 01:19:21.200
+Right. But also you might&nbsp;
+have to move across less area.&nbsp;
+
+01:19:21.200 --> 01:19:27.920
+Which is an energy saving as well.
+So if you can operate entirely within&nbsp;&nbsp;
+
+01:19:27.920 --> 01:19:33.760
+an SM, the data movement is much smaller.
+But the moment you want to operate across SMs,&nbsp;&nbsp;
+
+01:19:33.760 --> 01:19:37.760
+it becomes more complicated and expensive.
+So you don’t have to comment, but one might&nbsp;&nbsp;
+
+01:19:37.760 --> 01:19:45.040
+expect that a thing MatX might try to do&nbsp;
+is get the GPU-like smaller structure of&nbsp;&nbsp;
+
+01:19:45.760 --> 01:19:55.840
+systolic arrays surrounded by SRAM, but at the&nbsp;
+same time make it so that the things you need in&nbsp;&nbsp;
+
+01:19:55.840 --> 01:20:03.200
+an SM to support the CUDA architecture—which&nbsp;
+take a bunch of space—you might discard.&nbsp;
+
+01:20:05.280 --> 01:20:09.440
+We've talked publicly about something we&nbsp;
+call a splittable systolic array, which&nbsp;&nbsp;
+
+01:20:09.440 --> 01:20:13.600
+in some sense you can think of as big systolic&nbsp;
+arrays that can be small systolic arrays too.&nbsp;
+
+01:20:13.600 --> 01:20:16.640
+Cool. Okay, I think that's&nbsp;
+a good note to close on.&nbsp;
+
+01:20:16.640 --> 01:20:18.960
+Reiner, thank you so much.
+Thanks, Dwarkesh.
+
