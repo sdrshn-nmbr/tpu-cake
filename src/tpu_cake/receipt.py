@@ -367,6 +367,10 @@ def _validate_saved_matmul_phase(
         }
     if "identity_schema" in invocation:
         created_payload["identity_schema"] = identity_schema
+    if "pallas_execution_schema" in invocation:
+        created_payload["pallas_execution_schema"] = invocation[
+            "pallas_execution_schema"
+        ]
     expected_payloads = (
         created_payload,
         {"distributed_ir_sha256": _sha256(artifacts["distributed.xdsl"])},
@@ -374,6 +378,11 @@ def _validate_saved_matmul_phase(
             "physical_ir_sha256": result.schedule_sha256,
             "schedule_sha256": result.schedule_sha256,
             "pallas_source_sha256": result.pallas_source_sha256,
+            **(
+                {"pallas_execution_schema": invocation["pallas_execution_schema"]}
+                if "pallas_execution_schema" in invocation
+                else {}
+            ),
         },
         {
             "stablehlo_sha256": _sha256(artifacts["stablehlo.txt"]),

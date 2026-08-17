@@ -26,6 +26,9 @@ from tpu_cake.dialects.tpu_schedule import (
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
 
+LEGACY_PALLAS_EXECUTION_SCHEMA = "standalone-rendering-v1"
+PALLAS_EXECUTION_SCHEMA = "delegated-plan-v2"
+
 
 def _matmul_kernel(lhs_ref, rhs_ref, output_ref) -> None:
     output_ref[...] = lax.dot_general(
@@ -202,8 +205,53 @@ def build(*, interpret=False, devices=None):
     return jax.jit(mapped), mesh
 '''
 
+    def render_executable_source(self) -> str:
+        return f'''from __future__ import annotations
+
+from tpu_cake.pallas_lowering import PallasMatmulPlan
+
+PALLAS_EXECUTION_SCHEMA = {PALLAS_EXECUTION_SCHEMA!r}
+NAME = {self.name!r}
+SCHEDULE_SHA256 = {self.schedule_sha256!r}
+MESH_AXIS = {self.mesh_axis!r}
+MESH_SIZE = {self.mesh_size}
+LHS_LOCAL_SHAPE = {self.lhs_local_shape!r}
+RHS_LOCAL_SHAPE = {self.rhs_local_shape!r}
+PARTIAL_LOCAL_SHAPE = {self.partial_local_shape!r}
+OUTPUT_LOCAL_SHAPE = {self.output_local_shape!r}
+OUTPUT_SHARDING = {self.output_sharding!r}
+LHS_SHARDING = {self.lhs_sharding!r}
+RHS_SHARDING = {self.rhs_sharding!r}
+SCATTER_DIMENSION = {self.scatter_dimension}
+TILE_M = {self.tile_m}
+TILE_K = {self.tile_k}
+TILE_N = {self.tile_n}
+
+PLAN = PallasMatmulPlan(
+    name=NAME,
+    schedule_sha256=SCHEDULE_SHA256,
+    mesh_axis=MESH_AXIS,
+    mesh_size=MESH_SIZE,
+    lhs_local_shape=LHS_LOCAL_SHAPE,
+    rhs_local_shape=RHS_LOCAL_SHAPE,
+    partial_local_shape=PARTIAL_LOCAL_SHAPE,
+    output_local_shape=OUTPUT_LOCAL_SHAPE,
+    lhs_sharding=LHS_SHARDING,
+    rhs_sharding=RHS_SHARDING,
+    output_sharding=OUTPUT_SHARDING,
+    scatter_dimension=SCATTER_DIMENSION,
+    tile_m=TILE_M,
+    tile_k=TILE_K,
+    tile_n=TILE_N,
+)
+
+
+def build(*, interpret=False, devices=None):
+    return PLAN.build(interpret=interpret, devices=devices)
+'''
+
     def source_sha256(self) -> str:
-        return hashlib.sha256(self.render_source().encode()).hexdigest()
+        return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
 
 
 def _shape(buffer: BufferType) -> tuple[int, int]:
@@ -340,6 +388,18 @@ def validate_saved_pallas_plan(
     if not isinstance(name, str):
         raise TypeError("SAVED_PALLAS_SOURCE_PLAN_MISMATCH")
     rendering_plan = replace(plan, name=name)
-    if rendering_plan.render_source() != pallas_path.read_text():
+    execution_schema = constants.get(
+        "PALLAS_EXECUTION_SCHEMA", LEGACY_PALLAS_EXECUTION_SCHEMA
+    )
+    expected_source = (
+        rendering_plan.render_source()
+        if execution_schema == LEGACY_PALLAS_EXECUTION_SCHEMA
+        else rendering_plan.render_executable_source()
+        if execution_schema == PALLAS_EXECUTION_SCHEMA
+        else None
+    )
+    if expected_source is None:
+        raise ValueError("SAVED_PALLAS_EXECUTION_SCHEMA_UNSUPPORTED")
+    if expected_source != pallas_path.read_text():
         raise ValueError("SAVED_PALLAS_RENDERING_MISMATCH")
     return rendering_plan

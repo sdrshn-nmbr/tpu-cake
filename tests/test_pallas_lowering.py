@@ -26,9 +26,9 @@ def test_physical_matmul_lowers_to_stable_pallas_plan() -> None:
     assert first.global_rhs_shape == (32, 16)
     assert first.global_output_shape == (16, 16)
     assert first.source_sha256() == second.source_sha256()
-    source = first.render_source()
+    source = first.render_executable_source()
     compile(source, "lowered_pallas.py", "exec")
-    for required in ("pallas_call", "BlockSpec", "shard_map", "psum_scatter", "check_vma=False"):
+    for required in ("PallasMatmulPlan", "PALLAS_EXECUTION_SCHEMA", "PLAN.build"):
         assert required in source
 
 
@@ -52,7 +52,7 @@ def test_saved_physical_tile_and_pallas_rendering_are_bound(tmp_path) -> None:
     physical_path = tmp_path / "physical.xdsl"
     pallas_path = tmp_path / "lowered_pallas.py"
     physical_path.write_text(canonical_text(physical))
-    pallas_path.write_text(plan.render_source())
+    pallas_path.write_text(plan.render_executable_source())
 
     replayed = validate_saved_pallas_plan(
         physical_path,

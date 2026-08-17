@@ -19,6 +19,7 @@ from tpu_cake.identity import (
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.pallas_lowering import (
+    PALLAS_EXECUTION_SCHEMA,
     lower_physical_matmul_to_pallas,
     validate_saved_pallas_plan,
 )
@@ -332,6 +333,10 @@ def _validate_saved_run_evidence(
         }
     if "identity_schema" in invocation:
         created_payload["identity_schema"] = identity_schema
+    if "pallas_execution_schema" in invocation:
+        created_payload["pallas_execution_schema"] = invocation[
+            "pallas_execution_schema"
+        ]
     expected_payloads = (
         created_payload,
         {"distributed_ir_sha256": hashlib.sha256(distributed.read_bytes()).hexdigest()},
@@ -339,6 +344,11 @@ def _validate_saved_run_evidence(
             "physical_ir_sha256": result.schedule_sha256,
             "schedule_sha256": result.schedule_sha256,
             "pallas_source_sha256": result.pallas_source_sha256,
+            **(
+                {"pallas_execution_schema": invocation["pallas_execution_schema"]}
+                if "pallas_execution_schema" in invocation
+                else {}
+            ),
         },
         {
             "stablehlo_sha256": hashlib.sha256(stablehlo.read_bytes()).hexdigest(),
@@ -403,6 +413,10 @@ def _validate_resumed_result(
         if identity_schema != SEMANTIC_IDENTITY_SCHEMA:
             raise ValueError(f"STALE_SEARCH_IDENTITY_SCHEMA candidate={candidate.name}")
         expected_invocation["identity_schema"] = identity_schema
+    if "pallas_execution_schema" in invocation:
+        if invocation["pallas_execution_schema"] != PALLAS_EXECUTION_SCHEMA:
+            raise ValueError(f"STALE_SEARCH_PALLAS_SCHEMA candidate={candidate.name}")
+        expected_invocation["pallas_execution_schema"] = PALLAS_EXECUTION_SCHEMA
     if invocation != expected_invocation:
         raise ValueError(f"STALE_SEARCH_INVOCATION candidate={candidate.name}")
     expected_backend = "cpu" if interpret else "tpu"

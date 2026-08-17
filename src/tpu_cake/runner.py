@@ -33,7 +33,10 @@ from tpu_cake.identity import (
 from tpu_cake.ledger import ExperimentLedger, RunState
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.metrics import MetricSource
-from tpu_cake.pallas_lowering import lower_physical_matmul_to_pallas
+from tpu_cake.pallas_lowering import (
+    PALLAS_EXECUTION_SCHEMA,
+    lower_physical_matmul_to_pallas,
+)
 from tpu_cake.workloads.distributed_matmul import (
     distributed_matmul_experiment,
     distributed_matmul_schedule,
@@ -261,6 +264,7 @@ def run_distributed_matmul(
     output_dir.mkdir(parents=True, exist_ok=False)
     invocation = {
         "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
+        "pallas_execution_schema": PALLAS_EXECUTION_SCHEMA,
         "mode": mode.value,
         "mesh_size": mesh_size,
         "m": m,
@@ -298,6 +302,7 @@ def run_distributed_matmul(
         RunState.CREATED,
         {
             "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
+            "pallas_execution_schema": PALLAS_EXECUTION_SCHEMA,
             "mode": mode.value,
             "mesh_size": mesh_size,
             "m": m,
@@ -330,6 +335,7 @@ def run_distributed_matmul(
             "physical_ir_sha256": hashlib.sha256(physical_text.encode()).hexdigest(),
             "schedule_sha256": plan.schedule_sha256,
             "pallas_source_sha256": plan.source_sha256(),
+            "pallas_execution_schema": PALLAS_EXECUTION_SCHEMA,
         },
     )
     experiment = distributed_matmul_experiment(
@@ -358,7 +364,7 @@ def run_distributed_matmul(
         ),
         _write_text(
             output_dir / "lowered_pallas.py",
-            plan.render_source(),
+            plan.render_executable_source(),
             ArtifactRole.PALLAS_SOURCE,
         ),
     ]
