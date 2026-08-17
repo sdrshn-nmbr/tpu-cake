@@ -20,6 +20,7 @@ from tpu_cake.dialects.tpu_schedule import (
     LifetimeAttr,
     MemorySpace,
     MemorySpaceAttr,
+    MxuEinsumOp,
     MxuMatmulOp,
     Ownership,
     OwnershipAttr,
@@ -30,6 +31,7 @@ from tpu_cake.dialects.tpu_schedule import (
     ShapeAttr,
     ShardingAttr,
     TopologyAttr,
+    VectorComputeOp,
     ViewOp,
     YieldOp,
 )
@@ -109,6 +111,7 @@ class KernelBuilder:
         vector_unit_count: int = 1,
         ici_link_count: int = 1,
         remote_dma_engine_count: int = 1,
+        argument_modes: Iterable[str] | None = None,
     ) -> None:
         self._name = name
         self._target = target
@@ -116,22 +119,19 @@ class KernelBuilder:
         self._smem_capacity_bytes = smem_capacity_bytes
         self._input_specs = tuple(inputs)
         self._mesh = dict(sorted((mesh or {}).items()))
-        self._interconnect = dict(
-            sorted((interconnect_bandwidth_bytes_per_second or {}).items())
-        )
+        self._interconnect = dict(sorted((interconnect_bandwidth_bytes_per_second or {}).items()))
         if topology is not None and self._interconnect:
-            raise ValueError(
-                "provide either a structured topology or axis bandwidths, not both"
-            )
+            raise ValueError("provide either a structured topology or axis bandwidths, not both")
         if topology is None and set(self._interconnect) != set(self._mesh):
-            raise ValueError(
-                "interconnect must declare one bandwidth for every kernel mesh axis"
-            )
+            raise ValueError("interconnect must declare one bandwidth for every kernel mesh axis")
         self._dma_engine_count = dma_engine_count
         self._mxu_count = mxu_count
         self._vector_unit_count = vector_unit_count
         self._ici_link_count = ici_link_count
         self._remote_dma_engine_count = remote_dma_engine_count
+        self._argument_modes = None if argument_modes is None else tuple(argument_modes)
+        if self._argument_modes is not None and len(self._argument_modes) != len(self._input_specs):
+            raise ValueError("argument modes must match the kernel arguments")
         self._topology = topology
         self.block = Block(arg_types=[spec.to_type() for spec in self._input_specs])
 
@@ -296,6 +296,64 @@ class KernelBuilder:
         self._add(operation)
         return operation
 
+    def einsum(
+        self,
+        lhs: SSAValue | Operation,
+        rhs: SSAValue | Operation,
+        accumulator: SSAValue | Operation,
+        *,
+        stage: int,
+        contracting_dimensions: tuple[str, ...],
+        pending_reduction_axes: tuple[str, ...] = (),
+        tile_m: int,
+        tile_k: int,
+        tile_n: int,
+        source: SourceLocation | None = None,
+    ) -> MxuEinsumOp:
+        operation = attach_source(
+            MxuEinsumOp(
+                lhs,
+                rhs,
+                accumulator,
+                stage=stage,
+                contracting_dimensions=contracting_dimensions,
+                pending_reduction_axes=pending_reduction_axes,
+                tile_m=tile_m,
+                tile_k=tile_k,
+                tile_n=tile_n,
+            ),
+            source,
+        )
+        assert isinstance(operation, MxuEinsumOp)
+        self._add(operation)
+        return operation
+
+    def vector_compute(
+        self,
+        inputs: tuple[SSAValue | Operation, ...],
+        output: SSAValue | Operation,
+        *,
+        stage: int,
+        function: str,
+        configuration: tuple[str, ...] = (),
+        pending_reduction_axes: tuple[str, ...] = (),
+        source: SourceLocation | None = None,
+    ) -> VectorComputeOp:
+        operation = attach_source(
+            VectorComputeOp(
+                inputs,
+                output,
+                stage=stage,
+                function=function,
+                configuration=configuration,
+                pending_reduction_axes=pending_reduction_axes,
+            ),
+            source,
+        )
+        assert isinstance(operation, VectorComputeOp)
+        self._add(operation)
+        return operation
+
     def collective_reduce_scatter(
         self,
         source: SSAValue | Operation,
@@ -441,7 +499,7 @@ class KernelBuilder:
         self._add(operation)
         return operation
 
-    def module(self) -> ModuleOp:
+    def module(self, *, verify: bool = True) -> ModuleOp:
         self.block.add_op(YieldOp())
         kernel = KernelOp(
             self._name,
@@ -458,9 +516,11 @@ class KernelBuilder:
             vector_unit_count=self._vector_unit_count,
             ici_link_count=self._ici_link_count,
             remote_dma_engine_count=self._remote_dma_engine_count,
+            argument_modes=self._argument_modes,
         )
         module = ModuleOp([kernel])
-        verify_with_sources(module)
+        if verify:
+            verify_with_sources(module)
         return module
 
 

@@ -313,9 +313,7 @@ class TopologyAttr(ParametrizedAttribute):
         if device_ids != tuple(range(len(devices))):
             raise VerifyException("topology device IDs must be dense and canonically ordered")
         coordinate_rank = len(devices[0].coordinates) if devices else 0
-        coordinates = tuple(
-            tuple(value.data for value in device.coordinates) for device in devices
-        )
+        coordinates = tuple(tuple(value.data for value in device.coordinates) for device in devices)
         if any(len(device.coordinates) != coordinate_rank for device in devices):
             raise VerifyException("topology device coordinates must have equal rank")
         if len(coordinates) != len(set(coordinates)):
@@ -382,9 +380,7 @@ class TopologyAttr(ParametrizedAttribute):
 
         transfer_plan_ids = tuple(plan.plan_id.data for plan in transfer_plans)
         if transfer_plan_ids != tuple(sorted(set(transfer_plan_ids))):
-            raise VerifyException(
-                "topology transfer plans must be unique and canonically ordered"
-            )
+            raise VerifyException("topology transfer plans must be unique and canonically ordered")
         for plan in transfer_plans:
             for route in plan.routes:
                 source = route.source_device.data
@@ -402,9 +398,7 @@ class TopologyAttr(ParametrizedAttribute):
                         raise VerifyException("transfer route links do not form a contiguous path")
                     current = next(device for device in endpoints if device != current)
                     if current in visited:
-                        raise VerifyException(
-                            "transfer routes cannot revisit a device"
-                        )
+                        raise VerifyException("transfer routes cannot revisit a device")
                     visited.add(current)
                 if current != destination:
                     raise VerifyException("transfer route does not reach its destination")
@@ -447,12 +441,8 @@ def rectilinear_topology(
         if mesh_axis_sizes[axis_index] == 1:
             continue
         groups: list[CollectiveGroupAttr] = []
-        other_indices = tuple(
-            index for index in range(len(mesh_axis_names)) if index != axis_index
-        )
-        fixed_coordinates = product(
-            *(range(mesh_axis_sizes[index]) for index in other_indices)
-        )
+        other_indices = tuple(index for index in range(len(mesh_axis_names)) if index != axis_index)
+        fixed_coordinates = product(*(range(mesh_axis_sizes[index]) for index in other_indices))
         for group_index, fixed in enumerate(fixed_coordinates):
             base = dict(zip(other_indices, fixed, strict=True))
             group_coordinates = tuple(
@@ -462,9 +452,7 @@ def rectilinear_topology(
                 )
                 for coordinate in range(mesh_axis_sizes[axis_index])
             )
-            device_ids = tuple(
-                coordinate_to_device[coordinate] for coordinate in group_coordinates
-            )
+            device_ids = tuple(coordinate_to_device[coordinate] for coordinate in group_coordinates)
             route_ids: list[str] = []
             for source, destination in pairwise(device_ids):
                 endpoint = (min(source, destination), max(source, destination))
@@ -552,8 +540,17 @@ class BufferType(ParametrizedAttribute, TypeAttribute):
         rank = len(physical_shape)
         if len(logical_shape) != rank:
             raise VerifyException("logical shape rank must match storage rank")
+        if len(logical_shape) != len(set(logical_shape)):
+            raise VerifyException("logical shape dimensions must be unique")
         if len(sharding) != rank:
             raise VerifyException("sharding rank must match storage rank")
+        used_mesh_axes = [
+            axis
+            for dimension_sharding in sharding
+            for axis in filter(None, dimension_sharding.split("/"))
+        ]
+        if len(used_mesh_axes) != len(set(used_mesh_axes)):
+            raise VerifyException("one mesh axis cannot shard multiple buffer dimensions")
         if sorted(layout) != list(range(rank)):
             raise VerifyException("layout must be a permutation of buffer dimensions")
         for name, size in zip(logical_shape, physical_shape, strict=True):
@@ -635,8 +632,7 @@ def _regions_overlap(lhs: TileRegionAttr, rhs: TileRegionAttr) -> bool:
             first = lhs_offset
         else:
             index = (
-                (delta // divisor)
-                * pow(lhs_stride // divisor, -1, reduced_modulus)
+                (delta // divisor) * pow(lhs_stride // divisor, -1, reduced_modulus)
             ) % reduced_modulus
             first = lhs_offset + index * lhs_stride
         period = math.lcm(lhs_stride, rhs_stride)
@@ -956,6 +952,548 @@ class MxuMatmulOp(IRDLOperation):
             raise VerifyException("the current MXU schedule requires a complete K tile")
 
 
+def _named_buffer_shape(buffer: BufferType) -> dict[str, int]:
+    names = tuple(value.data for value in buffer.shape.dimensions)
+    sizes = buffer.storage.get_shape()
+    if len(names) != len(set(names)):
+        raise VerifyException("physical tensor operations require unique logical dimensions")
+    return dict(zip(names, sizes, strict=True))
+
+
+def _same_physical_value_contract(lhs: BufferType, rhs: BufferType) -> bool:
+    return (
+        lhs.storage == rhs.storage
+        and lhs.shape == rhs.shape
+        and lhs.space == rhs.space
+        and lhs.sharding == rhs.sharding
+        and lhs.layout == rhs.layout
+        and lhs.ownership == rhs.ownership
+    )
+
+
+def _same_physical_shape_and_placement(lhs: BufferType, rhs: BufferType) -> bool:
+    return (
+        lhs.storage.get_shape() == rhs.storage.get_shape()
+        and lhs.shape == rhs.shape
+        and lhs.space == rhs.space
+        and lhs.sharding == rhs.sharding
+        and lhs.layout == rhs.layout
+        and lhs.ownership == rhs.ownership
+    )
+
+
+def _element_type_name(buffer: BufferType) -> str:
+    element_type = buffer.storage.element_type
+    if isinstance(element_type, BFloat16Type):
+        return "bf16"
+    if isinstance(element_type, Float16Type):
+        return "f16"
+    if isinstance(element_type, Float32Type):
+        return "f32"
+    if isinstance(element_type, IntegerType):
+        if element_type.width.data == 1:
+            return "bool"
+        prefix = "u" if element_type.signedness.data is Signedness.UNSIGNED else "i"
+        return f"{prefix}{element_type.width.data}"
+    raise VerifyException(f"unsupported physical element type {element_type}")
+
+
+def _is_float_buffer(buffer: BufferType) -> bool:
+    return isinstance(
+        buffer.storage.element_type,
+        BFloat16Type | Float16Type | Float32Type,
+    )
+
+
+def _dimension_sharding(buffer: BufferType, dimension: str) -> str:
+    names = tuple(value.data for value in buffer.shape.dimensions)
+    if dimension not in names:
+        raise VerifyException(f"physical tensor has no logical dimension {dimension!r}")
+    return tuple(buffer.sharding.axes)[names.index(dimension)].data
+
+
+@irdl_op_definition
+class MxuEinsumOp(IRDLOperation):
+    name = "tpu_schedule.mxu_einsum"
+    lhs = operand_def(BufferType)
+    rhs = operand_def(BufferType)
+    accumulator = operand_def(BufferType)
+    stage = prop_def(IntAttr)
+    contracting_dimensions = prop_def(ArrayAttr[StringAttr])
+    pending_reduction_axes = prop_def(ArrayAttr[StringAttr])
+    tile_m = prop_def(IntAttr)
+    tile_k = prop_def(IntAttr)
+    tile_n = prop_def(IntAttr)
+
+    def __init__(
+        self,
+        lhs: SSAValue | Operation,
+        rhs: SSAValue | Operation,
+        accumulator: SSAValue | Operation,
+        *,
+        stage: int,
+        contracting_dimensions: tuple[str, ...],
+        pending_reduction_axes: tuple[str, ...] = (),
+        tile_m: int,
+        tile_k: int,
+        tile_n: int,
+    ) -> None:
+        super().__init__(
+            operands=[lhs, rhs, accumulator],
+            properties={
+                "stage": IntAttr(stage),
+                "contracting_dimensions": ArrayAttr(
+                    StringAttr(value) for value in sorted(contracting_dimensions)
+                ),
+                "pending_reduction_axes": ArrayAttr(
+                    StringAttr(value) for value in sorted(pending_reduction_axes)
+                ),
+                "tile_m": IntAttr(tile_m),
+                "tile_k": IntAttr(tile_k),
+                "tile_n": IntAttr(tile_n),
+            },
+        )
+
+    def verify_(self) -> None:
+        lhs, rhs, accumulator = self.lhs.type, self.rhs.type, self.accumulator.type
+        assert isinstance(lhs, BufferType)
+        assert isinstance(rhs, BufferType)
+        assert isinstance(accumulator, BufferType)
+        for buffer in (lhs, rhs, accumulator):
+            if buffer.space.data is not MemorySpace.VMEM:
+                raise VerifyException("MXU einsum operands must be resident in VMEM")
+            _check_live(buffer, self.stage.data)
+        if not isinstance(
+            lhs.storage.element_type,
+            BFloat16Type | Float16Type | Float32Type,
+        ):
+            raise VerifyException("MXU einsum inputs must use bf16, f16, or f32")
+        if rhs.storage.element_type != lhs.storage.element_type:
+            raise VerifyException("MXU einsum input element types must match")
+        if not isinstance(accumulator.storage.element_type, Float32Type):
+            raise VerifyException("MXU einsum accumulation must use f32")
+
+        contractions = tuple(value.data for value in self.contracting_dimensions)
+        if not contractions or contractions != tuple(sorted(set(contractions))):
+            raise VerifyException(
+                "MXU einsum contraction dimensions must be non-empty, unique, and canonical"
+            )
+        lhs_shape = _named_buffer_shape(lhs)
+        rhs_shape = _named_buffer_shape(rhs)
+        result_shape = _named_buffer_shape(accumulator)
+        lhs_sharding = {
+            name: axis.data for name, axis in zip(lhs_shape, lhs.sharding.axes, strict=True)
+        }
+        rhs_sharding = {
+            name: axis.data for name, axis in zip(rhs_shape, rhs.sharding.axes, strict=True)
+        }
+        result_sharding = {
+            name: axis.data
+            for name, axis in zip(result_shape, accumulator.sharding.axes, strict=True)
+        }
+        if any(name not in lhs_shape or name not in rhs_shape for name in contractions):
+            raise VerifyException("MXU einsum contraction dimensions must exist in both inputs")
+        if any(lhs_shape[name] != rhs_shape[name] for name in contractions):
+            raise VerifyException("MXU einsum local contraction extents must match")
+        if any(lhs_sharding[name] != rhs_sharding[name] for name in contractions):
+            raise VerifyException("MXU einsum contracted dimensions must have equal sharding")
+        expected_pending = tuple(
+            sorted(
+                {
+                    axis
+                    for name in contractions
+                    for axis in filter(None, lhs_sharding[name].split("/"))
+                }
+            )
+        )
+        pending = tuple(value.data for value in self.pending_reduction_axes)
+        if pending != tuple(sorted(set(pending))) or pending != expected_pending:
+            raise VerifyException(
+                "MXU einsum pending reductions must match contracted-dimension sharding"
+            )
+
+        shared = (set(lhs_shape) & set(rhs_shape)) - set(contractions)
+        if any(lhs_shape[name] != rhs_shape[name] for name in shared):
+            raise VerifyException("MXU einsum shared local extents must match")
+        if any(lhs_sharding[name] != rhs_sharding[name] for name in shared):
+            raise VerifyException("MXU einsum shared dimensions must have equal sharding")
+        expected_names = (set(lhs_shape) | set(rhs_shape)) - set(contractions)
+        if set(result_shape) != expected_names:
+            raise VerifyException("MXU einsum result has the wrong logical dimensions")
+        for name, size in result_shape.items():
+            expected_size = lhs_shape.get(name, rhs_shape.get(name))
+            if expected_size != size:
+                raise VerifyException("MXU einsum result has the wrong local extent")
+            expected_sharding = lhs_sharding.get(name, rhs_sharding.get(name))
+            if result_sharding[name] != expected_sharding:
+                raise VerifyException("MXU einsum result must preserve retained-dimension sharding")
+
+        batch = math.prod(lhs_shape[name] for name in shared)
+        m = math.prod(
+            size
+            for name, size in lhs_shape.items()
+            if name not in shared and name not in contractions
+        )
+        k = math.prod(lhs_shape[name] for name in contractions)
+        n = math.prod(
+            size
+            for name, size in rhs_shape.items()
+            if name not in shared and name not in contractions
+        )
+        tile = (self.tile_m.data, self.tile_k.data, self.tile_n.data)
+        if any(size <= 0 for size in tile):
+            raise VerifyException("MXU einsum tile dimensions must be positive")
+        if m % tile[0] or k % tile[1] or n % tile[2]:
+            raise VerifyException("MXU einsum tiles must divide flattened M, K, and N")
+        if tile[1] != k:
+            raise VerifyException("the current MXU einsum schedule requires a complete K tile")
+        if tile[0] != m or tile[2] != n:
+            raise VerifyException("the current MXU einsum schedule requires complete M and N tiles")
+        if batch <= 0:
+            raise VerifyException("MXU einsum batch extent must be positive")
+
+
+@irdl_op_definition
+class VectorComputeOp(IRDLOperation):
+    name = "tpu_schedule.vector_compute"
+    inputs = var_operand_def(BufferType)
+    output = operand_def(BufferType)
+    stage = prop_def(IntAttr)
+    function = prop_def(StringAttr)
+    configuration = prop_def(ArrayAttr[StringAttr])
+    pending_reduction_axes = prop_def(ArrayAttr[StringAttr])
+
+    def __init__(
+        self,
+        inputs: tuple[SSAValue | Operation, ...],
+        output: SSAValue | Operation,
+        *,
+        stage: int,
+        function: str,
+        configuration: tuple[str, ...] = (),
+        pending_reduction_axes: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(
+            operands=[list(inputs), output],
+            properties={
+                "stage": IntAttr(stage),
+                "function": StringAttr(function),
+                "configuration": ArrayAttr(StringAttr(value) for value in sorted(configuration)),
+                "pending_reduction_axes": ArrayAttr(
+                    StringAttr(value) for value in sorted(pending_reduction_axes)
+                ),
+            },
+        )
+
+    def verify_(self) -> None:
+        supported_arity = {
+            "cast": 1,
+            "rename_dimension": 1,
+            "slice": 1,
+            "rms_norm": 2,
+            "rotary_embedding": 1,
+            "packed_causal_mask": 1,
+            "masked_softmax": 2,
+            "embedding_lookup": 2,
+            "add": 2,
+            "multiply": 2,
+            "silu": 1,
+            "exp": 1,
+        }
+        required_configuration = {
+            "cast": {"dtype"},
+            "rename_dimension": {"destination", "source"},
+            "slice": {"dimension", "index"},
+            "rms_norm": {"dimension", "epsilon"},
+            "rotary_embedding": {
+                "head_dimension",
+                "maximum_timescale",
+                "sequence_dimension",
+            },
+            "packed_causal_mask": {
+                "key_dimension",
+                "query_dimension",
+                "sequence_dimension",
+            },
+            "masked_softmax": {"dimension"},
+            "embedding_lookup": {"vocabulary_dimension"},
+            "add": set(),
+            "multiply": set(),
+            "silu": set(),
+            "exp": set(),
+        }
+        function = self.function.data
+        if function not in supported_arity:
+            raise VerifyException(f"unsupported physical vector function {function!r}")
+        if len(self.inputs) != supported_arity[function]:
+            raise VerifyException(
+                f"physical vector function {function!r} requires {supported_arity[function]} inputs"
+            )
+        configuration = tuple(value.data for value in self.configuration)
+        if configuration != tuple(sorted(set(configuration))):
+            raise VerifyException("vector configuration must be unique and canonical")
+        keys = tuple(value.split("=", 1)[0] for value in configuration)
+        if any("=" not in value or not key for value, key in zip(configuration, keys, strict=True)):
+            raise VerifyException("vector configuration entries must use key=value form")
+        if len(keys) != len(set(keys)):
+            raise VerifyException("vector configuration keys must be unique")
+        if set(keys) != required_configuration[function]:
+            raise VerifyException(
+                f"physical vector function {function!r} has the wrong configuration keys"
+            )
+        parsed_configuration = dict(value.split("=", 1) for value in configuration)
+        pending_reductions = tuple(value.data for value in self.pending_reduction_axes)
+        if pending_reductions != tuple(sorted(set(pending_reductions))):
+            raise VerifyException("vector pending reductions must be unique and canonical")
+
+        buffers = tuple(value.type for value in (*self.inputs, self.output))
+        assert all(isinstance(value, BufferType) for value in buffers)
+        for buffer in buffers:
+            assert isinstance(buffer, BufferType)
+            if buffer.space.data is not MemorySpace.VMEM:
+                raise VerifyException("physical vector operands must be resident in VMEM")
+            _check_live(buffer, self.stage.data)
+        output = self.output.type
+        assert isinstance(output, BufferType)
+        inputs = tuple(value.type for value in self.inputs)
+        assert all(isinstance(value, BufferType) for value in inputs)
+
+        if function in {"add", "multiply"} and any(
+            not _same_physical_value_contract(value, output) for value in inputs
+        ):
+            raise VerifyException("binary vector operands must have identical buffer types")
+        if function in {"silu", "exp"} and not _same_physical_value_contract(inputs[0], output):
+            raise VerifyException("unary vector operations must preserve buffer type")
+        if function in {"silu", "exp"} and not _is_float_buffer(output):
+            raise VerifyException("nonlinear physical vector operations require floating point")
+        if function in {"cast", "rename_dimension"}:
+            source = inputs[0]
+            assert isinstance(source, BufferType)
+            if (
+                source.storage.get_shape() != output.storage.get_shape()
+                or source.sharding != output.sharding
+                or source.layout != output.layout
+            ):
+                raise VerifyException(f"{function} must preserve physical shape and placement")
+            if function == "cast" and source.storage.element_type == output.storage.element_type:
+                raise VerifyException("physical cast must change element type")
+            if function == "cast" and parsed_configuration["dtype"] != _element_type_name(output):
+                raise VerifyException("physical cast dtype does not match its output")
+            if function == "cast" and source.shape != output.shape:
+                raise VerifyException("physical cast cannot rename logical dimensions")
+            if (
+                function == "rename_dimension"
+                and source.storage.element_type != output.storage.element_type
+            ):
+                raise VerifyException("physical dimension rename cannot change element type")
+            if function == "rename_dimension":
+                source_names = tuple(value.data for value in source.shape.dimensions)
+                source_name = parsed_configuration["source"]
+                destination_name = parsed_configuration["destination"]
+                if source_name not in source_names or (
+                    destination_name in source_names and destination_name != source_name
+                ):
+                    raise VerifyException("physical dimension rename has invalid names")
+                expected_names = tuple(
+                    destination_name if name == source_name else name for name in source_names
+                )
+                if tuple(value.data for value in output.shape.dimensions) != expected_names:
+                    raise VerifyException("physical dimension rename has the wrong output names")
+        if function == "slice":
+            source = inputs[0]
+            assert isinstance(source, BufferType)
+            if len(source.storage.get_shape()) != len(output.storage.get_shape()) + 1:
+                raise VerifyException("physical slice must remove exactly one dimension")
+            source_names = tuple(value.data for value in source.shape.dimensions)
+            dimension = parsed_configuration["dimension"]
+            if dimension not in source_names:
+                raise VerifyException("physical slice dimension does not exist")
+            axis = source_names.index(dimension)
+            if tuple(source.sharding.axes)[axis].data:
+                raise VerifyException("physical slice cannot index a sharded dimension")
+            try:
+                index = int(parsed_configuration["index"])
+            except ValueError as error:
+                raise VerifyException("physical slice index must be an integer") from error
+            if not 0 <= index < source.storage.get_shape()[axis]:
+                raise VerifyException("physical slice index is out of bounds")
+            expected_shape = (
+                source.storage.get_shape()[:axis] + source.storage.get_shape()[axis + 1 :]
+            )
+            expected_names = source_names[:axis] + source_names[axis + 1 :]
+            source_sharding = tuple(source.sharding.axes)
+            expected_sharding = source_sharding[:axis] + source_sharding[axis + 1 :]
+            if (
+                output.storage.get_shape() != expected_shape
+                or output.storage.element_type != source.storage.element_type
+                or tuple(value.data for value in output.shape.dimensions) != expected_names
+                or tuple(output.sharding.axes) != expected_sharding
+            ):
+                raise VerifyException("physical slice has the wrong output contract")
+        if function == "rms_norm":
+            value, scale = inputs
+            assert isinstance(value, BufferType) and isinstance(scale, BufferType)
+            if not all(_is_float_buffer(buffer) for buffer in (value, scale, output)):
+                raise VerifyException("physical RMSNorm requires floating-point tensors")
+            if not _same_physical_value_contract(value, output):
+                raise VerifyException("physical RMSNorm must preserve value storage and sharding")
+            if len(scale.storage.get_shape()) != 1:
+                raise VerifyException("physical RMSNorm scale must have rank one")
+            dimension = parsed_configuration["dimension"]
+            value_shape = _named_buffer_shape(value)
+            if dimension not in value_shape:
+                raise VerifyException("physical RMSNorm dimension does not exist")
+            if _named_buffer_shape(scale) != {dimension: value_shape[dimension]}:
+                raise VerifyException("physical RMSNorm scale has the wrong named shape")
+            if _dimension_sharding(value, dimension):
+                raise VerifyException("physical RMSNorm dimension cannot be sharded")
+            if any(value.data for value in scale.sharding.axes):
+                raise VerifyException("physical RMSNorm scale must be locally replicated")
+            try:
+                epsilon = Decimal(parsed_configuration["epsilon"])
+            except InvalidOperation as error:
+                raise VerifyException("physical RMSNorm epsilon must be a decimal") from error
+            if not epsilon.is_finite() or epsilon <= 0:
+                raise VerifyException("physical RMSNorm epsilon must be positive and finite")
+        if function == "rotary_embedding":
+            value = inputs[0]
+            assert isinstance(value, BufferType)
+            if not _is_float_buffer(value):
+                raise VerifyException("physical rotary embedding requires floating-point input")
+            if not _same_physical_shape_and_placement(value, output):
+                raise VerifyException("physical rotary embedding must preserve shape and sharding")
+            if not isinstance(output.storage.element_type, Float32Type):
+                raise VerifyException("physical rotary embedding must produce f32")
+            names = tuple(value.data for value in value.shape.dimensions)
+            sequence = parsed_configuration["sequence_dimension"]
+            head = parsed_configuration["head_dimension"]
+            if sequence not in names or not names or names[-1] != head:
+                raise VerifyException("physical rotary embedding has invalid dimensions")
+            if _dimension_sharding(value, sequence) or _dimension_sharding(value, head):
+                raise VerifyException(
+                    "physical rotary embedding semantic dimensions cannot be sharded"
+                )
+            if value.storage.get_shape()[-1] % 2:
+                raise VerifyException("physical rotary head dimension must be even")
+            try:
+                maximum_timescale = Decimal(parsed_configuration["maximum_timescale"])
+            except InvalidOperation as error:
+                raise VerifyException("physical rotary timescale must be a decimal") from error
+            if not maximum_timescale.is_finite() or maximum_timescale <= 0:
+                raise VerifyException("physical rotary timescale must be positive and finite")
+        if function == "packed_causal_mask":
+            starts = inputs[0]
+            assert isinstance(starts, BufferType)
+            starts_names = tuple(value.data for value in starts.shape.dimensions)
+            sequence = parsed_configuration["sequence_dimension"]
+            query = parsed_configuration["query_dimension"]
+            key = parsed_configuration["key_dimension"]
+            if query == key:
+                raise VerifyException("physical packed mask query and key dimensions must differ")
+            if len(starts_names) != 2 or starts_names[-1] != sequence:
+                raise VerifyException("physical packed mask needs [batch, sequence] input")
+            batch = starts_names[0]
+            sequence_extent = starts.storage.get_shape()[-1]
+            starts_sharding = tuple(starts.sharding.axes)
+            expected_sharding = (
+                *starts_sharding[:-1],
+                StringAttr(""),
+                StringAttr(""),
+            )
+            if (
+                not isinstance(starts.storage.element_type, IntegerType)
+                or starts.storage.element_type.width.data != 1
+                or not isinstance(output.storage.element_type, IntegerType)
+                or output.storage.element_type.width.data != 1
+                or tuple(value.data for value in output.shape.dimensions) != (batch, query, key)
+                or output.storage.get_shape()
+                != (starts.storage.get_shape()[0], sequence_extent, sequence_extent)
+                or starts_sharding[-1].data
+                or tuple(output.sharding.axes) != expected_sharding
+            ):
+                raise VerifyException("physical packed mask has the wrong output contract")
+        if function == "masked_softmax":
+            value, mask = inputs
+            assert isinstance(value, BufferType) and isinstance(mask, BufferType)
+            if not _is_float_buffer(value) or not _is_float_buffer(output):
+                raise VerifyException("physical masked softmax values must be floating point")
+            if not _same_physical_shape_and_placement(value, output):
+                raise VerifyException("physical masked softmax must preserve shape and sharding")
+            dimension = parsed_configuration["dimension"]
+            value_shape = _named_buffer_shape(value)
+            mask_shape = _named_buffer_shape(mask)
+            if dimension not in value_shape:
+                raise VerifyException("physical masked softmax dimension does not exist")
+            if _dimension_sharding(value, dimension):
+                raise VerifyException("physical masked softmax dimension cannot be sharded")
+            value_sharding = {
+                name: axis.data for name, axis in zip(value_shape, value.sharding.axes, strict=True)
+            }
+            mask_sharding = {
+                name: axis.data for name, axis in zip(mask_shape, mask.sharding.axes, strict=True)
+            }
+            if (
+                not isinstance(mask.storage.element_type, IntegerType)
+                or mask.storage.element_type.width.data != 1
+                or any(
+                    name not in value_shape or value_shape[name] != size
+                    for name, size in mask_shape.items()
+                )
+                or any(value_sharding[name] != axis for name, axis in mask_sharding.items())
+            ):
+                raise VerifyException("physical masked softmax mask is incompatible")
+        if function == "embedding_lookup":
+            table, indices = inputs
+            assert isinstance(table, BufferType) and isinstance(indices, BufferType)
+            if not isinstance(indices.storage.element_type, IntegerType):
+                raise VerifyException("physical embedding indices must be integers")
+            if len(output.storage.get_shape()) != (
+                len(indices.storage.get_shape()) + len(table.storage.get_shape()) - 1
+            ):
+                raise VerifyException("physical embedding lookup has the wrong output rank")
+            vocabulary = parsed_configuration["vocabulary_dimension"]
+            table_shape = _named_buffer_shape(table)
+            if vocabulary not in table_shape:
+                raise VerifyException("physical embedding vocabulary dimension does not exist")
+            expected_names = (
+                *tuple(value.data for value in indices.shape.dimensions),
+                *(name for name in table_shape if name != vocabulary),
+            )
+            expected_shape = (
+                *indices.storage.get_shape(),
+                *(size for name, size in table_shape.items() if name != vocabulary),
+            )
+            table_names = tuple(value.data for value in table.shape.dimensions)
+            vocabulary_axis = table_names.index(vocabulary)
+            expected_pending = tuple(
+                sorted(
+                    filter(
+                        None,
+                        tuple(table.sharding.axes)[vocabulary_axis].data.split("/"),
+                    )
+                )
+            )
+            if pending_reductions != expected_pending:
+                raise VerifyException(
+                    "physical embedding pending reductions must match vocabulary sharding"
+                )
+            expected_sharding = (
+                *tuple(indices.sharding.axes),
+                *(
+                    axis
+                    for offset, axis in enumerate(table.sharding.axes)
+                    if offset != vocabulary_axis
+                ),
+            )
+            if (
+                tuple(value.data for value in output.shape.dimensions) != expected_names
+                or output.storage.get_shape() != expected_shape
+                or output.storage.element_type != table.storage.element_type
+                or tuple(output.sharding.axes) != expected_sharding
+            ):
+                raise VerifyException("physical embedding lookup has the wrong output contract")
+
+
 @irdl_op_definition
 class CollectiveReduceScatterOp(IRDLOperation):
     name = "tpu_schedule.collective_reduce_scatter"
@@ -988,9 +1526,7 @@ class CollectiveReduceScatterOp(IRDLOperation):
                 "group_size": IntAttr(group_size),
                 "scatter_dimension": IntAttr(scatter_dimension),
                 "reducer": StringAttr(reducer),
-                "collective_plan": StringAttr(
-                    collective_plan or f"axis:{mesh_axis}"
-                ),
+                "collective_plan": StringAttr(collective_plan or f"axis:{mesh_axis}"),
             },
         )
 
@@ -1025,9 +1561,7 @@ class CollectiveReduceScatterOp(IRDLOperation):
 
 
 def _buffer_sharding(buffer: BufferType) -> tuple[tuple[str, ...], ...]:
-    return tuple(
-        tuple(filter(None, value.data.split("/"))) for value in buffer.sharding.axes
-    )
+    return tuple(tuple(filter(None, value.data.split("/"))) for value in buffer.sharding.axes)
 
 
 @irdl_op_definition
@@ -1068,9 +1602,7 @@ class CollectiveOp(IRDLOperation):
                 "split_dimension": IntAttr(split_dimension),
                 "concat_dimension": IntAttr(concat_dimension),
                 "reducer": StringAttr(reducer),
-                "collective_plan": StringAttr(
-                    collective_plan or f"axis:{mesh_axis}"
-                ),
+                "collective_plan": StringAttr(collective_plan or f"axis:{mesh_axis}"),
             },
         )
 
@@ -1113,29 +1645,21 @@ class CollectiveOp(IRDLOperation):
 
         if self.kind.data is CollectiveKind.ALL_REDUCE:
             if split != -1 or concat != -1 or self.reducer.data == "none":
-                raise VerifyException(
-                    "all-reduce needs a reducer and no split or concat dimension"
-                )
+                raise VerifyException("all-reduce needs a reducer and no split or concat dimension")
         elif self.kind.data is CollectiveKind.REDUCE_SCATTER:
             if split < 0 or concat != -1 or self.reducer.data == "none":
-                raise VerifyException(
-                    "reduce-scatter needs a reducer and one split dimension"
-                )
+                raise VerifyException("reduce-scatter needs a reducer and one split dimension")
             if expected_shape[split] % group_size:
                 raise VerifyException(
                     "reduce-scatter split dimension must divide by the group size"
                 )
             if axis in expected_sharding[split]:
-                raise VerifyException(
-                    "reduce-scatter cannot add an already-present sharding axis"
-                )
+                raise VerifyException("reduce-scatter cannot add an already-present sharding axis")
             expected_shape[split] //= group_size
             expected_sharding[split].append(axis)
         elif self.kind.data is CollectiveKind.ALL_GATHER:
             if split != -1 or concat < 0 or self.reducer.data != "none":
-                raise VerifyException(
-                    "all-gather needs one concat dimension and no reducer"
-                )
+                raise VerifyException("all-gather needs one concat dimension and no reducer")
             if not expected_sharding[concat] or expected_sharding[concat][-1] != axis:
                 raise VerifyException(
                     "all-gather must remove its mesh axis from the gathered dimension"
@@ -1148,17 +1672,13 @@ class CollectiveOp(IRDLOperation):
                     "all-to-all needs distinct split and concat dimensions and no reducer"
                 )
             if expected_shape[split] % group_size:
-                raise VerifyException(
-                    "all-to-all split dimension must divide by the group size"
-                )
+                raise VerifyException("all-to-all split dimension must divide by the group size")
             if not expected_sharding[concat] or expected_sharding[concat][-1] != axis:
                 raise VerifyException(
                     "all-to-all must move its mesh axis from concat to split dimension"
                 )
             if axis in expected_sharding[split]:
-                raise VerifyException(
-                    "all-to-all split dimension already contains its mesh axis"
-                )
+                raise VerifyException("all-to-all split dimension already contains its mesh axis")
             expected_shape[split] //= group_size
             expected_shape[concat] *= group_size
             expected_sharding[concat].pop()
@@ -1254,8 +1774,7 @@ class RaggedPagedAttentionOp(IRDLOperation):
             or len(output_shape) != 3
         ):
             raise VerifyException(
-                "RPA expects query/output [batch, heads, dim] and caches "
-                "[pages, page, heads, dim]"
+                "RPA expects query/output [batch, heads, dim] and caches [pages, page, heads, dim]"
             )
         batch, query_heads, query_dimension = query_shape
         key_pages, page_size, key_heads, key_dimension = key_shape
@@ -1268,9 +1787,7 @@ class RaggedPagedAttentionOp(IRDLOperation):
         if key_heads <= 0 or value_heads <= 0:
             raise VerifyException("RPA key and value head counts must be positive")
         if query_heads % key_heads or query_heads % value_heads:
-            raise VerifyException(
-                "RPA query heads must divide evenly across key and value heads"
-            )
+            raise VerifyException("RPA query heads must divide evenly across key and value heads")
         if (output_batch, output_heads, output_dimension) != (
             batch,
             query_heads,
@@ -1375,9 +1892,7 @@ class FusedRaggedPagedAttentionOp(IRDLOperation):
                 "kv_cluster_size": IntAttr(kv_cluster_size),
                 "vmem_limit_bytes": IntAttr(vmem_limit_bytes),
                 "execution_authority": StringAttr("opaque-upstream-wrapper"),
-                "donated_operand_indices": ArrayAttr(
-                    IntAttr(index) for index in (0, 1, 2, 3)
-                ),
+                "donated_operand_indices": ArrayAttr(IntAttr(index) for index in (0, 1, 2, 3)),
             },
         )
 
@@ -1432,8 +1947,7 @@ class FusedRaggedPagedAttentionOp(IRDLOperation):
             updated_cache,
         )
         if any(
-            not isinstance(buffer.storage.element_type, BFloat16Type)
-            for buffer in data_buffers
+            not isinstance(buffer.storage.element_type, BFloat16Type) for buffer in data_buffers
         ):
             raise VerifyException("Inkling fused RPA data buffers must use bf16")
         metadata_buffers = (
@@ -1475,9 +1989,7 @@ class FusedRaggedPagedAttentionOp(IRDLOperation):
             raise VerifyException("fused RPA page indices must be rank 1")
         sequence_count = sequence_count_shape[0]
         if tokens != sequence_count:
-            raise VerifyException(
-                "Inkling fused decode RPA requires one query token per sequence"
-            )
+            raise VerifyException("Inkling fused decode RPA requires one query token per sequence")
         if page_indices_shape[0] % sequence_count:
             raise VerifyException("fused RPA flat page indices must divide across sequences")
         if cumulative_query_lengths.storage.get_shape() != (sequence_count + 1,) or (
@@ -1488,14 +2000,12 @@ class FusedRaggedPagedAttentionOp(IRDLOperation):
             raise VerifyException("fused RPA distribution must contain three boundaries")
         if relative_states.storage.get_shape()[:2] != (tokens, query_heads):
             raise VerifyException("fused RPA relative states must match query tokens and heads")
-        if len(relative_states.storage.get_shape()) != 3 or len(
-            relative_projection.storage.get_shape()
-        ) != 2:
-            raise VerifyException("fused RPA relative states/projection must be rank 3/rank 2")
         if (
-            relative_states.storage.get_shape()[2]
-            != relative_projection.storage.get_shape()[0]
+            len(relative_states.storage.get_shape()) != 3
+            or len(relative_projection.storage.get_shape()) != 2
         ):
+            raise VerifyException("fused RPA relative states/projection must be rank 3/rank 2")
+        if relative_states.storage.get_shape()[2] != relative_projection.storage.get_shape()[0]:
             raise VerifyException("fused RPA relative dimensions must match")
         if self.causal.data != 1:
             raise VerifyException(
@@ -1555,9 +2065,7 @@ class PipelineYieldOp(IRDLOperation):
 
     def verify_(self) -> None:
         if not isinstance(self.parent_op(), PipelineLoopOp):
-            raise VerifyException(
-                "tpu_schedule.pipeline_yield must terminate a pipeline loop"
-            )
+            raise VerifyException("tpu_schedule.pipeline_yield must terminate a pipeline loop")
 
 
 @irdl_op_definition
@@ -1617,9 +2125,7 @@ class PipelineLoopOp(IRDLOperation):
             )
         if len(block.args) != len(self.captures):
             raise VerifyException("pipeline block arguments must match captured buffers")
-        if len(self.outputs) != len(self.captures) or len(terminator.values) != len(
-            self.captures
-        ):
+        if len(self.outputs) != len(self.captures) or len(terminator.values) != len(self.captures):
             raise VerifyException("pipeline results and yields must match captured buffers")
         for capture, argument, result, yielded in zip(
             self.captures,
@@ -1628,9 +2134,7 @@ class PipelineLoopOp(IRDLOperation):
             terminator.values,
             strict=True,
         ):
-            if not (
-                capture.type == argument.type == result.type == yielded.type
-            ):
+            if not (capture.type == argument.type == result.type == yielded.type):
                 raise VerifyException(
                     "pipeline captures, block arguments, yields, and results must have equal types"
                 )
@@ -1649,8 +2153,7 @@ class PipelineLoopOp(IRDLOperation):
         if stages != tuple(sorted(stages)):
             raise VerifyException("pipeline body stages must be monotonic")
         if any(
-            stage is None or stage < 0 or stage >= self.pipeline_stages.data
-            for stage in stages
+            stage is None or stage < 0 or stage >= self.pipeline_stages.data for stage in stages
         ):
             raise VerifyException("pipeline operation stage is outside the declared pipeline")
 
@@ -1681,19 +2184,13 @@ class PipelineLoopOp(IRDLOperation):
                 written.add(root(operation.destination))
             elif isinstance(operation, RemoteDmaStartOp):
                 if root(operation.source) not in initialized:
-                    raise VerifyException(
-                        "pipeline remote DMA reads an uninitialized source"
-                    )
+                    raise VerifyException("pipeline remote DMA reads an uninitialized source")
                 semaphore = operation.semaphore.owner
                 if semaphore in pending_dma or semaphore in pending_remote_dma:
                     raise VerifyException("pipeline semaphore is reused before its wait")
                 uses = list(operation.token.uses)
-                if len(uses) != 1 or not isinstance(
-                    uses[0].operation, RemoteDmaWaitOp
-                ):
-                    raise VerifyException(
-                        "pipeline remote DMA token must have exactly one wait"
-                    )
+                if len(uses) != 1 or not isinstance(uses[0].operation, RemoteDmaWaitOp):
+                    raise VerifyException("pipeline remote DMA token must have exactly one wait")
                 if positions[uses[0].operation] <= positions[operation]:
                     raise VerifyException("pipeline remote DMA wait must follow its start")
                 pending_remote_dma[semaphore] = operation
@@ -1708,11 +2205,22 @@ class PipelineLoopOp(IRDLOperation):
                 assert isinstance(start, RemoteDmaStartOp)
                 pending_remote_dma.pop(start.semaphore.owner, None)
                 initialized.add(root(start.destination))
-            elif isinstance(operation, MxuMatmulOp):
+            elif isinstance(operation, (MxuMatmulOp, MxuEinsumOp)):
                 if any(root(value) not in initialized for value in (operation.lhs, operation.rhs)):
                     raise VerifyException("pipeline MXU reads an uninitialized operand")
+                if isinstance(operation, MxuEinsumOp) and len(operation.pending_reduction_axes) > 0:
+                    raise VerifyException(
+                        "pipeline MXU einsum does not yet support partial reductions"
+                    )
                 initialized.add(root(operation.accumulator))
                 written.add(root(operation.accumulator))
+            elif isinstance(operation, VectorComputeOp):
+                if any(root(value) not in initialized for value in operation.inputs):
+                    raise VerifyException(
+                        "pipeline vector operation reads an uninitialized operand"
+                    )
+                initialized.add(root(operation.output))
+                written.add(root(operation.output))
             elif _is_collective(operation):
                 assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                 if root(operation.source) not in initialized:
@@ -1735,9 +2243,7 @@ class PipelineLoopOp(IRDLOperation):
         if any(root(value) not in initialized for value in terminator.values):
             raise VerifyException("pipeline yields an uninitialized buffer")
 
-        for index, (argument, rotation_count) in enumerate(
-            zip(block.args, rotations, strict=True)
-        ):
+        for index, (argument, rotation_count) in enumerate(zip(block.args, rotations, strict=True)):
             if root(argument) not in written:
                 continue
             buffer = argument.type
@@ -1774,9 +2280,7 @@ class PipelineLoopOp(IRDLOperation):
                     continue
                 assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                 if operation.collective_plan is None:
-                    raise VerifyException(
-                        "structured pipeline collective needs a collective plan"
-                    )
+                    raise VerifyException("structured pipeline collective needs a collective plan")
                 plan = topology_plans.get(operation.collective_plan.data)
                 if (
                     plan is None
@@ -1790,13 +2294,10 @@ class PipelineLoopOp(IRDLOperation):
                 if isinstance(operation, RemoteDmaStartOp) and (
                     operation.transfer_plan.data not in transfer_plans
                 ):
-                    raise VerifyException(
-                        "pipeline remote DMA references an unknown transfer plan"
-                    )
+                    raise VerifyException("pipeline remote DMA references an unknown transfer plan")
         horizon = (
-            (self.trip_count.data - 1) * self.initiation_interval.data
-            + self.pipeline_stages.data
-        )
+            self.trip_count.data - 1
+        ) * self.initiation_interval.data + self.pipeline_stages.data
         for absolute_stage in range(horizon):
             active_dma = 0
             active_remote_dma = 0
@@ -1833,21 +2334,18 @@ class PipelineLoopOp(IRDLOperation):
                             if plan is not None:
                                 for route in plan.routes:
                                     for link_id in route.route_link_ids:
-                                        link_uses[link_id.data] = (
-                                            link_uses.get(link_id.data, 0) + 1
-                                        )
-                    elif isinstance(operation, (MxuMatmulOp, RaggedPagedAttentionOp)):
+                                        link_uses[link_id.data] = link_uses.get(link_id.data, 0) + 1
+                    elif isinstance(
+                        operation,
+                        (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp),
+                    ):
                         mxu_uses += operation.stage.data == logical_stage
                     elif _is_collective(operation):
-                        assert isinstance(
-                            operation, (CollectiveReduceScatterOp, CollectiveOp)
-                        )
+                        assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                         if operation.stage.data == logical_stage:
                             ici_uses += 1
                             if operation.collective_plan is not None:
-                                plan = topology_plans.get(
-                                    operation.collective_plan.data
-                                )
+                                plan = topology_plans.get(operation.collective_plan.data)
                                 if plan is not None:
                                     for group in plan.groups:
                                         for link_id in group.route_link_ids:
@@ -1914,6 +2412,7 @@ class KernelOp(IRDLOperation):
     topology = opt_prop_def(TopologyAttr)
     physical_schema = opt_prop_def(StringAttr)
     topology_authority = opt_prop_def(StringAttr)
+    argument_modes = opt_prop_def(ArrayAttr[StringAttr])
     dma_engine_count = prop_def(IntAttr)
     mxu_count = prop_def(IntAttr)
     vector_unit_count = prop_def(IntAttr)
@@ -1938,6 +2437,7 @@ class KernelOp(IRDLOperation):
         vector_unit_count: int = 1,
         ici_link_count: int = 1,
         remote_dma_engine_count: int = 1,
+        argument_modes: tuple[str, ...] | None = None,
     ):
         interconnect_bandwidth_bytes_per_second = dict(
             sorted((interconnect_bandwidth_bytes_per_second or {}).items())
@@ -1949,32 +2449,42 @@ class KernelOp(IRDLOperation):
             mesh_sizes,
             interconnect_bandwidth_bytes_per_second,
         )
+        properties = {
+            "sym_name": StringAttr(sym_name) if isinstance(sym_name, str) else sym_name,
+            "target": StringAttr(target) if isinstance(target, str) else target,
+            "vmem_capacity_bytes": IntAttr(vmem_capacity_bytes)
+            if isinstance(vmem_capacity_bytes, int)
+            else vmem_capacity_bytes,
+            "smem_capacity_bytes": IntAttr(smem_capacity_bytes)
+            if isinstance(smem_capacity_bytes, int)
+            else smem_capacity_bytes,
+            "mesh_axis_names": mesh_axis_names,
+            "mesh_axis_sizes": mesh_axis_sizes,
+            "topology": topology,
+            "physical_schema": StringAttr("static-topology-v3"),
+            "topology_authority": StringAttr("static-cost-model-only"),
+            "dma_engine_count": IntAttr(dma_engine_count),
+            "mxu_count": IntAttr(mxu_count),
+            "vector_unit_count": IntAttr(vector_unit_count),
+            "ici_link_count": IntAttr(ici_link_count),
+            "remote_dma_engine_count": IntAttr(remote_dma_engine_count),
+        }
+        if argument_modes is not None:
+            properties["argument_modes"] = ArrayAttr(StringAttr(mode) for mode in argument_modes)
         super().__init__(
-            properties={
-                "sym_name": StringAttr(sym_name) if isinstance(sym_name, str) else sym_name,
-                "target": StringAttr(target) if isinstance(target, str) else target,
-                "vmem_capacity_bytes": IntAttr(vmem_capacity_bytes)
-                if isinstance(vmem_capacity_bytes, int)
-                else vmem_capacity_bytes,
-                "smem_capacity_bytes": IntAttr(smem_capacity_bytes)
-                if isinstance(smem_capacity_bytes, int)
-                else smem_capacity_bytes,
-                "mesh_axis_names": mesh_axis_names,
-                "mesh_axis_sizes": mesh_axis_sizes,
-                "topology": topology,
-                "physical_schema": StringAttr("static-topology-v3"),
-                "topology_authority": StringAttr("static-cost-model-only"),
-                "dma_engine_count": IntAttr(dma_engine_count),
-                "mxu_count": IntAttr(mxu_count),
-                "vector_unit_count": IntAttr(vector_unit_count),
-                "ici_link_count": IntAttr(ici_link_count),
-                "remote_dma_engine_count": IntAttr(remote_dma_engine_count),
-            },
+            properties=properties,
             regions=[body],
         )
 
     def verify_(self) -> None:
         block = self.body.block
+        modes: tuple[str, ...] | None = None
+        if self.argument_modes is not None:
+            modes = tuple(value.data for value in self.argument_modes)
+            if len(modes) != len(block.args):
+                raise VerifyException("kernel argument modes must match its arguments")
+            if any(mode not in {"input", "output", "inout"} for mode in modes):
+                raise VerifyException("kernel argument modes must be input, output, or inout")
         mesh_names = tuple(value.data for value in self.mesh_axis_names)
         mesh_sizes = tuple(value.data for value in self.mesh_axis_sizes)
         if len(mesh_names) != len(mesh_sizes):
@@ -1990,12 +2500,9 @@ class KernelOp(IRDLOperation):
             "ICI": self.ici_link_count.data,
         }
         if self.physical_schema is not None and (
-            self.remote_dma_engine_count is None
-            or self.remote_dma_engine_count.data <= 0
+            self.remote_dma_engine_count is None or self.remote_dma_engine_count.data <= 0
         ):
-            raise VerifyException(
-                "structured kernels need a positive remote DMA engine capacity"
-            )
+            raise VerifyException("structured kernels need a positive remote DMA engine capacity")
         if any(capacity <= 0 for capacity in resource_capacities.values()):
             raise VerifyException("kernel hardware resource capacities must be positive")
         mesh = dict(zip(mesh_names, mesh_sizes, strict=True))
@@ -2019,9 +2526,7 @@ class KernelOp(IRDLOperation):
                 self.topology_authority is None
                 or self.topology_authority.data != "static-cost-model-only"
             ):
-                raise VerifyException(
-                    "structured kernels must declare static topology authority"
-                )
+                raise VerifyException("structured kernels must declare static topology authority")
             if self.topology is None or self.interconnect is not None:
                 raise VerifyException(
                     "structured kernels require topology and must not duplicate legacy interconnect"
@@ -2032,40 +2537,28 @@ class KernelOp(IRDLOperation):
                 raise source_aware_error(str(error), self) from error
             topology_plans = self.topology.plans_by_id()
             topology_links = self.topology.links_by_id()
-            topology_device_ids = {
-                device.device_id.data for device in self.topology.devices
-            }
+            topology_device_ids = {device.device_id.data for device in self.topology.devices}
             if len(self.topology.devices) != math.prod(mesh_sizes):
                 raise VerifyException("topology device count must match the kernel mesh")
             coordinates = {
                 tuple(value.data for value in device.coordinates)
                 for device in self.topology.devices
             }
-            expected_coordinates = set(
-                product(*(range(size) for size in mesh_sizes))
-            )
+            expected_coordinates = set(product(*(range(size) for size in mesh_sizes)))
             if coordinates != expected_coordinates:
                 raise VerifyException("topology coordinates must exactly cover the kernel mesh")
-            plans_by_axis = {
-                plan.mesh_axis.data: plan for plan in self.topology.collective_plans
-            }
-            expected_plan_axes = {
-                axis for axis, size in mesh.items() if size > 1
-            }
+            plans_by_axis = {plan.mesh_axis.data: plan for plan in self.topology.collective_plans}
+            expected_plan_axes = {axis for axis, size in mesh.items() if size > 1}
             if set(plans_by_axis) != expected_plan_axes:
                 raise VerifyException(
                     "topology must declare one collective plan for every nontrivial mesh axis"
                 )
             for axis, plan in plans_by_axis.items():
                 if any(len(group.device_ids) != mesh[axis] for group in plan.groups):
-                    raise VerifyException(
-                        "collective plan group size must match its mesh axis"
-                    )
+                    raise VerifyException("collective plan group size must match its mesh axis")
                 axis_index = mesh_names.index(axis)
                 coordinates_by_id = {
-                    device.device_id.data: tuple(
-                        value.data for value in device.coordinates
-                    )
+                    device.device_id.data: tuple(value.data for value in device.coordinates)
                     for device in self.topology.devices
                 }
                 for group in plan.groups:
@@ -2080,9 +2573,7 @@ class KernelOp(IRDLOperation):
                         )
                         for coordinate in group_coordinates
                     }
-                    varying = {
-                        coordinate[axis_index] for coordinate in group_coordinates
-                    }
+                    varying = {coordinate[axis_index] for coordinate in group_coordinates}
                     if len(fixed) != 1 or varying != set(range(mesh[axis])):
                         raise VerifyException(
                             "collective plan groups must follow their declared mesh axis"
@@ -2098,11 +2589,29 @@ class KernelOp(IRDLOperation):
         buffers: list[BufferType] = []
         storage_buffers: list[BufferType] = []
         views_by_root: dict[SSAValue, list[tuple[ViewOp, TileRegionAttr]]] = {}
-        initialized: set[SSAValue] = set(block.args)
+        initialized: set[SSAValue] = (
+            set(block.args)
+            if modes is None
+            else {
+                argument
+                for argument, mode in zip(block.args, modes, strict=True)
+                if mode in {"input", "inout"}
+            }
+        )
+        required_output_writes = (
+            set()
+            if modes is None
+            else {
+                argument
+                for argument, mode in zip(block.args, modes, strict=True)
+                if mode in {"output", "inout"}
+            }
+        )
+        mode_by_argument = {} if modes is None else dict(zip(block.args, modes, strict=True))
+        written_external_outputs: set[SSAValue] = set()
+        partial_reductions: dict[SSAValue, frozenset[str]] = {}
         pending_dma_destinations: dict[Operation, tuple[SSAValue, TileRegionAttr]] = {}
-        pending_remote_destinations: dict[
-            Operation, tuple[SSAValue, TileRegionAttr]
-        ] = {}
+        pending_remote_destinations: dict[Operation, tuple[SSAValue, TileRegionAttr]] = {}
         rotation_copies: list[tuple[BufferType, int]] = []
 
         def root_region(value: SSAValue) -> tuple[SSAValue, TileRegionAttr]:
@@ -2154,6 +2663,20 @@ class KernelOp(IRDLOperation):
                 raise VerifyException(
                     f"{operation.name} reads a buffer while remote DMA is in flight"
                 )
+
+        def require_fully_reduced(value: SSAValue, operation: Operation) -> None:
+            pending = partial_reductions.get(root(value), frozenset())
+            if pending:
+                raise VerifyException(
+                    f"{operation.name} consumes a partial reduction over {sorted(pending)}"
+                )
+
+        def mark_written(value: SSAValue) -> None:
+            base = root(value)
+            if mode_by_argument.get(base) == "input":
+                raise VerifyException("kernel cannot write an input-only argument")
+            if base in required_output_writes:
+                written_external_outputs.add(base)
 
         def reject_overlapping_pending_write(
             destination_root: SSAValue,
@@ -2215,10 +2738,9 @@ class KernelOp(IRDLOperation):
                 views_by_root[base].append((operation, normalized_region))
             if isinstance(operation, DmaStartOp):
                 require_initialized(operation.source, operation)
+                require_fully_reduced(operation.source, operation)
                 destination_root, destination_region = root_region(operation.destination)
-                reject_overlapping_pending_write(
-                    destination_root, destination_region, operation
-                )
+                reject_overlapping_pending_write(destination_root, destination_region, operation)
                 semaphore_owner = operation.semaphore.owner
                 if semaphore_owner in in_flight or semaphore_owner in remote_in_flight:
                     raise VerifyException("semaphore reused before its DMA was waited on")
@@ -2234,10 +2756,9 @@ class KernelOp(IRDLOperation):
                 )
             if isinstance(operation, RemoteDmaStartOp):
                 require_initialized(operation.source, operation)
+                require_fully_reduced(operation.source, operation)
                 destination_root, destination_region = root_region(operation.destination)
-                reject_overlapping_pending_write(
-                    destination_root, destination_region, operation
-                )
+                reject_overlapping_pending_write(destination_root, destination_region, operation)
                 semaphore_owner = operation.semaphore.owner
                 if semaphore_owner in in_flight or semaphore_owner in remote_in_flight:
                     raise VerifyException("semaphore reused before its DMA was waited on")
@@ -2264,24 +2785,79 @@ class KernelOp(IRDLOperation):
                 in_flight.pop(start.semaphore.owner, None)
                 destination, _ = pending_dma_destinations.pop(start.semaphore.owner)
                 initialized.add(destination)
+                mark_written(destination)
+                partial_reductions[destination] = partial_reductions.get(
+                    root(start.source), frozenset()
+                )
             if isinstance(operation, RemoteDmaWaitOp):
                 start = operation.token.owner
                 assert isinstance(start, RemoteDmaStartOp)
                 remote_in_flight.pop(start.semaphore.owner, None)
                 destination, _ = pending_remote_destinations.pop(start.semaphore.owner)
                 assert self.topology is not None
-                transfer_plan = self.topology.transfer_plans_by_id()[
-                    start.transfer_plan.data
-                ]
+                transfer_plan = self.topology.transfer_plans_by_id()[start.transfer_plan.data]
                 covered_destinations = {
                     route.destination_device.data for route in transfer_plan.routes
                 }
                 if covered_destinations == topology_device_ids:
                     initialized.add(destination)
+                    mark_written(destination)
+                    partial_reductions[destination] = partial_reductions.get(
+                        root(start.source), frozenset()
+                    )
             if isinstance(operation, MxuMatmulOp):
                 require_initialized(operation.lhs, operation)
                 require_initialized(operation.rhs, operation)
-                initialized.add(root(operation.accumulator))
+                require_fully_reduced(operation.lhs, operation)
+                require_fully_reduced(operation.rhs, operation)
+                accumulator = root(operation.accumulator)
+                initialized.add(accumulator)
+                partial_reductions.pop(accumulator, None)
+            if isinstance(operation, MxuEinsumOp):
+                require_initialized(operation.lhs, operation)
+                require_initialized(operation.rhs, operation)
+                require_fully_reduced(operation.lhs, operation)
+                require_fully_reduced(operation.rhs, operation)
+                accumulator = root(operation.accumulator)
+                initialized.add(accumulator)
+                partial_reductions[accumulator] = frozenset(
+                    value.data for value in operation.pending_reduction_axes
+                )
+            if isinstance(operation, VectorComputeOp):
+                for value in operation.inputs:
+                    require_initialized(value, operation)
+                input_pending = tuple(
+                    partial_reductions.get(root(value), frozenset()) for value in operation.inputs
+                )
+                declared_pending = frozenset(
+                    value.data for value in operation.pending_reduction_axes
+                )
+                function = operation.function.data
+                if function == "embedding_lookup":
+                    if any(input_pending):
+                        raise VerifyException(
+                            "physical embedding cannot consume a partial reduction"
+                        )
+                elif function == "add":
+                    if len(set(input_pending)) != 1 or input_pending[0] != declared_pending:
+                        raise VerifyException(
+                            "physical add must preserve matching pending reductions"
+                        )
+                elif function in {"rename_dimension", "slice"}:
+                    if input_pending[0] != declared_pending:
+                        raise VerifyException(
+                            f"physical {function} must preserve pending reductions"
+                        )
+                else:
+                    for value in operation.inputs:
+                        require_fully_reduced(value, operation)
+                    if declared_pending:
+                        raise VerifyException(
+                            f"physical {function} cannot introduce pending reductions"
+                        )
+                output = root(operation.output)
+                initialized.add(output)
+                partial_reductions[output] = declared_pending
             if _is_collective(operation):
                 assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                 require_initialized(operation.source, operation)
@@ -2289,25 +2865,29 @@ class KernelOp(IRDLOperation):
                 if axis not in mesh:
                     raise VerifyException(f"collective references unknown mesh axis {axis}")
                 if operation.group_size.data != mesh[axis]:
-                    raise VerifyException(
-                        "collective group size must match its kernel mesh axis"
-                    )
+                    raise VerifyException("collective group size must match its kernel mesh axis")
                 if self.physical_schema is None:
                     if links[axis] <= 0:
-                        raise VerifyException(
-                            "collective requires a usable interconnect link"
-                        )
+                        raise VerifyException("collective requires a usable interconnect link")
                 else:
                     if operation.collective_plan is None:
-                        raise VerifyException(
-                            "structured collective needs a collective plan"
-                        )
+                        raise VerifyException("structured collective needs a collective plan")
                     plan = topology_plans.get(operation.collective_plan.data)
                     if plan is None or plan.mesh_axis.data != axis:
                         raise VerifyException(
                             "collective references an incompatible collective plan"
                         )
-                initialized.add(root(operation.destination))
+                destination = root(operation.destination)
+                remaining = set(partial_reductions.get(root(operation.source), frozenset()))
+                reducing_collective = isinstance(operation, CollectiveReduceScatterOp) or (
+                    isinstance(operation, CollectiveOp)
+                    and operation.kind.data
+                    in {CollectiveKind.ALL_REDUCE, CollectiveKind.REDUCE_SCATTER}
+                )
+                if reducing_collective and operation.reducer.data == "sum":
+                    remaining.discard(axis)
+                initialized.add(destination)
+                partial_reductions[destination] = frozenset(remaining)
             if isinstance(operation, RaggedPagedAttentionOp):
                 for value in (
                     operation.query,
@@ -2318,30 +2898,40 @@ class KernelOp(IRDLOperation):
                     operation.bias,
                 ):
                     require_initialized(value, operation)
-                initialized.add(root(operation.output))
+                    require_fully_reduced(value, operation)
+                output = root(operation.output)
+                initialized.add(output)
+                partial_reductions.pop(output, None)
             if isinstance(operation, FusedRaggedPagedAttentionOp):
                 for value in operation.operands[:-2]:
                     require_initialized(value, operation)
-                initialized.add(root(operation.output))
-                initialized.add(root(operation.updated_cache))
+                    require_fully_reduced(value, operation)
+                for value in (operation.output, operation.updated_cache):
+                    output = root(value)
+                    initialized.add(output)
+                    mark_written(output)
+                    partial_reductions.pop(output, None)
             if isinstance(operation, PipelineLoopOp):
                 for value in operation.captures:
                     require_initialized(value, operation)
+                    require_fully_reduced(value, operation)
                 capture_roots = [root(value) for value in operation.captures]
                 if len(capture_roots) != len(set(capture_roots)):
                     raise VerifyException("pipeline captures must reference distinct buffers")
-                for value, rotation in zip(
-                    capture_roots, operation.rotation_counts, strict=True
-                ):
+                for value, rotation in zip(capture_roots, operation.rotation_counts, strict=True):
                     buffer = value.type
                     assert isinstance(buffer, BufferType)
-                    if (
-                        buffer.ownership.data is not Ownership.EXTERNAL
-                        and rotation.data > 1
-                    ):
+                    if buffer.ownership.data is not Ownership.EXTERNAL and rotation.data > 1:
                         rotation_copies.append((buffer, rotation.data - 1))
                 for value in operation.outputs:
-                    initialized.add(root(value))
+                    output = root(value)
+                    initialized.add(output)
+                    mark_written(output)
+                    partial_reductions.pop(output, None)
+
+        missing_output_writes = required_output_writes - written_external_outputs
+        if missing_output_writes:
+            raise VerifyException("kernel does not write every output or inout argument")
 
         for buffer in buffers:
             buffer.verify()
@@ -2369,9 +2959,7 @@ class KernelOp(IRDLOperation):
         if in_flight or remote_in_flight:
             raise VerifyException("kernel ends with DMA operations still in flight")
         local_buffers = [
-            buffer
-            for buffer in storage_buffers
-            if buffer.ownership.data is not Ownership.EXTERNAL
+            buffer for buffer in storage_buffers if buffer.ownership.data is not Ownership.EXTERNAL
         ]
         max_operation_stage = max((_stage(operation) or 0 for operation in operations), default=0)
         max_lifetime_stage = max(
@@ -2388,20 +2976,24 @@ class KernelOp(IRDLOperation):
             )
             active_remote_dma = sum(
                 start.stage.data <= stage <= wait.operation.stage.data
-                for start in (
-                    op for op in operations if isinstance(op, RemoteDmaStartOp)
-                )
+                for start in (op for op in operations if isinstance(op, RemoteDmaStartOp))
                 for wait in start.token.uses
                 if isinstance(wait.operation, RemoteDmaWaitOp)
             )
             mxu_uses = sum(
-                isinstance(operation, (MxuMatmulOp, RaggedPagedAttentionOp))
+                isinstance(
+                    operation,
+                    (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp),
+                )
                 and operation.stage.data == stage
                 for operation in operations
             )
+            vector_uses = sum(
+                isinstance(operation, VectorComputeOp) and operation.stage.data == stage
+                for operation in operations
+            )
             ici_uses = sum(
-                _is_collective(operation)
-                and operation.stage.data == stage
+                _is_collective(operation) and operation.stage.data == stage
                 for operation in operations
             )
             if active_dma > self.dma_engine_count.data:
@@ -2422,6 +3014,11 @@ class KernelOp(IRDLOperation):
                 raise VerifyException(
                     f"MXU capacity exceeded at stage {stage}: {mxu_uses} > {self.mxu_count.data}"
                 )
+            if vector_uses > self.vector_unit_count.data:
+                raise VerifyException(
+                    f"vector capacity exceeded at stage {stage}: "
+                    f"{vector_uses} > {self.vector_unit_count.data}"
+                )
             if ici_uses > self.ici_link_count.data:
                 raise VerifyException(
                     f"ICI link capacity exceeded at stage {stage}: "
@@ -2432,9 +3029,7 @@ class KernelOp(IRDLOperation):
                 for operation in operations:
                     if not _is_collective(operation):
                         continue
-                    assert isinstance(
-                        operation, (CollectiveReduceScatterOp, CollectiveOp)
-                    )
+                    assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                     if operation.stage.data != stage or operation.collective_plan is None:
                         continue
                     plan = topology_plans[operation.collective_plan.data]
@@ -2498,6 +3093,8 @@ TPUSchedule = Dialect(
         RemoteDmaStartOp,
         RemoteDmaWaitOp,
         MxuMatmulOp,
+        MxuEinsumOp,
+        VectorComputeOp,
         CollectiveReduceScatterOp,
         CollectiveOp,
         RaggedPagedAttentionOp,
