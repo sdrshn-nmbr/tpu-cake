@@ -180,7 +180,15 @@ class ExperimentLedger:
 
 
 def read_ledger_history(path: Path, run_id: str) -> tuple[LedgerEvent, ...]:
-    uri = f"{path.resolve().as_uri()}?mode=ro"
+    sidecars = (
+        path.with_name(f"{path.name}-shm"),
+        path.with_name(f"{path.name}-wal"),
+    )
+    present = tuple(sidecar for sidecar in sidecars if sidecar.exists())
+    if present:
+        names = ", ".join(sidecar.name for sidecar in present)
+        raise ValueError(f"LEDGER_SIDECAR_PRESENT files={names}")
+    uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as connection:
         rows = connection.execute(
             "SELECT sequence, state, timestamp_ns, payload_sha256 FROM events "

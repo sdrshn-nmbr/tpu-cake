@@ -824,6 +824,8 @@ def _artifact_roles(
         for path in sorted((root / phase).rglob("*")):
             if not path.is_file() or path.resolve() in roles:
                 continue
+            if path.name.endswith(("-shm", "-wal")):
+                raise ValueError(f"SEQAX_LEDGER_SIDECAR_PRESENT path={path}")
             if path.name == "hlo_stats.json":
                 selected_role = ArtifactRole.HLO_STATS
             elif path.suffixes[-2:] == [".xplane", ".pb"]:
@@ -834,6 +836,13 @@ def _artifact_roles(
     roles[assessment_path.resolve()] = ArtifactRole.PROFILE_ASSESSMENT
     roles[(root / "finalizer/source_state.json").resolve()] = ArtifactRole.SOURCE_STATE
     roles[(root / "finalizer/source_diff.patch").resolve()] = ArtifactRole.SOURCE_DIFF
+    receipt_path = (root / "receipt.json").resolve()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        resolved = path.resolve()
+        if resolved not in roles and resolved != receipt_path:
+            raise ValueError(f"SEQAX_UNMANIFESTED_ARTIFACT path={path}")
     return roles
 
 

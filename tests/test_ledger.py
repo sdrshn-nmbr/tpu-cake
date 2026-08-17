@@ -75,3 +75,15 @@ def test_evidence_validation_reads_ledger_without_mutating_it(tmp_path) -> None:
     assert read_ledger_history(path, RUN_ID)[0].state is RunState.CREATED
     after = hashlib.sha256(path.read_bytes()).hexdigest()
     assert after == before
+    assert not path.with_name(f"{path.name}-shm").exists()
+    assert not path.with_name(f"{path.name}-wal").exists()
+
+
+def test_evidence_validation_rejects_a_ledger_sidecar(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite"
+    with ExperimentLedger(path) as ledger:
+        ledger.create(RUN_ID, {"schedule": "a"})
+    path.with_name(f"{path.name}-wal").write_bytes(b"uncheckpointed")
+
+    with pytest.raises(ValueError, match="LEDGER_SIDECAR_PRESENT"):
+        read_ledger_history(path, RUN_ID)
