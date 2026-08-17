@@ -123,6 +123,34 @@ class TileRegionAttr(ParametrizedAttribute):
 
 
 @irdl_attr_definition
+class InterconnectAttr(ParametrizedAttribute):
+    name = "tpu_schedule.interconnect"
+    mesh_axes: ArrayAttr[StringAttr]
+    bandwidth_bytes_per_second: ArrayAttr[IntAttr]
+
+    def verify(self) -> None:
+        axes = tuple(value.data for value in self.mesh_axes)
+        bandwidths = tuple(value.data for value in self.bandwidth_bytes_per_second)
+        if len(axes) != len(bandwidths):
+            raise VerifyException("interconnect axes and bandwidths must have equal length")
+        if axes != tuple(sorted(set(axes))):
+            raise VerifyException("interconnect axes must be unique and canonically ordered")
+        if any(bandwidth <= 0 for bandwidth in bandwidths):
+            raise VerifyException("interconnect bandwidths must be positive")
+
+    def bandwidths(self) -> dict[str, int]:
+        self.verify()
+        return {
+            axis.data: bandwidth.data
+            for axis, bandwidth in zip(
+                self.mesh_axes,
+                self.bandwidth_bytes_per_second,
+                strict=True,
+            )
+        }
+
+
+@irdl_attr_definition
 class BufferType(ParametrizedAttribute, TypeAttribute):
     name = "tpu_schedule.buffer"
     storage: MemRefType
@@ -595,6 +623,7 @@ class KernelOp(IRDLOperation):
     smem_capacity_bytes = prop_def(IntAttr)
     mesh_axis_names = prop_def(ArrayAttr[StringAttr])
     mesh_axis_sizes = prop_def(ArrayAttr[IntAttr])
+    interconnect = prop_def(InterconnectAttr)
     dma_engine_count = prop_def(IntAttr)
     mxu_count = prop_def(IntAttr)
     vector_unit_count = prop_def(IntAttr)
@@ -611,11 +640,15 @@ class KernelOp(IRDLOperation):
         mesh_axis_sizes: ArrayAttr[IntAttr],
         body: Region,
         *,
+        interconnect_bandwidth_bytes_per_second: dict[str, int] | None = None,
         dma_engine_count: int = 2,
         mxu_count: int = 1,
         vector_unit_count: int = 1,
         ici_link_count: int = 1,
     ):
+        interconnect_bandwidth_bytes_per_second = dict(
+            sorted((interconnect_bandwidth_bytes_per_second or {}).items())
+        )
         super().__init__(
             properties={
                 "sym_name": StringAttr(sym_name) if isinstance(sym_name, str) else sym_name,
@@ -628,6 +661,16 @@ class KernelOp(IRDLOperation):
                 else smem_capacity_bytes,
                 "mesh_axis_names": mesh_axis_names,
                 "mesh_axis_sizes": mesh_axis_sizes,
+                "interconnect": InterconnectAttr(
+                    ArrayAttr(
+                        StringAttr(axis)
+                        for axis in interconnect_bandwidth_bytes_per_second
+                    ),
+                    ArrayAttr(
+                        IntAttr(bandwidth)
+                        for bandwidth in interconnect_bandwidth_bytes_per_second.values()
+                    ),
+                ),
                 "dma_engine_count": IntAttr(dma_engine_count),
                 "mxu_count": IntAttr(mxu_count),
                 "vector_unit_count": IntAttr(vector_unit_count),
@@ -655,6 +698,11 @@ class KernelOp(IRDLOperation):
         if any(capacity <= 0 for capacity in resource_capacities.values()):
             raise VerifyException("kernel hardware resource capacities must be positive")
         mesh = dict(zip(mesh_names, mesh_sizes, strict=True))
+        links = self.interconnect.bandwidths()
+        if set(links) != set(mesh):
+            raise VerifyException(
+                "kernel interconnect must declare one bandwidth for every mesh axis"
+            )
         if not isinstance(block.last_op, YieldOp):
             raise VerifyException("kernel must end with tpu_schedule.yield")
         operations = list(block.ops)
@@ -746,6 +794,8 @@ class KernelOp(IRDLOperation):
                     raise VerifyException(
                         "reduce-scatter group size must match its kernel mesh axis"
                     )
+                if links[axis] <= 0:
+                    raise VerifyException("reduce-scatter requires a usable interconnect link")
                 initialized.add(root(operation.destination))
             if isinstance(operation, RaggedPagedAttentionOp):
                 for value in (
@@ -859,6 +909,7 @@ TPUSchedule = Dialect(
         LayoutAttr,
         LifetimeAttr,
         TileRegionAttr,
+        InterconnectAttr,
         BufferType,
         DmaTokenType,
         SemaphoreType,

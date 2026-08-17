@@ -25,18 +25,24 @@ class LoweringTarget:
     name: str
     vmem_capacity_bytes: int
     smem_capacity_bytes: int
+    ici_bandwidth_bytes_per_second: int
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("lowering target needs a name")
-        if self.vmem_capacity_bytes <= 0 or self.smem_capacity_bytes <= 0:
-            raise ValueError("lowering target memory capacities must be positive")
+        if (
+            self.vmem_capacity_bytes <= 0
+            or self.smem_capacity_bytes <= 0
+            or self.ici_bandwidth_bytes_per_second <= 0
+        ):
+            raise ValueError("lowering target memory and interconnect capacities must be positive")
 
 
 TPU7X_TARGET = LoweringTarget(
     name="tpu7x",
     vmem_capacity_bytes=64 << 20,
     smem_capacity_bytes=16 << 20,
+    ici_bandwidth_bytes_per_second=600_000_000_000,
 )
 
 
@@ -179,6 +185,9 @@ def lower_distributed_matmul(
         vmem_capacity_bytes=target.vmem_capacity_bytes,
         smem_capacity_bytes=target.smem_capacity_bytes,
         mesh=mesh,
+        interconnect_bandwidth_bytes_per_second={
+            axis: target.ici_bandwidth_bytes_per_second for axis in mesh
+        },
     )
     lhs = builder.alloc(
         buffer(

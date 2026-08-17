@@ -1,8 +1,13 @@
 import pytest
-from xdsl.dialects.builtin import IntAttr, StringAttr, bf16, f32
+from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f32
 from xdsl.utils.exceptions import VerifyException
 
-from tpu_cake.dialects.tpu_schedule import CollectiveReduceScatterOp, KernelOp, MxuMatmulOp
+from tpu_cake.dialects.tpu_schedule import (
+    CollectiveReduceScatterOp,
+    InterconnectAttr,
+    KernelOp,
+    MxuMatmulOp,
+)
 from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
 from tpu_cake.lowering import MatmulTile, UnsupportedLoweringError, lower_distributed_matmul
 from tpu_cake.source import SourceLocation
@@ -119,3 +124,12 @@ def test_tile_must_divide_the_local_matmul_shape() -> None:
             distributed_matmul_schedule(mesh_size=4, m=256, k=512, n=256),
             tile=MatmulTile(96, 128),
         )
+
+
+def test_physical_collective_requires_a_structured_interconnect_link() -> None:
+    schedule = lower_distributed_matmul(distributed_matmul_schedule())
+    kernel = next(operation for operation in schedule.walk() if isinstance(operation, KernelOp))
+    kernel.properties["interconnect"] = InterconnectAttr(ArrayAttr(()), ArrayAttr(()))
+
+    with pytest.raises(VerifyException, match="one bandwidth for every mesh axis"):
+        schedule.verify()
