@@ -13,6 +13,7 @@ import numpy as np
 from xdsl.context import Context
 from xdsl.dialects.builtin import Builtin
 from xdsl.parser import Parser
+from xprof import profile_data
 
 from tpu_cake.artifacts import resolve_recorded_artifact
 from tpu_cake.contracts import (
@@ -113,9 +114,8 @@ def _phase_identity(result: FusedRpaRunResult) -> tuple[object, ...]:
 def _require_shared_canonical_identity(
     results: tuple[FusedRpaRunResult, ...], experiment: KernelExperiment
 ) -> None:
-    if (
-        len({_phase_identity(result) for result in results}) != 1
-        or any(result.schedule_sha256 != experiment.schedule_sha256 for result in results)
+    if len({_phase_identity(result) for result in results}) != 1 or any(
+        result.schedule_sha256 != experiment.schedule_sha256 for result in results
     ):
         raise ValueError("RPA_RUNS_DO_NOT_SHARE_CANONICAL_EXECUTION_IDENTITY")
 
@@ -125,6 +125,38 @@ def _require_timing_sample_protocol(result: FusedRpaRunResult) -> None:
         sample <= 0 for sample in result.samples_ns
     ):
         raise ValueError("RPA_TIMING_SAMPLE_PROTOCOL_MISMATCH")
+
+
+def _decode_custom_call_durations(
+    mode_root: Path,
+    decode_block_sizes: tuple[int, int, int, int],
+    expected_count: int,
+) -> tuple[float, ...]:
+    xplanes = tuple((mode_root / "profile").rglob("*.xplane.pb"))
+    if len(xplanes) != 1:
+        raise ValueError(f"RPA_PROFILE_XPLANE_COUNT_MISMATCH phase={mode_root.name}")
+    query_block, kv_block, query_cluster, kv_cluster = decode_block_sizes
+    event_fragment = f"%RPAd-p_16-bq_{query_block}_{query_cluster}-bkv_{kv_block}_{kv_cluster}"
+    profile = profile_data.ProfileData.from_file(xplanes[0])
+    try:
+        durations = tuple(
+            float(event.duration_ns)
+            for plane in profile.planes
+            if plane.name == "/device:TPU:0"
+            for line in plane.lines
+            if line.name == "XLA Ops"
+            for event in line.events
+            if event.name.startswith(event_fragment + ".")
+            and 'custom_call_target="tpu_custom_call"' in event.name
+        )
+    finally:
+        profile.close()
+    if len(durations) != expected_count or any(value <= 0 for value in durations):
+        raise ValueError(
+            "RPA_DECODE_CUSTOM_CALL_PROTOCOL_MISMATCH "
+            f"phase={mode_root.name} expected={expected_count} observed={len(durations)}"
+        )
+    return durations
 
 
 def _parse_saved_plan(physical_path: Path, lowered_path: Path, result: FusedRpaRunResult):
@@ -262,8 +294,7 @@ def _validate_phase(
     ):
         raise ValueError(f"RPA_BACKEND_MANIFEST_MISMATCH phase={phase}")
     if (
-        result.backend_executor
-        != f"{plan.backend_module}.{plan.backend_executor_qualname}"
+        result.backend_executor != f"{plan.backend_module}.{plan.backend_executor_qualname}"
         or result.backend_executor_sha256 != plan.backend_sha256
         or result.stablehlo_sha256 != _sha256(artifacts["stablehlo.txt"])
         or result.compiler_hlo_sha256 != _sha256(artifacts["compiler_hlo.txt"])
@@ -424,14 +455,17 @@ def _validate_phase(
         xplanes = sorted((root / phase / "profile").rglob("*.xplane.pb"))
         if len(xplanes) != 1:
             raise ValueError(f"RPA_PROFILE_XPLANE_COUNT_MISMATCH phase={phase}")
-        observed_steps = count_profile_events(
-            root / phase / "profile", "inkling_fused_rpa"
-        )
+        observed_steps = count_profile_events(root / phase / "profile", "inkling_fused_rpa")
         if observed_steps != result.measured_iterations:
             raise ValueError(
                 f"RPA_PROFILE_STEP_COUNT_MISMATCH phase={phase} "
                 f"expected={result.measured_iterations} observed={observed_steps}"
             )
+        _decode_custom_call_durations(
+            root / phase,
+            plan.decode_block_sizes,
+            result.measured_iterations,
+        )
         terminal_payload.update(
             xplane_sha256=_sha256(xplanes[0]),
             xplane_size_bytes=xplanes[0].stat().st_size,
@@ -535,12 +569,13 @@ def _timing_metrics(root: Path, result: FusedRpaRunResult) -> tuple[Metric, ...]
     assert result.median_ns is not None
     assert result.p90_ns is not None
     assert result.coefficient_of_variation is not None
+    exact_median = Decimal(str(statistics.median(result.samples_ns)))
     mean = Decimal(str(statistics.mean(result.samples_ns)))
     deviation = Decimal(str(statistics.pstdev(result.samples_ns)))
     return (
         Metric(
             name="median_synchronized_invocation_duration",
-            quantity=Quantity(value=Decimal(result.median_ns), unit=Unit.NANOSECOND),
+            quantity=Quantity(value=exact_median, unit=Unit.NANOSECOND),
             kind=MeasurementKind.DERIVED,
             interval=interval,
             sources=(source,),
@@ -578,6 +613,69 @@ def _timing_metrics(root: Path, result: FusedRpaRunResult) -> tuple[Metric, ...]
             ),
             numerator=Quantity(value=deviation, unit=Unit.NANOSECOND),
             denominator=Quantity(value=mean, unit=Unit.NANOSECOND),
+        ),
+    )
+
+
+def _decode_custom_call_metrics(
+    root: Path,
+    phase: str,
+    result: FusedRpaRunResult,
+    decode_block_sizes: tuple[int, int, int, int],
+) -> tuple[Metric, ...]:
+    mode_root = root / phase
+    xplane = next((mode_root / "profile").rglob("*.xplane.pb"))
+    durations = _decode_custom_call_durations(
+        mode_root,
+        decode_block_sizes,
+        result.measured_iterations,
+    )
+    ordered = sorted(durations)
+    p90 = ordered[min(len(ordered) - 1, round((len(ordered) - 1) * 0.9))]
+    source = MetricSource(
+        artifact_sha256=_sha256(xplane),
+        artifact_path=xplane.resolve().relative_to(root.resolve()).as_posix(),
+        tool="XProf XPlane",
+        field="/device:TPU:0/XLA Ops/%RPAd custom-call duration_ns",
+    )
+    call_interval = MeasurementInterval(scope="one local-shard upstream RPA decode custom call")
+    capture_interval = MeasurementInterval(
+        scope=f"the complete {result.measured_iterations}-invocation {phase} capture"
+    )
+    return (
+        Metric(
+            name=f"{phase}_decode_custom_call_count",
+            quantity=Quantity(value=Decimal(len(durations)), unit=Unit.COUNT),
+            kind=MeasurementKind.MEASURED,
+            interval=capture_interval,
+            sources=(source,),
+        ),
+        Metric(
+            name=f"{phase}_median_decode_custom_call_duration",
+            quantity=Quantity(
+                value=Decimal(str(statistics.median(durations))),
+                unit=Unit.NANOSECOND,
+            ),
+            kind=MeasurementKind.DERIVED,
+            interval=call_interval,
+            sources=(source,),
+            formula=FormulaIdentity(
+                name="sample_median",
+                version="1",
+                expression="median(decode_custom_call_duration_ns)",
+            ),
+        ),
+        Metric(
+            name=f"{phase}_p90_decode_custom_call_duration",
+            quantity=Quantity(value=Decimal(str(p90)), unit=Unit.NANOSECOND),
+            kind=MeasurementKind.DERIVED,
+            interval=call_interval,
+            sources=(source,),
+            formula=FormulaIdentity(
+                name="nearest_rank_p90",
+                version="1",
+                expression="sorted(duration_ns)[round((n-1)*0.9)]",
+            ),
         ),
     )
 
@@ -671,6 +769,8 @@ def build_fused_rpa_receipt(
     )
     metrics = (
         *_timing_metrics(root, timing),
+        *_decode_custom_call_metrics(root, "trace", trace, decode_block_sizes),
+        *_decode_custom_call_metrics(root, "counters", counters, decode_block_sizes),
         *_prefix_capture_metrics("trace", capture_metrics(trace_assessment.capture), root),
         *_prefix_capture_metrics("counter", capture_metrics(counter_assessment.capture), root),
     )
@@ -804,8 +904,25 @@ def validate_fused_rpa_receipt(
     )
     if json.loads((root / assessment_artifact.path).read_text()) != expected_assessment:
         raise ValueError("RPA_PROFILE_ASSESSMENT_REPLAY_MISMATCH")
+    trace_plan = _parse_saved_plan(
+        root / "trace/physical.xdsl",
+        root / "trace/lowered_pallas.py",
+        trace,
+    )
     expected_metrics = (
         *_timing_metrics(root, timing),
+        *_decode_custom_call_metrics(
+            root,
+            "trace",
+            trace,
+            trace_plan.decode_block_sizes,
+        ),
+        *_decode_custom_call_metrics(
+            root,
+            "counters",
+            counters,
+            trace_plan.decode_block_sizes,
+        ),
         *_prefix_capture_metrics("trace", capture_metrics(trace_assessment.capture), root),
         *_prefix_capture_metrics("counter", capture_metrics(counter_assessment.capture), root),
     )

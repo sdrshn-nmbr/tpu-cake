@@ -1,14 +1,18 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tpu_cake.contracts import RuntimeIdentity
+from tpu_cake import rpa_bundle
+from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.rpa_bundle import (
+    _decode_custom_call_durations,
     _load_declared_array,
     _require_shared_canonical_identity,
     _require_timing_sample_protocol,
+    _timing_metrics,
 )
 from tpu_cake.rpa_runner import FusedRpaRunResult
 from tpu_cake.workloads import inkling_fused_rpa_experiment
@@ -89,3 +93,74 @@ def test_bfloat16_artifact_round_trip_restores_declared_dtype(tmp_path: Path) ->
 
     assert str(observed.dtype) == "bfloat16"
     np.testing.assert_array_equal(observed, expected)
+
+
+def test_decode_custom_call_duration_requires_fifty_tpu_xla_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    xplane = tmp_path / "profile/capture.xplane.pb"
+    xplane.parent.mkdir()
+    xplane.write_bytes(b"xplane")
+    event_name = (
+        '%RPAd-p_16-bq_8_8-bkv_128_128.1 custom-call(), custom_call_target="tpu_custom_call"'
+    )
+    colliding_event_name = (
+        '%RPAd-p_16-bq_8_8-bkv_128_1280.1 custom-call(), custom_call_target="tpu_custom_call"'
+    )
+
+    class FakeProfile:
+        planes = (
+            SimpleNamespace(
+                name="/device:TPU:0",
+                lines=(
+                    SimpleNamespace(
+                        name="XLA Ops",
+                        events=tuple(
+                            SimpleNamespace(name=event_name, duration_ns=float(index + 1))
+                            for index in range(50)
+                        )
+                        + (SimpleNamespace(name=colliding_event_name, duration_ns=999.0),),
+                    ),
+                ),
+            ),
+        )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        rpa_bundle.profile_data.ProfileData,
+        "from_file",
+        lambda _: FakeProfile(),
+    )
+
+    assert _decode_custom_call_durations(tmp_path, (8, 128, 8, 128), 50) == tuple(
+        float(index + 1) for index in range(50)
+    )
+    with pytest.raises(ValueError, match="DECODE_CUSTOM_CALL_PROTOCOL"):
+        _decode_custom_call_durations(tmp_path, (8, 128, 8, 128), 49)
+
+
+def test_timing_metric_preserves_half_nanosecond_median(tmp_path: Path) -> None:
+    result_path = tmp_path / "timing/result.json"
+    result_path.parent.mkdir()
+    result_path.write_text("{}")
+    result = _result(
+        samples_ns=tuple(range(1, 51)),
+        median_ns=25,
+        p90_ns=45,
+        coefficient_of_variation=0.1,
+        artifacts=(
+            ArtifactReference(
+                path="result.json",
+                size_bytes=2,
+                sha256="0" * 64,
+                role=ArtifactRole.TIMING_SAMPLES,
+            ),
+        ),
+    )
+
+    median_metric = _timing_metrics(tmp_path, result)[0]
+
+    assert str(median_metric.quantity.value) == "25.5"
