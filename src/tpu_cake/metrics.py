@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import StrEnum
-from pathlib import PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Unit(StrEnum):
@@ -56,20 +55,6 @@ class MetricSource(BaseModel):
     artifact_path: str = Field(min_length=1)
     tool: str = Field(min_length=1)
     field: str = Field(min_length=1)
-
-    @field_validator("artifact_path")
-    @classmethod
-    def path_stays_inside_bundle(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if (
-            "\\" in value
-            or path.is_absolute()
-            or ".." in path.parts
-            or value != path.as_posix()
-            or path.as_posix() == "."
-        ):
-            raise ValueError("metric source path must be bundle-relative")
-        return value
 
 
 class FormulaIdentity(BaseModel):
