@@ -17,13 +17,18 @@ from xdsl.dialects.builtin import BFloat16Type, Builtin, Float32Type, ModuleOp
 from xdsl.parser import Parser
 
 from tpu_cake.dialects.tpu_schedule import (
+    AllocOp,
     BufferType,
     CollectiveKind,
     CollectiveOp,
     CollectiveReduceScatterOp,
+    DmaStartOp,
+    DmaWaitOp,
     KernelOp,
     MxuMatmulOp,
+    SemaphoreAllocOp,
     TPUSchedule,
+    YieldOp,
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
@@ -276,12 +281,50 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
     if len(kernels) != 1 or len(list(module.body.block.ops)) != 1:
         raise UnsupportedLoweringError("Pallas lowering expects exactly one physical kernel")
     kernel = kernels[0]
+    operations = list(kernel.body.block.ops)
+    expected_types = (
+        AllocOp,
+        AllocOp,
+        AllocOp,
+        AllocOp,
+        SemaphoreAllocOp,
+        SemaphoreAllocOp,
+        SemaphoreAllocOp,
+        DmaStartOp,
+        DmaStartOp,
+        DmaWaitOp,
+        DmaWaitOp,
+        MxuMatmulOp,
+        (CollectiveReduceScatterOp, CollectiveOp),
+        DmaStartOp,
+        DmaWaitOp,
+        YieldOp,
+    )
+    if len(operations) != len(expected_types) or any(
+        not isinstance(operation, expected)
+        for operation, expected in zip(operations, expected_types, strict=True)
+    ):
+        mismatch = next(
+            (
+                operation
+                for operation, expected in zip(operations, expected_types)
+                if not isinstance(operation, expected)
+            ),
+            operations[len(expected_types)]
+            if len(operations) > len(expected_types)
+            else kernel,
+        )
+        raise UnsupportedLoweringError(
+            "Pallas matmul lowering requires the exact supported load, matmul, "
+            f"reduce-scatter, and store schedule; found {mismatch.name} "
+            f"at {mismatch.location}"
+        )
     matmuls = [
-        operation for operation in kernel.body.block.ops if isinstance(operation, MxuMatmulOp)
+        operation for operation in operations if isinstance(operation, MxuMatmulOp)
     ]
     collectives = [
         operation
-        for operation in kernel.body.block.ops
+        for operation in operations
         if isinstance(operation, CollectiveReduceScatterOp)
         or (
             isinstance(operation, CollectiveOp)
@@ -295,6 +338,36 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
     matmul, collective = matmuls[0], collectives[0]
     if collective.source != matmul.accumulator:
         raise UnsupportedLoweringError("Pallas reduce-scatter must consume the MXU accumulator")
+    if collective.reducer.data != "sum":
+        raise UnsupportedLoweringError("Pallas matmul lowering supports sum reduction only")
+    input_dmas = operations[7:9]
+    input_waits = operations[9:11]
+    output_dma = operations[13]
+    output_wait = operations[14]
+    assert all(isinstance(operation, DmaStartOp) for operation in input_dmas)
+    assert all(isinstance(operation, DmaWaitOp) for operation in input_waits)
+    assert isinstance(output_dma, DmaStartOp)
+    assert isinstance(output_wait, DmaWaitOp)
+    if len(kernel.body.block.args) != 3:
+        raise UnsupportedLoweringError("Pallas matmul lowering expects two inputs and one output")
+    if tuple(operation.source for operation in input_dmas) != tuple(
+        kernel.body.block.args[:2]
+    ):
+        raise UnsupportedLoweringError("Pallas matmul input DMAs must load the kernel inputs")
+    if tuple(operation.destination for operation in input_dmas) != (matmul.lhs, matmul.rhs):
+        raise UnsupportedLoweringError("Pallas matmul input DMAs must feed the MXU operands")
+    if tuple(operation.token for operation in input_dmas) != tuple(
+        operation.token for operation in input_waits
+    ):
+        raise UnsupportedLoweringError("Pallas matmul input DMA waits do not match their loads")
+    if output_dma.source != collective.destination:
+        raise UnsupportedLoweringError(
+            "Pallas matmul output DMA must store the reduce-scatter destination"
+        )
+    if output_dma.destination != kernel.body.block.args[2]:
+        raise UnsupportedLoweringError("Pallas matmul output DMA must store the kernel output")
+    if output_wait.token != output_dma.token:
+        raise UnsupportedLoweringError("Pallas matmul output DMA wait does not match its store")
     lhs, rhs, partial = matmul.lhs.type, matmul.rhs.type, matmul.accumulator.type
     output = collective.destination.type
     assert isinstance(lhs, BufferType)

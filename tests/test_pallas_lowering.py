@@ -7,9 +7,19 @@ import subprocess
 import sys
 
 import pytest
+from xdsl.dialects.builtin import IntAttr, StringAttr
 
 from tpu_cake.canonical import canonical_text
-from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
+from tpu_cake.dialects.tpu_schedule import (
+    CollectiveKind,
+    CollectiveOp,
+    KernelOp,
+)
+from tpu_cake.lowering import (
+    MatmulTile,
+    UnsupportedLoweringError,
+    lower_distributed_matmul,
+)
 from tpu_cake.pallas_lowering import (
     lower_physical_matmul_to_pallas,
     validate_saved_pallas_plan,
@@ -41,6 +51,42 @@ def test_tile_choice_is_part_of_the_canonical_physical_schedule() -> None:
     assert (tiled.tile_m, tiled.tile_k, tiled.tile_n) == (128, 128, 128)
     assert tiled.schedule_sha256 != whole.schedule_sha256
     assert tiled.source_sha256() != whole.source_sha256()
+
+
+def test_pallas_lowering_rejects_an_unrepresented_collective() -> None:
+    physical = lower_distributed_matmul(distributed_matmul_schedule())
+    kernel = next(operation for operation in physical.walk() if isinstance(operation, KernelOp))
+    collective = next(
+        operation for operation in physical.walk() if isinstance(operation, CollectiveOp)
+    )
+    extra = CollectiveOp(
+        collective.destination,
+        collective.destination,
+        stage=4,
+        kind=CollectiveKind.ALL_REDUCE,
+        mesh_axis=collective.mesh_axis.data,
+        group_size=collective.group_size.data,
+        reducer="sum",
+    )
+    assert collective.parent is not None
+    collective.parent.insert_op_after(extra, collective)
+    kernel.properties["ici_link_count"] = IntAttr(2)
+    physical.verify()
+
+    with pytest.raises(UnsupportedLoweringError, match="exact supported"):
+        lower_physical_matmul_to_pallas(physical)
+
+
+def test_pallas_lowering_rejects_a_non_sum_reduce_scatter() -> None:
+    physical = lower_distributed_matmul(distributed_matmul_schedule())
+    collective = next(
+        operation for operation in physical.walk() if isinstance(operation, CollectiveOp)
+    )
+    collective.properties["reducer"] = StringAttr("max")
+    physical.verify()
+
+    with pytest.raises(UnsupportedLoweringError, match="sum reduction only"):
+        lower_physical_matmul_to_pallas(physical)
 
 
 def test_saved_physical_tile_and_pallas_rendering_are_bound(tmp_path) -> None:

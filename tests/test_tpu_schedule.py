@@ -20,6 +20,8 @@ from tpu_cake.dialects.tpu_schedule import (
     RemoteDmaStartOp,
     SemaphoreAllocOp,
     TopologyAttr,
+    TransferPlanAttr,
+    TransferRouteAttr,
     YieldOp,
     rectilinear_topology,
 )
@@ -74,6 +76,55 @@ def test_topology_rejects_links_to_unknown_devices() -> None:
         )
 
 
+def test_transfer_route_rejects_a_revisited_device() -> None:
+    topology = rectilinear_topology(("t",), (4,), {"t": 600_000_000_000})
+    extra_links = (
+        LinkAttr(
+            StringAttr("link:0-2"),
+            IntAttr(0),
+            IntAttr(2),
+            IntAttr(600_000_000_000),
+            IntAttr(1),
+        ),
+        LinkAttr(
+            StringAttr("link:0-3"),
+            IntAttr(0),
+            IntAttr(3),
+            IntAttr(600_000_000_000),
+            IntAttr(1),
+        ),
+    )
+    cycle = TransferPlanAttr(
+        StringAttr("zz:cycle"),
+        ArrayAttr(
+            (
+                TransferRouteAttr(
+                    StringAttr("route:cycle"),
+                    IntAttr(0),
+                    IntAttr(3),
+                    ArrayAttr(
+                        StringAttr(link)
+                        for link in (
+                            "link:0-1",
+                            "link:1-2",
+                            "link:0-2",
+                            "link:0-3",
+                        )
+                    ),
+                ),
+            )
+        ),
+    )
+
+    with pytest.raises(VerifyException, match="cannot revisit"):
+        TopologyAttr(
+            topology.devices,
+            ArrayAttr(sorted((*topology.links, *extra_links), key=lambda link: link.link_id.data)),
+            topology.collective_plans,
+            ArrayAttr((*topology.transfer_plans, cycle)),
+        ).verify()
+
+
 def test_collective_groups_must_follow_their_mesh_axis() -> None:
     topology = rectilinear_topology(
         ("d", "t"),
@@ -111,7 +162,9 @@ def test_new_schedules_use_only_the_structured_topology_schema() -> None:
     kernel = next(operation for operation in module.walk() if isinstance(operation, KernelOp))
 
     assert kernel.physical_schema is not None
-    assert kernel.physical_schema.data == "structured-topology-v2"
+    assert kernel.physical_schema.data == "static-topology-v3"
+    assert kernel.topology_authority is not None
+    assert kernel.topology_authority.data == "static-cost-model-only"
     assert kernel.topology is not None
     assert kernel.interconnect is None
 
@@ -218,7 +271,48 @@ def test_collective_rejects_a_shape_correct_but_wrong_sharding_transition() -> N
         ).verify_()
 
 
-def _remote_dma_module(*, transfers: int, remote_dma_engines: int):
+@pytest.mark.parametrize(
+    ("destination_names", "destination_layout", "message"),
+    (
+        ("A B", (0, 1), "rename logical dimensions"),
+        ("X Y", (1, 0), "change physical layout"),
+    ),
+)
+def test_collective_rejects_implicit_metadata_transformations(
+    destination_names: str,
+    destination_layout: tuple[int, int],
+    message: str,
+) -> None:
+    source = AllocOp(
+        buffer((8, 8), "X Y", f32, memory=MemorySpace.VMEM).to_type(),
+        "source",
+    )
+    destination = AllocOp(
+        buffer(
+            (8, 8),
+            destination_names,
+            f32,
+            memory=MemorySpace.VMEM,
+            layout=destination_layout,
+        ).to_type(),
+        "destination",
+    )
+
+    with pytest.raises(VerifyException, match=message):
+        CollectiveOp(
+            source,
+            destination,
+            stage=0,
+            kind=CollectiveKind.ALL_REDUCE,
+            mesh_axis="t",
+            group_size=4,
+            reducer="sum",
+        ).verify_()
+
+
+def _remote_dma_module(
+    *, transfers: int, remote_dma_engines: int, consume_partial_destination: bool = False
+):
     external = buffer(
         (8, 8),
         "X Y",
@@ -281,6 +375,18 @@ def _remote_dma_module(*, transfers: int, remote_dma_engines: int):
     ]
     for transfer in remote_transfers:
         builder.remote_dma_wait(transfer, stage=3)
+    if consume_partial_destination:
+        accumulator = builder.alloc(
+            buffer(
+                (8, 8),
+                "X Y",
+                f32,
+                memory=MemorySpace.VMEM,
+                lifetime=(3, 3),
+            ),
+            "accumulator",
+        )
+        builder.matmul(destinations[0], sources[0], accumulator, stage=3)
     return builder.module()
 
 
@@ -292,6 +398,15 @@ def test_remote_dma_uses_an_explicit_topology_route() -> None:
         operation for operation in module.walk() if isinstance(operation, RemoteDmaStartOp)
     )
     assert transfer.transfer_plan.data == "shift:t:+1"
+
+
+def test_partial_remote_dma_does_not_initialize_unwritten_devices() -> None:
+    with pytest.raises(VerifyException, match="before its producing operation completes"):
+        _remote_dma_module(
+            transfers=1,
+            remote_dma_engines=1,
+            consume_partial_destination=True,
+        )
 
 
 def test_remote_dma_rejects_an_unknown_transfer_plan() -> None:

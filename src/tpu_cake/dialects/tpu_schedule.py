@@ -174,13 +174,10 @@ class DeviceAttr(ParametrizedAttribute):
     name = "tpu_schedule.device"
     device_id: IntAttr
     coordinates: ArrayAttr[IntAttr]
-    core_count: IntAttr
 
     def verify(self) -> None:
         if self.device_id.data < 0:
             raise VerifyException("topology device IDs must be nonnegative")
-        if self.core_count.data <= 0:
-            raise VerifyException("topology device core counts must be positive")
         if any(value.data < 0 for value in self.coordinates):
             raise VerifyException("topology device coordinates must be nonnegative")
 
@@ -393,6 +390,7 @@ class TopologyAttr(ParametrizedAttribute):
                 if source not in known_devices or destination not in known_devices:
                     raise VerifyException("transfer route references an unknown device")
                 current = source
+                visited = {source}
                 for link_id in route.route_link_ids:
                     link = links_by_id.get(link_id.data)
                     if link is None:
@@ -401,6 +399,11 @@ class TopologyAttr(ParametrizedAttribute):
                     if current not in endpoints:
                         raise VerifyException("transfer route links do not form a contiguous path")
                     current = next(device for device in endpoints if device != current)
+                    if current in visited:
+                        raise VerifyException(
+                            "transfer routes cannot revisit a device"
+                        )
+                    visited.add(current)
                 if current != destination:
                     raise VerifyException("transfer route does not reach its destination")
 
@@ -422,7 +425,6 @@ def rectilinear_topology(
     mesh_axis_sizes: tuple[int, ...],
     bandwidth_bytes_per_second: dict[str, int],
     *,
-    cores_per_device: int = 2,
     channels_per_link: int = 1,
 ) -> TopologyAttr:
     coordinates = tuple(product(*(range(size) for size in mesh_axis_sizes)))
@@ -433,7 +435,6 @@ def rectilinear_topology(
         DeviceAttr(
             IntAttr(device_id),
             ArrayAttr(IntAttr(value) for value in coordinate),
-            IntAttr(cores_per_device),
         )
         for device_id, coordinate in enumerate(coordinates)
     )
@@ -1078,6 +1079,10 @@ class CollectiveOp(IRDLOperation):
             _check_live(buffer, self.stage.data)
         if source.storage.element_type != destination.storage.element_type:
             raise VerifyException("collectives cannot change element type")
+        if source.shape != destination.shape:
+            raise VerifyException("collectives cannot rename logical dimensions")
+        if source.layout != destination.layout:
+            raise VerifyException("collectives cannot change physical layout")
         source_shape = source.storage.get_shape()
         destination_shape = destination.storage.get_shape()
         if len(source_shape) != len(destination_shape):
@@ -1619,6 +1624,7 @@ class KernelOp(IRDLOperation):
     interconnect = opt_prop_def(InterconnectAttr)
     topology = opt_prop_def(TopologyAttr)
     physical_schema = opt_prop_def(StringAttr)
+    topology_authority = opt_prop_def(StringAttr)
     dma_engine_count = prop_def(IntAttr)
     mxu_count = prop_def(IntAttr)
     vector_unit_count = prop_def(IntAttr)
@@ -1667,7 +1673,8 @@ class KernelOp(IRDLOperation):
                 "mesh_axis_names": mesh_axis_names,
                 "mesh_axis_sizes": mesh_axis_sizes,
                 "topology": topology,
-                "physical_schema": StringAttr("structured-topology-v2"),
+                "physical_schema": StringAttr("static-topology-v3"),
+                "topology_authority": StringAttr("static-cost-model-only"),
                 "dma_engine_count": IntAttr(dma_engine_count),
                 "mxu_count": IntAttr(mxu_count),
                 "vector_unit_count": IntAttr(vector_unit_count),
@@ -1715,16 +1722,30 @@ class KernelOp(IRDLOperation):
                 )
             topology_plans: dict[str, CollectivePlanAttr] = {}
             topology_links: dict[str, LinkAttr] = {}
+            topology_device_ids: set[int] = set()
         else:
-            if self.physical_schema.data != "structured-topology-v2":
+            if self.physical_schema.data != "static-topology-v3":
                 raise VerifyException("unsupported physical schedule schema")
+            if (
+                self.topology_authority is None
+                or self.topology_authority.data != "static-cost-model-only"
+            ):
+                raise VerifyException(
+                    "structured kernels must declare static topology authority"
+                )
             if self.topology is None or self.interconnect is not None:
                 raise VerifyException(
                     "structured kernels require topology and must not duplicate legacy interconnect"
                 )
-            self.topology.verify()
+            try:
+                self.topology.verify()
+            except VerifyException as error:
+                raise source_aware_error(str(error), self) from error
             topology_plans = self.topology.plans_by_id()
             topology_links = self.topology.links_by_id()
+            topology_device_ids = {
+                device.device_id.data for device in self.topology.devices
+            }
             if len(self.topology.devices) != math.prod(mesh_sizes):
                 raise VerifyException("topology device count must match the kernel mesh")
             coordinates = {
@@ -1959,7 +1980,15 @@ class KernelOp(IRDLOperation):
                 assert isinstance(start, RemoteDmaStartOp)
                 remote_in_flight.pop(start.semaphore.owner, None)
                 destination, _ = pending_remote_destinations.pop(start.semaphore.owner)
-                initialized.add(destination)
+                assert self.topology is not None
+                transfer_plan = self.topology.transfer_plans_by_id()[
+                    start.transfer_plan.data
+                ]
+                covered_destinations = {
+                    route.destination_device.data for route in transfer_plan.routes
+                }
+                if covered_destinations == topology_device_ids:
+                    initialized.add(destination)
             if isinstance(operation, MxuMatmulOp):
                 require_initialized(operation.lhs, operation)
                 require_initialized(operation.rhs, operation)
