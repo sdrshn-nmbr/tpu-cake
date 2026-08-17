@@ -1,5 +1,6 @@
 import pytest
 from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f16, f32, i1, i32
+from xdsl.ir import SSAValue
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.distributed_tensor import MeshAttr, PendingReductionsAttr
@@ -614,4 +615,88 @@ def test_cast_rejects_a_partially_reduced_value() -> None:
     result = builder.cast(builder.inputs[0], tensor(bf16, partial.dimensions))
 
     with pytest.raises(VerifyException, match="partially reduced"):
+        builder.module(result)
+
+
+def test_layer_scan_types_carries_stacked_weights_and_invariants() -> None:
+    carry = tensor(bf16, (("B", 8), ("L", 16), ("M", 32)), sharding={"B": ("d",)})
+    stacked = tensor(
+        bf16,
+        (("Z", 2), ("M", 32), ("F", 64)),
+        sharding={"F": ("t",)},
+    )
+    invariant = carry
+    builder = DistributedProgramBuilder(
+        "layer_scan",
+        {"d": 2, "t": 4},
+        (carry, stacked, invariant),
+    )
+
+    def body(
+        nested: DistributedProgramBuilder, arguments: tuple[SSAValue, ...]
+    ) -> tuple[SSAValue, ...]:
+        carried, _weight, residual = arguments
+        return (
+            nested.elementwise(
+                carried,
+                residual,
+                result=carry,
+                function="add",
+            ),
+        )
+
+    (result,) = builder.layer_scan(
+        builder.inputs,
+        body,
+        carry_count=1,
+        stacked_count=1,
+        layer_dimension="Z",
+        trip_count=2,
+    )
+
+    builder.module(result).verify()
+
+
+def test_layer_scan_rejects_a_sharded_layer_dimension() -> None:
+    carry = tensor(bf16, (("B", 8), ("M", 32)))
+    stacked = tensor(
+        bf16,
+        (("Z", 2), ("M", 32)),
+        sharding={"Z": ("d",)},
+    )
+    builder = DistributedProgramBuilder("bad_scan", {"d": 2}, (carry, stacked))
+
+    (result,) = builder.layer_scan(
+        builder.inputs,
+        lambda _nested, arguments: (arguments[0],),
+        carry_count=1,
+        stacked_count=1,
+        layer_dimension="Z",
+        trip_count=2,
+    )
+
+    with pytest.raises(VerifyException, match="locally replicated"):
+        builder.module(result)
+
+
+def test_layer_scan_rejects_a_yield_type_that_changes_the_carry() -> None:
+    carry = tensor(bf16, (("B", 8), ("M", 32)))
+    stacked = tensor(bf16, (("Z", 2), ("M", 32)))
+    invariant = tensor(bf16, (("B", 8), ("F", 64)))
+    builder = DistributedProgramBuilder(
+        "bad_yield",
+        {},
+        (carry, stacked, invariant),
+    )
+
+    (result,) = builder.layer_scan(
+        builder.inputs,
+        lambda _nested, arguments: (arguments[2],),
+        carry_count=1,
+        stacked_count=1,
+        layer_dimension="Z",
+        trip_count=2,
+    )
+
+    with pytest.raises(VerifyException, match="yield types"):
         builder.module(result)

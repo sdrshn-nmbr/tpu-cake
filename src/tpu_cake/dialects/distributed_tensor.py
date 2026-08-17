@@ -24,6 +24,7 @@ from xdsl.irdl import (
     result_def,
     traits_def,
     var_operand_def,
+    var_result_def,
 )
 from xdsl.traits import IsolatedFromAbove, IsTerminator
 from xdsl.utils.exceptions import VerifyException
@@ -986,6 +987,136 @@ class AllReduceOp(IRDLOperation):
             raise VerifyException("all-reduce result has incorrect pending reductions")
 
 
+def _without_dimension(tensor: DTensorType, dimension: str) -> DTensorType:
+    indexes = _dimension_index(tensor)
+    if dimension not in indexes:
+        raise VerifyException(f"stacked scan input is missing layer dimension {dimension}")
+    index = indexes[dimension]
+    if tensor.sharding_axes()[index]:
+        raise VerifyException("scan layer dimension must be locally replicated")
+    return DTensorType(
+        tensor.element_type,
+        ArrayAttr(
+            value for offset, value in enumerate(tensor.dimensions) if offset != index
+        ),
+        ShardingAttr(
+            ArrayAttr(
+                value
+                for offset, value in enumerate(tensor.sharding.dimensions)
+                if offset != index
+            )
+        ),
+        tensor.pending,
+    )
+
+
+@irdl_op_definition
+class ScanYieldOp(IRDLOperation):
+    name = "dtensor.scan_yield"
+    values = var_operand_def(DTensorType)
+    traits = traits_def(IsTerminator())
+
+    def __init__(self, *values: SSAValue | IRDLOperation) -> None:
+        super().__init__(operands=[list(values)])
+
+    def verify_(self) -> None:
+        if not isinstance(self.parent_op(), LayerScanOp):
+            raise VerifyException("dtensor.scan_yield must terminate a layer scan")
+
+
+@irdl_op_definition
+class LayerScanOp(IRDLOperation):
+    name = "dtensor.layer_scan"
+    captures = var_operand_def(DTensorType)
+    outputs = var_result_def(DTensorType)
+    body = region_def("single_block")
+    carry_count = prop_def(IntAttr)
+    stacked_count = prop_def(IntAttr)
+    layer_dimension = prop_def(StringAttr)
+    trip_count = prop_def(IntAttr)
+    traits = traits_def(IsolatedFromAbove())
+
+    def __init__(
+        self,
+        captures: tuple[SSAValue | IRDLOperation, ...],
+        body: Region,
+        *,
+        carry_count: int,
+        stacked_count: int,
+        layer_dimension: str,
+        trip_count: int,
+    ) -> None:
+        capture_types = [SSAValue.get(value).type for value in captures]
+        super().__init__(
+            operands=[list(captures)],
+            result_types=[capture_types[:carry_count]],
+            regions=[body],
+            properties={
+                "carry_count": IntAttr(carry_count),
+                "stacked_count": IntAttr(stacked_count),
+                "layer_dimension": StringAttr(layer_dimension),
+                "trip_count": IntAttr(trip_count),
+            },
+        )
+
+    def verify_(self) -> None:
+        carry_count = self.carry_count.data
+        stacked_count = self.stacked_count.data
+        if carry_count <= 0 or stacked_count <= 0 or self.trip_count.data <= 0:
+            raise VerifyException(
+                "layer scan needs positive carry, stacked-input, and trip counts"
+            )
+        captures = tuple(self.captures)
+        if carry_count + stacked_count > len(captures):
+            raise VerifyException("layer scan capture segments exceed its inputs")
+        if len(self.outputs) != carry_count:
+            raise VerifyException("layer scan output count must match its carry count")
+        body_arguments = tuple(self.body.block.args)
+        if len(body_arguments) != len(captures):
+            raise VerifyException("layer scan body arguments must match its captures")
+        for capture, argument, output in zip(
+            captures[:carry_count],
+            body_arguments[:carry_count],
+            self.outputs,
+            strict=True,
+        ):
+            if capture.type != argument.type or capture.type != output.type:
+                raise VerifyException("layer scan carries must preserve their exact types")
+            assert isinstance(capture.type, DTensorType)
+            _require_fully_reduced(capture.type)
+        layer_dimension = self.layer_dimension.data
+        for capture, argument in zip(
+            captures[carry_count : carry_count + stacked_count],
+            body_arguments[carry_count : carry_count + stacked_count],
+            strict=True,
+        ):
+            assert isinstance(capture.type, DTensorType)
+            shape = dict(capture.type.logical_shape())
+            if shape.get(layer_dimension) != self.trip_count.data:
+                raise VerifyException(
+                    "stacked scan inputs must match the layer dimension and trip count"
+                )
+            if argument.type != _without_dimension(capture.type, layer_dimension):
+                raise VerifyException(
+                    "stacked scan body arguments must remove exactly the layer dimension"
+                )
+        for capture, argument in zip(
+            captures[carry_count + stacked_count :],
+            body_arguments[carry_count + stacked_count :],
+            strict=True,
+        ):
+            if capture.type != argument.type:
+                raise VerifyException("layer scan invariants must preserve their exact types")
+        terminator = self.body.block.last_op
+        if not isinstance(terminator, ScanYieldOp):
+            raise VerifyException("layer scan body must end with dtensor.scan_yield")
+        if len(terminator.values) != carry_count or any(
+            yielded.type != output.type
+            for yielded, output in zip(terminator.values, self.outputs, strict=True)
+        ):
+            raise VerifyException("layer scan yield types must match its carries")
+
+
 @irdl_op_definition
 class ReturnOp(IRDLOperation):
     name = "dtensor.return"
@@ -1021,9 +1152,12 @@ class ProgramOp(IRDLOperation):
             raise VerifyException("distributed program must end with dtensor.return")
         mesh = self.mesh.sizes()
         dimensions: dict[str, int] = {}
-        values = list(self.body.block.args)
-        for operation in self.body.block.ops:
+        values: list[SSAValue] = []
+        for operation in self.walk():
             values.extend(operation.results)
+            for region in operation.regions:
+                for block in region.blocks:
+                    values.extend(block.args)
         for value in values:
             if not isinstance(value.type, DTensorType):
                 continue
@@ -1073,6 +1207,8 @@ DistributedTensor = Dialect(
         AllGatherOp,
         ReduceScatterOp,
         AllReduceOp,
+        LayerScanOp,
+        ScanYieldOp,
         ReturnOp,
     ],
     [DimensionAttr, AxisListAttr, MeshAttr, ShardingAttr, PendingReductionsAttr, DTensorType],

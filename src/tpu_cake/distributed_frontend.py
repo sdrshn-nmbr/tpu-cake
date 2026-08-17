@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 from xdsl.dialects.builtin import ArrayAttr, Float32Type, IntAttr, ModuleOp, StringAttr, f32
@@ -18,6 +18,7 @@ from tpu_cake.dialects.distributed_tensor import (
     EinsumOp,
     ElementwiseOp,
     EmbeddingLookupOp,
+    LayerScanOp,
     MaskedSoftmaxOp,
     MeshAttr,
     PackedCausalMaskOp,
@@ -28,6 +29,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ReturnOp,
     RmsNormOp,
     RotaryEmbeddingOp,
+    ScanYieldOp,
     ShardingAttr,
     SliceOp,
     TransposeOp,
@@ -398,6 +400,67 @@ class DistributedProgramBuilder:
         assert isinstance(operation, AllReduceOp)
         self.block.add_op(operation)
         return operation.result
+
+    def layer_scan(
+        self,
+        captures: tuple[SSAValue, ...],
+        body_builder: Callable[
+            [DistributedProgramBuilder, tuple[SSAValue, ...]], tuple[SSAValue, ...]
+        ],
+        *,
+        carry_count: int,
+        stacked_count: int,
+        layer_dimension: str,
+        trip_count: int,
+        source: SourceLocation | None = None,
+    ) -> tuple[SSAValue, ...]:
+        body_types: list[Attribute] = []
+        for index, capture in enumerate(captures):
+            capture_type = capture.type
+            assert isinstance(capture_type, DTensorType)
+            if carry_count <= index < carry_count + stacked_count:
+                dimensions = tuple(
+                    (name, size)
+                    for name, size in capture_type.logical_shape()
+                    if name != layer_dimension
+                )
+                sharding = tuple(
+                    axes
+                    for (name, _), axes in zip(
+                        capture_type.logical_shape(),
+                        capture_type.sharding_axes(),
+                        strict=True,
+                    )
+                    if name != layer_dimension
+                )
+                capture_type = DistributedTensorSpec(
+                    element_type=capture_type.element_type,
+                    dimensions=dimensions,
+                    sharding=sharding,
+                    pending_reductions=tuple(capture_type.pending_reductions().items()),
+                ).to_type()
+            body_types.append(capture_type)
+        body = Block(arg_types=body_types)
+        nested = object.__new__(DistributedProgramBuilder)
+        nested._name = self._name
+        nested._mesh = self._mesh
+        nested.block = body
+        yielded = tuple(body_builder(nested, tuple(body.args)))
+        body.add_op(ScanYieldOp(*yielded))
+        operation = attach_source(
+            LayerScanOp(
+                captures,
+                Region(body),
+                carry_count=carry_count,
+                stacked_count=stacked_count,
+                layer_dimension=layer_dimension,
+                trip_count=trip_count,
+            ),
+            source,
+        )
+        assert isinstance(operation, LayerScanOp)
+        self.block.add_op(operation)
+        return tuple(operation.outputs)
 
     def module(self, *results: SSAValue) -> ModuleOp:
         self.block.add_op(ReturnOp(*results))
