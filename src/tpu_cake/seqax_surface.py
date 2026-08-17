@@ -223,6 +223,24 @@ def _same_array(left: np.ndarray, right: np.ndarray) -> bool:
     )
 
 
+def _symmetric_allclose(
+    left: np.ndarray,
+    right: np.ndarray,
+    *,
+    absolute_tolerance: float,
+    relative_tolerance: float,
+) -> bool:
+    if left.shape != right.shape or left.dtype != right.dtype:
+        return False
+    left_f32 = left.astype(np.float32)
+    right_f32 = right.astype(np.float32)
+    tolerance = absolute_tolerance + relative_tolerance * np.maximum(
+        np.abs(left_f32),
+        np.abs(right_f32),
+    )
+    return bool(np.all(np.abs(left_f32 - right_f32) <= tolerance))
+
+
 def _runtime_sha256(runtime: RuntimeIdentity, device_kind: str, device_count: int) -> str:
     return semantic_sha256(
         SEQAX_SURFACE_SCHEMA,
@@ -812,11 +830,11 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
                     "SEQAX_SURFACE_OUTPUT_ORACLE_MISMATCH "
                     f"scenario={scenario.name} candidate={name}"
                 )
-        if not np.allclose(
+        if not _symmetric_allclose(
             baseline_output,
             candidate_output,
-            atol=SEQAX_SURFACE_ATOL,
-            rtol=SEQAX_SURFACE_RTOL,
+            absolute_tolerance=SEQAX_SURFACE_ATOL,
+            relative_tolerance=SEQAX_SURFACE_RTOL,
         ):
             raise ValueError(
                 f"SEQAX_SURFACE_CROSS_MODE_MISMATCH scenario={scenario.name}"

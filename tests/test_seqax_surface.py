@@ -34,6 +34,7 @@ from tpu_cake.seqax_surface import (
     _runtime_sha256,
     _save_array,
     _strategy_source,
+    _symmetric_allclose,
     _write_json,
     _write_nested_json,
     _write_text,
@@ -743,3 +744,24 @@ def test_seqax_surface_rejects_cross_mode_divergence_within_oracle_bands(
 
     with pytest.raises(ValueError, match="CROSS_MODE_MISMATCH"):
         validate_seqax_surface_receipt(receipt, root=tmp_path)
+
+
+def test_seqax_cross_mode_tolerance_is_label_symmetric() -> None:
+    baseline = np.asarray([1.0], dtype=np.float32)
+    candidate = np.asarray([1.068], dtype=np.float32)
+
+    forward = _symmetric_allclose(
+        baseline,
+        candidate,
+        absolute_tolerance=0.016,
+        relative_tolerance=0.05,
+    )
+    reverse = _symmetric_allclose(
+        candidate,
+        baseline,
+        absolute_tolerance=0.016,
+        relative_tolerance=0.05,
+    )
+
+    assert forward
+    assert reverse
