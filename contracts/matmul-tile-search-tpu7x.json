@@ -1,0 +1,28 @@
+{
+  "mesh_size": 8,
+  "m": 1024,
+  "k": 65536,
+  "n": 1024,
+  "warmup_iterations": 20,
+  "measured_iterations": 200,
+  "rounds": 5,
+  "bootstrap_samples": 10000,
+  "minimum_practical_improvement": 0.01,
+  "candidates": [
+    {
+      "name": "tile-128",
+      "tile_m": 128,
+      "tile_n": 128
+    },
+    {
+      "name": "tile-256",
+      "tile_m": 256,
+      "tile_n": 256
+    },
+    {
+      "name": "tile-512",
+      "tile_m": 512,
+      "tile_n": 512
+    }
+  ]
+}
