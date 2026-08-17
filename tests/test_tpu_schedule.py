@@ -27,13 +27,18 @@ from tpu_cake.dialects.tpu_schedule import (
 )
 from tpu_cake.frontend import KernelBuilder, buffer
 from tpu_cake.lowering import lower_distributed_matmul
-from tpu_cake.workloads import inkling_rpa_schedule, matmul_schedule
+from tpu_cake.workloads import (
+    inkling_fused_rpa_schedule,
+    inkling_rpa_schedule,
+    matmul_schedule,
+)
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
 
 
 def test_vertical_workload_schedules_verify() -> None:
     matmul_schedule().verify()
     inkling_rpa_schedule().verify()
+    inkling_fused_rpa_schedule().verify()
 
 
 def test_rpa_schedule_supports_independent_key_and_value_layouts() -> None:

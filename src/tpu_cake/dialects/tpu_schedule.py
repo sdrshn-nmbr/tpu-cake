@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import pairwise, product
 
@@ -12,6 +13,7 @@ from xdsl.dialects.builtin import (
     IntAttr,
     IntegerType,
     MemRefType,
+    Signedness,
     StringAttr,
 )
 from xdsl.ir import (
@@ -1290,6 +1292,258 @@ class RaggedPagedAttentionOp(IRDLOperation):
 
 
 @irdl_op_definition
+class FusedRaggedPagedAttentionOp(IRDLOperation):
+    name = "tpu_schedule.fused_ragged_paged_attention"
+    queries = operand_def(BufferType)
+    keys = operand_def(BufferType)
+    values = operand_def(BufferType)
+    fused_cache = operand_def(BufferType)
+    kv_lengths = operand_def(BufferType)
+    page_indices = operand_def(BufferType)
+    cumulative_query_lengths = operand_def(BufferType)
+    cumulative_kv_lengths = operand_def(BufferType)
+    distribution = operand_def(BufferType)
+    relative_states = operand_def(BufferType)
+    relative_projection = operand_def(BufferType)
+    output = operand_def(BufferType)
+    updated_cache = operand_def(BufferType)
+    stage = prop_def(IntAttr)
+    causal = prop_def(IntAttr)
+    softmax_scale = prop_def(StringAttr)
+    softmax_dtype = prop_def(StringAttr)
+    sliding_window = prop_def(IntAttr)
+    query_block_size = prop_def(IntAttr)
+    kv_block_size = prop_def(IntAttr)
+    query_cluster_size = prop_def(IntAttr)
+    kv_cluster_size = prop_def(IntAttr)
+    vmem_limit_bytes = prop_def(IntAttr)
+    execution_authority = prop_def(StringAttr)
+    donated_operand_indices = prop_def(ArrayAttr[IntAttr])
+
+    def __init__(
+        self,
+        queries: SSAValue | Operation,
+        keys: SSAValue | Operation,
+        values: SSAValue | Operation,
+        fused_cache: SSAValue | Operation,
+        kv_lengths: SSAValue | Operation,
+        page_indices: SSAValue | Operation,
+        cumulative_query_lengths: SSAValue | Operation,
+        cumulative_kv_lengths: SSAValue | Operation,
+        distribution: SSAValue | Operation,
+        relative_states: SSAValue | Operation,
+        relative_projection: SSAValue | Operation,
+        output: SSAValue | Operation,
+        updated_cache: SSAValue | Operation,
+        *,
+        stage: int,
+        causal: int,
+        softmax_scale: str,
+        softmax_dtype: str,
+        sliding_window: int,
+        query_block_size: int,
+        kv_block_size: int,
+        query_cluster_size: int,
+        kv_cluster_size: int,
+        vmem_limit_bytes: int,
+    ) -> None:
+        super().__init__(
+            operands=[
+                queries,
+                keys,
+                values,
+                fused_cache,
+                kv_lengths,
+                page_indices,
+                cumulative_query_lengths,
+                cumulative_kv_lengths,
+                distribution,
+                relative_states,
+                relative_projection,
+                output,
+                updated_cache,
+            ],
+            properties={
+                "stage": IntAttr(stage),
+                "causal": IntAttr(causal),
+                "softmax_scale": StringAttr(softmax_scale),
+                "softmax_dtype": StringAttr(softmax_dtype),
+                "sliding_window": IntAttr(sliding_window),
+                "query_block_size": IntAttr(query_block_size),
+                "kv_block_size": IntAttr(kv_block_size),
+                "query_cluster_size": IntAttr(query_cluster_size),
+                "kv_cluster_size": IntAttr(kv_cluster_size),
+                "vmem_limit_bytes": IntAttr(vmem_limit_bytes),
+                "execution_authority": StringAttr("opaque-upstream-wrapper"),
+                "donated_operand_indices": ArrayAttr(
+                    IntAttr(index) for index in (0, 1, 2, 3)
+                ),
+            },
+        )
+
+    def verify_(self) -> None:
+        buffers = tuple(value.type for value in self.operands)
+        assert all(isinstance(value, BufferType) for value in buffers)
+        for buffer in buffers:
+            assert isinstance(buffer, BufferType)
+            _check_live(buffer, self.stage.data)
+            if buffer.space.data is not MemorySpace.HBM:
+                raise VerifyException("fused RPA wrapper operands must reside in HBM")
+        (
+            queries,
+            keys,
+            values,
+            fused_cache,
+            kv_lengths,
+            page_indices,
+            cumulative_query_lengths,
+            cumulative_kv_lengths,
+            distribution,
+            relative_states,
+            relative_projection,
+            output,
+            updated_cache,
+        ) = buffers
+        assert all(isinstance(value, BufferType) for value in buffers)
+        query_shape = queries.storage.get_shape()
+        key_shape = keys.storage.get_shape()
+        value_shape = values.storage.get_shape()
+        cache_shape = fused_cache.storage.get_shape()
+        if len(query_shape) != 3 or len(key_shape) != 3 or len(value_shape) != 3:
+            raise VerifyException("fused RPA Q/K/V must have [tokens, heads, dim] shape")
+        if len(cache_shape) != 5:
+            raise VerifyException(
+                "fused RPA cache must have [pages, page, packed_heads, packing, dim] shape"
+            )
+        tokens, query_heads, dimension = query_shape
+        key_tokens, key_heads, key_dimension = key_shape
+        value_tokens, value_heads, value_dimension = value_shape
+        _, _, packed_interleaved_heads, packing, cache_dimension = cache_shape
+        if any(value <= 0 for value in (*query_shape, *key_shape, *value_shape, *cache_shape)):
+            raise VerifyException("fused RPA Q/K/V/cache dimensions must be positive")
+        data_buffers = (
+            queries,
+            keys,
+            values,
+            fused_cache,
+            relative_states,
+            relative_projection,
+            output,
+            updated_cache,
+        )
+        if any(
+            not isinstance(buffer.storage.element_type, BFloat16Type)
+            for buffer in data_buffers
+        ):
+            raise VerifyException("Inkling fused RPA data buffers must use bf16")
+        metadata_buffers = (
+            kv_lengths,
+            page_indices,
+            cumulative_query_lengths,
+            cumulative_kv_lengths,
+            distribution,
+        )
+        if any(
+            not isinstance(buffer.storage.element_type, IntegerType)
+            or buffer.storage.element_type.width.data != 32
+            or buffer.storage.element_type.signedness.data is Signedness.UNSIGNED
+            for buffer in metadata_buffers
+        ):
+            raise VerifyException("fused RPA metadata buffers must use i32")
+        if (key_tokens, value_tokens) != (tokens, tokens):
+            raise VerifyException("fused RPA Q/K/V token counts must match")
+        if key_heads != value_heads or query_heads % key_heads:
+            raise VerifyException("fused RPA requires equal K/V heads dividing query heads")
+        if (key_dimension, value_dimension, cache_dimension) != (
+            dimension,
+            dimension,
+            dimension,
+        ):
+            raise VerifyException("fused RPA Q/K/V/cache head dimensions must match")
+        if packing != 2 or packed_interleaved_heads * packing != 2 * key_heads:
+            raise VerifyException("fused RPA cache must interleave one K and V per KV head")
+        if output.storage.get_shape() != query_shape:
+            raise VerifyException("fused RPA output shape must match queries")
+        if updated_cache.storage.get_shape() != cache_shape:
+            raise VerifyException("fused RPA updated cache shape must match its input cache")
+        sequence_count_shape = kv_lengths.storage.get_shape()
+        page_indices_shape = page_indices.storage.get_shape()
+        if len(sequence_count_shape) != 1 or not sequence_count_shape[0]:
+            raise VerifyException("fused RPA KV lengths must be nonempty rank 1")
+        if len(page_indices_shape) != 1:
+            raise VerifyException("fused RPA page indices must be rank 1")
+        sequence_count = sequence_count_shape[0]
+        if tokens != sequence_count:
+            raise VerifyException(
+                "Inkling fused decode RPA requires one query token per sequence"
+            )
+        if page_indices_shape[0] % sequence_count:
+            raise VerifyException("fused RPA flat page indices must divide across sequences")
+        if cumulative_query_lengths.storage.get_shape() != (sequence_count + 1,) or (
+            cumulative_kv_lengths.storage.get_shape() != (sequence_count + 1,)
+        ):
+            raise VerifyException("fused RPA cumulative lengths must have sequences + 1 entries")
+        if distribution.storage.get_shape() != (3,):
+            raise VerifyException("fused RPA distribution must contain three boundaries")
+        if relative_states.storage.get_shape()[:2] != (tokens, query_heads):
+            raise VerifyException("fused RPA relative states must match query tokens and heads")
+        if len(relative_states.storage.get_shape()) != 3 or len(
+            relative_projection.storage.get_shape()
+        ) != 2:
+            raise VerifyException("fused RPA relative states/projection must be rank 3/rank 2")
+        if (
+            relative_states.storage.get_shape()[2]
+            != relative_projection.storage.get_shape()[0]
+        ):
+            raise VerifyException("fused RPA relative dimensions must match")
+        if self.causal.data != 1:
+            raise VerifyException(
+                "Inkling fused RPA adapter requires causal attention without a custom mask"
+            )
+        try:
+            scale = Decimal(self.softmax_scale.data)
+        except InvalidOperation as error:
+            raise VerifyException("fused RPA softmax scale must be decimal") from error
+        if not scale.is_finite() or scale <= 0:
+            raise VerifyException("fused RPA softmax scale must be positive and finite")
+        if scale * dimension != Decimal(1):
+            raise VerifyException("Inkling fused RPA softmax scale must equal 1 / head dimension")
+        if self.softmax_dtype.data != "float32":
+            raise VerifyException("Inkling fused RPA softmax must use float32")
+        if self.sliding_window.data < 0:
+            raise VerifyException("fused RPA sliding window cannot be negative")
+        if any(
+            value.data <= 0
+            for value in (
+                self.query_block_size,
+                self.kv_block_size,
+                self.query_cluster_size,
+                self.kv_cluster_size,
+                self.vmem_limit_bytes,
+            )
+        ):
+            raise VerifyException("fused RPA block sizes and VMEM limit must be positive")
+        if self.execution_authority.data != "opaque-upstream-wrapper":
+            raise VerifyException("fused RPA must declare delegated execution authority")
+        if tuple(value.data for value in self.donated_operand_indices) != (0, 1, 2, 3):
+            raise VerifyException("fused RPA must donate Q, K, V, and fused cache")
+        if self.output is not self.queries or self.updated_cache is not self.fused_cache:
+            raise VerifyException(
+                "fused RPA output/cache destinations must alias query/cache inputs"
+            )
+        page_size = cache_shape[1]
+        if (
+            self.query_block_size.data % self.query_cluster_size.data
+            or self.kv_block_size.data % self.kv_cluster_size.data
+            or self.kv_block_size.data % page_size
+            or self.kv_cluster_size.data % page_size
+        ):
+            raise VerifyException(
+                "fused RPA blocks must divide into clusters and KV blocks must align to pages"
+            )
+
+
+@irdl_op_definition
 class PipelineYieldOp(IRDLOperation):
     name = "tpu_schedule.pipeline_yield"
     values = var_operand_def(BufferType)
@@ -1469,6 +1723,12 @@ class PipelineLoopOp(IRDLOperation):
                     raise VerifyException("pipeline RPA reads an uninitialized operand")
                 initialized.add(root(operation.output))
                 written.add(root(operation.output))
+            elif isinstance(operation, FusedRaggedPagedAttentionOp):
+                if any(root(value) not in initialized for value in operation.operands[:-2]):
+                    raise VerifyException("pipeline fused RPA reads an uninitialized operand")
+                for value in (operation.output, operation.updated_cache):
+                    initialized.add(root(value))
+                    written.add(root(value))
         if pending_dma or pending_remote_dma:
             raise VerifyException("pipeline iteration ends with DMA operations in flight")
         if any(root(value) not in initialized for value in terminator.values):
@@ -2058,6 +2318,11 @@ class KernelOp(IRDLOperation):
                 ):
                     require_initialized(value, operation)
                 initialized.add(root(operation.output))
+            if isinstance(operation, FusedRaggedPagedAttentionOp):
+                for value in operation.operands[:-2]:
+                    require_initialized(value, operation)
+                initialized.add(root(operation.output))
+                initialized.add(root(operation.updated_cache))
             if isinstance(operation, PipelineLoopOp):
                 for value in operation.captures:
                     require_initialized(value, operation)
@@ -2235,6 +2500,7 @@ TPUSchedule = Dialect(
         CollectiveReduceScatterOp,
         CollectiveOp,
         RaggedPagedAttentionOp,
+        FusedRaggedPagedAttentionOp,
         PipelineLoopOp,
         PipelineYieldOp,
         YieldOp,

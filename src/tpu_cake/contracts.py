@@ -133,6 +133,28 @@ class NumericalContract(BaseModel):
     semantic_properties: tuple[SemanticPropertyKind, ...] = ()
 
 
+class SourceFileContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ExecutionContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    executor: str = Field(min_length=1)
+    scope: str = Field(min_length=1)
+    preflight: str | None = None
+    source_revision: str | None = None
+    source_manifest: tuple[SourceFileContract, ...] = ()
+
+    @model_validator(mode="after")
+    def source_paths_are_unique(self) -> ExecutionContract:
+        paths = [source.path for source in self.source_manifest]
+        if len(paths) != len(set(paths)):
+            raise ValueError("execution source manifest paths must be unique")
+        return self
+
+
 class SemanticPropertyResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     property: SemanticPropertyKind
@@ -163,6 +185,7 @@ class WorkloadContract(BaseModel):
     inputs: tuple[TensorContract, ...]
     outputs: tuple[TensorContract, ...]
     numerical: NumericalContract
+    execution: ExecutionContract | None = None
 
 
 class KernelExperiment(BaseModel):

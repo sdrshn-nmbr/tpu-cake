@@ -14,6 +14,7 @@ from tpu_cake.dialects.tpu_schedule import (
     CollectiveOp,
     DmaStartOp,
     DmaWaitOp,
+    FusedRaggedPagedAttentionOp,
     KernelOp,
     LayoutAttr,
     LifetimeAttr,
@@ -377,6 +378,66 @@ class KernelBuilder:
             query_block_size,
             kv_block_size,
         )
+        self._add(operation)
+        return operation
+
+    def fused_ragged_paged_attention(
+        self,
+        queries: SSAValue | Operation,
+        keys: SSAValue | Operation,
+        values: SSAValue | Operation,
+        fused_cache: SSAValue | Operation,
+        kv_lengths: SSAValue | Operation,
+        page_indices: SSAValue | Operation,
+        cumulative_query_lengths: SSAValue | Operation,
+        cumulative_kv_lengths: SSAValue | Operation,
+        distribution: SSAValue | Operation,
+        relative_states: SSAValue | Operation,
+        relative_projection: SSAValue | Operation,
+        output: SSAValue | Operation,
+        updated_cache: SSAValue | Operation,
+        *,
+        stage: int,
+        causal: int,
+        softmax_scale: str,
+        softmax_dtype: str,
+        sliding_window: int,
+        query_block_size: int,
+        kv_block_size: int,
+        query_cluster_size: int,
+        kv_cluster_size: int,
+        vmem_limit_bytes: int,
+        source_location: SourceLocation | None = None,
+    ) -> FusedRaggedPagedAttentionOp:
+        operation = attach_source(
+            FusedRaggedPagedAttentionOp(
+                queries,
+                keys,
+                values,
+                fused_cache,
+                kv_lengths,
+                page_indices,
+                cumulative_query_lengths,
+                cumulative_kv_lengths,
+                distribution,
+                relative_states,
+                relative_projection,
+                output,
+                updated_cache,
+                stage=stage,
+                causal=causal,
+                softmax_scale=softmax_scale,
+                softmax_dtype=softmax_dtype,
+                sliding_window=sliding_window,
+                query_block_size=query_block_size,
+                kv_block_size=kv_block_size,
+                query_cluster_size=query_cluster_size,
+                kv_cluster_size=kv_cluster_size,
+                vmem_limit_bytes=vmem_limit_bytes,
+            ),
+            source_location,
+        )
+        assert isinstance(operation, FusedRaggedPagedAttentionOp)
         self._add(operation)
         return operation
 

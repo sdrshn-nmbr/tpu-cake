@@ -2,6 +2,9 @@ import numpy as np
 
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.workloads.inkling_rpa import (
+    inkling_fused_rpa_contract,
+    inkling_fused_rpa_experiment,
+    inkling_fused_rpa_schedule,
     inkling_rpa_inputs,
     inkling_rpa_reference,
     inkling_rpa_schedule,
@@ -52,3 +55,16 @@ def test_schedule_text_and_hash_are_stable() -> None:
         second = build()
         assert canonical_module_text(first) == canonical_module_text(second)
         assert schedule_sha256(first) == schedule_sha256(second)
+
+
+def test_fused_rpa_experiment_binds_oracle_preflight_and_backend_sources() -> None:
+    contract = inkling_fused_rpa_contract()
+    experiment = inkling_fused_rpa_experiment()
+
+    assert len(contract.inputs) == 11
+    assert len(contract.outputs) == 2
+    assert contract.execution.scope == "local-shard-caller-owned-sharding"
+    assert contract.execution.preflight == "tpu_cake.rpa_lowering.FusedRpaPlan.preflight"
+    assert len(contract.execution.source_manifest) == 3
+    assert experiment.workload == contract
+    assert experiment.schedule_sha256 == schedule_sha256(inkling_fused_rpa_schedule())

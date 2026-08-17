@@ -1,22 +1,34 @@
 from __future__ import annotations
 
 import math
+from enum import StrEnum
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from xdsl.dialects.builtin import ModuleOp, bf16, i32
 
 from tpu_cake.contracts import (
     BenchmarkProtocol,
+    ExecutionContract,
     KernelExperiment,
     NumericalContract,
     ProfileExpectation,
     SearchPolicy,
+    SourceFileContract,
     TargetHardware,
     TensorContract,
     WorkloadContract,
 )
 from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership
 from tpu_cake.frontend import KernelBuilder, buffer, schedule_sha256
+from tpu_cake.rpa_lowering import (
+    INKLE_REPOSITORY_REVISION,
+    INKLING_RPA_SOURCE_SHA256,
+    INKLING_RPA_TUNING_SHA256,
+    INKLING_RPA_UTIL_SHA256,
+)
+from tpu_cake.source import SourceLocation
 
 
 def inkling_rpa_reference(
@@ -50,7 +62,7 @@ def inkling_rpa_reference(
         query_keys = keys[:, key_head_for_query, :]
         query_values = values[:, value_head_for_query, :]
         scores = np.einsum("hd,lhd->hl", query[request], query_keys, dtype=np.float32)
-        scores = scores / math.sqrt(query_dimension) + bias[:, :length]
+        scores = scores / query_dimension + bias[:, :length]
         scores -= scores.max(axis=-1, keepdims=True)
         probabilities = np.exp(scores)
         probabilities /= probabilities.sum(axis=-1, keepdims=True)
@@ -129,6 +141,199 @@ def inkling_rpa_schedule() -> ModuleOp:
     return builder.module()
 
 
+def inkling_fused_rpa_schedule() -> ModuleOp:
+    external = {
+        "memory": MemorySpace.HBM,
+        "ownership": Ownership.EXTERNAL,
+        "lifetime": (0, 0),
+    }
+    inputs = (
+        buffer((4, 4, 32), "T Hq D", bf16, **external),
+        buffer((4, 2, 32), "T Hkv D", bf16, **external),
+        buffer((4, 2, 32), "T Hkv D", bf16, **external),
+        buffer((32, 16, 2, 2, 32), "P S Hkv2p Pack D", bf16, **external),
+        buffer((4,), "N", i32, **external),
+        buffer((32,), "PI", i32, **external),
+        buffer((5,), "N1", i32, **external),
+        buffer((5,), "N1", i32, **external),
+        buffer((3,), "R3", i32, **external),
+        buffer((4, 4, 16), "T Hq R", bf16, **external),
+        buffer((16, 128), "R E", bf16, **external),
+    )
+    builder = KernelBuilder(
+        "inkling_fused_rpa_decode",
+        "tpu7x",
+        inputs,
+        vmem_capacity_bytes=96 << 20,
+        smem_capacity_bytes=1 << 20,
+    )
+    builder.fused_ragged_paged_attention(
+        *builder.inputs,
+        builder.inputs[0],
+        builder.inputs[3],
+        stage=0,
+        causal=1,
+        softmax_scale="0.03125",
+        softmax_dtype="float32",
+        sliding_window=0,
+        query_block_size=8,
+        kv_block_size=128,
+        query_cluster_size=8,
+        kv_cluster_size=128,
+        vmem_limit_bytes=96 << 20,
+        source_location=SourceLocation(
+            "engine/sglang-jax/python/sgl_jax/srt/kernels/"
+            "ragged_paged_attention/ragged_paged_attention_v3.py",
+            1802,
+            1,
+        ),
+    )
+    return builder.module()
+
+
+class FusedRpaOracleMutation(StrEnum):
+    WRONG_SCALE = "wrong_scale"
+    OMIT_RELATIVE_BIAS = "omit_relative_bias"
+    WRONG_PAGE_INDEX = "wrong_page_index"
+    SWAP_KV_INTERLEAVE = "swap_kv_interleave"
+    SKIP_CACHE_UPDATE = "skip_cache_update"
+
+
+def inkling_fused_rpa_inputs(seed: int = 0) -> tuple[jax.Array, ...]:
+    generator = np.random.default_rng(seed)
+
+    def bf16(shape: tuple[int, ...], scale: float = 1.0) -> jax.Array:
+        values = generator.normal(scale=scale, size=shape).astype(np.float32)
+        return jnp.asarray(values, dtype=jnp.bfloat16)
+
+    return (
+        bf16((4, 4, 32)),
+        bf16((4, 2, 32)),
+        bf16((4, 2, 32)),
+        bf16((32, 16, 2, 2, 32), scale=0.25),
+        jnp.asarray((1, 17, 33, 49), dtype=jnp.int32),
+        jnp.arange(32, dtype=jnp.int32),
+        jnp.arange(5, dtype=jnp.int32),
+        jnp.asarray((0, 16, 48, 96, 160), dtype=jnp.int32),
+        jnp.full((3,), 4, dtype=jnp.int32),
+        bf16((4, 4, 16), scale=0.4),
+        bf16((16, 128), scale=0.4),
+    )
+
+
+def inkling_fused_rpa_reference(
+    inputs: tuple[jax.Array, ...],
+    *,
+    mutation: FusedRpaOracleMutation | None = None,
+) -> tuple[jax.Array, jax.Array]:
+    (
+        queries_value,
+        keys_value,
+        values_value,
+        cache_value,
+        kv_lengths_value,
+        page_indices_value,
+        cumulative_query_lengths_value,
+        cumulative_kv_lengths_value,
+        distribution_value,
+        relative_states_value,
+        relative_projection_value,
+    ) = inputs
+    queries = np.asarray(queries_value, dtype=np.float32)
+    keys = np.asarray(keys_value, dtype=np.float32)
+    values = np.asarray(values_value, dtype=np.float32)
+    cache = np.asarray(cache_value, dtype=np.float32).copy()
+    kv_lengths = np.asarray(kv_lengths_value, dtype=np.int32)
+    page_indices = np.asarray(page_indices_value, dtype=np.int32).copy()
+    cumulative_query_lengths = np.asarray(
+        cumulative_query_lengths_value, dtype=np.int32
+    )
+    cumulative_kv_lengths = np.asarray(cumulative_kv_lengths_value, dtype=np.int32)
+    distribution = np.asarray(distribution_value, dtype=np.int32)
+    relative_states = np.asarray(relative_states_value, dtype=np.float32)
+    relative_projection = np.asarray(relative_projection_value, dtype=np.float32)
+    sequence_count = kv_lengths.shape[0]
+    if not np.array_equal(distribution, np.full((3,), sequence_count, dtype=np.int32)):
+        raise ValueError("fused RPA oracle requires a decode-only distribution")
+    if not np.array_equal(
+        cumulative_query_lengths,
+        np.arange(sequence_count + 1, dtype=np.int32),
+    ):
+        raise ValueError("fused RPA oracle requires one query token per sequence")
+    if mutation is FusedRpaOracleMutation.WRONG_PAGE_INDEX:
+        page_indices[0] = (page_indices[0] + 1) % cache.shape[0]
+
+    page_size = cache.shape[1]
+    packing = cache.shape[3]
+    key_slot, value_slot = (1, 0) if mutation is FusedRpaOracleMutation.SWAP_KV_INTERLEAVE else (0, 1)
+    if mutation is not FusedRpaOracleMutation.SKIP_CACHE_UPDATE:
+        for sequence in range(sequence_count):
+            position = int(kv_lengths[sequence]) - 1
+            page_offset = int(cumulative_kv_lengths[sequence]) // page_size
+            page = page_indices[page_offset + position // page_size]
+            offset = position % page_size
+            for head in range(keys.shape[1]):
+                for slot, source in ((key_slot, keys), (value_slot, values)):
+                    interleaved = 2 * head + slot
+                    cache[page, offset, interleaved // packing, interleaved % packing] = source[
+                        sequence, head
+                    ]
+
+    unpacked = cache.reshape(*cache.shape[:2], cache.shape[2] * packing, cache.shape[-1])
+    outputs = np.empty_like(queries, dtype=np.float32)
+    scale = (
+        1.0 / math.sqrt(queries.shape[-1])
+        if mutation is FusedRpaOracleMutation.WRONG_SCALE
+        else 1.0 / queries.shape[-1]
+    )
+    for sequence in range(sequence_count):
+        length = int(kv_lengths[sequence])
+        page_offset = int(cumulative_kv_lengths[sequence]) // page_size
+        page_count = math.ceil(length / page_size)
+        pages = page_indices[page_offset : page_offset + page_count]
+        sequence_cache = unpacked[pages].reshape(-1, unpacked.shape[2], unpacked.shape[3])[
+            :length
+        ]
+        key_cache = sequence_cache[:, key_slot::2][:, : keys.shape[1]]
+        value_cache = sequence_cache[:, value_slot::2][:, : values.shape[1]]
+        query_heads_per_kv_head = queries.shape[1] // keys.shape[1]
+        head_index = np.arange(queries.shape[1]) // query_heads_per_kv_head
+        scores = np.einsum(
+            "hd,lhd->hl",
+            queries[sequence],
+            key_cache[:, head_index],
+            dtype=np.float32,
+        ) * scale
+        if mutation is not FusedRpaOracleMutation.OMIT_RELATIVE_BIAS:
+            distances = (length - 1) - np.arange(length, dtype=np.int32)
+            clipped = np.clip(distances, 0, relative_projection.shape[1] - 1)
+            projection = relative_projection[:, clipped]
+            bias = np.einsum(
+                "hr,rl->hl",
+                relative_states[sequence],
+                projection,
+                dtype=np.float32,
+            )
+            scores += np.where(
+                distances[None] < relative_projection.shape[1],
+                bias,
+                0.0,
+            )
+        scores -= np.max(scores, axis=-1, keepdims=True)
+        probabilities = np.exp(scores, dtype=np.float32)
+        probabilities /= np.sum(probabilities, axis=-1, keepdims=True)
+        outputs[sequence] = np.einsum(
+            "hl,lhd->hd",
+            probabilities,
+            value_cache[:, head_index],
+            dtype=np.float32,
+        )
+    return (
+        jnp.asarray(outputs, dtype=jnp.bfloat16),
+        jnp.asarray(cache, dtype=jnp.bfloat16),
+    )
+
+
 def inkling_rpa_contract() -> WorkloadContract:
     def tensor(
         name: str, shape: tuple[int, ...], logical: tuple[str, ...], dtype: str
@@ -154,6 +359,110 @@ def inkling_rpa_contract() -> WorkloadContract:
             absolute_tolerance=0.02,
             relative_tolerance=0.02,
         ),
+        execution=ExecutionContract(
+            executor="tpu_cake.workloads.inkling_rpa.inkling_rpa_reference",
+            scope="conceptual-separate-cache-prototype",
+        ),
+    )
+
+
+def inkling_fused_rpa_contract() -> WorkloadContract:
+    def tensor(
+        name: str, shape: tuple[int, ...], logical: tuple[str, ...], dtype: str
+    ) -> TensorContract:
+        return TensorContract(
+            name=name,
+            shape=shape,
+            logical_shape=logical,
+            dtype=dtype,
+            sharding=("",) * len(shape),
+        )
+
+    return WorkloadContract(
+        name="inkling-fused-ragged-paged-relative-bias-decode-local-shard",
+        stage="steady_decode",
+        inputs=(
+            tensor("queries", (4, 4, 32), ("T", "Hq", "D"), "bf16"),
+            tensor("keys", (4, 2, 32), ("T", "Hkv", "D"), "bf16"),
+            tensor("values", (4, 2, 32), ("T", "Hkv", "D"), "bf16"),
+            tensor(
+                "fused_cache",
+                (32, 16, 2, 2, 32),
+                ("P", "S", "Hkv2p", "Pack", "D"),
+                "bf16",
+            ),
+            tensor("kv_lengths", (4,), ("N",), "i32"),
+            tensor("page_indices", (32,), ("PI",), "i32"),
+            tensor("cumulative_query_lengths", (5,), ("N1",), "i32"),
+            tensor("cumulative_kv_lengths", (5,), ("N1",), "i32"),
+            tensor("distribution", (3,), ("R3",), "i32"),
+            tensor("relative_states", (4, 4, 16), ("T", "Hq", "R"), "bf16"),
+            tensor("relative_projection", (16, 128), ("R", "E"), "bf16"),
+        ),
+        outputs=(
+            tensor("output", (4, 4, 32), ("T", "Hq", "D"), "bf16"),
+            tensor(
+                "updated_fused_cache",
+                (32, 16, 2, 2, 32),
+                ("P", "S", "Hkv2p", "Pack", "D"),
+                "bf16",
+            ),
+        ),
+        numerical=NumericalContract(
+            reference="tpu_cake.workloads.inkling_rpa.inkling_fused_rpa_reference",
+            absolute_tolerance=0.02,
+            relative_tolerance=0.02,
+        ),
+        execution=ExecutionContract(
+            executor=(
+                "sgl_jax.srt.kernels.ragged_paged_attention."
+                "ragged_paged_attention_v3.ragged_paged_attention"
+            ),
+            scope="local-shard-caller-owned-sharding",
+            preflight="tpu_cake.rpa_lowering.FusedRpaPlan.preflight",
+            source_revision=INKLE_REPOSITORY_REVISION,
+            source_manifest=(
+                SourceFileContract(
+                    path="ragged_paged_attention_v3.py",
+                    sha256=INKLING_RPA_SOURCE_SHA256,
+                ),
+                SourceFileContract(
+                    path="tuned_block_sizes_v3.py",
+                    sha256=INKLING_RPA_TUNING_SHA256,
+                ),
+                SourceFileContract(path="util.py", sha256=INKLING_RPA_UTIL_SHA256),
+            ),
+        ),
+    )
+
+
+def inkling_fused_rpa_experiment() -> KernelExperiment:
+    schedule = inkling_fused_rpa_schedule()
+    return KernelExperiment(
+        workload=inkling_fused_rpa_contract(),
+        target=TargetHardware(
+            accelerator="TPU7x",
+            topology="local shard; caller owns outer mesh",
+            chip_count=1,
+            vmem_budget_bytes_per_core=128 << 20,
+            smem_budget_bytes_per_core=32 << 20,
+            runtime_target="Pallas Mosaic TPU through pinned sglang-jax RPA v3",
+        ),
+        benchmark=BenchmarkProtocol(
+            warmup_iterations=5,
+            measured_iterations=50,
+            synchronization="block until output and updated cache are ready",
+            statistic="median local-shard device duration",
+        ),
+        search=SearchPolicy(objective_metric="median_device_duration_ns"),
+        profile=ProfileExpectation(
+            name="inkling-fused-rpa-local-shard-decode",
+            stage="steady_decode",
+            minimum_tpu_device_planes=1,
+            required_timed_hlo_markers=("ragged_paged_attention",),
+            forbidden_timed_hlo_fragments=("native_backend.py:500",),
+        ),
+        schedule_sha256=schedule_sha256(schedule),
     )
 
 
