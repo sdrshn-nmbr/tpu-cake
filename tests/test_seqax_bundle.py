@@ -1,3 +1,4 @@
+import jax
 import numpy as np
 import pytest
 
@@ -12,6 +13,7 @@ from tpu_cake.seqax_bundle import (
     _trusted_experiment,
     _validate_array_contract,
 )
+from tpu_cake.workloads import seqax_oracle
 
 
 def test_seqax_receipt_profile_has_complete_phase_contracts() -> None:
@@ -59,3 +61,21 @@ def test_seqax_result_artifact_roles_come_from_trusted_paths() -> None:
     assert _expected_result_role("inputs/12.npy") is ArtifactRole.CORRECTNESS_INPUT
     with pytest.raises(ValueError, match="PATH_UNRECOGNIZED"):
         _expected_result_role("renamed-experiment.json")
+
+
+def test_seqax_reference_uses_the_canonical_cpu_backend(monkeypatch) -> None:
+    observed_platforms: list[str] = []
+
+    def reference_on_current_device(*_args, **_kwargs) -> np.ndarray:
+        observed_platforms.append(jax.device_put(np.ones(1)).device.platform)
+        return np.zeros((1,), dtype=np.float32)
+
+    monkeypatch.setattr(
+        seqax_oracle,
+        "_seqax_forward_reference_on_current_device",
+        reference_on_current_device,
+    )
+
+    seqax_oracle.seqax_forward_reference((), rope_max_timescale=256)
+
+    assert observed_platforms == ["cpu"]

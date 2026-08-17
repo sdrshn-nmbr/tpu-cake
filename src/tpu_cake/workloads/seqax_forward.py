@@ -754,7 +754,7 @@ def seqax_forward_experiment(
             ),
             outputs=(_tensor_contract("logits", plan.output_contracts[0]),),
             numerical=NumericalContract(
-                reference="independent NumPy Seqax forward reference",
+                reference="canonical CPU JAX Seqax forward reference",
                 absolute_tolerance=absolute_tolerance,
                 relative_tolerance=relative_tolerance,
             ),

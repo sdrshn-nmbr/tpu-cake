@@ -77,7 +77,7 @@ def _rope(value: jax.Array, maximum_timescale: int) -> jax.Array:
     )
 
 
-def seqax_forward_reference(
+def _seqax_forward_reference_on_current_device(
     inputs: tuple[np.ndarray, ...],
     *,
     rope_max_timescale: int,
@@ -174,3 +174,20 @@ def seqax_forward_reference(
         preferred_element_type=jnp.float32,
     )
     return np.asarray(logits, dtype=np.float32)
+
+
+def seqax_forward_reference(
+    inputs: tuple[np.ndarray, ...],
+    *,
+    rope_max_timescale: int,
+    **parameters: int,
+) -> np.ndarray:
+    cpu_devices = jax.devices("cpu")
+    if not cpu_devices:
+        raise RuntimeError("SEQAX_REFERENCE_CPU_UNAVAILABLE")
+    with jax.default_device(cpu_devices[0]):
+        return _seqax_forward_reference_on_current_device(
+            inputs,
+            rope_max_timescale=rope_max_timescale,
+            **parameters,
+        )

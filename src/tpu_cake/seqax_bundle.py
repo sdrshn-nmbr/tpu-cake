@@ -429,7 +429,6 @@ def _validate_phase(
         raise ValueError(f"SEQAX_CORRECTNESS_REPLAY_MISMATCH phase={phase}")
     if not passed:
         raise ValueError(f"SEQAX_PHASE_CORRECTNESS_FAILED phase={phase}")
-
     expected_run_id = semantic_sha256(
         "seqax-distributed-forward-run-v1",
         result.mode.value,
