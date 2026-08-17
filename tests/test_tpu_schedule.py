@@ -13,7 +13,7 @@ from tpu_cake.dialects.tpu_schedule import (
     SemaphoreAllocOp,
     YieldOp,
 )
-from tpu_cake.frontend import buffer
+from tpu_cake.frontend import KernelBuilder, buffer
 from tpu_cake.workloads import inkling_rpa_schedule, matmul_schedule
 
 
@@ -97,3 +97,72 @@ def test_peak_memory_rejects_overlapping_allocations() -> None:
 def test_use_outside_buffer_lifetime_is_rejected() -> None:
     with pytest.raises(VerifyException, match="outside lifetime"):
         _dma_kernel(first_lifetime=(1, 1), second_lifetime=(1, 1), capacity=1024).verify()
+
+
+def _view_builder(*, capacity: int = 512) -> tuple[KernelBuilder, AllocOp]:
+    base_spec = buffer(
+        (16, 16),
+        "M N",
+        bf16,
+        memory=MemorySpace.VMEM,
+        lifetime=(0, 2),
+    )
+    builder = KernelBuilder(
+        "views",
+        "tpu7x",
+        (),
+        vmem_capacity_bytes=capacity,
+        smem_capacity_bytes=1024,
+    )
+    return builder, builder.alloc(base_spec, "base")
+
+
+def _tile(*, lifetime: tuple[int, int] = (0, 1)):
+    return buffer(
+        (8, 8),
+        "m_tile n_tile",
+        bf16,
+        memory=MemorySpace.VMEM,
+        lifetime=lifetime,
+    )
+
+
+def test_tile_views_alias_without_consuming_additional_capacity() -> None:
+    builder, base = _view_builder(capacity=512)
+    builder.view(base, _tile(), offsets=(0, 0), alias_group="read_window")
+    builder.view(base, _tile(), offsets=(8, 8), alias_group="other_window")
+
+    builder.module().verify()
+
+
+def test_tile_view_rejects_out_of_bounds_region() -> None:
+    builder, base = _view_builder()
+    builder.view(base, _tile(), offsets=(12, 12), alias_group="bad")
+
+    with pytest.raises(VerifyException, match="exceeds its base buffer bounds"):
+        builder.module()
+
+
+def test_tile_view_lifetime_must_fit_base_lifetime() -> None:
+    builder, base = _view_builder()
+    builder.view(base, _tile(lifetime=(1, 3)), offsets=(0, 0), alias_group="bad")
+
+    with pytest.raises(VerifyException, match="lifetime must be contained"):
+        builder.module()
+
+
+def test_overlapping_live_views_need_one_alias_group() -> None:
+    builder, base = _view_builder()
+    builder.view(base, _tile(), offsets=(0, 0), alias_group="lhs")
+    builder.view(base, _tile(), offsets=(4, 4), alias_group="rhs")
+
+    with pytest.raises(VerifyException, match="same alias group"):
+        builder.module()
+
+
+def test_overlapping_views_in_one_declared_alias_group_verify() -> None:
+    builder, base = _view_builder()
+    builder.view(base, _tile(), offsets=(0, 0), alias_group="rotating_buffer")
+    builder.view(base, _tile(), offsets=(4, 4), alias_group="rotating_buffer")
+
+    builder.module().verify()

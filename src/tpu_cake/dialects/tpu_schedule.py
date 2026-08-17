@@ -90,6 +90,39 @@ class LifetimeAttr(ParametrizedAttribute):
 
 
 @irdl_attr_definition
+class TileRegionAttr(ParametrizedAttribute):
+    name = "tpu_schedule.tile_region"
+    offsets: ArrayAttr[IntAttr]
+    sizes: ArrayAttr[IntAttr]
+    strides: ArrayAttr[IntAttr]
+
+    def verify(self) -> None:
+        offsets = tuple(value.data for value in self.offsets)
+        sizes = tuple(value.data for value in self.sizes)
+        strides = tuple(value.data for value in self.strides)
+        if not offsets or len(offsets) != len(sizes) or len(offsets) != len(strides):
+            raise VerifyException("tile region offsets, sizes, and strides need equal rank")
+        if any(offset < 0 for offset in offsets):
+            raise VerifyException("tile region offsets must be nonnegative")
+        if any(size <= 0 for size in sizes):
+            raise VerifyException("tile region sizes must be positive")
+        if any(stride <= 0 for stride in strides):
+            raise VerifyException("tile region strides must be positive")
+
+    def bounds(self) -> tuple[tuple[int, int], ...]:
+        self.verify()
+        return tuple(
+            (offset, offset + (size - 1) * stride)
+            for offset, size, stride in zip(
+                (value.data for value in self.offsets),
+                (value.data for value in self.sizes),
+                (value.data for value in self.strides),
+                strict=True,
+            )
+        )
+
+
+@irdl_attr_definition
 class BufferType(ParametrizedAttribute, TypeAttribute):
     name = "tpu_schedule.buffer"
     storage: MemRefType
@@ -161,6 +194,22 @@ def _check_live(buffer: BufferType, stage: int) -> None:
         )
 
 
+def _lifetimes_overlap(lhs: BufferType, rhs: BufferType) -> bool:
+    return not (
+        lhs.lifetime.end.data < rhs.lifetime.start.data
+        or rhs.lifetime.end.data < lhs.lifetime.start.data
+    )
+
+
+def _regions_overlap(lhs: TileRegionAttr, rhs: TileRegionAttr) -> bool:
+    return all(
+        not (lhs_high < rhs_low or rhs_high < lhs_low)
+        for (lhs_low, lhs_high), (rhs_low, rhs_high) in zip(
+            lhs.bounds(), rhs.bounds(), strict=True
+        )
+    )
+
+
 @irdl_op_definition
 class AllocOp(IRDLOperation):
     name = "tpu_schedule.alloc"
@@ -181,6 +230,67 @@ class AllocOp(IRDLOperation):
         if buffer.ownership.data is Ownership.EXTERNAL:
             raise VerifyException("local allocations cannot have external ownership")
         buffer_bytes(buffer)
+
+
+@irdl_op_definition
+class ViewOp(IRDLOperation):
+    name = "tpu_schedule.view"
+    base = operand_def(BufferType)
+    view = result_def(BufferType)
+    region = prop_def(TileRegionAttr)
+    alias_group = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        base: SSAValue | Operation,
+        result_type: BufferType,
+        *,
+        offsets: tuple[int, ...],
+        sizes: tuple[int, ...],
+        strides: tuple[int, ...] | None = None,
+        alias_group: str,
+    ) -> None:
+        strides = strides or (1,) * len(offsets)
+        super().__init__(
+            operands=[base],
+            result_types=[result_type],
+            properties={
+                "region": TileRegionAttr(
+                    ArrayAttr(IntAttr(value) for value in offsets),
+                    ArrayAttr(IntAttr(value) for value in sizes),
+                    ArrayAttr(IntAttr(value) for value in strides),
+                ),
+                "alias_group": StringAttr(alias_group),
+            },
+        )
+
+    def verify_(self) -> None:
+        base, view = self.base.type, self.view.type
+        assert isinstance(base, BufferType) and isinstance(view, BufferType)
+        self.region.verify()
+        if not self.alias_group.data:
+            raise VerifyException("buffer view needs a non-empty alias group")
+        base_shape = base.storage.get_shape()
+        view_shape = view.storage.get_shape()
+        bounds = self.region.bounds()
+        if len(bounds) != len(base_shape):
+            raise VerifyException("tile view rank must match its base buffer")
+        sizes = tuple(value.data for value in self.region.sizes)
+        if view_shape != sizes:
+            raise VerifyException("tile view storage shape must match its region size")
+        if any(high >= extent for (_, high), extent in zip(bounds, base_shape, strict=True)):
+            raise VerifyException("tile view exceeds its base buffer bounds")
+        if base.storage.element_type != view.storage.element_type:
+            raise VerifyException("tile view cannot change element type")
+        if base.space != view.space or base.ownership != view.ownership:
+            raise VerifyException("tile view must preserve memory space and ownership")
+        if base.sharding != view.sharding or base.layout != view.layout:
+            raise VerifyException("tile view must preserve sharding and layout")
+        if (
+            view.lifetime.start.data < base.lifetime.start.data
+            or view.lifetime.end.data > base.lifetime.end.data
+        ):
+            raise VerifyException("tile view lifetime must be contained by its base buffer")
 
 
 @irdl_op_definition
@@ -532,6 +642,8 @@ class KernelOp(IRDLOperation):
         in_flight: dict[Operation, DmaStartOp] = {}
         symbols: dict[str, int] = {}
         buffers: list[BufferType] = []
+        storage_buffers: list[BufferType] = []
+        views_by_base: dict[SSAValue, list[ViewOp]] = {}
 
         for argument in block.args:
             if not isinstance(argument.type, BufferType):
@@ -541,6 +653,7 @@ class KernelOp(IRDLOperation):
             if argument.type.ownership.data is not Ownership.EXTERNAL:
                 raise VerifyException("kernel arguments must have external ownership")
             buffers.append(argument.type)
+            storage_buffers.append(argument.type)
 
         for operation in operations:
             stage = _stage(operation)
@@ -550,6 +663,21 @@ class KernelOp(IRDLOperation):
                 previous_stage = stage
             if isinstance(operation, AllocOp):
                 buffers.append(operation.buffer.type)
+                storage_buffers.append(operation.buffer.type)
+            if isinstance(operation, ViewOp):
+                operation.verify_()
+                buffers.append(operation.view.type)
+                base = operation.base
+                for other in views_by_base.setdefault(base, []):
+                    if (
+                        _lifetimes_overlap(operation.view.type, other.view.type)
+                        and _regions_overlap(operation.region, other.region)
+                        and operation.alias_group.data != other.alias_group.data
+                    ):
+                        raise VerifyException(
+                            "overlapping live tile views must declare the same alias group"
+                        )
+                views_by_base[base].append(operation)
             if isinstance(operation, DmaStartOp):
                 semaphore_owner = operation.semaphore.owner
                 if semaphore_owner in in_flight:
@@ -599,7 +727,9 @@ class KernelOp(IRDLOperation):
         if in_flight:
             raise VerifyException("kernel ends with DMA operations still in flight")
         local_buffers = [
-            buffer for buffer in buffers if buffer.ownership.data is not Ownership.EXTERNAL
+            buffer
+            for buffer in storage_buffers
+            if buffer.ownership.data is not Ownership.EXTERNAL
         ]
         max_stage = max((_stage(operation) or 0 for operation in operations), default=0)
         for stage in range(max_stage + 1):
@@ -624,6 +754,7 @@ TPUSchedule = Dialect(
     [
         KernelOp,
         AllocOp,
+        ViewOp,
         SemaphoreAllocOp,
         DmaStartOp,
         DmaWaitOp,
@@ -639,6 +770,7 @@ TPUSchedule = Dialect(
         ShardingAttr,
         LayoutAttr,
         LifetimeAttr,
+        TileRegionAttr,
         BufferType,
         DmaTokenType,
         SemaphoreType,

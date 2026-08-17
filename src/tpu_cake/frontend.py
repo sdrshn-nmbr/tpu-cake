@@ -25,6 +25,7 @@ from tpu_cake.dialects.tpu_schedule import (
     SemaphoreAllocOp,
     ShapeAttr,
     ShardingAttr,
+    ViewOp,
     YieldOp,
 )
 from tpu_cake.source import SourceLocation, attach_source
@@ -124,6 +125,31 @@ class KernelBuilder:
     def semaphore(self, *, source: SourceLocation | None = None) -> SemaphoreAllocOp:
         operation = attach_source(SemaphoreAllocOp(), source)
         assert isinstance(operation, SemaphoreAllocOp)
+        self._add(operation)
+        return operation
+
+    def view(
+        self,
+        base: SSAValue | Operation,
+        spec: BufferSpec,
+        *,
+        offsets: tuple[int, ...],
+        strides: tuple[int, ...] | None = None,
+        alias_group: str,
+        source: SourceLocation | None = None,
+    ) -> ViewOp:
+        operation = attach_source(
+            ViewOp(
+                base,
+                spec.to_type(),
+                offsets=offsets,
+                sizes=spec.physical_shape,
+                strides=strides,
+                alias_group=alias_group,
+            ),
+            source,
+        )
+        assert isinstance(operation, ViewOp)
         self._add(operation)
         return operation
 
