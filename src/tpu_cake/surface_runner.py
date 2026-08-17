@@ -141,7 +141,8 @@ def run_surface_pair(
         if not all(passed.values()):
             failed = sorted(name for name, value in passed.items() if not value)
             raise ValueError(
-                f"surface candidates failed the numerical oracle: {failed}"
+                "surface candidates failed the numerical oracle: "
+                f"scenario={scenario.name} candidates={failed}"
             )
         prepared[scenario.name] = (
             inputs,

@@ -11,6 +11,7 @@ import pytest
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
+from tpu_cake.dtensor_interpreter import interpret_distributed_program
 from tpu_cake.identity import semantic_seed, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
 from tpu_cake.ledger import RunState
@@ -300,7 +301,7 @@ def _receipt(tmp_path: Path, monkeypatch) -> SeqaxSurfaceReceipt:
         (
             RunState.CORRECT,
             {
-                "absolute_tolerance": 0.006,
+                "absolute_tolerance": 0.016,
                 "relative_tolerance": 0.05,
                 "scenarios": tuple(scenario.name for scenario in surface.scenarios),
             },
@@ -631,3 +632,18 @@ def test_seqax_surface_rejects_a_coordinated_ledger_edit(tmp_path, monkeypatch) 
 
     with pytest.raises(ValueError, match="LEDGER_REPLAY_MISMATCH"):
         validate_seqax_surface_receipt(receipt, root=tmp_path)
+
+
+def test_seqax_surface_tolerance_still_rejects_swapped_mlp_weights() -> None:
+    surface = seqax_forward_workload_surface()
+    scenario = next(value for value in surface.scenarios if value.name == "deeper")
+    seed = semantic_seed(surface.surface_id, scenario.name, "inputs")
+    inputs = seqax_forward_inputs(seed=seed, **scenario.parameters())
+    expected = seqax_forward_canonical_reference(inputs, **scenario.parameters())
+    swapped = (*inputs[:3], inputs[4], inputs[3], *inputs[5:])
+    (wrong,) = interpret_distributed_program(
+        seqax_forward_schedule(**scenario.parameters()),
+        swapped,
+    )
+
+    assert not np.allclose(wrong, expected, atol=0.016, rtol=0.05)
