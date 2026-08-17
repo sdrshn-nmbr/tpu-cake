@@ -394,6 +394,60 @@ class SliceOp(IRDLOperation):
 
 
 @irdl_op_definition
+class RenameDimensionOp(IRDLOperation):
+    name = "dtensor.rename_dimension"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    source_dimension = prop_def(StringAttr)
+    destination_dimension = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        source_dimension: str,
+        destination_dimension: str,
+    ) -> None:
+        super().__init__(
+            operands=[value],
+            result_types=[result_type],
+            properties={
+                "source_dimension": StringAttr(source_dimension),
+                "destination_dimension": StringAttr(destination_dimension),
+            },
+        )
+
+    def verify_(self) -> None:
+        before, after = self.value.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        source = self.source_dimension.data
+        destination = self.destination_dimension.data
+        before_shape = before.logical_shape()
+        names = tuple(name for name, _ in before_shape)
+        if (
+            not source
+            or not destination
+            or source not in names
+            or destination in names
+        ):
+            raise VerifyException(
+                "dimension rename needs one present source and one fresh destination"
+            )
+        expected_shape = tuple(
+            (destination if name == source else name, size)
+            for name, size in before_shape
+        )
+        if (
+            after.logical_shape() != expected_shape
+            or before.element_type != after.element_type
+            or before.sharding_axes() != after.sharding_axes()
+            or before.pending_reductions() != after.pending_reductions()
+        ):
+            raise VerifyException("dimension rename may only change one logical name")
+
+
+@irdl_op_definition
 class PackedCausalMaskOp(IRDLOperation):
     name = "dtensor.packed_causal_mask"
     sequence_starts = operand_def(DTensorType)
@@ -1196,6 +1250,7 @@ DistributedTensor = Dialect(
         RmsNormOp,
         RotaryEmbeddingOp,
         SliceOp,
+        RenameDimensionOp,
         PackedCausalMaskOp,
         MaskedSoftmaxOp,
         ReduceLocalOp,

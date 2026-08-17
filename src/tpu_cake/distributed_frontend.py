@@ -26,6 +26,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ProgramOp,
     ReduceLocalOp,
     ReduceScatterOp,
+    RenameDimensionOp,
     ReturnOp,
     RmsNormOp,
     RotaryEmbeddingOp,
@@ -239,6 +240,28 @@ class DistributedProgramBuilder:
             source,
         )
         assert isinstance(operation, SliceOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def rename_dimension(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        source_dimension: str,
+        destination_dimension: str,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            RenameDimensionOp(
+                value,
+                result.to_type(),
+                source_dimension=source_dimension,
+                destination_dimension=destination_dimension,
+            ),
+            source,
+        )
+        assert isinstance(operation, RenameDimensionOp)
         self.block.add_op(operation)
         return operation.result
 
