@@ -8,7 +8,7 @@ from xdsl.ir import Operation
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.distributed_tensor import ReduceScatterOp
-from tpu_cake.dialects.tpu_schedule import CollectiveReduceScatterOp
+from tpu_cake.dialects.tpu_schedule import CollectiveOp
 from tpu_cake.lowering import lower_distributed_matmul
 from tpu_cake.source import verify_with_sources
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
@@ -57,7 +57,7 @@ def test_physical_schedule_mutations_fail_closed(
     mutate: Callable[[Operation], None],
 ) -> None:
     module = lower_distributed_matmul(distributed_matmul_schedule())
-    operation = _operation(module, CollectiveReduceScatterOp)
+    operation = _operation(module, CollectiveOp)
     mutate(operation)
 
     with pytest.raises(VerifyException):

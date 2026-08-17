@@ -57,6 +57,13 @@ class Ownership(StrEnum):
     DEVICE = "device"
 
 
+class CollectiveKind(StrEnum):
+    ALL_GATHER = "all_gather"
+    ALL_REDUCE = "all_reduce"
+    ALL_TO_ALL = "all_to_all"
+    REDUCE_SCATTER = "reduce_scatter"
+
+
 @irdl_attr_definition
 class MemorySpaceAttr(EnumAttribute[MemorySpace], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.memory_space"
@@ -65,6 +72,11 @@ class MemorySpaceAttr(EnumAttribute[MemorySpace], SpacedOpaqueSyntaxAttribute):
 @irdl_attr_definition
 class OwnershipAttr(EnumAttribute[Ownership], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.ownership"
+
+
+@irdl_attr_definition
+class CollectiveKindAttr(EnumAttribute[CollectiveKind], SpacedOpaqueSyntaxAttribute):
+    name = "tpu_schedule.collective_kind"
 
 
 @irdl_attr_definition
@@ -234,21 +246,68 @@ class CollectivePlanAttr(ParametrizedAttribute):
 
 
 @irdl_attr_definition
+class TransferRouteAttr(ParametrizedAttribute):
+    name = "tpu_schedule.transfer_route"
+    route_id: StringAttr
+    source_device: IntAttr
+    destination_device: IntAttr
+    route_link_ids: ArrayAttr[StringAttr]
+
+    def verify(self) -> None:
+        routes = tuple(value.data for value in self.route_link_ids)
+        if not self.route_id.data:
+            raise VerifyException("transfer routes need stable IDs")
+        if self.source_device.data < 0 or self.destination_device.data < 0:
+            raise VerifyException("transfer route endpoints must be nonnegative")
+        if self.source_device.data == self.destination_device.data:
+            raise VerifyException("transfer routes must cross devices")
+        if not routes or len(routes) != len(set(routes)):
+            raise VerifyException("transfer routes need a nonempty simple link path")
+
+
+@irdl_attr_definition
+class TransferPlanAttr(ParametrizedAttribute):
+    name = "tpu_schedule.transfer_plan"
+    plan_id: StringAttr
+    routes: ArrayAttr[TransferRouteAttr]
+
+    def verify(self) -> None:
+        routes = tuple(self.routes)
+        if not self.plan_id.data:
+            raise VerifyException("transfer plans need stable IDs")
+        for route in routes:
+            route.verify()
+        route_ids = tuple(route.route_id.data for route in routes)
+        if not routes or route_ids != tuple(sorted(set(route_ids))):
+            raise VerifyException("transfer plan routes must be unique and ordered")
+        sources = tuple(route.source_device.data for route in routes)
+        destinations = tuple(route.destination_device.data for route in routes)
+        if len(sources) != len(set(sources)) or len(destinations) != len(set(destinations)):
+            raise VerifyException(
+                "transfer plans cannot send from or write to one device more than once"
+            )
+
+
+@irdl_attr_definition
 class TopologyAttr(ParametrizedAttribute):
     name = "tpu_schedule.topology"
     devices: ArrayAttr[DeviceAttr]
     links: ArrayAttr[LinkAttr]
     collective_plans: ArrayAttr[CollectivePlanAttr]
+    transfer_plans: ArrayAttr[TransferPlanAttr]
 
     def verify(self) -> None:
         devices = tuple(self.devices)
         links = tuple(self.links)
         plans = tuple(self.collective_plans)
+        transfer_plans = tuple(self.transfer_plans)
         for device in devices:
             device.verify()
         for link in links:
             link.verify()
         for plan in plans:
+            plan.verify()
+        for plan in transfer_plans:
             plan.verify()
 
         device_ids = tuple(device.device_id.data for device in devices)
@@ -322,6 +381,29 @@ class TopologyAttr(ParametrizedAttribute):
             if covered != known_devices:
                 raise VerifyException("collective plan groups must partition all devices")
 
+        transfer_plan_ids = tuple(plan.plan_id.data for plan in transfer_plans)
+        if transfer_plan_ids != tuple(sorted(set(transfer_plan_ids))):
+            raise VerifyException(
+                "topology transfer plans must be unique and canonically ordered"
+            )
+        for plan in transfer_plans:
+            for route in plan.routes:
+                source = route.source_device.data
+                destination = route.destination_device.data
+                if source not in known_devices or destination not in known_devices:
+                    raise VerifyException("transfer route references an unknown device")
+                current = source
+                for link_id in route.route_link_ids:
+                    link = links_by_id.get(link_id.data)
+                    if link is None:
+                        raise VerifyException("transfer route references an unknown link")
+                    endpoints = {link.source_device.data, link.destination_device.data}
+                    if current not in endpoints:
+                        raise VerifyException("transfer route links do not form a contiguous path")
+                    current = next(device for device in endpoints if device != current)
+                if current != destination:
+                    raise VerifyException("transfer route does not reach its destination")
+
     def plans_by_id(self) -> dict[str, CollectivePlanAttr]:
         self.verify()
         return {plan.plan_id.data: plan for plan in self.collective_plans}
@@ -329,6 +411,10 @@ class TopologyAttr(ParametrizedAttribute):
     def links_by_id(self) -> dict[str, LinkAttr]:
         self.verify()
         return {link.link_id.data: link for link in self.links}
+
+    def transfer_plans_by_id(self) -> dict[str, TransferPlanAttr]:
+        self.verify()
+        return {plan.plan_id.data: plan for plan in self.transfer_plans}
 
 
 def rectilinear_topology(
@@ -353,6 +439,7 @@ def rectilinear_topology(
     )
     links: dict[tuple[int, int], LinkAttr] = {}
     plans: list[CollectivePlanAttr] = []
+    transfer_plans: list[TransferPlanAttr] = []
     for axis_index, axis in enumerate(mesh_axis_names):
         if mesh_axis_sizes[axis_index] == 1:
             continue
@@ -408,10 +495,34 @@ def rectilinear_topology(
                 ArrayAttr(sorted(groups, key=lambda group: group.group_id.data)),
             )
         )
+        for direction in (-1, 1):
+            routes: list[TransferRouteAttr] = []
+            for coordinate, source in coordinate_to_device.items():
+                peer = list(coordinate)
+                peer[axis_index] += direction
+                if not 0 <= peer[axis_index] < mesh_axis_sizes[axis_index]:
+                    continue
+                destination = coordinate_to_device[tuple(peer)]
+                endpoint = (min(source, destination), max(source, destination))
+                routes.append(
+                    TransferRouteAttr(
+                        StringAttr(f"route:{source}->{destination}"),
+                        IntAttr(source),
+                        IntAttr(destination),
+                        ArrayAttr((StringAttr(f"link:{endpoint[0]}-{endpoint[1]}"),)),
+                    )
+                )
+            transfer_plans.append(
+                TransferPlanAttr(
+                    StringAttr(f"shift:{axis}:{direction:+d}"),
+                    ArrayAttr(sorted(routes, key=lambda route: route.route_id.data)),
+                )
+            )
     topology = TopologyAttr(
         ArrayAttr(devices),
         ArrayAttr(sorted(links.values(), key=lambda link: link.link_id.data)),
         ArrayAttr(sorted(plans, key=lambda plan: plan.plan_id.data)),
+        ArrayAttr(sorted(transfer_plans, key=lambda plan: plan.plan_id.data)),
     )
     topology.verify()
     return topology
@@ -708,6 +819,72 @@ class DmaWaitOp(IRDLOperation):
 
 
 @irdl_op_definition
+class RemoteDmaStartOp(IRDLOperation):
+    name = "tpu_schedule.remote_dma_start"
+    source = operand_def(BufferType)
+    destination = operand_def(BufferType)
+    semaphore = operand_def(SemaphoreType)
+    token = result_def(DmaTokenType)
+    stage = prop_def(IntAttr)
+    transfer_plan = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        source: SSAValue | Operation,
+        destination: SSAValue | Operation,
+        semaphore: SSAValue | Operation,
+        *,
+        stage: int,
+        transfer_plan: str,
+    ) -> None:
+        super().__init__(
+            operands=[source, destination, semaphore],
+            result_types=[DmaTokenType()],
+            properties={
+                "stage": IntAttr(stage),
+                "transfer_plan": StringAttr(transfer_plan),
+            },
+        )
+
+    def verify_(self) -> None:
+        source, destination = self.source.type, self.destination.type
+        assert isinstance(source, BufferType) and isinstance(destination, BufferType)
+        for buffer in (source, destination):
+            if buffer.space.data is not MemorySpace.VMEM:
+                raise VerifyException("remote DMA buffers must be resident in VMEM")
+            _check_live(buffer, self.stage.data)
+        if source.storage != destination.storage:
+            raise VerifyException("remote DMA source and destination storage must match")
+        if source.sharding != destination.sharding or source.layout != destination.layout:
+            raise VerifyException("remote DMA must preserve sharding and layout")
+        if not self.transfer_plan.data:
+            raise VerifyException("remote DMA needs a transfer plan")
+
+
+@irdl_op_definition
+class RemoteDmaWaitOp(IRDLOperation):
+    name = "tpu_schedule.remote_dma_wait"
+    token = operand_def(DmaTokenType)
+    stage = prop_def(IntAttr)
+
+    def __init__(self, token: SSAValue | Operation, *, stage: int) -> None:
+        super().__init__(operands=[token], properties={"stage": IntAttr(stage)})
+
+    def verify_(self) -> None:
+        owner = self.token.owner
+        if not isinstance(owner, RemoteDmaStartOp):
+            raise VerifyException(
+                "remote DMA wait token must come from tpu_schedule.remote_dma_start"
+            )
+        if self.stage.data < owner.stage.data:
+            raise VerifyException("remote DMA wait cannot precede its start stage")
+        source, destination = owner.source.type, owner.destination.type
+        assert isinstance(source, BufferType) and isinstance(destination, BufferType)
+        _check_live(source, self.stage.data)
+        _check_live(destination, self.stage.data)
+
+
+@irdl_op_definition
 class MxuMatmulOp(IRDLOperation):
     name = "tpu_schedule.mxu_matmul"
     lhs = operand_def(BufferType)
@@ -840,6 +1017,162 @@ class CollectiveReduceScatterOp(IRDLOperation):
             raise VerifyException("unsupported reduce-scatter reducer")
         if not self.mesh_axis.data:
             raise VerifyException("reduce-scatter needs a mesh axis")
+
+
+def _buffer_sharding(buffer: BufferType) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        tuple(filter(None, value.data.split("/"))) for value in buffer.sharding.axes
+    )
+
+
+@irdl_op_definition
+class CollectiveOp(IRDLOperation):
+    name = "tpu_schedule.collective"
+    source = operand_def(BufferType)
+    destination = operand_def(BufferType)
+    stage = prop_def(IntAttr)
+    kind = prop_def(CollectiveKindAttr)
+    mesh_axis = prop_def(StringAttr)
+    group_size = prop_def(IntAttr)
+    split_dimension = prop_def(IntAttr)
+    concat_dimension = prop_def(IntAttr)
+    reducer = prop_def(StringAttr)
+    collective_plan = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        source: SSAValue | Operation,
+        destination: SSAValue | Operation,
+        *,
+        stage: int,
+        kind: CollectiveKind,
+        mesh_axis: str,
+        group_size: int,
+        split_dimension: int = -1,
+        concat_dimension: int = -1,
+        reducer: str = "none",
+        collective_plan: str | None = None,
+    ) -> None:
+        super().__init__(
+            operands=[source, destination],
+            properties={
+                "stage": IntAttr(stage),
+                "kind": CollectiveKindAttr(kind),
+                "mesh_axis": StringAttr(mesh_axis),
+                "group_size": IntAttr(group_size),
+                "split_dimension": IntAttr(split_dimension),
+                "concat_dimension": IntAttr(concat_dimension),
+                "reducer": StringAttr(reducer),
+                "collective_plan": StringAttr(
+                    collective_plan or f"axis:{mesh_axis}"
+                ),
+            },
+        )
+
+    def verify_(self) -> None:
+        source, destination = self.source.type, self.destination.type
+        assert isinstance(source, BufferType) and isinstance(destination, BufferType)
+        for buffer in (source, destination):
+            if buffer.space.data is not MemorySpace.VMEM:
+                raise VerifyException("collective buffers must be resident in VMEM")
+            _check_live(buffer, self.stage.data)
+        if source.storage.element_type != destination.storage.element_type:
+            raise VerifyException("collectives cannot change element type")
+        source_shape = source.storage.get_shape()
+        destination_shape = destination.storage.get_shape()
+        if len(source_shape) != len(destination_shape):
+            raise VerifyException("collectives cannot change rank")
+        if self.group_size.data <= 1:
+            raise VerifyException("collective group size must be greater than one")
+        if not self.mesh_axis.data or not self.collective_plan.data:
+            raise VerifyException("collectives need a mesh axis and collective plan")
+        if self.reducer.data not in {"none", "sum", "max", "min"}:
+            raise VerifyException("unsupported collective reducer")
+
+        rank = len(source_shape)
+        split = self.split_dimension.data
+        concat = self.concat_dimension.data
+        for dimension in (split, concat):
+            if dimension < -1 or dimension >= rank:
+                raise VerifyException("collective dimension is out of range")
+        source_sharding = [list(value) for value in _buffer_sharding(source)]
+        destination_sharding = [list(value) for value in _buffer_sharding(destination)]
+        expected_shape = list(source_shape)
+        expected_sharding = [list(value) for value in source_sharding]
+        axis = self.mesh_axis.data
+        group_size = self.group_size.data
+
+        if self.kind.data is CollectiveKind.ALL_REDUCE:
+            if split != -1 or concat != -1 or self.reducer.data == "none":
+                raise VerifyException(
+                    "all-reduce needs a reducer and no split or concat dimension"
+                )
+        elif self.kind.data is CollectiveKind.REDUCE_SCATTER:
+            if split < 0 or concat != -1 or self.reducer.data == "none":
+                raise VerifyException(
+                    "reduce-scatter needs a reducer and one split dimension"
+                )
+            if expected_shape[split] % group_size:
+                raise VerifyException(
+                    "reduce-scatter split dimension must divide by the group size"
+                )
+            if axis in expected_sharding[split]:
+                raise VerifyException(
+                    "reduce-scatter cannot add an already-present sharding axis"
+                )
+            expected_shape[split] //= group_size
+            expected_sharding[split].append(axis)
+        elif self.kind.data is CollectiveKind.ALL_GATHER:
+            if split != -1 or concat < 0 or self.reducer.data != "none":
+                raise VerifyException(
+                    "all-gather needs one concat dimension and no reducer"
+                )
+            if not expected_sharding[concat] or expected_sharding[concat][-1] != axis:
+                raise VerifyException(
+                    "all-gather must remove its mesh axis from the gathered dimension"
+                )
+            expected_shape[concat] *= group_size
+            expected_sharding[concat].pop()
+        elif self.kind.data is CollectiveKind.ALL_TO_ALL:
+            if split < 0 or concat < 0 or split == concat or self.reducer.data != "none":
+                raise VerifyException(
+                    "all-to-all needs distinct split and concat dimensions and no reducer"
+                )
+            if expected_shape[split] % group_size:
+                raise VerifyException(
+                    "all-to-all split dimension must divide by the group size"
+                )
+            if not expected_sharding[concat] or expected_sharding[concat][-1] != axis:
+                raise VerifyException(
+                    "all-to-all must move its mesh axis from concat to split dimension"
+                )
+            if axis in expected_sharding[split]:
+                raise VerifyException(
+                    "all-to-all split dimension already contains its mesh axis"
+                )
+            expected_shape[split] //= group_size
+            expected_shape[concat] *= group_size
+            expected_sharding[concat].pop()
+            expected_sharding[split].append(axis)
+
+        if tuple(expected_shape) != destination_shape:
+            raise VerifyException("collective destination has the wrong local shape")
+        if tuple(tuple(value) for value in expected_sharding) != tuple(
+            tuple(value) for value in destination_sharding
+        ):
+            raise VerifyException("collective destination has the wrong sharding")
+
+
+PhysicalCollectiveOp = CollectiveReduceScatterOp | CollectiveOp
+
+
+def _is_collective(operation: Operation) -> bool:
+    return isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
+
+
+def _collective_plan_id(operation: PhysicalCollectiveOp) -> str | None:
+    value = operation.collective_plan
+    return None if value is None else value.data
 
 
 @irdl_op_definition
@@ -1036,6 +1369,7 @@ class PipelineLoopOp(IRDLOperation):
         positions = {operation: index for index, operation in enumerate(operations)}
         initialized: set[SSAValue] = set(block.args)
         pending_dma: dict[Operation, DmaStartOp] = {}
+        pending_remote_dma: dict[Operation, RemoteDmaStartOp] = {}
 
         def root(value: SSAValue) -> SSAValue:
             while isinstance(value.owner, ViewOp):
@@ -1057,17 +1391,42 @@ class PipelineLoopOp(IRDLOperation):
                     raise VerifyException("pipeline DMA wait must follow its start")
                 pending_dma[semaphore] = operation
                 written.add(root(operation.destination))
+            elif isinstance(operation, RemoteDmaStartOp):
+                if root(operation.source) not in initialized:
+                    raise VerifyException(
+                        "pipeline remote DMA reads an uninitialized source"
+                    )
+                semaphore = operation.semaphore.owner
+                if semaphore in pending_dma or semaphore in pending_remote_dma:
+                    raise VerifyException("pipeline semaphore is reused before its wait")
+                uses = list(operation.token.uses)
+                if len(uses) != 1 or not isinstance(
+                    uses[0].operation, RemoteDmaWaitOp
+                ):
+                    raise VerifyException(
+                        "pipeline remote DMA token must have exactly one wait"
+                    )
+                if positions[uses[0].operation] <= positions[operation]:
+                    raise VerifyException("pipeline remote DMA wait must follow its start")
+                pending_remote_dma[semaphore] = operation
+                written.add(root(operation.destination))
             elif isinstance(operation, DmaWaitOp):
                 start = operation.token.owner
                 assert isinstance(start, DmaStartOp)
                 pending_dma.pop(start.semaphore.owner, None)
+                initialized.add(root(start.destination))
+            elif isinstance(operation, RemoteDmaWaitOp):
+                start = operation.token.owner
+                assert isinstance(start, RemoteDmaStartOp)
+                pending_remote_dma.pop(start.semaphore.owner, None)
                 initialized.add(root(start.destination))
             elif isinstance(operation, MxuMatmulOp):
                 if any(root(value) not in initialized for value in (operation.lhs, operation.rhs)):
                     raise VerifyException("pipeline MXU reads an uninitialized operand")
                 initialized.add(root(operation.accumulator))
                 written.add(root(operation.accumulator))
-            elif isinstance(operation, CollectiveReduceScatterOp):
+            elif _is_collective(operation):
+                assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                 if root(operation.source) not in initialized:
                     raise VerifyException("pipeline collective reads an uninitialized source")
                 initialized.add(root(operation.destination))
@@ -1077,7 +1436,7 @@ class PipelineLoopOp(IRDLOperation):
                     raise VerifyException("pipeline RPA reads an uninitialized operand")
                 initialized.add(root(operation.output))
                 written.add(root(operation.output))
-        if pending_dma:
+        if pending_dma or pending_remote_dma:
             raise VerifyException("pipeline iteration ends with DMA operations in flight")
         if any(root(value) not in initialized for value in terminator.values):
             raise VerifyException("pipeline yields an uninitialized buffer")
@@ -1102,11 +1461,13 @@ class PipelineLoopOp(IRDLOperation):
             raise VerifyException("pipeline loop must be directly contained by a TPU kernel")
         topology_plans: dict[str, CollectivePlanAttr] = {}
         topology_links: dict[str, LinkAttr] = {}
+        transfer_plans: dict[str, TransferPlanAttr] = {}
         if kernel.physical_schema is not None:
             if kernel.topology is None:
                 raise VerifyException("structured pipeline kernel needs a topology")
             topology_plans = kernel.topology.plans_by_id()
             topology_links = kernel.topology.links_by_id()
+            transfer_plans = kernel.topology.transfer_plans_by_id()
             mesh = dict(
                 zip(
                     (value.data for value in kernel.mesh_axis_names),
@@ -1115,8 +1476,9 @@ class PipelineLoopOp(IRDLOperation):
                 )
             )
             for operation in scheduled:
-                if not isinstance(operation, CollectiveReduceScatterOp):
+                if not _is_collective(operation):
                     continue
+                assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                 if operation.collective_plan is None:
                     raise VerifyException(
                         "structured pipeline collective needs a collective plan"
@@ -1130,12 +1492,20 @@ class PipelineLoopOp(IRDLOperation):
                     raise VerifyException(
                         "pipeline collective references an incompatible collective plan"
                     )
+            for operation in scheduled:
+                if isinstance(operation, RemoteDmaStartOp) and (
+                    operation.transfer_plan.data not in transfer_plans
+                ):
+                    raise VerifyException(
+                        "pipeline remote DMA references an unknown transfer plan"
+                    )
         horizon = (
             (self.trip_count.data - 1) * self.initiation_interval.data
             + self.pipeline_stages.data
         )
         for absolute_stage in range(horizon):
             active_dma = 0
+            active_remote_dma = 0
             mxu_uses = 0
             ici_uses = 0
             link_uses: dict[str, int] = {}
@@ -1155,9 +1525,29 @@ class PipelineLoopOp(IRDLOperation):
                             active_dma += 1
                             owner = operation.semaphore.owner
                             semaphore_uses[owner] = semaphore_uses.get(owner, 0) + 1
+                    elif isinstance(operation, RemoteDmaStartOp):
+                        wait = next(
+                            use.operation
+                            for use in operation.token.uses
+                            if isinstance(use.operation, RemoteDmaWaitOp)
+                        )
+                        if operation.stage.data <= logical_stage <= wait.stage.data:
+                            active_remote_dma += 1
+                            owner = operation.semaphore.owner
+                            semaphore_uses[owner] = semaphore_uses.get(owner, 0) + 1
+                            plan = transfer_plans.get(operation.transfer_plan.data)
+                            if plan is not None:
+                                for route in plan.routes:
+                                    for link_id in route.route_link_ids:
+                                        link_uses[link_id.data] = (
+                                            link_uses.get(link_id.data, 0) + 1
+                                        )
                     elif isinstance(operation, (MxuMatmulOp, RaggedPagedAttentionOp)):
                         mxu_uses += operation.stage.data == logical_stage
-                    elif isinstance(operation, CollectiveReduceScatterOp):
+                    elif _is_collective(operation):
+                        assert isinstance(
+                            operation, (CollectiveReduceScatterOp, CollectiveOp)
+                        )
                         if operation.stage.data == logical_stage:
                             ici_uses += 1
                             if operation.collective_plan is not None:
@@ -1173,6 +1563,13 @@ class PipelineLoopOp(IRDLOperation):
             if active_dma > kernel.dma_engine_count.data:
                 raise VerifyException(
                     f"pipeline exceeds DMA capacity at absolute stage {absolute_stage}"
+                )
+            if (
+                kernel.remote_dma_engine_count is None
+                or active_remote_dma > kernel.remote_dma_engine_count.data
+            ):
+                raise VerifyException(
+                    f"pipeline exceeds remote DMA capacity at absolute stage {absolute_stage}"
                 )
             if mxu_uses > kernel.mxu_count.data:
                 raise VerifyException(
@@ -1226,6 +1623,7 @@ class KernelOp(IRDLOperation):
     mxu_count = prop_def(IntAttr)
     vector_unit_count = prop_def(IntAttr)
     ici_link_count = prop_def(IntAttr)
+    remote_dma_engine_count = opt_prop_def(IntAttr)
     traits = traits_def(IsolatedFromAbove())
 
     def __init__(
@@ -1244,6 +1642,7 @@ class KernelOp(IRDLOperation):
         mxu_count: int = 1,
         vector_unit_count: int = 1,
         ici_link_count: int = 1,
+        remote_dma_engine_count: int = 1,
     ):
         interconnect_bandwidth_bytes_per_second = dict(
             sorted((interconnect_bandwidth_bytes_per_second or {}).items())
@@ -1273,6 +1672,7 @@ class KernelOp(IRDLOperation):
                 "mxu_count": IntAttr(mxu_count),
                 "vector_unit_count": IntAttr(vector_unit_count),
                 "ici_link_count": IntAttr(ici_link_count),
+                "remote_dma_engine_count": IntAttr(remote_dma_engine_count),
             },
             regions=[body],
         )
@@ -1293,6 +1693,13 @@ class KernelOp(IRDLOperation):
             "vector": self.vector_unit_count.data,
             "ICI": self.ici_link_count.data,
         }
+        if self.physical_schema is not None and (
+            self.remote_dma_engine_count is None
+            or self.remote_dma_engine_count.data <= 0
+        ):
+            raise VerifyException(
+                "structured kernels need a positive remote DMA engine capacity"
+            )
         if any(capacity <= 0 for capacity in resource_capacities.values()):
             raise VerifyException("kernel hardware resource capacities must be positive")
         mesh = dict(zip(mesh_names, mesh_sizes, strict=True))
@@ -1376,12 +1783,16 @@ class KernelOp(IRDLOperation):
         positions = {operation: index for index, operation in enumerate(operations)}
         previous_stage = -1
         in_flight: dict[Operation, DmaStartOp] = {}
+        remote_in_flight: dict[Operation, RemoteDmaStartOp] = {}
         symbols: dict[str, int] = {}
         buffers: list[BufferType] = []
         storage_buffers: list[BufferType] = []
         views_by_root: dict[SSAValue, list[tuple[ViewOp, TileRegionAttr]]] = {}
         initialized: set[SSAValue] = set(block.args)
         pending_dma_destinations: dict[Operation, tuple[SSAValue, TileRegionAttr]] = {}
+        pending_remote_destinations: dict[
+            Operation, tuple[SSAValue, TileRegionAttr]
+        ] = {}
         rotation_copies: list[tuple[BufferType, int]] = []
 
         def root_region(value: SSAValue) -> tuple[SSAValue, TileRegionAttr]:
@@ -1429,6 +1840,35 @@ class KernelOp(IRDLOperation):
                 )
             if any(base == pending[0] for pending in pending_dma_destinations.values()):
                 raise VerifyException(f"{operation.name} reads a buffer while DMA is in flight")
+            if any(base == pending[0] for pending in pending_remote_destinations.values()):
+                raise VerifyException(
+                    f"{operation.name} reads a buffer while remote DMA is in flight"
+                )
+
+        def reject_overlapping_pending_write(
+            destination_root: SSAValue,
+            destination_region: TileRegionAttr,
+            operation: Operation,
+        ) -> None:
+            pending = (
+                *(
+                    (root_value, region, in_flight[semaphore])
+                    for semaphore, (root_value, region) in pending_dma_destinations.items()
+                ),
+                *(
+                    (root_value, region, remote_in_flight[semaphore])
+                    for semaphore, (root_value, region) in pending_remote_destinations.items()
+                ),
+            )
+            for other_root, other_region, start in pending:
+                if destination_root == other_root and _regions_overlap(
+                    destination_region, other_region
+                ):
+                    raise source_aware_error(
+                        "concurrent DMA writes target overlapping buffer regions",
+                        start,
+                        operation,
+                    )
 
         for argument in block.args:
             if not isinstance(argument.type, BufferType):
@@ -1466,20 +1906,11 @@ class KernelOp(IRDLOperation):
             if isinstance(operation, DmaStartOp):
                 require_initialized(operation.source, operation)
                 destination_root, destination_region = root_region(operation.destination)
-                for semaphore_owner, (
-                    other_root,
-                    other_region,
-                ) in pending_dma_destinations.items():
-                    if destination_root == other_root and _regions_overlap(
-                        destination_region, other_region
-                    ):
-                        raise source_aware_error(
-                            "concurrent DMA writes target overlapping buffer regions",
-                            in_flight[semaphore_owner],
-                            operation,
-                        )
+                reject_overlapping_pending_write(
+                    destination_root, destination_region, operation
+                )
                 semaphore_owner = operation.semaphore.owner
-                if semaphore_owner in in_flight:
+                if semaphore_owner in in_flight or semaphore_owner in remote_in_flight:
                     raise VerifyException("semaphore reused before its DMA was waited on")
                 in_flight[semaphore_owner] = operation
                 uses = list(operation.token.uses)
@@ -1491,39 +1922,72 @@ class KernelOp(IRDLOperation):
                     destination_root,
                     destination_region,
                 )
+            if isinstance(operation, RemoteDmaStartOp):
+                require_initialized(operation.source, operation)
+                destination_root, destination_region = root_region(operation.destination)
+                reject_overlapping_pending_write(
+                    destination_root, destination_region, operation
+                )
+                semaphore_owner = operation.semaphore.owner
+                if semaphore_owner in in_flight or semaphore_owner in remote_in_flight:
+                    raise VerifyException("semaphore reused before its DMA was waited on")
+                if self.physical_schema is None or self.topology is None:
+                    raise VerifyException("remote DMA requires a structured topology")
+                transfer_plan = self.topology.transfer_plans_by_id().get(
+                    operation.transfer_plan.data
+                )
+                if transfer_plan is None:
+                    raise VerifyException("remote DMA references an unknown transfer plan")
+                remote_in_flight[semaphore_owner] = operation
+                uses = list(operation.token.uses)
+                if len(uses) != 1 or not isinstance(uses[0].operation, RemoteDmaWaitOp):
+                    raise VerifyException("every remote DMA token must have exactly one wait")
+                if positions[uses[0].operation] <= positions[operation]:
+                    raise VerifyException("remote DMA wait must occur after its start")
+                pending_remote_destinations[semaphore_owner] = (
+                    destination_root,
+                    destination_region,
+                )
             if isinstance(operation, DmaWaitOp):
                 start = operation.token.owner
                 assert isinstance(start, DmaStartOp)
                 in_flight.pop(start.semaphore.owner, None)
                 destination, _ = pending_dma_destinations.pop(start.semaphore.owner)
                 initialized.add(destination)
+            if isinstance(operation, RemoteDmaWaitOp):
+                start = operation.token.owner
+                assert isinstance(start, RemoteDmaStartOp)
+                remote_in_flight.pop(start.semaphore.owner, None)
+                destination, _ = pending_remote_destinations.pop(start.semaphore.owner)
+                initialized.add(destination)
             if isinstance(operation, MxuMatmulOp):
                 require_initialized(operation.lhs, operation)
                 require_initialized(operation.rhs, operation)
                 initialized.add(root(operation.accumulator))
-            if isinstance(operation, CollectiveReduceScatterOp):
+            if _is_collective(operation):
+                assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                 require_initialized(operation.source, operation)
                 axis = operation.mesh_axis.data
                 if axis not in mesh:
-                    raise VerifyException(f"reduce-scatter references unknown mesh axis {axis}")
+                    raise VerifyException(f"collective references unknown mesh axis {axis}")
                 if operation.group_size.data != mesh[axis]:
                     raise VerifyException(
-                        "reduce-scatter group size must match its kernel mesh axis"
+                        "collective group size must match its kernel mesh axis"
                     )
                 if self.physical_schema is None:
                     if links[axis] <= 0:
                         raise VerifyException(
-                            "reduce-scatter requires a usable interconnect link"
+                            "collective requires a usable interconnect link"
                         )
                 else:
                     if operation.collective_plan is None:
                         raise VerifyException(
-                            "structured reduce-scatter needs a collective plan"
+                            "structured collective needs a collective plan"
                         )
                     plan = topology_plans.get(operation.collective_plan.data)
                     if plan is None or plan.mesh_axis.data != axis:
                         raise VerifyException(
-                            "reduce-scatter references an incompatible collective plan"
+                            "collective references an incompatible collective plan"
                         )
                 initialized.add(root(operation.destination))
             if isinstance(operation, RaggedPagedAttentionOp):
@@ -1579,7 +2043,7 @@ class KernelOp(IRDLOperation):
                         f"{previous} and {global_size}"
                     )
 
-        if in_flight:
+        if in_flight or remote_in_flight:
             raise VerifyException("kernel ends with DMA operations still in flight")
         local_buffers = [
             buffer
@@ -1599,13 +2063,21 @@ class KernelOp(IRDLOperation):
                 for wait in start.token.uses
                 if isinstance(wait.operation, DmaWaitOp)
             )
+            active_remote_dma = sum(
+                start.stage.data <= stage <= wait.operation.stage.data
+                for start in (
+                    op for op in operations if isinstance(op, RemoteDmaStartOp)
+                )
+                for wait in start.token.uses
+                if isinstance(wait.operation, RemoteDmaWaitOp)
+            )
             mxu_uses = sum(
                 isinstance(operation, (MxuMatmulOp, RaggedPagedAttentionOp))
                 and operation.stage.data == stage
                 for operation in operations
             )
             ici_uses = sum(
-                isinstance(operation, CollectiveReduceScatterOp)
+                _is_collective(operation)
                 and operation.stage.data == stage
                 for operation in operations
             )
@@ -1613,6 +2085,15 @@ class KernelOp(IRDLOperation):
                 raise VerifyException(
                     f"DMA engine capacity exceeded at stage {stage}: "
                     f"{active_dma} > {self.dma_engine_count.data}"
+                )
+            if (
+                self.physical_schema is not None
+                and self.remote_dma_engine_count is not None
+                and active_remote_dma > self.remote_dma_engine_count.data
+            ):
+                raise VerifyException(
+                    f"remote DMA engine capacity exceeded at stage {stage}: "
+                    f"{active_remote_dma} > {self.remote_dma_engine_count.data}"
                 )
             if mxu_uses > self.mxu_count.data:
                 raise VerifyException(
@@ -1626,13 +2107,32 @@ class KernelOp(IRDLOperation):
             if self.physical_schema is not None:
                 link_uses: dict[str, int] = {}
                 for operation in operations:
-                    if not isinstance(operation, CollectiveReduceScatterOp):
+                    if not _is_collective(operation):
                         continue
+                    assert isinstance(
+                        operation, (CollectiveReduceScatterOp, CollectiveOp)
+                    )
                     if operation.stage.data != stage or operation.collective_plan is None:
                         continue
                     plan = topology_plans[operation.collective_plan.data]
                     for group in plan.groups:
                         for link_id in group.route_link_ids:
+                            link_uses[link_id.data] = link_uses.get(link_id.data, 0) + 1
+                assert self.topology is not None
+                transfer_plans = self.topology.transfer_plans_by_id()
+                for operation in operations:
+                    if not isinstance(operation, RemoteDmaStartOp):
+                        continue
+                    wait = next(
+                        use.operation
+                        for use in operation.token.uses
+                        if isinstance(use.operation, RemoteDmaWaitOp)
+                    )
+                    if not operation.stage.data <= stage <= wait.stage.data:
+                        continue
+                    plan = transfer_plans[operation.transfer_plan.data]
+                    for route in plan.routes:
+                        for link_id in route.route_link_ids:
                             link_uses[link_id.data] = link_uses.get(link_id.data, 0) + 1
                 for link_id, uses in link_uses.items():
                     capacity = topology_links[link_id].channel_count.data
@@ -1672,8 +2172,11 @@ TPUSchedule = Dialect(
         SemaphoreAllocOp,
         DmaStartOp,
         DmaWaitOp,
+        RemoteDmaStartOp,
+        RemoteDmaWaitOp,
         MxuMatmulOp,
         CollectiveReduceScatterOp,
+        CollectiveOp,
         RaggedPagedAttentionOp,
         PipelineLoopOp,
         PipelineYieldOp,
@@ -1682,6 +2185,7 @@ TPUSchedule = Dialect(
     [
         MemorySpaceAttr,
         OwnershipAttr,
+        CollectiveKindAttr,
         ShapeAttr,
         ShardingAttr,
         LayoutAttr,
@@ -1692,6 +2196,8 @@ TPUSchedule = Dialect(
         LinkAttr,
         CollectiveGroupAttr,
         CollectivePlanAttr,
+        TransferRouteAttr,
+        TransferPlanAttr,
         TopologyAttr,
         BufferType,
         DmaTokenType,

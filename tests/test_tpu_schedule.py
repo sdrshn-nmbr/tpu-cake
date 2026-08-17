@@ -5,8 +5,9 @@ from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
+    CollectiveKind,
+    CollectiveOp,
     CollectivePlanAttr,
-    CollectiveReduceScatterOp,
     DmaStartOp,
     DmaWaitOp,
     KernelOp,
@@ -16,6 +17,7 @@ from tpu_cake.dialects.tpu_schedule import (
     Ownership,
     PipelineLoopOp,
     PipelineYieldOp,
+    RemoteDmaStartOp,
     SemaphoreAllocOp,
     TopologyAttr,
     YieldOp,
@@ -46,6 +48,12 @@ def test_rectilinear_topology_materializes_devices_links_and_collective_groups()
         "axis:t",
     )
     assert all(len(plan.groups) == 2 for plan in topology.collective_plans)
+    assert tuple(plan.plan_id.data for plan in topology.transfer_plans) == (
+        "shift:d:+1",
+        "shift:d:-1",
+        "shift:t:+1",
+        "shift:t:-1",
+    )
 
 
 def test_topology_rejects_links_to_unknown_devices() -> None:
@@ -62,6 +70,7 @@ def test_topology_rejects_links_to_unknown_devices() -> None:
             topology.devices,
             ArrayAttr((*topology.links, invalid)),
             topology.collective_plans,
+            topology.transfer_plans,
         )
 
 
@@ -81,6 +90,7 @@ def test_collective_groups_must_follow_their_mesh_axis() -> None:
                 CollectivePlanAttr(t_plan.plan_id, t_plan.mesh_axis, d_plan.groups),
             )
         ),
+        topology.transfer_plans,
     )
     builder = KernelBuilder(
         "bad_topology",
@@ -112,15 +122,16 @@ def test_collectives_cannot_overbook_one_physical_link() -> None:
     collective = next(
         operation
         for operation in module.walk()
-        if isinstance(operation, CollectiveReduceScatterOp)
+        if isinstance(operation, CollectiveOp)
     )
-    duplicate = CollectiveReduceScatterOp(
+    duplicate = CollectiveOp(
         collective.source,
         collective.destination,
         stage=collective.stage.data,
+        kind=CollectiveKind.REDUCE_SCATTER,
         mesh_axis=collective.mesh_axis.data,
         group_size=collective.group_size.data,
-        scatter_dimension=collective.scatter_dimension.data,
+        split_dimension=collective.split_dimension.data,
         reducer=collective.reducer.data,
     )
     assert collective.parent is not None
@@ -129,6 +140,174 @@ def test_collectives_cannot_overbook_one_physical_link() -> None:
 
     with pytest.raises(VerifyException, match="topology link .* capacity exceeded"):
         module.verify()
+
+
+@pytest.mark.parametrize(
+    ("kind", "source_shape", "source_sharding", "destination_shape", "destination_sharding", "split", "concat", "reducer"),
+    (
+        (CollectiveKind.ALL_REDUCE, (8, 8), ("", "t"), (8, 8), ("", "t"), -1, -1, "sum"),
+        (CollectiveKind.REDUCE_SCATTER, (8, 8), ("", ""), (8, 2), ("", "t"), 1, -1, "sum"),
+        (CollectiveKind.ALL_GATHER, (8, 2), ("", "t"), (8, 8), ("", ""), -1, 1, "none"),
+        (CollectiveKind.ALL_TO_ALL, (8, 2), ("", "t"), (2, 8), ("t", ""), 0, 1, "none"),
+    ),
+)
+def test_collective_kinds_verify_exact_local_shape_and_sharding_transitions(
+    kind: CollectiveKind,
+    source_shape: tuple[int, int],
+    source_sharding: tuple[str, str],
+    destination_shape: tuple[int, int],
+    destination_sharding: tuple[str, str],
+    split: int,
+    concat: int,
+    reducer: str,
+) -> None:
+    source = AllocOp(
+        buffer(
+            source_shape,
+            "X Y",
+            f32,
+            memory=MemorySpace.VMEM,
+            sharding=source_sharding,
+        ).to_type(),
+        "source",
+    )
+    destination = AllocOp(
+        buffer(
+            destination_shape,
+            "X Y",
+            f32,
+            memory=MemorySpace.VMEM,
+            sharding=destination_sharding,
+        ).to_type(),
+        "destination",
+    )
+
+    CollectiveOp(
+        source,
+        destination,
+        stage=0,
+        kind=kind,
+        mesh_axis="t",
+        group_size=4,
+        split_dimension=split,
+        concat_dimension=concat,
+        reducer=reducer,
+    ).verify_()
+
+
+def test_collective_rejects_a_shape_correct_but_wrong_sharding_transition() -> None:
+    source = AllocOp(
+        buffer((8, 8), "X Y", f32, memory=MemorySpace.VMEM).to_type(),
+        "source",
+    )
+    destination = AllocOp(
+        buffer((8, 2), "X Y", f32, memory=MemorySpace.VMEM).to_type(),
+        "destination",
+    )
+
+    with pytest.raises(VerifyException, match="wrong sharding"):
+        CollectiveOp(
+            source,
+            destination,
+            stage=0,
+            kind=CollectiveKind.REDUCE_SCATTER,
+            mesh_axis="t",
+            group_size=4,
+            split_dimension=1,
+            reducer="sum",
+        ).verify_()
+
+
+def _remote_dma_module(*, transfers: int, remote_dma_engines: int):
+    external = buffer(
+        (8, 8),
+        "X Y",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 3),
+    )
+    builder = KernelBuilder(
+        "remote_dma",
+        "tpu7x",
+        (external,) * transfers,
+        vmem_capacity_bytes=4096,
+        smem_capacity_bytes=1024,
+        mesh={"t": 2},
+        interconnect_bandwidth_bytes_per_second={"t": 600_000_000_000},
+        dma_engine_count=transfers,
+        remote_dma_engine_count=remote_dma_engines,
+    )
+    sources = []
+    destinations = []
+    local_transfers = []
+    for index, external_value in enumerate(builder.inputs):
+        source = builder.alloc(
+            buffer(
+                (8, 8),
+                "X Y",
+                bf16,
+                memory=MemorySpace.VMEM,
+                lifetime=(0, 3),
+            ),
+            f"source_{index}",
+        )
+        destination = builder.alloc(
+            buffer(
+                (8, 8),
+                "X Y",
+                bf16,
+                memory=MemorySpace.VMEM,
+                lifetime=(0, 3),
+            ),
+            f"destination_{index}",
+        )
+        local_transfers.append(
+            builder.dma_start(external_value, source, builder.semaphore(), stage=0)
+        )
+        sources.append(source)
+        destinations.append(destination)
+    for transfer in local_transfers:
+        builder.dma_wait(transfer, stage=1)
+    remote_transfers = [
+        builder.remote_dma_start(
+            source,
+            destination,
+            builder.semaphore(),
+            stage=2,
+            transfer_plan="shift:t:+1",
+        )
+        for source, destination in zip(sources, destinations, strict=True)
+    ]
+    for transfer in remote_transfers:
+        builder.remote_dma_wait(transfer, stage=3)
+    return builder.module()
+
+
+def test_remote_dma_uses_an_explicit_topology_route() -> None:
+    module = _remote_dma_module(transfers=1, remote_dma_engines=1)
+
+    module.verify()
+    transfer = next(
+        operation for operation in module.walk() if isinstance(operation, RemoteDmaStartOp)
+    )
+    assert transfer.transfer_plan.data == "shift:t:+1"
+
+
+def test_remote_dma_rejects_an_unknown_transfer_plan() -> None:
+    module = _remote_dma_module(transfers=1, remote_dma_engines=1)
+    transfer = next(
+        operation for operation in module.walk() if isinstance(operation, RemoteDmaStartOp)
+    )
+    transfer.properties["transfer_plan"] = StringAttr("missing")
+
+    with pytest.raises(VerifyException, match="unknown transfer plan"):
+        module.verify()
+
+
+def test_remote_dmas_cannot_overbook_one_physical_link() -> None:
+    with pytest.raises(VerifyException, match="topology link .* capacity exceeded"):
+        _remote_dma_module(transfers=2, remote_dma_engines=2)
 
 
 def test_buffer_rejects_mismatched_logical_rank() -> None:

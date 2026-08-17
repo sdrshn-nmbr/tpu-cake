@@ -18,6 +18,8 @@ from xdsl.parser import Parser
 
 from tpu_cake.dialects.tpu_schedule import (
     BufferType,
+    CollectiveKind,
+    CollectiveOp,
     CollectiveReduceScatterOp,
     KernelOp,
     MxuMatmulOp,
@@ -281,6 +283,10 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
         operation
         for operation in kernel.body.block.ops
         if isinstance(operation, CollectiveReduceScatterOp)
+        or (
+            isinstance(operation, CollectiveOp)
+            and operation.kind.data is CollectiveKind.REDUCE_SCATTER
+        )
     ]
     if len(matmuls) != 1 or len(collectives) != 1:
         raise UnsupportedLoweringError(
@@ -321,7 +327,11 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
         lhs_sharding=_sharding(lhs),
         rhs_sharding=_sharding(rhs),
         output_sharding=_sharding(output),
-        scatter_dimension=collective.scatter_dimension.data,
+        scatter_dimension=(
+            collective.scatter_dimension.data
+            if isinstance(collective, CollectiveReduceScatterOp)
+            else collective.split_dimension.data
+        ),
         tile_m=matmul.tile_m.data,
         tile_k=matmul.tile_k.data,
         tile_n=matmul.tile_n.data,

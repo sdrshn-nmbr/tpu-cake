@@ -3,7 +3,8 @@ from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f32
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
-    CollectiveReduceScatterOp,
+    CollectiveKind,
+    CollectiveOp,
     KernelOp,
     MxuMatmulOp,
     TopologyAttr,
@@ -19,11 +20,12 @@ def test_distributed_matmul_lowers_to_verified_physical_schedule() -> None:
     schedule.verify()
     operations = list(schedule.walk())
     assert sum(isinstance(operation, MxuMatmulOp) for operation in operations) == 1
-    assert sum(isinstance(operation, CollectiveReduceScatterOp) for operation in operations) == 1
+    assert sum(isinstance(operation, CollectiveOp) for operation in operations) == 1
     matmul = next(operation for operation in operations if isinstance(operation, MxuMatmulOp))
     collective = next(
-        operation for operation in operations if isinstance(operation, CollectiveReduceScatterOp)
+        operation for operation in operations if isinstance(operation, CollectiveOp)
     )
+    assert collective.kind.data is CollectiveKind.REDUCE_SCATTER
     assert str(matmul.location) == 'loc("tpu_cake/workloads/distributed_matmul.py":18:15)'
     assert str(collective.location) == 'loc("tpu_cake/workloads/distributed_matmul.py":26:14)'
 
@@ -105,17 +107,14 @@ def test_physical_collective_must_match_kernel_mesh(
     collective = next(
         operation
         for operation in schedule.walk()
-        if isinstance(operation, CollectiveReduceScatterOp)
+        if isinstance(operation, CollectiveOp)
     )
     collective.properties[property_name] = replacement
     with pytest.raises(VerifyException, match=message):
-        if property_name == "group_size":
-            kernel = next(
-                operation for operation in schedule.walk() if isinstance(operation, KernelOp)
-            )
-            kernel.verify_()
-        else:
-            schedule.verify()
+        kernel = next(
+            operation for operation in schedule.walk() if isinstance(operation, KernelOp)
+        )
+        kernel.verify_()
 
 
 def test_tile_must_divide_the_local_matmul_shape() -> None:
@@ -136,4 +135,5 @@ def test_physical_collective_requires_a_routed_topology_link() -> None:
             kernel.topology.devices,
             ArrayAttr(()),
             kernel.topology.collective_plans,
+            kernel.topology.transfer_plans,
         )

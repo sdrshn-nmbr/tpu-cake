@@ -10,7 +10,8 @@ from tpu_cake.canonical import canonical_sha256, canonical_text
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
     BufferType,
-    CollectiveReduceScatterOp,
+    CollectiveKind,
+    CollectiveOp,
     DmaStartOp,
     DmaWaitOp,
     KernelOp,
@@ -22,6 +23,8 @@ from tpu_cake.dialects.tpu_schedule import (
     Ownership,
     OwnershipAttr,
     RaggedPagedAttentionOp,
+    RemoteDmaStartOp,
+    RemoteDmaWaitOp,
     SemaphoreAllocOp,
     ShapeAttr,
     ShardingAttr,
@@ -104,6 +107,7 @@ class KernelBuilder:
         mxu_count: int = 1,
         vector_unit_count: int = 1,
         ici_link_count: int = 1,
+        remote_dma_engine_count: int = 1,
     ) -> None:
         self._name = name
         self._target = target
@@ -126,6 +130,7 @@ class KernelBuilder:
         self._mxu_count = mxu_count
         self._vector_unit_count = vector_unit_count
         self._ici_link_count = ici_link_count
+        self._remote_dma_engine_count = remote_dma_engine_count
         self._topology = topology
         self.block = Block(arg_types=[spec.to_type() for spec in self._input_specs])
 
@@ -226,6 +231,42 @@ class KernelBuilder:
         self._add(operation)
         return operation
 
+    def remote_dma_start(
+        self,
+        source: SSAValue | Operation,
+        destination: SSAValue | Operation,
+        semaphore: SSAValue | Operation,
+        *,
+        stage: int,
+        transfer_plan: str,
+        source_location: SourceLocation | None = None,
+    ) -> RemoteDmaStartOp:
+        operation = attach_source(
+            RemoteDmaStartOp(
+                source,
+                destination,
+                semaphore,
+                stage=stage,
+                transfer_plan=transfer_plan,
+            ),
+            source_location,
+        )
+        assert isinstance(operation, RemoteDmaStartOp)
+        self._add(operation)
+        return operation
+
+    def remote_dma_wait(
+        self,
+        token: SSAValue | Operation,
+        *,
+        stage: int,
+        source: SourceLocation | None = None,
+    ) -> RemoteDmaWaitOp:
+        operation = attach_source(RemoteDmaWaitOp(token, stage=stage), source)
+        assert isinstance(operation, RemoteDmaWaitOp)
+        self._add(operation)
+        return operation
+
     def matmul(
         self,
         lhs: SSAValue | Operation,
@@ -265,20 +306,48 @@ class KernelBuilder:
         scatter_dimension: int,
         reducer: str = "sum",
         source_location: SourceLocation | None = None,
-    ) -> CollectiveReduceScatterOp:
+    ) -> CollectiveOp:
+        return self.collective(
+            source,
+            destination,
+            stage=stage,
+            kind=CollectiveKind.REDUCE_SCATTER,
+            mesh_axis=mesh_axis,
+            group_size=group_size,
+            split_dimension=scatter_dimension,
+            reducer=reducer,
+            source_location=source_location,
+        )
+
+    def collective(
+        self,
+        source: SSAValue | Operation,
+        destination: SSAValue | Operation,
+        *,
+        stage: int,
+        kind: CollectiveKind,
+        mesh_axis: str,
+        group_size: int,
+        split_dimension: int = -1,
+        concat_dimension: int = -1,
+        reducer: str = "none",
+        source_location: SourceLocation | None = None,
+    ) -> CollectiveOp:
         operation = attach_source(
-            CollectiveReduceScatterOp(
+            CollectiveOp(
                 source,
                 destination,
                 stage=stage,
+                kind=kind,
                 mesh_axis=mesh_axis,
                 group_size=group_size,
-                scatter_dimension=scatter_dimension,
+                split_dimension=split_dimension,
+                concat_dimension=concat_dimension,
                 reducer=reducer,
             ),
             source_location,
         )
-        assert isinstance(operation, CollectiveReduceScatterOp)
+        assert isinstance(operation, CollectiveOp)
         self._add(operation)
         return operation
 
@@ -327,6 +396,7 @@ class KernelBuilder:
             mxu_count=self._mxu_count,
             vector_unit_count=self._vector_unit_count,
             ici_link_count=self._ici_link_count,
+            remote_dma_engine_count=self._remote_dma_engine_count,
         )
         module = ModuleOp([kernel])
         verify_with_sources(module)
