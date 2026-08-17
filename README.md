@@ -37,6 +37,8 @@ TPU-cake began by combining CAKE's search loop with this MatX discipline (as see
 - Matmul and Inkling ragged paged attention examples.
 - An XProf reader that rejects captures without the intended TPU work.
 - Verified distributed matmul lowering through Pallas and Mosaic.
+- Replayable full Seqax-forward lowering through multi-device JAX/XLA with exact
+  input/output sharding and real collectives.
 - A physical compute, HBM, ICI, and live-memory cost model.
 - Separate timing, trace, and hardware-counter runs.
 - A resumable, matched-input tile search with alternating run order and bootstrap confidence intervals.
@@ -84,7 +86,7 @@ uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
 
 ## Current boundary
 
-The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed-tensor dialect represents the pinned Seqax forward algebra and has an independent numerical interpreter, but physical Pallas lowering remains deliberately narrow and currently accepts the distributed matmul slice.
+The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed-tensor dialect represents the pinned Seqax forward algebra, has an independent numerical interpreter, and lowers the complete forward program to a replayable multi-device `jax.shard_map` plan. That plan executes local shards with real JAX/XLA collectives and binds exact input/output `PartitionSpec` values. It is a distributed JAX/XLA lowering, not a hand-scheduled Pallas kernel. Physical Pallas lowering remains deliberately narrow and currently accepts only the distributed matmul slice.
 
 Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution, bounded block-size search, separate timing/trace/counter captures, and a search-bound receipt. It delegates execution to the pinned upstream RPA Pallas wrapper and covers one fixed decode-only local-shard fixture. It does not yet represent the wrapper's internal Pallas schedule, own the outer multi-device `shard_map`, prove full Inkling serving, or establish a global block-size optimum.
 

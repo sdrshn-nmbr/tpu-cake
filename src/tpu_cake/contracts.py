@@ -41,6 +41,7 @@ class EvidencePhaseName(StrEnum):
 class EvidenceProfile(StrEnum):
     DISTRIBUTED_MATMUL = "distributed_matmul_v1"
     OPAQUE_RPA_ADAPTER = "opaque_rpa_adapter_v1"
+    SEQAX_DISTRIBUTED_FORWARD = "seqax_distributed_forward_v1"
 
 
 class ArtifactRole(StrEnum):
@@ -48,6 +49,8 @@ class ArtifactRole(StrEnum):
     DISTRIBUTED_IR = "distributed_ir"
     PHYSICAL_IR = "physical_ir"
     PALLAS_SOURCE = "pallas_source"
+    JAX_SOURCE = "jax_source"
+    PLAN_MANIFEST = "plan_manifest"
     STABLEHLO = "stablehlo"
     COMPILER_HLO = "compiler_hlo"
     CORRECTNESS_INPUT = "correctness_input"

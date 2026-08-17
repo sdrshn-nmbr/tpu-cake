@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
@@ -43,6 +44,37 @@ from tpu_cake.dialects.distributed_tensor import (
 
 class UnsupportedInterpretationError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class _ExecutionSemantics:
+    mesh: dict[str, int] | None = None
+
+    @property
+    def physical(self) -> bool:
+        return self.mesh is not None
+
+    def shape(self, value_type: DTensorType) -> tuple[int, ...]:
+        if self.mesh is None:
+            return tuple(size for _, size in value_type.logical_shape())
+        result = []
+        for (_, size), axes in zip(
+            value_type.logical_shape(), value_type.sharding_axes(), strict=True
+        ):
+            divisor = 1
+            for axis in axes:
+                divisor *= self.mesh[axis]
+            result.append(size // divisor)
+        return tuple(result)
+
+
+_LOGICAL_SEMANTICS = _ExecutionSemantics()
+
+
+def _axis_name(axes: tuple[str, ...]):
+    if not axes:
+        raise UnsupportedInterpretationError("collective needs at least one mesh axis")
+    return axes[0] if len(axes) == 1 else axes
 
 
 def _names(value_type: DTensorType) -> tuple[str, ...]:
@@ -92,7 +124,9 @@ def _align_named(
     permutation = tuple(source_names.index(name) for name in retained)
     if permutation != tuple(range(len(permutation))):
         value = jnp.transpose(value, permutation)
-    shape = tuple(value.shape[retained.index(name)] if name in retained else 1 for name in target_names)
+    shape = tuple(
+        value.shape[retained.index(name)] if name in retained else 1 for name in target_names
+    )
     return jnp.reshape(value, shape)
 
 
@@ -150,12 +184,61 @@ def _rope(value: jax.Array, operation: RotaryEmbeddingOp) -> jax.Array:
 def _execute_block(
     block: Block,
     environment: dict[SSAValue, jax.Array],
+    semantics: _ExecutionSemantics = _LOGICAL_SEMANTICS,
 ) -> tuple[jax.Array, ...] | None:
     for operation in block.ops:
         if isinstance(operation, (ReturnOp, ScanYieldOp)):
             return tuple(environment[value] for value in operation.values)
-        if isinstance(operation, (AllGatherOp, AllReduceOp, ReduceScatterOp)):
+        if isinstance(operation, AllGatherOp):
             result = environment[operation.value]
+            if semantics.physical:
+                before = operation.value.type
+                after = operation.result.type
+                assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+                for dimension, (old_axes, new_axes) in enumerate(
+                    zip(before.sharding_axes(), after.sharding_axes(), strict=True)
+                ):
+                    removed = old_axes[len(new_axes) :]
+                    if removed:
+                        result = jax.lax.all_gather(
+                            result,
+                            _axis_name(removed),
+                            axis=dimension,
+                            tiled=True,
+                        )
+        elif isinstance(operation, AllReduceOp):
+            result = environment[operation.value]
+            if semantics.physical:
+                axes = tuple(value.data for value in operation.axes)
+                reducer = operation.reducer.data
+                collective = {
+                    "sum": jax.lax.psum,
+                    "max": jax.lax.pmax,
+                    "min": jax.lax.pmin,
+                }[reducer]
+                result = collective(result, _axis_name(axes))
+        elif isinstance(operation, ReduceScatterOp):
+            result = environment[operation.value]
+            if semantics.physical:
+                axes = tuple(value.data for value in operation.axes)
+                dimensions = tuple(value.data for value in operation.scatter_dimensions)
+                if operation.reducer.data != "sum":
+                    raise UnsupportedInterpretationError(
+                        "physical reduce-scatter currently supports sum only"
+                    )
+                before = operation.value.type
+                assert isinstance(before, DTensorType)
+                if len(dimensions) != 1:
+                    raise UnsupportedInterpretationError(
+                        "physical reduce-scatter currently supports one scatter dimension"
+                    )
+                scatter_dimension = _names(before).index(dimensions[0])
+                result = jax.lax.psum_scatter(
+                    result,
+                    _axis_name(axes),
+                    scatter_dimension=scatter_dimension,
+                    tiled=True,
+                )
         elif isinstance(operation, CastOp):
             result_type = operation.result.type
             assert isinstance(result_type, DTensorType)
@@ -171,12 +254,8 @@ def _execute_block(
             assert isinstance(result_type, DTensorType)
             aligned_scale = _align_named(scale, _names(scale_type), _names(value_type))
             axis = _names(value_type).index(operation.dimension.data)
-            mean_square = jnp.mean(
-                jnp.square(value.astype(jnp.float32)), axis=axis, keepdims=True
-            )
-            normalized = value * jax.lax.rsqrt(
-                mean_square + float(operation.epsilon.data)
-            )
+            mean_square = jnp.mean(jnp.square(value.astype(jnp.float32)), axis=axis, keepdims=True)
+            normalized = value * jax.lax.rsqrt(mean_square + float(operation.epsilon.data))
             result = _cast(normalized * aligned_scale, result_type)
         elif isinstance(operation, RotaryEmbeddingOp):
             result_type = operation.result.type
@@ -222,8 +301,7 @@ def _execute_block(
             value_type = operation.value.type
             assert isinstance(value_type, DTensorType)
             axes = tuple(
-                _names(value_type).index(dimension.data)
-                for dimension in operation.dimensions
+                _names(value_type).index(dimension.data) for dimension in operation.dimensions
             )
             reducer = operation.reducer.data
             reduce = {"sum": jnp.sum, "max": jnp.max, "min": jnp.min}[reducer]
@@ -247,7 +325,24 @@ def _execute_block(
             table_type = operation.table.type
             assert isinstance(table_type, DTensorType)
             axis = _names(table_type).index(operation.vocabulary_dimension.data)
-            result = jnp.take(table, indices, axis=axis)
+            vocabulary_axes = table_type.sharding_axes()[axis]
+            if semantics.physical and vocabulary_axes:
+                assert semantics.mesh is not None
+                shard_index = jnp.int32(0)
+                for mesh_axis in vocabulary_axes:
+                    shard_index = shard_index * semantics.mesh[mesh_axis] + jax.lax.axis_index(
+                        mesh_axis
+                    )
+                local_vocabulary = table.shape[axis]
+                offset = shard_index * local_vocabulary
+                local_indices = indices.astype(jnp.int32) - offset
+                valid = (local_indices >= 0) & (local_indices < local_vocabulary)
+                local_indices = jnp.clip(local_indices, 0, local_vocabulary - 1)
+                result = jnp.take(table, local_indices, axis=axis)
+                valid_shape = (*valid.shape, *((1,) * (table.ndim - 1)))
+                result = jnp.where(valid.reshape(valid_shape), result, 0)
+            else:
+                result = jnp.take(table, indices, axis=axis)
         elif isinstance(operation, (EinsumOp, EinsumLocalOp)):
             result = _einsum(operation, environment)
         elif isinstance(operation, ElementwiseOp):
@@ -262,9 +357,7 @@ def _execute_block(
             elif function == "exp":
                 result = jnp.exp(values[0])
             else:
-                raise UnsupportedInterpretationError(
-                    f"unsupported elementwise function {function}"
-                )
+                raise UnsupportedInterpretationError(f"unsupported elementwise function {function}")
             result_type = operation.result.type
             assert isinstance(result_type, DTensorType)
             result = _cast(result, result_type)
@@ -288,10 +381,12 @@ def _execute_block(
                     body_inputs.append(jnp.take(value, layer, axis=axis))
                 body_inputs.extend(invariants)
                 nested_environment = dict(environment)
-                nested_environment.update(
-                    zip(operation.body.block.args, body_inputs, strict=True)
+                nested_environment.update(zip(operation.body.block.args, body_inputs, strict=True))
+                yielded = _execute_block(
+                    operation.body.block,
+                    nested_environment,
+                    semantics,
                 )
-                yielded = _execute_block(operation.body.block, nested_environment)
                 if yielded is None:
                     raise UnsupportedInterpretationError("layer scan body did not yield")
                 carries = yielded
@@ -309,7 +404,7 @@ def _execute_block(
             )
         result_type = operation.results[0].type
         assert isinstance(result_type, DTensorType)
-        expected_shape = tuple(size for _, size in result_type.logical_shape())
+        expected_shape = semantics.shape(result_type)
         if tuple(result.shape) != expected_shape:
             raise UnsupportedInterpretationError(
                 f"{operation.name} produced shape {tuple(result.shape)}, expected {expected_shape}"
@@ -318,10 +413,17 @@ def _execute_block(
     return None
 
 
-def interpret_distributed_program(
+def execute_distributed_program_jax(
     module: ModuleOp,
     inputs: Sequence[np.ndarray | jax.Array],
-) -> tuple[np.ndarray, ...]:
+) -> tuple[jax.Array, ...]:
+    """Execute global logical tensor semantics with JAX on one device.
+
+    This function does not implement physical sharding or communication. Collective
+    operations are identities because every value is represented at its declared
+    global logical shape. Callers that need physical collectives must use a physical
+    lowering instead.
+    """
     module.verify()
     programs = tuple(
         operation for operation in module.body.block.ops if isinstance(operation, ProgramOp)
@@ -340,17 +442,59 @@ def interpret_distributed_program(
         actual_dtype = jnp.dtype(value.dtype)
         expected_dtype = jnp.dtype(_dtype(value_type))
         if actual_dtype != expected_dtype:
-            raise ValueError(
-                f"input dtype {actual_dtype} does not match {expected_dtype}"
-            )
+            raise ValueError(f"input dtype {actual_dtype} does not match {expected_dtype}")
         array = jnp.asarray(value)
         expected_shape = tuple(size for _, size in value_type.logical_shape())
         if tuple(array.shape) != expected_shape:
-            raise ValueError(
-                f"input shape {tuple(array.shape)} does not match {expected_shape}"
-            )
+            raise ValueError(f"input shape {tuple(array.shape)} does not match {expected_shape}")
         environment[argument] = array
-    outputs = _execute_block(program.body.block, environment)
+    outputs = _execute_block(program.body.block, environment, _LOGICAL_SEMANTICS)
     if outputs is None:
         raise UnsupportedInterpretationError("distributed program did not return")
-    return tuple(np.asarray(value) for value in outputs)
+    return outputs
+
+
+def execute_distributed_program_jax_sharded(
+    module: ModuleOp,
+    inputs: Sequence[jax.Array],
+) -> tuple[jax.Array, ...]:
+    """Execute local shards with physical JAX collectives inside ``shard_map``."""
+    module.verify()
+    programs = tuple(
+        operation for operation in module.body.block.ops if isinstance(operation, ProgramOp)
+    )
+    if len(programs) != 1 or len(tuple(module.body.block.ops)) != 1:
+        raise UnsupportedInterpretationError(
+            "sharded interpretation expects one distributed program"
+        )
+    program = programs[0]
+    if len(inputs) != len(program.body.block.args):
+        raise ValueError(
+            f"distributed program expects {len(program.body.block.args)} inputs, got {len(inputs)}"
+        )
+    semantics = _ExecutionSemantics(program.mesh.sizes())
+    environment: dict[SSAValue, jax.Array] = {}
+    for argument, value in zip(program.body.block.args, inputs, strict=True):
+        value_type = argument.type
+        assert isinstance(value_type, DTensorType)
+        actual_dtype = jnp.dtype(value.dtype)
+        expected_dtype = jnp.dtype(_dtype(value_type))
+        if actual_dtype != expected_dtype:
+            raise ValueError(f"input dtype {actual_dtype} does not match {expected_dtype}")
+        if tuple(value.shape) != semantics.shape(value_type):
+            raise ValueError(
+                f"local input shape {tuple(value.shape)} does not match "
+                f"{semantics.shape(value_type)}"
+            )
+        environment[argument] = value
+    outputs = _execute_block(program.body.block, environment, semantics)
+    if outputs is None:
+        raise UnsupportedInterpretationError("distributed program did not return")
+    return outputs
+
+
+def interpret_distributed_program(
+    module: ModuleOp,
+    inputs: Sequence[np.ndarray | jax.Array],
+) -> tuple[np.ndarray, ...]:
+    return tuple(np.asarray(value) for value in execute_distributed_program_jax(module, inputs))
