@@ -33,6 +33,7 @@ from tpu_cake.seqax_bundle import (
     build_seqax_forward_receipt,
     validate_seqax_forward_receipt,
 )
+from tpu_cake.seqax_pallas_runner import run_seqax_physical_pallas
 from tpu_cake.seqax_runner import run_seqax_forward
 from tpu_cake.seqax_surface import (
     SeqaxSurfaceReceipt,
@@ -115,6 +116,14 @@ def _parser() -> argparse.ArgumentParser:
     run_seqax = commands.add_parser("run-seqax-forward")
     run_seqax.add_argument("--output-dir", required=True, type=Path)
     run_seqax.add_argument("--mode", choices=tuple(RunMode), default=RunMode.TIMING)
+
+    run_seqax_pallas = commands.add_parser("run-seqax-physical-pallas")
+    run_seqax_pallas.add_argument("--output-dir", required=True, type=Path)
+    run_seqax_pallas.add_argument(
+        "--mode",
+        choices=tuple(RunMode),
+        default=RunMode.TIMING,
+    )
 
     finalize_seqax = commands.add_parser("finalize-seqax-forward")
     finalize_seqax.add_argument("run_root", type=Path)
@@ -310,6 +319,18 @@ def main() -> None:
         result = run_seqax_forward(args.output_dir, mode=RunMode(args.mode))
         print(result.model_dump_json(indent=2))
         code = 0 if result.passed else 1
+    elif args.command == "run-seqax-physical-pallas":
+        result = run_seqax_physical_pallas(
+            args.output_dir,
+            mode=RunMode(args.mode),
+        )
+        print(
+            "SEQAX_PHYSICAL_PALLAS_PHASE_COMPLETE "
+            f"mode={result.mode.value} "
+            "acceptance_requires_final_receipt=true"
+        )
+        print(result.model_dump_json(indent=2))
+        code = 0 if result.correctness_passed else 1
     elif args.command == "finalize-seqax-forward":
         receipt = build_seqax_forward_receipt(args.run_root)
         print(receipt.model_dump_json(indent=2))
