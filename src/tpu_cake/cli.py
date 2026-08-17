@@ -39,6 +39,12 @@ from tpu_cake.seqax_surface import (
     run_seqax_surface,
     validate_seqax_surface_receipt,
 )
+from tpu_cake.seqax_surface_profile import (
+    SeqaxSurfaceProfileReceipt,
+    build_seqax_surface_profile_receipt,
+    run_seqax_surface_profile_phase,
+    validate_seqax_surface_profile_receipt,
+)
 from tpu_cake.workloads import (
     inkling_fused_rpa_experiment,
     inkling_rpa_experiment,
@@ -121,6 +127,23 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_seqax_surface = commands.add_parser("verify-seqax-surface")
     verify_seqax_surface.add_argument("run_root", type=Path)
+
+    run_seqax_surface_profile = commands.add_parser("run-seqax-surface-profile")
+    run_seqax_surface_profile.add_argument("--output-dir", required=True, type=Path)
+    run_seqax_surface_profile.add_argument("--surface-root", required=True, type=Path)
+    run_seqax_surface_profile.add_argument(
+        "--scenario", choices=("tiny", "wider", "deeper"), required=True
+    )
+    run_seqax_surface_profile.add_argument(
+        "--mode", choices=(RunMode.TRACE, RunMode.COUNTERS), required=True
+    )
+
+    finalize_seqax_surface_profile = commands.add_parser("finalize-seqax-surface-profile")
+    finalize_seqax_surface_profile.add_argument("run_root", type=Path)
+    finalize_seqax_surface_profile.add_argument("--surface-root", required=True, type=Path)
+
+    verify_seqax_surface_profile = commands.add_parser("verify-seqax-surface-profile")
+    verify_seqax_surface_profile.add_argument("run_root", type=Path)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -316,6 +339,40 @@ def main() -> None:
             f"SEQAX_SURFACE_ACCEPTED decision={verdict} "
             f"scenarios={len(receipt.comparison.scenario_improvements)} "
             f"artifacts={len(receipt.artifacts)}"
+        )
+        code = 0
+    elif args.command == "run-seqax-surface-profile":
+        result = run_seqax_surface_profile_phase(
+            args.output_dir,
+            surface_root=args.surface_root,
+            scenario_name=args.scenario,
+            mode=RunMode(args.mode),
+        )
+        print(
+            "SEQAX_SURFACE_PROFILE_PHASE_COMPLETE "
+            f"scenario={result.invocation.scenario} mode={result.invocation.mode.value} "
+            "acceptance_requires_final_receipt=true"
+        )
+        print(result.model_dump_json(indent=2))
+        code = 0 if result.passed else 1
+    elif args.command == "finalize-seqax-surface-profile":
+        receipt = build_seqax_surface_profile_receipt(
+            args.run_root,
+            surface_root=args.surface_root,
+        )
+        print(receipt.model_dump_json(indent=2))
+        code = 0 if receipt.accepted else 1
+    elif args.command == "verify-seqax-surface-profile":
+        root = args.run_root.resolve()
+        receipt = SeqaxSurfaceProfileReceipt.model_validate_json(
+            (root / "receipt.json").read_text()
+        )
+        validate_seqax_surface_profile_receipt(receipt, root=root)
+        print(
+            "SEQAX_SURFACE_PROFILE_ACCEPTED "
+            f"scenarios={len(receipt.results) // 2} "
+            f"captures={len(receipt.results)} artifacts={len(receipt.artifacts)} "
+            f"metrics={len(receipt.metrics)}"
         )
         code = 0
     elif args.command == "search-matmul":
