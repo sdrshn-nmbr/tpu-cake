@@ -149,6 +149,7 @@ def run_fused_rpa(
     seed: int,
     warmup_iterations: int,
     measured_iterations: int,
+    decode_block_sizes: tuple[int, int, int, int] = (8, 128, 8, 128),
 ) -> FusedRpaRunResult:
     if jax.default_backend() != "tpu":
         raise ValueError("fused Inkling RPA device evidence requires a TPU backend")
@@ -158,9 +159,9 @@ def run_fused_rpa(
         measured_iterations=measured_iterations,
     )
     output_dir.mkdir(parents=True, exist_ok=False)
-    schedule = inkling_fused_rpa_schedule()
+    schedule = inkling_fused_rpa_schedule(decode_block_sizes)
     plan = lower_inkling_rpa_to_pallas(schedule)
-    experiment = inkling_fused_rpa_experiment()
+    experiment = inkling_fused_rpa_experiment(decode_block_sizes)
     if experiment.schedule_sha256 != plan.schedule_sha256:
         raise ValueError("RPA experiment schedule does not match the executable plan")
     if backend_manifest != plan.backend_manifest:

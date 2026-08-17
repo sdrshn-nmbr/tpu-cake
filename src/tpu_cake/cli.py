@@ -21,6 +21,7 @@ from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
 from tpu_cake.receipt import validate_receipt
 from tpu_cake.rpa_bundle import build_fused_rpa_receipt, validate_fused_rpa_receipt
+from tpu_cake.rpa_search import RpaSearchContract, validate_rpa_search_result
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
 from tpu_cake.search import MatmulSearchContract, run_matmul_search
@@ -84,6 +85,9 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_rpa_bundle = commands.add_parser("verify-rpa-bundle")
     verify_rpa_bundle.add_argument("run_root", type=Path)
+    verify_rpa_search = commands.add_parser("verify-rpa-search")
+    verify_rpa_search.add_argument("run_root", type=Path)
+    verify_rpa_search.add_argument("--contract", type=Path, required=True)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -215,6 +219,14 @@ def main() -> None:
         code = 0 if receipt.status.value == "passed" else 1
     elif args.command == "verify-rpa-bundle":
         code = _verify_rpa_bundle(args.run_root)
+    elif args.command == "verify-rpa-search":
+        contract = RpaSearchContract.model_validate_json(args.contract.read_text())
+        result = validate_rpa_search_result(args.run_root, contract)
+        print(
+            f"RPA_SEARCH_ACCEPTED winner={result.winner or 'none'} "
+            f"runs={len(result.runs)}"
+        )
+        code = 0
     elif args.command == "search-matmul":
         contract = MatmulSearchContract.model_validate_json(args.contract.read_text())
         result = run_matmul_search(args.output_dir, contract, interpret=args.interpret)

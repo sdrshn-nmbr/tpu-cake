@@ -16,6 +16,9 @@ def test_rpa_bundle_commands_are_public() -> None:
 
     assert parser.parse_args(["finalize-rpa-run", "bundle"]).command == "finalize-rpa-run"
     assert parser.parse_args(["verify-rpa-bundle", "bundle"]).command == "verify-rpa-bundle"
+    assert parser.parse_args(
+        ["verify-rpa-search", "search", "--contract", "contract.json"]
+    ).command == "verify-rpa-search"
 
 
 def test_public_rpa_verifier_uses_trusted_experiment_and_rejects_rejected_receipt(

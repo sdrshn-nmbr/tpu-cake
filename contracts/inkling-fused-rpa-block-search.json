@@ -1,0 +1,68 @@
+{
+  "baseline": "incumbent",
+  "seed": 97,
+  "warmup_iterations": 5,
+  "measured_iterations": 50,
+  "rounds": 10,
+  "confirmation_rounds": 10,
+  "bootstrap_samples": 10000,
+  "minimum_practical_improvement": 0.01,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "profiler": {
+    "mode": "trace",
+    "raise_error_on_start_failure": true,
+    "enable_hlo_proto": true,
+    "host_tracer_level": 1,
+    "python_tracer_level": 0,
+    "advanced_configuration": {
+      "tpu_num_chips_to_profile_per_task": 4
+    },
+    "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "candidates": [
+    {
+      "name": "incumbent",
+      "query_block_size": 8,
+      "kv_block_size": 128,
+      "query_cluster_size": 8,
+      "kv_cluster_size": 128
+    },
+    {
+      "name": "kv-64",
+      "query_block_size": 8,
+      "kv_block_size": 64,
+      "query_cluster_size": 8,
+      "kv_cluster_size": 64
+    },
+    {
+      "name": "kv-128-cluster-64",
+      "query_block_size": 8,
+      "kv_block_size": 128,
+      "query_cluster_size": 8,
+      "kv_cluster_size": 64
+    },
+    {
+      "name": "kv-256-cluster-128",
+      "query_block_size": 8,
+      "kv_block_size": 256,
+      "query_cluster_size": 8,
+      "kv_cluster_size": 128
+    },
+    {
+      "name": "kv-256-cluster-256",
+      "query_block_size": 8,
+      "kv_block_size": 256,
+      "query_cluster_size": 8,
+      "kv_cluster_size": 256
+    }
+  ]
+}

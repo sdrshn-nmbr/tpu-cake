@@ -17,6 +17,7 @@ from sgl_jax.srt.kernels.ragged_paged_attention.tuned_block_sizes_v3 import (
 from sgl_jax.srt.kernels.ragged_paged_attention.util import get_dtype_packing
 
 from tpu_cake.rpa_runner import run_fused_rpa
+from tpu_cake.rpa_search import RpaSearchContract, run_rpa_search
 from tpu_cake.runner import RunMode
 
 
@@ -39,11 +40,35 @@ def _backend_manifest() -> tuple[tuple[str, str], ...]:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m tpu_cake.rpa_device_main")
     parser.add_argument("output_dir", type=Path)
-    parser.add_argument("--mode", type=RunMode, choices=tuple(RunMode), required=True)
+    parser.add_argument("--mode", type=RunMode, choices=tuple(RunMode))
+    parser.add_argument("--search-contract", type=Path)
     parser.add_argument("--seed", type=int, default=97)
     parser.add_argument("--warmup-iterations", type=int, default=5)
     parser.add_argument("--measured-iterations", type=int, default=50)
+    parser.add_argument(
+        "--decode-block-sizes",
+        type=int,
+        nargs=4,
+        metavar=("BQ", "BKV", "CQ", "CKV"),
+        default=(8, 128, 8, 128),
+    )
     args = parser.parse_args()
+    if args.search_contract is not None:
+        if args.mode is not None:
+            parser.error("--mode and --search-contract are mutually exclusive")
+        contract = RpaSearchContract.model_validate_json(
+            args.search_contract.read_text()
+        )
+        result = run_rpa_search(
+            args.output_dir,
+            contract,
+            kernel=ragged_paged_attention,
+            backend_manifest=_backend_manifest(),
+        )
+        print(result.model_dump_json(indent=2))
+        return
+    if args.mode is None:
+        parser.error("--mode is required unless --search-contract is used")
     result = run_fused_rpa(
         args.output_dir,
         mode=args.mode,
@@ -52,6 +77,7 @@ def main() -> None:
         seed=args.seed,
         warmup_iterations=args.warmup_iterations,
         measured_iterations=args.measured_iterations,
+        decode_block_sizes=tuple(args.decode_block_sizes),
     )
     print(result.model_dump_json(indent=2))
 

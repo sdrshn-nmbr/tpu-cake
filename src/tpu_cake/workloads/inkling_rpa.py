@@ -137,7 +137,12 @@ def inkling_rpa_schedule() -> ModuleOp:
     return builder.module()
 
 
-def inkling_fused_rpa_schedule() -> ModuleOp:
+def inkling_fused_rpa_schedule(
+    decode_block_sizes: tuple[int, int, int, int] = (8, 128, 8, 128),
+) -> ModuleOp:
+    query_block_size, kv_block_size, query_cluster_size, kv_cluster_size = (
+        decode_block_sizes
+    )
     external = {
         "memory": MemorySpace.HBM,
         "ownership": Ownership.EXTERNAL,
@@ -172,10 +177,10 @@ def inkling_fused_rpa_schedule() -> ModuleOp:
         softmax_scale="0.03125",
         softmax_dtype="float32",
         sliding_window=0,
-        query_block_size=8,
-        kv_block_size=128,
-        query_cluster_size=8,
-        kv_cluster_size=128,
+        query_block_size=query_block_size,
+        kv_block_size=kv_block_size,
+        query_cluster_size=query_cluster_size,
+        kv_cluster_size=kv_cluster_size,
         vmem_limit_bytes=96 << 20,
         source_location=SourceLocation(
             "engine/sglang-jax/python/sgl_jax/srt/kernels/"
@@ -479,8 +484,10 @@ def inkling_fused_rpa_contract(plan: FusedRpaPlan | None = None) -> WorkloadCont
     )
 
 
-def inkling_fused_rpa_experiment() -> KernelExperiment:
-    schedule = inkling_fused_rpa_schedule()
+def inkling_fused_rpa_experiment(
+    decode_block_sizes: tuple[int, int, int, int] = (8, 128, 8, 128),
+) -> KernelExperiment:
+    schedule = inkling_fused_rpa_schedule(decode_block_sizes)
     plan = lower_inkling_rpa_to_pallas(schedule)
     return KernelExperiment(
         workload=inkling_fused_rpa_contract(plan),

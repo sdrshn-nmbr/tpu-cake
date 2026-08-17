@@ -151,11 +151,11 @@ def _parse_saved_plan(physical_path: Path, lowered_path: Path, result: FusedRpaR
 
 def _result_artifacts(
     root: Path,
-    receipt: RunReceipt,
+    receipt_artifacts: tuple[ArtifactReference, ...],
     phase: str,
     result: FusedRpaRunResult,
 ) -> dict[str, Path]:
-    receipt_artifacts = {artifact.path: artifact for artifact in receipt.artifacts}
+    receipt_artifacts_by_path = {artifact.path: artifact for artifact in receipt_artifacts}
     resolved: dict[str, Path] = {}
     for artifact in result.artifacts:
         path = resolve_recorded_artifact(
@@ -165,7 +165,7 @@ def _result_artifacts(
             sha256=artifact.sha256,
         )
         relative = path.resolve().relative_to(root.resolve()).as_posix()
-        receipt_artifact = receipt_artifacts.get(relative)
+        receipt_artifact = receipt_artifacts_by_path.get(relative)
         if receipt_artifact is None or receipt_artifact != artifact.model_copy(
             update={"path": relative}
         ):
@@ -178,12 +178,13 @@ def _result_artifacts(
 
 def _validate_phase(
     root: Path,
-    receipt: RunReceipt,
+    receipt_artifacts: tuple[ArtifactReference, ...],
+    require_clean_source: bool,
     experiment: KernelExperiment,
     phase: str,
     result: FusedRpaRunResult,
 ) -> tuple[float, float]:
-    artifacts = _result_artifacts(root, receipt, phase, result)
+    artifacts = _result_artifacts(root, receipt_artifacts, phase, result)
     required_names = {
         "invocation.json",
         "profiler_config.json",
@@ -242,7 +243,7 @@ def _validate_phase(
     _source_identity(
         artifacts["source_state.json"],
         artifacts["source_diff.patch"],
-        require_clean=receipt.status is RunStatus.PASSED,
+        require_clean=require_clean_source,
     )
     saved_experiment = KernelExperiment.model_validate_json(
         artifacts["experiment.json"].read_text()
@@ -468,6 +469,36 @@ def _validate_phase(
     ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
         raise ValueError(f"RPA_LEDGER_EVIDENCE_MISMATCH phase={phase}")
     return max(absolute_errors), max(relative_errors)
+
+
+def validate_fused_rpa_run(
+    run_root: Path,
+    experiment: KernelExperiment,
+    mode: RunMode,
+) -> FusedRpaRunResult:
+    run_root = run_root.resolve()
+    result = _load_result(run_root / "result.json", mode)
+    phase = run_root.name
+    receipt_artifacts = tuple(
+        artifact.model_copy(update={"path": f"{phase}/{artifact.path}"})
+        for artifact in result.artifacts
+    )
+    _validate_phase(
+        run_root.parent,
+        receipt_artifacts,
+        True,
+        experiment,
+        phase,
+        result,
+    )
+    return result
+
+
+def validate_fused_rpa_timing_run(
+    run_root: Path,
+    experiment: KernelExperiment,
+) -> FusedRpaRunResult:
+    return validate_fused_rpa_run(run_root, experiment, RunMode.TIMING)
 
 
 def _prefix_capture_metrics(
@@ -708,7 +739,14 @@ def validate_fused_rpa_receipt(
     if len(source_identities) != 1:
         raise ValueError("RPA_RUNS_DO_NOT_SHARE_SOURCE_IDENTITY")
     errors = tuple(
-        _validate_phase(root, receipt, experiment, phase, result)
+        _validate_phase(
+            root,
+            receipt.artifacts,
+            receipt.status is RunStatus.PASSED,
+            experiment,
+            phase,
+            result,
+        )
         for phase, result in (
             ("timing", timing),
             ("trace", trace),

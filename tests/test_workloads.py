@@ -80,3 +80,15 @@ def test_fused_rpa_experiment_binds_oracle_preflight_and_backend_sources() -> No
     assert tuple(
         (source.path, source.sha256) for source in contract.execution.source_manifest
     ) == plan.backend_manifest
+
+
+def test_fused_rpa_experiment_materializes_decode_block_sizes() -> None:
+    incumbent = inkling_fused_rpa_experiment()
+    candidate_blocks = (8, 64, 8, 64)
+    candidate_schedule = inkling_fused_rpa_schedule(candidate_blocks)
+    candidate_plan = lower_inkling_rpa_to_pallas(candidate_schedule)
+    candidate = inkling_fused_rpa_experiment(candidate_blocks)
+
+    assert candidate_plan.decode_block_sizes == candidate_blocks
+    assert candidate.schedule_sha256 == candidate_plan.schedule_sha256
+    assert candidate.schedule_sha256 != incumbent.schedule_sha256
