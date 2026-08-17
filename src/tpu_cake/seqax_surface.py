@@ -26,6 +26,7 @@ from tpu_cake.runner import _record_event, _runtime_identity, _source_state
 from tpu_cake.seqax_cost_model import SeqaxCostModelReport, estimate_seqax_forward
 from tpu_cake.surface_runner import run_surface_pair
 from tpu_cake.surfaces import (
+    OutputEquivalencePolicy,
     SeqaxForwardScenario,
     SeqaxForwardWorkloadSurface,
     SurfaceCandidateObservation,
@@ -136,6 +137,9 @@ def seqax_forward_workload_surface() -> SeqaxForwardWorkloadSurface:
         minimum_practical_improvement=Decimal("0.03"),
         maximum_scenario_regression=Decimal("0.01"),
         bootstrap_samples=10_000,
+        output_equivalence=(
+            OutputEquivalencePolicy.INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE
+        ),
     )
 
 
@@ -788,27 +792,45 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
         )
         if not _same_array(saved_oracle, expected_oracle):
             raise ValueError(f"SEQAX_SURFACE_ORACLE_REPLAY_MISMATCH scenario={scenario.name}")
-        if not _same_array(baseline_output, candidate_output):
-            raise ValueError(f"SEQAX_SURFACE_OUTPUT_PARITY_MISMATCH scenario={scenario.name}")
-        if (
-            baseline_output.shape != expected_oracle.shape
-            or baseline_output.dtype != expected_oracle.dtype
-        ):
-            raise ValueError(f"SEQAX_SURFACE_OUTPUT_CONTRACT_MISMATCH scenario={scenario.name}")
+        outputs = {
+            "baseline": baseline_output,
+            "candidate": candidate_output,
+        }
+        for name, output in outputs.items():
+            if output.shape != expected_oracle.shape or output.dtype != expected_oracle.dtype:
+                raise ValueError(
+                    "SEQAX_SURFACE_OUTPUT_CONTRACT_MISMATCH "
+                    f"scenario={scenario.name} candidate={name}"
+                )
+            if not np.allclose(
+                output,
+                expected_oracle,
+                atol=SEQAX_SURFACE_ATOL,
+                rtol=SEQAX_SURFACE_RTOL,
+            ):
+                raise ValueError(
+                    "SEQAX_SURFACE_OUTPUT_ORACLE_MISMATCH "
+                    f"scenario={scenario.name} candidate={name}"
+                )
         if not np.allclose(
             baseline_output,
-            expected_oracle,
+            candidate_output,
             atol=SEQAX_SURFACE_ATOL,
             rtol=SEQAX_SURFACE_RTOL,
         ):
-            raise ValueError(f"SEQAX_SURFACE_OUTPUT_ORACLE_MISMATCH scenario={scenario.name}")
+            raise ValueError(
+                f"SEQAX_SURFACE_CROSS_MODE_MISMATCH scenario={scenario.name}"
+            )
         input_identity = _array_tuple_sha256(saved_inputs)
-        output_identity = _array_tuple_sha256((baseline_output,))
+        baseline_output_identity = _array_tuple_sha256((baseline_output,))
+        candidate_output_identity = _array_tuple_sha256((candidate_output,))
         if (
             baseline_by_name[scenario.name].input_sha256 != input_identity
             or candidate_by_name[scenario.name].input_sha256 != input_identity
-            or baseline_by_name[scenario.name].output_sha256 != output_identity
-            or candidate_by_name[scenario.name].output_sha256 != output_identity
+            or baseline_by_name[scenario.name].output_sha256
+            != baseline_output_identity
+            or candidate_by_name[scenario.name].output_sha256
+            != candidate_output_identity
         ):
             raise ValueError(f"SEQAX_SURFACE_ARRAY_IDENTITY_MISMATCH scenario={scenario.name}")
     if (

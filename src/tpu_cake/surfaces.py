@@ -3,12 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.contracts import WorkloadStage
+
+
+class OutputEquivalencePolicy(StrEnum):
+    EXACT_IDENTITY = "exact_identity"
+    INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE = (
+        "independent_oracle_and_cross_mode_tolerance"
+    )
 
 
 class AttentionScenario(BaseModel):
@@ -55,6 +63,7 @@ class AttentionWorkloadSurface(BaseModel):
     minimum_practical_improvement: Decimal = Field(gt=0, lt=1)
     maximum_scenario_regression: Decimal = Field(default=Decimal("0.01"), ge=0, lt=1)
     bootstrap_samples: int = Field(default=10_000, ge=1_000)
+    output_equivalence: OutputEquivalencePolicy = OutputEquivalencePolicy.EXACT_IDENTITY
 
     @model_validator(mode="after")
     def scenario_names_are_unique(self) -> AttentionWorkloadSurface:
@@ -119,6 +128,7 @@ class SeqaxForwardWorkloadSurface(BaseModel):
     minimum_practical_improvement: Decimal = Field(gt=0, lt=1)
     maximum_scenario_regression: Decimal = Field(default=Decimal("0.01"), ge=0, lt=1)
     bootstrap_samples: int = Field(default=10_000, ge=1_000)
+    output_equivalence: OutputEquivalencePolicy = OutputEquivalencePolicy.EXACT_IDENTITY
 
     @model_validator(mode="after")
     def scenario_names_are_unique(self) -> SeqaxForwardWorkloadSurface:
@@ -215,10 +225,17 @@ def compare_surface_candidates(
     if len(round_counts) != 1:
         raise ValueError("surface observations need the same number of independent rounds")
     if any(
-        not baseline_by_name[name].passed
-        or not candidate_by_name[name].passed
-        or baseline_by_name[name].output_sha256 != candidate_by_name[name].output_sha256
+        not baseline_by_name[name].passed or not candidate_by_name[name].passed
         for name in expected_names
+    ):
+        raise ValueError("surface candidates must pass their numerical contracts")
+    if (
+        surface.output_equivalence is OutputEquivalencePolicy.EXACT_IDENTITY
+        and any(
+            baseline_by_name[name].output_sha256
+            != candidate_by_name[name].output_sha256
+            for name in expected_names
+        )
     ):
         raise ValueError("surface candidates need matched correct outputs")
     if any(

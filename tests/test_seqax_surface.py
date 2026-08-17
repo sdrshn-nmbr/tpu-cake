@@ -647,3 +647,99 @@ def test_seqax_surface_tolerance_still_rejects_swapped_mlp_weights() -> None:
     )
 
     assert not np.allclose(wrong, expected, atol=0.016, rtol=0.05)
+
+
+def test_seqax_surface_accepts_valid_cross_mode_rounding(tmp_path, monkeypatch) -> None:
+    receipt = _receipt(tmp_path, monkeypatch)
+    output_path = tmp_path / "outputs/tiny/candidate.npy"
+    output = np.load(output_path, allow_pickle=False)
+    rounded = (output + np.float32(0.001)).astype(output.dtype)
+    np.save(output_path, rounded, allow_pickle=False)
+    candidate_path = tmp_path / "candidate.json"
+    candidate = json.loads(candidate_path.read_text())
+    candidate["scenarios"][0]["output_sha256"] = _array_tuple_sha256((rounded,))
+    candidate_path.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n")
+    receipt = _replace_artifact(
+        receipt,
+        tmp_path,
+        "outputs/tiny/candidate.npy",
+    )
+    receipt = _replace_artifact(receipt, tmp_path, "candidate.json")
+
+    validate_seqax_surface_receipt(receipt, root=tmp_path)
+
+
+def test_seqax_surface_rejects_cross_mode_error_outside_contract(
+    tmp_path, monkeypatch
+) -> None:
+    receipt = _receipt(tmp_path, monkeypatch)
+    output_path = tmp_path / "outputs/tiny/candidate.npy"
+    output = np.load(output_path, allow_pickle=False)
+    wrong = (output + np.float32(1)).astype(output.dtype)
+    np.save(output_path, wrong, allow_pickle=False)
+    candidate_path = tmp_path / "candidate.json"
+    candidate = json.loads(candidate_path.read_text())
+    candidate["scenarios"][0]["output_sha256"] = _array_tuple_sha256((wrong,))
+    candidate_path.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n")
+    receipt = _replace_artifact(
+        receipt,
+        tmp_path,
+        "outputs/tiny/candidate.npy",
+    )
+    receipt = _replace_artifact(receipt, tmp_path, "candidate.json")
+
+    with pytest.raises(ValueError, match="OUTPUT_ORACLE_MISMATCH"):
+        validate_seqax_surface_receipt(receipt, root=tmp_path)
+
+
+def test_seqax_surface_rejects_candidate_output_hash_mismatch(
+    tmp_path, monkeypatch
+) -> None:
+    receipt = _receipt(tmp_path, monkeypatch)
+    candidate_path = tmp_path / "candidate.json"
+    candidate = json.loads(candidate_path.read_text())
+    candidate["scenarios"][0]["output_sha256"] = "f" * 64
+    candidate_path.write_text(json.dumps(candidate, indent=2, sort_keys=True) + "\n")
+    receipt = _replace_artifact(receipt, tmp_path, "candidate.json")
+
+    with pytest.raises(ValueError, match="ARRAY_IDENTITY_MISMATCH"):
+        validate_seqax_surface_receipt(receipt, root=tmp_path)
+
+
+def test_seqax_surface_rejects_cross_mode_divergence_within_oracle_bands(
+    tmp_path, monkeypatch
+) -> None:
+    receipt = _receipt(tmp_path, monkeypatch)
+    baseline_path = tmp_path / "outputs/tiny/baseline.npy"
+    candidate_path = tmp_path / "outputs/tiny/candidate.npy"
+    oracle = np.load(tmp_path / "oracle/tiny.npy", allow_pickle=False)
+    baseline = (oracle - np.float32(0.015)).astype(oracle.dtype)
+    candidate = (oracle + np.float32(0.015)).astype(oracle.dtype)
+    np.save(baseline_path, baseline, allow_pickle=False)
+    np.save(candidate_path, candidate, allow_pickle=False)
+    baseline_json_path = tmp_path / "baseline.json"
+    candidate_json_path = tmp_path / "candidate.json"
+    baseline_json = json.loads(baseline_json_path.read_text())
+    candidate_json = json.loads(candidate_json_path.read_text())
+    baseline_json["scenarios"][0]["output_sha256"] = _array_tuple_sha256(
+        (baseline,)
+    )
+    candidate_json["scenarios"][0]["output_sha256"] = _array_tuple_sha256(
+        (candidate,)
+    )
+    baseline_json_path.write_text(
+        json.dumps(baseline_json, indent=2, sort_keys=True) + "\n"
+    )
+    candidate_json_path.write_text(
+        json.dumps(candidate_json, indent=2, sort_keys=True) + "\n"
+    )
+    for path in (
+        "outputs/tiny/baseline.npy",
+        "outputs/tiny/candidate.npy",
+        "baseline.json",
+        "candidate.json",
+    ):
+        receipt = _replace_artifact(receipt, tmp_path, path)
+
+    with pytest.raises(ValueError, match="CROSS_MODE_MISMATCH"):
+        validate_seqax_surface_receipt(receipt, root=tmp_path)

@@ -5,6 +5,7 @@ import pytest
 from tpu_cake.surfaces import (
     AttentionScenario,
     AttentionWorkloadSurface,
+    OutputEquivalencePolicy,
     ScenarioObservation,
     SeqaxForwardScenario,
     SeqaxForwardWorkloadSurface,
@@ -219,7 +220,7 @@ def test_surface_promotion_uses_matched_rounds_and_rejects_regressions() -> None
     assert rejected.scenario_improvements["prefill-tail"] < 0
 
 
-def test_surface_comparison_requires_matched_correct_outputs() -> None:
+def test_surface_comparison_requires_each_candidate_to_pass() -> None:
     baseline = _candidate("baseline", (100,) * 5, (200,) * 5)
     raw_candidate = _candidate("candidate", (90,) * 5, (180,) * 5)
     candidate = raw_candidate.model_copy(
@@ -233,14 +234,42 @@ def test_surface_comparison_requires_matched_correct_outputs() -> None:
     corrupted = candidate.model_copy(
         update={
             "scenarios": (
-                candidate.scenarios[0].model_copy(update={"output_sha256": "c" * 64}),
+                candidate.scenarios[0].model_copy(update={"passed": False}),
                 candidate.scenarios[1],
             )
         }
     )
 
-    with pytest.raises(ValueError, match="matched correct outputs"):
+    with pytest.raises(ValueError, match="must pass their numerical contracts"):
         compare_surface_candidates(_surface(), baseline, corrupted)
+
+
+def test_surface_comparison_allows_numerically_valid_cross_mode_rounding() -> None:
+    baseline = _candidate("baseline", (100,) * 5, (200,) * 5)
+    raw_candidate = _candidate("candidate", (90,) * 5, (180,) * 5)
+    candidate = raw_candidate.model_copy(
+        update={
+            "scenarios": tuple(
+                value.model_copy(
+                    update={
+                        "ran_first": (False, True, False, True, False),
+                        "output_sha256": "c" * 64,
+                    }
+                )
+                for value in raw_candidate.scenarios
+            )
+        }
+    )
+
+    tolerant_surface = _surface().model_copy(
+        update={
+            "output_equivalence": (
+                OutputEquivalencePolicy.INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE
+            )
+        }
+    )
+
+    assert compare_surface_candidates(tolerant_surface, baseline, candidate).promotable
 
 
 def test_surface_comparison_rejects_unmatched_benchmark_context() -> None:
