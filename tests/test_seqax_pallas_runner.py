@@ -79,9 +79,7 @@ def test_seqax_pallas_experiment_binds_physical_execution() -> None:
     plan = _plan()
     experiment = seqax_physical_pallas_experiment(plan)
 
-    assert tuple(value.name for value in experiment.workload.inputs) == (
-        SEQAX_FORWARD_INPUT_NAMES
-    )
+    assert tuple(value.name for value in experiment.workload.inputs) == (SEQAX_FORWARD_INPUT_NAMES)
     assert experiment.schedule_sha256 == plan.physical_schedule_sha256
     assert experiment.workload.execution is not None
     assert experiment.workload.execution.scope == plan.execution_scope
@@ -122,30 +120,89 @@ def test_seqax_pallas_runner_is_available_through_the_cli() -> None:
 
 
 def test_seqax_pallas_compiled_program_requires_exact_regions_and_collectives() -> None:
-    stablehlo = "\n".join("seqax_named_einsum" for _ in range(17))
+    stablehlo = "\n".join(
+        (
+            "module @jit_physical_call {",
+            "  func.func public @main() {",
+            *(
+                f"    %{index} = stablehlo.custom_call @tpu_custom_call() "
+                '{kernel_name = "seqax_named_einsum"} : () -> tensor<f32>'
+                for index in range(17)
+            ),
+            "  }",
+            "}",
+        )
+    )
     compiler_hlo = "\n".join(
         (
-            *(f'pallas_call.{index} custom_call_target="tpu_custom_call"' for index in range(17)),
-            "all-gather",
-            "reduce-scatter",
+            "HloModule jit_physical_call",
+            "ENTRY main.1 {",
+            *(
+                f'pallas_call.{index} = f32[] custom-call(), custom_call_target="tpu_custom_call"'
+                for index in range(17)
+            ),
+            "all_gather.0 = f32[] all-gather(pallas_call.0)",
+            "ROOT reduce_scatter.0 = f32[] reduce-scatter(all_gather.0)",
+            "}",
         )
     )
 
-    _validate_compiled_program(stablehlo, compiler_hlo, pallas_region_count=17)
+    _validate_compiled_program(
+        stablehlo,
+        compiler_hlo,
+        pallas_region_count=17,
+        all_gather_count=1,
+        reduce_scatter_count=1,
+    )
 
     with pytest.raises(ValueError, match="COMPILED_REGION_COUNT_MISMATCH"):
         _validate_compiled_program(
             stablehlo,
             compiler_hlo.replace(
-                'pallas_call.0 custom_call_target="tpu_custom_call"',
-                "pallas_call.0",
+                'pallas_call.0 = f32[] custom-call(), custom_call_target="tpu_custom_call"',
+                "pallas_call.0 = f32[] add()",
             ),
             pallas_region_count=17,
+            all_gather_count=1,
+            reduce_scatter_count=1,
         )
 
-    with pytest.raises(ValueError, match="COMPILER_HLO_MISSING"):
+    with pytest.raises(ValueError, match="COLLECTIVE_COUNT_MISMATCH"):
         _validate_compiled_program(
             stablehlo,
             compiler_hlo.replace("reduce-scatter", "reduce_scatter"),
             pallas_region_count=17,
+            all_gather_count=1,
+            reduce_scatter_count=1,
+        )
+
+
+def test_seqax_pallas_compiled_program_rejects_marker_decoys() -> None:
+    stablehlo = "\n".join(
+        (
+            "module @fake {",
+            "func.func public @main() {",
+            *("not hlo seqax_named_einsum" for _ in range(17)),
+            "}",
+            "}",
+        )
+    )
+    compiler_hlo = "\n".join(
+        (
+            "HloModule fake",
+            "ENTRY main {",
+            *(f'not hlo custom_call_target="tpu_custom_call" {index}' for index in range(17)),
+            "not hlo all-gather",
+            "not hlo reduce-scatter",
+            "}",
+        )
+    )
+
+    with pytest.raises(ValueError, match="COMPILED_REGION_COUNT_MISMATCH"):
+        _validate_compiled_program(
+            stablehlo,
+            compiler_hlo,
+            pallas_region_count=17,
+            all_gather_count=1,
+            reduce_scatter_count=1,
         )

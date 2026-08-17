@@ -33,6 +33,10 @@ from tpu_cake.seqax_bundle import (
     build_seqax_forward_receipt,
     validate_seqax_forward_receipt,
 )
+from tpu_cake.seqax_pallas_bundle import (
+    build_seqax_pallas_receipt,
+    validate_seqax_pallas_receipt,
+)
 from tpu_cake.seqax_pallas_runner import run_seqax_physical_pallas
 from tpu_cake.seqax_runner import run_seqax_forward
 from tpu_cake.seqax_surface import (
@@ -124,6 +128,12 @@ def _parser() -> argparse.ArgumentParser:
         choices=tuple(RunMode),
         default=RunMode.TIMING,
     )
+
+    finalize_seqax_pallas = commands.add_parser("finalize-seqax-physical-pallas")
+    finalize_seqax_pallas.add_argument("run_root", type=Path)
+
+    verify_seqax_pallas = commands.add_parser("verify-seqax-physical-pallas")
+    verify_seqax_pallas.add_argument("run_root", type=Path)
 
     finalize_seqax = commands.add_parser("finalize-seqax-forward")
     finalize_seqax.add_argument("run_root", type=Path)
@@ -331,6 +341,20 @@ def main() -> None:
         )
         print(result.model_dump_json(indent=2))
         code = 0 if result.correctness_passed else 1
+    elif args.command == "finalize-seqax-physical-pallas":
+        receipt = build_seqax_pallas_receipt(args.run_root)
+        print(receipt.model_dump_json(indent=2))
+        code = 0 if receipt.status.value == "passed" else 1
+    elif args.command == "verify-seqax-physical-pallas":
+        root = args.run_root.resolve()
+        receipt = RunReceipt.model_validate_json((root / "receipt.json").read_text())
+        validate_seqax_pallas_receipt(receipt, root=root)
+        print(
+            "SEQAX_PHYSICAL_PALLAS_ACCEPTED "
+            f"status={receipt.status.value} artifacts={len(receipt.artifacts)} "
+            f"metrics={len(receipt.metrics)}"
+        )
+        code = 0
     elif args.command == "finalize-seqax-forward":
         receipt = build_seqax_forward_receipt(args.run_root)
         print(receipt.model_dump_json(indent=2))

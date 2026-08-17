@@ -42,6 +42,7 @@ class EvidenceProfile(StrEnum):
     DISTRIBUTED_MATMUL = "distributed_matmul_v1"
     OPAQUE_RPA_ADAPTER = "opaque_rpa_adapter_v1"
     SEQAX_DISTRIBUTED_FORWARD = "seqax_distributed_forward_v1"
+    SEQAX_PHYSICAL_PALLAS_FORWARD = "seqax_physical_pallas_forward_v1"
 
 
 class ArtifactRole(StrEnum):
@@ -59,6 +60,7 @@ class ArtifactRole(StrEnum):
     TIMING_SAMPLES = "timing_samples"
     TIMING_TRACE = "timing_trace"
     COUNTER_TRACE = "counter_trace"
+    PROFILE_AUXILIARY = "profile_auxiliary"
     PROFILE_ASSESSMENT = "profile_assessment"
     COST_MODEL_INPUT = "cost_model_input"
     COST_MODEL = "cost_model"
@@ -415,10 +417,62 @@ SEQAX_PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
     EvidencePhaseName.AGGREGATE: frozenset({ArtifactRole.PROFILE_ASSESSMENT}),
 }
 
+SEQAX_PALLAS_PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
+    EvidencePhaseName.TIMING: frozenset(
+        {
+            ArtifactRole.EXPERIMENT,
+            ArtifactRole.DISTRIBUTED_IR,
+            ArtifactRole.PHYSICAL_IR,
+            ArtifactRole.PALLAS_SOURCE,
+            ArtifactRole.PLAN_MANIFEST,
+            ArtifactRole.STABLEHLO,
+            ArtifactRole.COMPILER_HLO,
+            ArtifactRole.CORRECTNESS_INPUT,
+            ArtifactRole.CORRECTNESS_OUTPUT,
+            ArtifactRole.ORACLE_OUTPUT,
+            ArtifactRole.TIMING_SAMPLES,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.TRACE: frozenset(
+        {
+            ArtifactRole.TRACE_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.TIMING_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.COUNTERS: frozenset(
+        {
+            ArtifactRole.COUNTER_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.COUNTER_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.FINALIZER: frozenset(
+        {ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}
+    ),
+    EvidencePhaseName.AGGREGATE: frozenset({ArtifactRole.PROFILE_ASSESSMENT}),
+}
+
 PHASE_REQUIRED_ROLES_BY_PROFILE = {
     EvidenceProfile.DISTRIBUTED_MATMUL: PHASE_REQUIRED_ROLES,
     EvidenceProfile.OPAQUE_RPA_ADAPTER: RPA_PHASE_REQUIRED_ROLES,
     EvidenceProfile.SEQAX_DISTRIBUTED_FORWARD: SEQAX_PHASE_REQUIRED_ROLES,
+    EvidenceProfile.SEQAX_PHYSICAL_PALLAS_FORWARD: SEQAX_PALLAS_PHASE_REQUIRED_ROLES,
 }
 
 

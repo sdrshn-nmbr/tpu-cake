@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import statistics
 import subprocess
 import time
@@ -30,6 +31,7 @@ from tpu_cake.contracts import (
     WorkloadStage,
     experiment_artifact_json,
 )
+from tpu_cake.dialects.tpu_schedule import CollectiveKind, CollectiveOp
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, array_sha256, semantic_sha256
 from tpu_cake.ledger import RunState
 from tpu_cake.runner import (
@@ -248,11 +250,32 @@ def _validate_compiled_program(
     compiler_hlo: str,
     *,
     pallas_region_count: int,
+    all_gather_count: int,
+    reduce_scatter_count: int,
 ) -> None:
-    stable_regions = stablehlo.count("seqax_named_einsum")
-    compiler_regions = sum(
-        'custom_call_target="tpu_custom_call"' in line
-        for line in compiler_hlo.splitlines()
+    if re.search(r"(?m)^\s*module\s+@[A-Za-z0-9_.$-]+\b[^\n]*\{\s*$", stablehlo) is None:
+        raise ValueError("SEQAX_PALLAS_STABLEHLO_MODULE_MISSING")
+    if re.search(r"(?m)^\s*func\.func\s+public\s+@main\(", stablehlo) is None:
+        raise ValueError("SEQAX_PALLAS_STABLEHLO_MAIN_MISSING")
+    stable_regions = len(
+        re.findall(
+            r"(?m)^\s*%[A-Za-z0-9_.$-]+\s*=\s*stablehlo\.custom_call\s+"
+            r"@tpu_custom_call\([^\n]*\)\s*\{[^\n]*"
+            r'kernel_name\s*=\s*"seqax_named_einsum"',
+            stablehlo,
+        )
+    )
+    if re.search(r"(?m)^HloModule\s+\S+", compiler_hlo) is None:
+        raise ValueError("SEQAX_PALLAS_COMPILER_HLO_MODULE_MISSING")
+    if re.search(r"(?m)^\s*ENTRY\s+[A-Za-z0-9_.$-]+\s*\{", compiler_hlo) is None:
+        raise ValueError("SEQAX_PALLAS_COMPILER_HLO_ENTRY_MISSING")
+    compiler_regions = len(
+        re.findall(
+            r"(?m)^\s*(?:ROOT\s+)?[A-Za-z0-9_.$-]+\s*=\s*"
+            r"[^=\n]+?\s+custom-call\([^\n]*\),"
+            r'[^\n]*\bcustom_call_target="tpu_custom_call"',
+            compiler_hlo,
+        )
     )
     if stable_regions != pallas_region_count or compiler_regions != pallas_region_count:
         raise ValueError(
@@ -260,9 +283,33 @@ def _validate_compiled_program(
             f"expected={pallas_region_count} stablehlo={stable_regions} "
             f"compiler_hlo={compiler_regions}"
         )
-    for marker in ("all-gather", "reduce-scatter"):
-        if marker not in compiler_hlo:
-            raise ValueError(f"SEQAX_PALLAS_COMPILER_HLO_MISSING marker={marker}")
+    expected_collectives = {
+        "all-gather": all_gather_count,
+        "reduce-scatter": reduce_scatter_count,
+    }
+    for opcode, expected_count in expected_collectives.items():
+        observed_count = len(
+            re.findall(
+                rf"(?m)^\s*(?:ROOT\s+)?[A-Za-z0-9_.$-]+\s*=\s*"
+                rf"[^=\n]+?\s+{opcode}\(",
+                compiler_hlo,
+            )
+        )
+        if observed_count != expected_count:
+            raise ValueError(
+                f"SEQAX_PALLAS_COMPILER_HLO_COLLECTIVE_COUNT_MISMATCH "
+                f"opcode={opcode} expected={expected_count} observed={observed_count}"
+            )
+
+
+def _physical_collective_counts(physical: Any) -> tuple[int, int]:
+    kinds = tuple(
+        operation.kind.data for operation in physical.walk() if isinstance(operation, CollectiveOp)
+    )
+    return (
+        kinds.count(CollectiveKind.ALL_GATHER),
+        kinds.count(CollectiveKind.REDUCE_SCATTER),
+    )
 
 
 def _require_clean_repository(repo_root: Path) -> None:
@@ -410,9 +457,7 @@ def run_seqax_physical_pallas(
             **SEQAX_EVIDENCE_PARAMETERS,
         )
     )
-    oracle = np.asarray(
-        seqax_forward_canonical_reference(host_inputs, **SEQAX_EVIDENCE_PARAMETERS)
-    )
+    oracle = np.asarray(seqax_forward_canonical_reference(host_inputs, **SEQAX_EVIDENCE_PARAMETERS))
     namespace: dict[str, Any] = {}
     exec(compile(source, "<seqax-physical-pallas>", "exec"), namespace)  # noqa: S102
     replayed_plan = namespace["PLAN"]
@@ -434,6 +479,8 @@ def run_seqax_physical_pallas(
         stablehlo,
         compiler_hlo,
         pallas_region_count=plan.pallas_region_count,
+        all_gather_count=_physical_collective_counts(physical)[0],
+        reduce_scatter_count=_physical_collective_counts(physical)[1],
     )
     compiled = lowered.compile()
     compile_duration_ns = time.perf_counter_ns() - compile_started
@@ -563,22 +610,46 @@ def run_seqax_physical_pallas(
             coefficient_of_variation=coefficient,
         )
     else:
-        xplanes = sorted((output_dir / "profile").rglob("*.xplane.pb"))
+        profile_files = tuple(
+            sorted(path for path in (output_dir / "profile").rglob("*") if path.is_file())
+        )
+        xplanes = tuple(path for path in profile_files if path.name.endswith(".xplane.pb"))
         if len(xplanes) != 1:
             raise ValueError(f"SEQAX_PALLAS_XPLANE_COUNT_MISMATCH observed={xplanes}")
-        artifacts.append(
-            _artifact(
-                output_dir,
-                xplanes[0],
-                ArtifactRole.TIMING_TRACE
-                if mode is RunMode.TRACE
-                else ArtifactRole.COUNTER_TRACE,
+        for path in profile_files:
+            role = ArtifactRole.PROFILE_AUXILIARY
+            if path == xplanes[0]:
+                role = (
+                    ArtifactRole.TIMING_TRACE
+                    if mode is RunMode.TRACE
+                    else ArtifactRole.COUNTER_TRACE
+                )
+            artifacts.append(
+                _artifact(
+                    output_dir,
+                    path,
+                    role,
+                )
             )
-        )
         terminal_payload.update(
             profile_root="profile",
             xplane_sha256=_sha256(xplanes[0]),
             xplane_size_bytes=xplanes[0].stat().st_size,
+            profile_auxiliary_artifacts=tuple(
+                {
+                    "path": artifact.path,
+                    "size_bytes": artifact.size_bytes,
+                    "sha256": artifact.sha256,
+                }
+                for artifact in sorted(
+                    (
+                        artifact
+                        for artifact in artifacts
+                        if artifact.role is ArtifactRole.PROFILE_AUXILIARY
+                    ),
+                    key=lambda artifact: artifact.path,
+                )
+            ),
         )
     _record_event(ledger_path, run_id, terminal, terminal_payload)
     ledger_artifact = _artifact(output_dir, ledger_path, ArtifactRole.EXECUTION_LEDGER)
