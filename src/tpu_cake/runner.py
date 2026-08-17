@@ -80,7 +80,7 @@ def _write_text(path: Path, value: str, role: ArtifactRole) -> ArtifactReference
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value)
     return ArtifactReference(
-        path=str(path), size_bytes=path.stat().st_size, sha256=_sha256(path), role=role
+        path=path.name, size_bytes=path.stat().st_size, sha256=_sha256(path), role=role
     )
 
 
@@ -503,7 +503,10 @@ def run_distributed_matmul(
         path = output_dir / name
         artifacts.append(
             ArtifactReference(
-                path=str(path), size_bytes=path.stat().st_size, sha256=_sha256(path), role=role
+                path=path.name,
+                size_bytes=path.stat().st_size,
+                sha256=_sha256(path),
+                role=role,
             )
         )
     median_ns = int(statistics.median(samples)) if samples else None
@@ -539,7 +542,7 @@ def run_distributed_matmul(
     _record_event(ledger_path, run_id, terminal_state, terminal_payload)
     artifacts.append(
         ArtifactReference(
-            path=str(ledger_path),
+            path=ledger_path.name,
             size_bytes=ledger_path.stat().st_size,
             sha256=_sha256(ledger_path),
             role=ArtifactRole.EXECUTION_LEDGER,
@@ -567,16 +570,7 @@ def run_distributed_matmul(
         p90_ns=p90_ns,
         coefficient_of_variation=coefficient,
         runtime=_runtime_identity(),
-        artifacts=tuple(
-            artifact.model_copy(
-                update={
-                    "path": str(
-                        Path(artifact.path).resolve().relative_to(output_dir.resolve())
-                    )
-                }
-            )
-            for artifact in artifacts
-        ),
+        artifacts=tuple(artifacts),
     )
     _write_text(
         output_dir / "result.json",

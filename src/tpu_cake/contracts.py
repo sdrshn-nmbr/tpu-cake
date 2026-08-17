@@ -3,8 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
+from pathlib import PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from tpu_cake.metrics import Metric
 
@@ -180,6 +188,20 @@ class ArtifactReference(BaseModel):
     size_bytes: int = Field(ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     role: ArtifactRole
+
+    @field_validator("path")
+    @classmethod
+    def path_stays_inside_bundle(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if (
+            "\\" in value
+            or path.is_absolute()
+            or ".." in path.parts
+            or value != path.as_posix()
+            or path.as_posix() == "."
+        ):
+            raise ValueError("artifact path must be a canonical bundle-relative POSIX path")
+        return value
 
 
 PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {

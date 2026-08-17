@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from tpu_cake.contracts import (
     PHASE_REQUIRED_ROLES,
     ArtifactReference,
+    ArtifactRole,
     CorrectnessResult,
     EvidencePhase,
     KernelExperiment,
@@ -101,6 +102,17 @@ def test_run_receipt_is_immutable() -> None:
     )
     with pytest.raises(ValidationError):
         receipt.status = "failed"
+
+
+@pytest.mark.parametrize("path", ("../outside", "/tmp/outside", "a/../outside", "a\\b"))
+def test_artifact_paths_cannot_escape_the_bundle(path: str) -> None:
+    with pytest.raises(ValidationError, match="bundle-relative"):
+        ArtifactReference(
+            path=path,
+            size_bytes=1,
+            sha256="0" * 64,
+            role=ArtifactRole.EXPERIMENT,
+        )
 
 
 def test_passed_receipt_requires_all_semantic_properties() -> None:
