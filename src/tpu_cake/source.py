@@ -27,6 +27,10 @@ def attach_source(operation: Operation, source: SourceLocation | None) -> Operat
     return operation
 
 
+class SourceAwareVerifyException(VerifyException):
+    pass
+
+
 def _source_location(operation: Operation) -> str | None:
     location = str(operation.location)
     if location != "loc(unknown)":
@@ -54,11 +58,28 @@ def _source_context(operation: Operation) -> tuple[str, ...]:
     return tuple(entries)
 
 
+def source_aware_error(message: str, *operations: Operation) -> VerifyException:
+    entries: list[str] = []
+    for operation in operations:
+        location = str(operation.location)
+        if location != "loc(unknown)":
+            entries.append(f"{operation.name} at {location}")
+    if not entries:
+        return SourceAwareVerifyException(message)
+    return SourceAwareVerifyException(
+        f"{message}: relevant source sites: {'; '.join(dict.fromkeys(entries))}"
+    )
+
+
 def _raise_with_sources(operation: Operation, error: VerifyException) -> None:
+    if isinstance(error, SourceAwareVerifyException):
+        raise error
     context = _source_context(operation)
     if not context:
         raise error
-    raise VerifyException(f"{error}: source context: {'; '.join(context)}") from error
+    raise VerifyException(
+        f"{error}: available source context: {'; '.join(context)}"
+    ) from error
 
 
 def verify_with_sources(module: ModuleOp) -> None:

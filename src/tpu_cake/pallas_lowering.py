@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -10,13 +12,16 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 from jax.sharding import Mesh, PartitionSpec
-from xdsl.dialects.builtin import BFloat16Type, Float32Type, ModuleOp
+from xdsl.context import Context
+from xdsl.dialects.builtin import BFloat16Type, Builtin, Float32Type, ModuleOp
+from xdsl.parser import Parser
 
 from tpu_cake.dialects.tpu_schedule import (
     BufferType,
     CollectiveReduceScatterOp,
     KernelOp,
     MxuMatmulOp,
+    TPUSchedule,
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
@@ -273,3 +278,62 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
         tile_k=matmul.tile_k.data,
         tile_n=matmul.tile_n.data,
     )
+
+
+def validate_saved_pallas_plan(
+    physical_path: Path,
+    pallas_path: Path,
+    *,
+    schedule_sha256: str,
+    pallas_source_sha256: str,
+) -> PallasMatmulPlan:
+    if hashlib.sha256(physical_path.read_bytes()).hexdigest() != schedule_sha256:
+        raise ValueError("SAVED_PHYSICAL_IR_HASH_MISMATCH")
+    if hashlib.sha256(pallas_path.read_bytes()).hexdigest() != pallas_source_sha256:
+        raise ValueError("SAVED_PALLAS_SOURCE_HASH_MISMATCH")
+    context = Context()
+    context.load_dialect(Builtin)
+    context.load_dialect(TPUSchedule)
+    try:
+        module = Parser(
+            context, physical_path.read_text(), name=str(physical_path)
+        ).parse_module()
+        plan = replace(
+            lower_physical_matmul_to_pallas(module),
+            schedule_sha256=schedule_sha256,
+        )
+    except Exception as error:
+        raise ValueError("SAVED_PHYSICAL_IR_INVALID") from error
+    try:
+        tree = ast.parse(pallas_path.read_text(), filename=str(pallas_path))
+    except SyntaxError as error:
+        raise ValueError("SAVED_PALLAS_SOURCE_INVALID") from error
+    constants: dict[str, object] = {}
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        try:
+            constants[target.id] = ast.literal_eval(statement.value)
+        except (ValueError, TypeError):
+            continue
+    expected = {
+        "SCHEDULE_SHA256": schedule_sha256,
+        "MESH_AXIS": plan.mesh_axis,
+        "MESH_SIZE": plan.mesh_size,
+        "LHS_LOCAL_SHAPE": plan.lhs_local_shape,
+        "RHS_LOCAL_SHAPE": plan.rhs_local_shape,
+        "PARTIAL_LOCAL_SHAPE": plan.partial_local_shape,
+        "OUTPUT_SHARDING": plan.output_sharding,
+        "LHS_SHARDING": plan.lhs_sharding,
+        "RHS_SHARDING": plan.rhs_sharding,
+        "SCATTER_DIMENSION": plan.scatter_dimension,
+        "TILE_M": plan.tile_m,
+        "TILE_K": plan.tile_k,
+        "TILE_N": plan.tile_n,
+    }
+    if any(constants.get(name) != value for name, value in expected.items()):
+        raise ValueError("SAVED_PALLAS_SOURCE_PLAN_MISMATCH")
+    return plan

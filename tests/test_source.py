@@ -26,6 +26,7 @@ def test_cross_operation_failure_reports_all_relevant_source_sites() -> None:
     destination = builder.alloc(
         buffer((8, 8), "X Y", bf16, memory=MemorySpace.VMEM, lifetime=(0, 1)),
         "destination",
+        source=SourceLocation("factory.py", 5, 3),
     )
     first = builder.dma_start(
         builder.inputs[0],
@@ -50,3 +51,4 @@ def test_cross_operation_failure_reports_all_relevant_source_sites() -> None:
     assert "concurrent DMA writes" in message
     assert 'loc("factory.py":10:3)' in message
     assert 'loc("factory.py":20:3)' in message
+    assert 'loc("factory.py":5:3)' not in message

@@ -28,6 +28,7 @@ from xdsl.irdl import (
     irdl_attr_definition,
     irdl_op_definition,
     operand_def,
+    opt_prop_def,
     prop_def,
     region_def,
     result_def,
@@ -35,6 +36,8 @@ from xdsl.irdl import (
 )
 from xdsl.traits import IsolatedFromAbove, IsTerminator
 from xdsl.utils.exceptions import VerifyException
+
+from tpu_cake.source import source_aware_error
 
 
 class MemorySpace(StrEnum):
@@ -364,9 +367,21 @@ class ViewOp(IRDLOperation):
 class SemaphoreAllocOp(IRDLOperation):
     name = "tpu_schedule.semaphore_alloc"
     semaphore = result_def(SemaphoreType)
+    slots = opt_prop_def(IntAttr)
 
-    def __init__(self):
-        super().__init__(result_types=[SemaphoreType()])
+    def __init__(self, slots: int = 1):
+        super().__init__(
+            result_types=[SemaphoreType()],
+            properties={"slots": IntAttr(slots)},
+        )
+
+    def verify_(self) -> None:
+        if self.slot_count <= 0:
+            raise VerifyException("semaphore slot count must be positive")
+
+    @property
+    def slot_count(self) -> int:
+        return 1 if self.slots is None else self.slots.data
 
 
 @irdl_op_definition
@@ -837,12 +852,17 @@ class KernelOp(IRDLOperation):
             if isinstance(operation, DmaStartOp):
                 require_initialized(operation.source, operation)
                 destination_root, destination_region = root_region(operation.destination)
-                for other_root, other_region in pending_dma_destinations.values():
+                for semaphore_owner, (
+                    other_root,
+                    other_region,
+                ) in pending_dma_destinations.items():
                     if destination_root == other_root and _regions_overlap(
                         destination_region, other_region
                     ):
-                        raise VerifyException(
-                            "concurrent DMA writes target overlapping buffer regions"
+                        raise source_aware_error(
+                            "concurrent DMA writes target overlapping buffer regions",
+                            in_flight[semaphore_owner],
+                            operation,
                         )
                 semaphore_owner = operation.semaphore.owner
                 if semaphore_owner in in_flight:

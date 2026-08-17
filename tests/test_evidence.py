@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 from tpu_cake.contracts import ProfileExpectation
@@ -8,11 +9,29 @@ from tpu_cake.evidence import (
     PlaneEvidence,
     ProgramEvidence,
 )
+from tpu_cake.metrics import MetricSource
+from tpu_cake.receipt_metrics import _relocate_metric_source
 from tpu_cake.xprof_evidence import _hlo_proto_paths, assess_evidence, capture_metrics
 
 
 def _artifact(path: str) -> ArtifactEvidence:
     return ArtifactEvidence(path=Path(path), size_bytes=1, sha256="0" * 64)
+
+
+def test_metric_source_relocation_uses_content_identity(tmp_path) -> None:
+    artifact = tmp_path / "timing" / "cost_model_input.json"
+    artifact.parent.mkdir()
+    artifact.write_text("evidence\n")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    source = MetricSource(
+        artifact_sha256=digest,
+        artifact_path="runs/old-host/timing/cost_model_input.json",
+        tool="tpu-cake",
+        field="cost",
+    )
+
+    relocated = _relocate_metric_source(tmp_path, source)
+    assert relocated.artifact_path == "timing/cost_model_input.json"
 
 
 def _capture(*, rpa_markers: int, forbidden_hits: int) -> CaptureEvidence:
@@ -150,7 +169,7 @@ def test_profile_contract_rejects_empty_physical_device_planes() -> None:
     }
 
 
-def test_counter_rates_are_fail_closed_when_the_contract_requires_them() -> None:
+def test_periodic_counter_series_are_fail_closed_when_requested() -> None:
     capture = _capture(rpa_markers=1, forbidden_hits=0)
     one_snapshot = capture.model_copy(
         update={
@@ -168,6 +187,6 @@ def test_counter_rates_are_fail_closed_when_the_contract_requires_them() -> None
     )
     assessment = assess_evidence(one_snapshot, expectation)
     assert not assessment.accepted
-    assert "COUNTER_RATES_NOT_DERIVABLE" in {
+    assert "PERIODIC_COUNTER_SERIES_NOT_DERIVABLE" in {
         finding.code for finding in assessment.findings
     }

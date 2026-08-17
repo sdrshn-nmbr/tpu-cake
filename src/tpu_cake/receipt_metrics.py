@@ -29,6 +29,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _relocate_metric_source(root: Path, source: MetricSource) -> MetricSource:
+    declared = Path(source.artifact_path)
+    direct = declared if declared.is_absolute() else root / declared
+    if direct.is_file() and _sha256(direct) == source.artifact_sha256:
+        path = direct.resolve().relative_to(root.resolve())
+        return source.model_copy(update={"artifact_path": str(path)})
+    matches = [
+        candidate
+        for candidate in root.rglob(declared.name)
+        if candidate.is_file() and _sha256(candidate) == source.artifact_sha256
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            "METRIC_SOURCE_CANNOT_BE_RELOCATED "
+            f"path={source.artifact_path} sha256={source.artifact_sha256}"
+        )
+    return source.model_copy(
+        update={"artifact_path": str(matches[0].resolve().relative_to(root.resolve()))}
+    )
+
+
 def timing_metrics(root: Path, result: MatmulRunResult) -> tuple[Metric, ...]:
     if not result.samples_ns:
         raise ValueError("TIMING_RUN_HAS_NO_SAMPLES")
@@ -171,18 +192,6 @@ def build_receipt_metrics(
     )
     normalized: list[Metric] = []
     for metric in metrics:
-        sources = []
-        for source in metric.sources:
-            path = Path(source.artifact_path)
-            if path.is_absolute() and path.is_relative_to(root):
-                path = path.relative_to(root)
-            elif path.is_absolute():
-                matches = [candidate for candidate in root.rglob(path.name) if candidate.is_file()]
-                if len(matches) != 1:
-                    raise ValueError(
-                        f"METRIC_SOURCE_CANNOT_BE_RELOCATED path={source.artifact_path}"
-                    )
-                path = matches[0].relative_to(root)
-            sources.append(source.model_copy(update={"artifact_path": str(path)}))
+        sources = [_relocate_metric_source(root, source) for source in metric.sources]
         normalized.append(metric.model_copy(update={"sources": tuple(sources)}))
     return tuple(normalized)

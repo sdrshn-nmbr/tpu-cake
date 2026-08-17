@@ -23,6 +23,7 @@ from tpu_cake.cost_model import (
 )
 from tpu_cake.identity import array_sha256, semantic_sha256
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.pallas_lowering import validate_saved_pallas_plan
 from tpu_cake.receipt_metrics import build_receipt_metrics
 from tpu_cake.runner import MatmulRunResult, RunMode, validate_profiler_contract
 from tpu_cake.search import (
@@ -167,6 +168,13 @@ def _validate_saved_matmul_phase(
     if _sha256(artifacts["lowered_pallas.py"]) != result.pallas_source_sha256:
         raise ValueError(f"PALLAS_SOURCE_IDENTITY_MISMATCH phase={phase}")
 
+    saved_plan = validate_saved_pallas_plan(
+        artifacts["physical.xdsl"],
+        artifacts["lowered_pallas.py"],
+        schedule_sha256=result.schedule_sha256,
+        pallas_source_sha256=result.pallas_source_sha256,
+    )
+
     invocation = json.loads(artifacts["invocation.json"].read_text())
     if invocation.get("mode") != result.mode.value:
         raise ValueError(f"RUN_INVOCATION_MODE_MISMATCH phase={phase}")
@@ -177,6 +185,14 @@ def _validate_saved_matmul_phase(
     }
     if any(invocation.get(name) != value for name, value in expected_fields.items()):
         raise ValueError(f"RUN_INVOCATION_RESULT_MISMATCH phase={phase}")
+    invocation_tile_m = invocation["tile_m"] or saved_plan.partial_local_shape[0]
+    invocation_tile_n = invocation["tile_n"] or saved_plan.partial_local_shape[1]
+    if (
+        saved_plan.mesh_size != invocation["mesh_size"]
+        or saved_plan.tile_m != invocation_tile_m
+        or saved_plan.tile_n != invocation_tile_n
+    ):
+        raise ValueError(f"RUN_INVOCATION_PLAN_MISMATCH phase={phase}")
     validate_profiler_contract(
         result.mode, json.loads(artifacts["profiler_config.json"].read_text())
     )
@@ -376,7 +392,12 @@ def _validate_cost_model(root: Path, receipt: RunReceipt) -> CostModelReport:
     return report
 
 
-def _validate_roofline(root: Path, receipt: RunReceipt, timing: MatmulRunResult) -> None:
+def _validate_roofline(
+    root: Path,
+    receipt: RunReceipt,
+    timing: MatmulRunResult,
+    cost_report: CostModelReport,
+) -> None:
     input_artifact = next(
         artifact for artifact in receipt.artifacts if artifact.role is ArtifactRole.ROOFLINE_INPUT
     )
@@ -389,6 +410,18 @@ def _validate_roofline(root: Path, receipt: RunReceipt, timing: MatmulRunResult)
     workload = model_input["workload"]
     operations = float(workload["operations"])
     total_bytes = float(workload["bytes_read"] + workload["bytes_written"])
+    if operations != cost_report.counts.operations_per_device or total_bytes != (
+        cost_report.counts.hbm_read_bytes_per_device
+        + cost_report.counts.hbm_write_bytes_per_device
+    ):
+        raise ValueError("ROOFLINE_WORKLOAD_DOES_NOT_MATCH_COST_MODEL")
+    if (
+        float(hardware["compute_peak_ops_s"])
+        != cost_report.hardware.compute_flops_per_second
+        or float(hardware["memory_bandwidth_bytes_s"])
+        != cost_report.hardware.hbm_bytes_per_second
+    ):
+        raise ValueError("ROOFLINE_HARDWARE_DOES_NOT_MATCH_COST_MODEL")
     compute_peak = float(hardware["compute_peak_ops_s"]) * float(
         hardware["effective_compute_fraction"]
     )
@@ -502,7 +535,7 @@ def _validate_distributed_matmul_receipt(
         raise ValueError("PROFILE_ASSESSMENT_DOES_NOT_MATCH_RAW_CAPTURE")
 
     cost_report = _validate_cost_model(root, receipt)
-    _validate_roofline(root, receipt, results[0])
+    _validate_roofline(root, receipt, results[0], cost_report)
     expected_metrics = build_receipt_metrics(
         root,
         results[0],

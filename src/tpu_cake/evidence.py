@@ -43,7 +43,7 @@ class CounterEvidence(BaseModel):
 
     @computed_field
     @property
-    def rates_derivable(self) -> bool:
+    def periodic_series_derivable(self) -> bool:
         return bool(self.periodic_counter_names) and bool(
             self.periodic_samples_per_tpu_core
         ) and all(

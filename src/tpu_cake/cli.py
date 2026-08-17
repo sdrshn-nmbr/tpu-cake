@@ -97,7 +97,8 @@ def _inspect_profile(capture: Path, contract_path: Path, output: Path | None) ->
         "EVIDENCE "
         f"tpu_device_planes={sum(plane.name.startswith('/device:TPU:') and 'SparseCore' not in plane.name for plane in assessment.capture.planes)} "
         f"timed_programs={sorted(assessment.capture.timed_program_ids)} "
-        f"counter_rates_derivable={assessment.capture.counters.rates_derivable}"
+        "periodic_counter_series_derivable="
+        f"{assessment.capture.counters.periodic_series_derivable}"
     )
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)

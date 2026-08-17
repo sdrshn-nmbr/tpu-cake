@@ -337,12 +337,15 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
             expectation.require_cycle_counters,
         )
     )
-    if counters_requested and not capture.counters.rates_derivable:
+    if counters_requested and not capture.counters.periodic_series_derivable:
         findings.append(
             Finding(
-                code="COUNTER_RATES_NOT_DERIVABLE",
+                code="PERIODIC_COUNTER_SERIES_NOT_DERIVABLE",
                 severity=FindingSeverity.ERROR,
-                message="hardware counters exist but have fewer than two snapshots per TPU core",
+                message=(
+                    "periodic hardware-counter series have fewer than two samples "
+                    "per TPU core"
+                ),
             )
         )
 

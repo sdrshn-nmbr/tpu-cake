@@ -13,7 +13,10 @@ from tpu_cake.contracts import ArtifactReference, ArtifactRole
 from tpu_cake.identity import array_sha256, semantic_sha256
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
-from tpu_cake.pallas_lowering import lower_physical_matmul_to_pallas
+from tpu_cake.pallas_lowering import (
+    lower_physical_matmul_to_pallas,
+    validate_saved_pallas_plan,
+)
 from tpu_cake.runner import (
     MatmulRunResult,
     RunMode,
@@ -175,6 +178,16 @@ def _validate_saved_run_evidence(
         raise ValueError(f"SEARCH_SCHEDULE_ARTIFACT_MISMATCH candidate={candidate.name}")
     if hashlib.sha256(pallas.read_bytes()).hexdigest() != result.pallas_source_sha256:
         raise ValueError(f"SEARCH_PALLAS_ARTIFACT_MISMATCH candidate={candidate.name}")
+    plan = validate_saved_pallas_plan(
+        physical,
+        pallas,
+        schedule_sha256=result.schedule_sha256,
+        pallas_source_sha256=result.pallas_source_sha256,
+    )
+    if (plan.tile_m, plan.tile_n) != (candidate.tile_m, candidate.tile_n):
+        raise ValueError(f"SEARCH_PHYSICAL_TILE_MISMATCH candidate={candidate.name}")
+    if plan.mesh_size != contract.mesh_size:
+        raise ValueError(f"SEARCH_PALLAS_PLAN_MISMATCH candidate={candidate.name}")
 
     lhs = np.load(
         _named_artifact(run_path, result, "lhs.npy", ArtifactRole.CORRECTNESS_INPUT),
