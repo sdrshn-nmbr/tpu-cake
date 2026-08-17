@@ -22,6 +22,7 @@ from tpu_cake.seqax_pallas_bundle import (
     _canonical_profile_assessment,
     _counter_experiment,
     _expected_result_role,
+    _export_xprof_isolated,
     _preflight_phase_files,
     _require_owned_safe_root,
     _resolve_result_artifact,
@@ -29,6 +30,7 @@ from tpu_cake.seqax_pallas_bundle import (
     _validate_capture,
     _validate_xprof_exports,
 )
+from tpu_cake.xprof_export import XProfExport, XProfExportManifest
 
 
 def _assessment(*, counter_names: tuple[str, ...]) -> CaptureAssessment:
@@ -117,9 +119,11 @@ def test_seqax_pallas_result_artifact_roles_come_from_trusted_paths() -> None:
     assert _expected_result_role("lowered_pallas.py") is ArtifactRole.PALLAS_SOURCE
     assert _expected_result_role("inputs/12.npy") is ArtifactRole.CORRECTNESS_INPUT
     assert (
-        _expected_result_role("profile/plugins/profile/run/jit_main(1).hlo_proto.pb")
+        _expected_result_role("profile/plugins/profile/run/capture.trace.json.gz")
         is ArtifactRole.PROFILE_AUXILIARY
     )
+    with pytest.raises(ValueError, match="PATH_UNRECOGNIZED"):
+        _expected_result_role("profile/plugins/profile/run/jit_main(1).hlo_proto.pb")
     with pytest.raises(ValueError, match="PATH_UNRECOGNIZED"):
         _expected_result_role("renamed-physical.xdsl")
     with pytest.raises(ValueError, match="PATH_UNRECOGNIZED"):
@@ -250,6 +254,24 @@ def test_seqax_pallas_xprof_manifest_binds_the_raw_xplane(tmp_path: Path) -> Non
     xplane.write_bytes(b"xplane")
     hlo_stats = xprof / "hlo_stats.json"
     hlo_stats.write_text("{}")
+    derived = xprof / "derived"
+    derived.mkdir()
+    hlo_proto = derived / "jit_main(1).hlo_proto.pb"
+    hlo_proto.write_bytes(b"hlo")
+    op_stats = derived / "ALL_HOSTS.op_stats_v2.pb"
+    op_stats.write_bytes(b"stats")
+    derived_manifest = {
+        "artifacts": [
+            {
+                "path": f"derived/{path.name}",
+                "size_bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "role": "xprof_export",
+            }
+            for path in (op_stats, hlo_proto)
+        ]
+    }
+    (xprof / "derived_manifest.json").write_text(json.dumps(derived_manifest))
     manifest = {
         "xplane": "profile/run.xplane.pb",
         "available_tools": ["hlo_stats"],
@@ -270,6 +292,57 @@ def test_seqax_pallas_xprof_manifest_binds_the_raw_xplane(tmp_path: Path) -> Non
     (xprof / "manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="XPLANE_IDENTITY_MISMATCH"):
         _validate_xprof_exports(xprof, phase_root=phase, expected_xplane=xplane)
+
+    manifest["xplane"] = "profile/run.xplane.pb"
+    (xprof / "manifest.json").write_text(json.dumps(manifest))
+    hlo_proto.write_bytes(b"forged")
+    with pytest.raises(ValueError, match="DERIVED_ARTIFACT_MISMATCH"):
+        _validate_xprof_exports(xprof, phase_root=phase, expected_xplane=xplane)
+
+
+def test_seqax_pallas_xprof_export_isolates_generated_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    xplane = profile / "run.xplane.pb"
+    xplane.write_bytes(b"xplane")
+    trace_json = profile / "run.trace.json.gz"
+    trace_json.write_bytes(b"trace")
+
+    def fake_export(capture_root: Path, output_root: Path) -> XProfExportManifest:
+        staged_xplane = capture_root / "run.xplane.pb"
+        assert staged_xplane.read_bytes() == b"xplane"
+        (capture_root / "jit_main(1).hlo_proto.pb").write_bytes(b"hlo")
+        (capture_root / "ALL_HOSTS.op_stats_v2.pb").write_bytes(b"stats")
+        hlo_stats = output_root / "hlo_stats.json"
+        hlo_stats.write_text("{}")
+        return XProfExportManifest(
+            xplane=staged_xplane,
+            available_tools=("hlo_stats",),
+            exports=(
+                XProfExport(
+                    tool="hlo_stats",
+                    mime_type="application/json",
+                    output=hlo_stats,
+                    size_bytes=hlo_stats.stat().st_size,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("tpu_cake.seqax_pallas_bundle.export_xprof_capture", fake_export)
+    temporary = tmp_path / "xprof.tmp"
+    _export_xprof_isolated(xplane, temporary)
+
+    assert {path.name for path in profile.iterdir()} == {
+        "run.trace.json.gz",
+        "run.xplane.pb",
+    }
+    assert not (temporary / ".xprof-input").exists()
+    assert (temporary / "derived/jit_main(1).hlo_proto.pb").read_bytes() == b"hlo"
+    assert (temporary / "derived/ALL_HOSTS.op_stats_v2.pb").read_bytes() == b"stats"
+    assert (temporary / "derived_manifest.json").is_file()
 
 
 def test_seqax_pallas_profile_assessment_canonicalizes_program_ids() -> None:

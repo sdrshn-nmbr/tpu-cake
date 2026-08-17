@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import statistics
 import subprocess
 import time
@@ -11,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict
 from xprof import profile_data
 
 from tpu_cake.artifacts import resolve_bundle_artifact
@@ -70,6 +72,12 @@ from tpu_cake.xprof_export import DEFAULT_TOOLS, XProfExportManifest, export_xpr
 _PHASES = ("timing", "trace", "counters")
 _PROFILE_MARKERS = ("pallas_call", "all-gather", "reduce_scatter")
 _STEP_EVENT = "seqax_physical_pallas_forward"
+
+
+class _XProfDerivedManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    artifacts: tuple[ArtifactReference, ...]
 
 
 def _sha256(path: Path) -> str:
@@ -188,9 +196,7 @@ def _expected_result_role(path: str) -> ArtifactRole:
             return ArtifactRole.CORRECTNESS_INPUT
     if path.endswith(".xplane.pb") and path.startswith("profile/"):
         raise ValueError("profile XPlane role depends on the phase")
-    if path.startswith("profile/") and path.endswith(
-        (".hlo_proto.pb", ".trace.json.gz", "/ALL_HOSTS.op_stats_v2.pb")
-    ):
+    if path.startswith("profile/") and path.endswith(".trace.json.gz"):
         return ArtifactRole.PROFILE_AUXILIARY
     raise ValueError(f"SEQAX_PALLAS_RESULT_ARTIFACT_PATH_UNRECOGNIZED path={path}")
 
@@ -601,6 +607,33 @@ def _validate_xprof_exports(
         raise ValueError("SEQAX_PALLAS_XPROF_XPLANE_IDENTITY_MISMATCH")
     if tuple(sorted(set(manifest.available_tools))) != manifest.available_tools:
         raise ValueError("SEQAX_PALLAS_XPROF_AVAILABLE_TOOLS_NOT_CANONICAL")
+    derived_manifest_path = output_root / "derived_manifest.json"
+    if not derived_manifest_path.is_file():
+        raise ValueError("SEQAX_PALLAS_XPROF_DERIVED_MANIFEST_MISSING")
+    derived_manifest = _XProfDerivedManifest.model_validate_json(derived_manifest_path.read_text())
+    derived_paths: set[str] = set()
+    for artifact in derived_manifest.artifacts:
+        if (
+            artifact.role is not ArtifactRole.XPROF_EXPORT
+            or not artifact.path.startswith("derived/")
+            or not artifact.path.endswith((".hlo_proto.pb", "/ALL_HOSTS.op_stats_v2.pb"))
+            or artifact.path in derived_paths
+        ):
+            raise ValueError("SEQAX_PALLAS_XPROF_DERIVED_ARTIFACT_INVALID")
+        path = (output_root / artifact.path).resolve()
+        if not path.is_relative_to(output_root.resolve()) or path.is_symlink():
+            raise ValueError("SEQAX_PALLAS_XPROF_DERIVED_ARTIFACT_UNSAFE")
+        if (
+            not path.is_file()
+            or path.stat().st_size != artifact.size_bytes
+            or _sha256(path) != artifact.sha256
+        ):
+            raise ValueError("SEQAX_PALLAS_XPROF_DERIVED_ARTIFACT_MISMATCH")
+        derived_paths.add(artifact.path)
+    if not any(path.endswith(".hlo_proto.pb") for path in derived_paths):
+        raise ValueError("SEQAX_PALLAS_XPROF_HLO_PROTO_MISSING")
+    if not any(path.endswith("/ALL_HOSTS.op_stats_v2.pb") for path in derived_paths):
+        raise ValueError("SEQAX_PALLAS_XPROF_OP_STATS_MISSING")
     expected_tools = tuple(tool for tool in DEFAULT_TOOLS if tool in set(manifest.available_tools))
     observed_tools = tuple(export.tool for export in manifest.exports)
     if observed_tools != expected_tools or len(observed_tools) != len(set(observed_tools)):
@@ -612,13 +645,15 @@ def _validate_xprof_exports(
         if export.output != expected_output:
             raise ValueError(f"SEQAX_PALLAS_XPROF_OUTPUT_PATH_MISMATCH tool={export.tool}")
         expected_names.add(expected_output.name)
-    expected = {"manifest.json", *expected_names}
+    expected = {"manifest.json", "derived_manifest.json", *expected_names, *derived_paths}
     observed = {
         path.relative_to(output_root).as_posix()
         for path in output_root.rglob("*")
         if path.is_file()
     }
-    if observed != expected or len(expected) != len(manifest.exports) + 1:
+    if observed != expected or len(expected) != (
+        len(manifest.exports) + len(derived_manifest.artifacts) + 2
+    ):
         raise ValueError("SEQAX_PALLAS_XPROF_EXPORT_SET_MISMATCH")
     for path in output_root.rglob("*"):
         if path.is_symlink():
@@ -629,6 +664,40 @@ def _validate_xprof_exports(
             raise ValueError(f"SEQAX_PALLAS_XPROF_EXPORT_SIZE_MISMATCH tool={export.tool}")
     if not any(export.tool == "hlo_stats" for export in manifest.exports):
         raise ValueError("SEQAX_PALLAS_XPROF_HLO_STATS_MISSING")
+
+
+def _export_xprof_isolated(
+    expected_xplane: Path,
+    temporary: Path,
+) -> XProfExportManifest:
+    staging = temporary / ".xprof-input"
+    staging.mkdir(parents=True)
+    staged_xplane = staging / expected_xplane.name
+    shutil.copy2(expected_xplane, staged_xplane)
+    manifest = export_xprof_capture(staging, temporary)
+    derived_root = temporary / "derived"
+    derived_root.mkdir()
+    for path in sorted(staging.rglob("*")):
+        if not path.is_file() or path == staged_xplane:
+            continue
+        relative = path.relative_to(staging)
+        if not relative.as_posix().endswith((".hlo_proto.pb", "ALL_HOSTS.op_stats_v2.pb")):
+            raise ValueError(f"SEQAX_PALLAS_XPROF_DERIVED_ARTIFACT_UNRECOGNIZED path={relative}")
+        destination = derived_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(path, destination)
+    shutil.rmtree(staging)
+    derived_manifest = _XProfDerivedManifest(
+        artifacts=tuple(
+            _reference(temporary, path, ArtifactRole.XPROF_EXPORT)
+            for path in sorted(derived_root.rglob("*"))
+            if path.is_file()
+        )
+    )
+    (temporary / "derived_manifest.json").write_text(
+        derived_manifest.model_dump_json(indent=2) + "\n"
+    )
+    return manifest
 
 
 def _ensure_exports(
@@ -658,7 +727,7 @@ def _ensure_exports(
         return
     temporary = phase_root / f"xprof.tmp-{time.time_ns()}"
     try:
-        manifest = export_xprof_capture(phase_root / "profile", temporary)
+        manifest = _export_xprof_isolated(expected_xplane, temporary)
         portable = manifest.model_copy(
             update={
                 "xplane": expected_xplane.relative_to(phase_root),
