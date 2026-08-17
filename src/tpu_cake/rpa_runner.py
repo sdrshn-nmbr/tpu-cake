@@ -54,7 +54,11 @@ class FusedRpaRunResult(BaseModel):
     execution_scope: str
     schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     backend_manifest: tuple[SourceFileContract, ...]
+    backend_executor: str
+    backend_executor_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     preflight_passed: bool
     input_sha256: tuple[str, ...]
     output_sha256: tuple[str, ...]
@@ -71,6 +75,25 @@ class FusedRpaRunResult(BaseModel):
     coefficient_of_variation: float | None = Field(default=None, ge=0)
     runtime: RuntimeIdentity
     artifacts: tuple[ArtifactReference, ...]
+
+
+def validate_fused_rpa_run_protocol(
+    *,
+    seed: int,
+    warmup_iterations: int,
+    measured_iterations: int,
+) -> None:
+    protocol = inkling_fused_rpa_experiment().benchmark
+    if (
+        seed != 97
+        or warmup_iterations != protocol.warmup_iterations
+        or measured_iterations != protocol.measured_iterations
+    ):
+        raise ValueError(
+            "fused RPA run must use its predeclared benchmark protocol: "
+            "seed=97, "
+            f"warmup={protocol.warmup_iterations}, measured={protocol.measured_iterations}"
+        )
 
 
 def _artifact(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
@@ -105,6 +128,18 @@ def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:
     return float(absolute.max()), float((absolute / denominator).max())
 
 
+def fused_rpa_outputs_pass(
+    actual: tuple[np.ndarray, np.ndarray],
+    expected: tuple[np.ndarray, np.ndarray],
+    *,
+    output_atol: float,
+    output_rtol: float,
+) -> bool:
+    return np.allclose(
+        actual[0], expected[0], atol=output_atol, rtol=output_rtol
+    ) and np.array_equal(actual[1], expected[1])
+
+
 def run_fused_rpa(
     output_dir: Path,
     *,
@@ -117,6 +152,11 @@ def run_fused_rpa(
 ) -> FusedRpaRunResult:
     if jax.default_backend() != "tpu":
         raise ValueError("fused Inkling RPA device evidence requires a TPU backend")
+    validate_fused_rpa_run_protocol(
+        seed=seed,
+        warmup_iterations=warmup_iterations,
+        measured_iterations=measured_iterations,
+    )
     output_dir.mkdir(parents=True, exist_ok=False)
     schedule = inkling_fused_rpa_schedule()
     plan = lower_inkling_rpa_to_pallas(schedule)
@@ -125,6 +165,7 @@ def run_fused_rpa(
         raise ValueError("RPA experiment schedule does not match the executable plan")
     if backend_manifest != plan.backend_manifest:
         raise ValueError("RPA runtime source manifest does not match the executable plan")
+    backend_executor, backend_executor_sha256 = plan.validate_backend_callable(kernel)
     device_kind = jax.devices()[0].device_kind
     run_id = semantic_sha256(
         "inkling-fused-rpa-run",
@@ -134,6 +175,8 @@ def run_fused_rpa(
         str(measured_iterations),
         plan.schedule_sha256,
         plan.source_sha256(),
+        backend_executor,
+        backend_executor_sha256,
     )
     invocation = {
         "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
@@ -144,6 +187,8 @@ def run_fused_rpa(
         "execution_scope": plan.execution_scope,
         "schedule_sha256": plan.schedule_sha256,
         "pallas_source_sha256": plan.source_sha256(),
+        "backend_executor": backend_executor,
+        "backend_executor_sha256": backend_executor_sha256,
     }
     artifacts = [
         _write_json(output_dir / "invocation.json", invocation, ArtifactRole.INVOCATION),
@@ -244,27 +289,24 @@ def run_fused_rpa(
     )
     compiled = lowered.compile()
     compile_duration_ns = time.perf_counter_ns() - compile_started
-    artifacts.extend(
-        (
-            _write_text(
-                output_dir / "stablehlo.txt",
-                stablehlo + "\n",
-                ArtifactRole.STABLEHLO,
-            ),
-            _write_text(
-                output_dir / "compiler_hlo.txt",
-                compiler_hlo + "\n",
-                ArtifactRole.COMPILER_HLO,
-            ),
-        )
+    stablehlo_artifact = _write_text(
+        output_dir / "stablehlo.txt",
+        stablehlo + "\n",
+        ArtifactRole.STABLEHLO,
     )
+    compiler_hlo_artifact = _write_text(
+        output_dir / "compiler_hlo.txt",
+        compiler_hlo + "\n",
+        ArtifactRole.COMPILER_HLO,
+    )
+    artifacts.extend((stablehlo_artifact, compiler_hlo_artifact))
     _record_event(
         ledger_path,
         run_id,
         RunState.COMPILED,
         {
-            "stablehlo_sha256": artifacts[-2].sha256,
-            "compiler_hlo_sha256": artifacts[-1].sha256,
+            "stablehlo_sha256": stablehlo_artifact.sha256,
+            "compiler_hlo_sha256": compiler_hlo_artifact.sha256,
             "compile_duration_ns": compile_duration_ns,
         },
     )
@@ -274,12 +316,13 @@ def run_fused_rpa(
     _block_results(actual_device)
     actual_host = tuple(np.asarray(value) for value in actual_device)
     maximum_errors = tuple(
-        _errors(actual, expected)
-        for actual, expected in zip(actual_host, oracle_host, strict=True)
+        _errors(actual, expected) for actual, expected in zip(actual_host, oracle_host, strict=True)
     )
-    passed = all(
-        np.allclose(actual, expected, atol=0.02, rtol=0.02)
-        for actual, expected in zip(actual_host, oracle_host, strict=True)
+    passed = fused_rpa_outputs_pass(
+        actual_host,
+        oracle_host,
+        output_atol=experiment.workload.numerical.absolute_tolerance,
+        output_rtol=experiment.workload.numerical.relative_tolerance,
     )
     if not passed:
         _record_event(
@@ -299,28 +342,30 @@ def run_fused_rpa(
         },
     )
 
-    state = [jnp.asarray(value) for value in host_inputs]
-    for _ in range(warmup_iterations):
-        outputs = compiled(*state)
+    def fresh_device_inputs() -> tuple[jax.Array, ...]:
+        return tuple(jax.device_put(np.array(value, copy=True)) for value in host_inputs)
+
+    warmup_inputs = tuple(fresh_device_inputs() for _ in range(warmup_iterations))
+    measured_inputs = tuple(fresh_device_inputs() for _ in range(measured_iterations))
+    jax.block_until_ready((*warmup_inputs, *measured_inputs))
+    for inputs in warmup_inputs:
+        outputs = compiled(*inputs)
         _block_results(outputs)
-        state[0], state[3] = outputs
     samples: list[int] = []
     if mode is RunMode.TIMING:
-        for _ in range(measured_iterations):
+        for inputs in measured_inputs:
             started = time.perf_counter_ns()
-            outputs = compiled(*state)
+            outputs = compiled(*inputs)
             _block_results(outputs)
             samples.append(time.perf_counter_ns() - started)
-            state[0], state[3] = outputs
     else:
         trace_dir = output_dir / "profile"
         jax.profiler.start_trace(trace_dir, profiler_options=_profiler_options(mode))
         try:
-            for step in range(measured_iterations):
+            for step, inputs in enumerate(measured_inputs):
                 with jax.profiler.StepTraceAnnotation("inkling_fused_rpa", step_num=step):
-                    outputs = compiled(*state)
+                    outputs = compiled(*inputs)
                     _block_results(outputs)
-                    state[0], state[3] = outputs
         finally:
             jax.profiler.stop_trace()
 
@@ -381,9 +426,7 @@ def run_fused_rpa(
         if len(xplanes) != 1:
             raise ValueError(f"PROFILE_XPLANE_COUNT_MISMATCH observed={xplanes}")
         trace_role = (
-            ArtifactRole.TIMING_TRACE
-            if mode is RunMode.TRACE
-            else ArtifactRole.COUNTER_TRACE
+            ArtifactRole.TIMING_TRACE if mode is RunMode.TRACE else ArtifactRole.COUNTER_TRACE
         )
         artifacts.append(_artifact(output_dir, xplanes[0], trace_role))
         terminal_payload.update(
@@ -401,10 +444,13 @@ def run_fused_rpa(
         execution_scope=plan.execution_scope,
         schedule_sha256=plan.schedule_sha256,
         pallas_source_sha256=plan.source_sha256(),
+        stablehlo_sha256=stablehlo_artifact.sha256,
+        compiler_hlo_sha256=compiler_hlo_artifact.sha256,
         backend_manifest=tuple(
-            SourceFileContract(path=path, sha256=sha256)
-            for path, sha256 in backend_manifest
+            SourceFileContract(path=path, sha256=sha256) for path, sha256 in backend_manifest
         ),
+        backend_executor=backend_executor,
+        backend_executor_sha256=backend_executor_sha256,
         preflight_passed=True,
         input_sha256=tuple(artifact.sha256 for artifact in input_artifacts),
         output_sha256=tuple(artifact.sha256 for artifact in output_artifacts),
@@ -425,8 +471,6 @@ def run_fused_rpa(
     _write_text(
         output_dir / "result.json",
         result.model_dump_json(indent=2) + "\n",
-        ArtifactRole.TIMING_SAMPLES
-        if mode is RunMode.TIMING
-        else ArtifactRole.PROFILE_ASSESSMENT,
+        ArtifactRole.TIMING_SAMPLES if mode is RunMode.TIMING else ArtifactRole.PROFILE_ASSESSMENT,
     )
     return result

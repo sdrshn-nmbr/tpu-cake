@@ -1,3 +1,8 @@
+import hashlib
+from dataclasses import replace
+from functools import wraps
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -15,6 +20,41 @@ from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
 from tpu_cake.rpa_lowering import lower_inkling_rpa_to_pallas
 from tpu_cake.workloads.inkling_rpa import inkling_fused_rpa_schedule
+
+_OBSERVED: dict[str, object] = {}
+
+
+def _successful_fake_kernel(*args, **kwargs):
+    _OBSERVED["args"] = args
+    _OBSERVED["kwargs"] = kwargs
+    return (
+        jnp.ones(args[0].shape, dtype=args[0].dtype),
+        jnp.ones(args[3].shape, dtype=args[3].dtype),
+    )
+
+
+def _bad_result_fake_kernel(*args, **_kwargs):
+    return np.zeros((1,), dtype=np.float32), jnp.zeros(
+        args[3].shape, dtype=args[3].dtype
+    )
+
+
+@wraps(_successful_fake_kernel)
+def _forged_fake_kernel(*_args, **_kwargs):
+    raise RuntimeError("forged executor ran")
+
+
+def _trust_test_callable(plan, kernel):
+    source = Path(__file__)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    manifest = ((source.name, digest),)
+    return replace(
+        plan,
+        backend_module=kernel.__module__,
+        backend_executor_qualname=kernel.__qualname__,
+        backend_sha256=digest,
+        backend_manifest=manifest,
+    )
 
 
 def _valid_inputs(plan):
@@ -51,20 +91,15 @@ def test_fused_rpa_lowers_to_a_stable_upstream_plan() -> None:
 
 
 def test_fused_rpa_plan_invokes_the_exact_serving_contract() -> None:
-    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    plan = _trust_test_callable(
+        lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule()),
+        _successful_fake_kernel,
+    )
     inputs = _valid_inputs(plan)
-    observed = {}
-
-    def fake_kernel(*args, **kwargs):
-        observed["args"] = args
-        observed["kwargs"] = kwargs
-        return (
-            jnp.ones(plan.output_shape, dtype=plan.output_dtypes[0]),
-            jnp.ones(plan.fused_cache_shape, dtype=plan.output_dtypes[1]),
-        )
+    _OBSERVED.clear()
 
     output, cache = plan.invoke(
-        fake_kernel,
+        _successful_fake_kernel,
         *inputs,
         backend_manifest=plan.backend_manifest,
         device_kind="TPU7x",
@@ -72,9 +107,9 @@ def test_fused_rpa_plan_invokes_the_exact_serving_contract() -> None:
 
     assert output.shape == plan.output_shape
     assert cache.shape == plan.fused_cache_shape
-    assert len(observed["args"]) == 10
-    assert observed["args"][-1] is None
-    assert observed["kwargs"] | {
+    assert len(_OBSERVED["args"]) == 10
+    assert _OBSERVED["args"][-1] is None
+    assert _OBSERVED["kwargs"] | {
         "relative_states": None,
         "relative_projection": None,
     } == {
@@ -87,17 +122,45 @@ def test_fused_rpa_plan_invokes_the_exact_serving_contract() -> None:
         "relative_states": None,
         "relative_projection": None,
     }
-    assert observed["kwargs"]["relative_states"] is inputs[9]
-    assert observed["kwargs"]["relative_projection"] is inputs[10]
+    assert _OBSERVED["kwargs"]["relative_states"] is inputs[9]
+    assert _OBSERVED["kwargs"]["relative_projection"] is inputs[10]
 
 
 def test_fused_rpa_plan_rejects_unverified_backend_and_bad_results() -> None:
-    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    production_plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    plan = _trust_test_callable(production_plan, _bad_result_fake_kernel)
     inputs = _valid_inputs(plan)
+
+    with pytest.raises(ValueError, match="pinned backend callable"):
+        production_plan.invoke(
+            _successful_fake_kernel,
+            *inputs,
+            backend_manifest=production_plan.backend_manifest,
+            device_kind="TPU7x",
+        )
+
+    trusted_test_plan = _trust_test_callable(production_plan, _successful_fake_kernel)
+    wrong_auxiliary_plan = replace(
+        trusted_test_plan,
+        backend_manifest=(
+            *trusted_test_plan.backend_manifest,
+            ("test_evidence.py", "0" * 64),
+        ),
+    )
+    with pytest.raises(ValueError, match="executor source"):
+        wrong_auxiliary_plan.validate_backend_callable(_successful_fake_kernel)
+
+    with pytest.raises(ValueError, match="pinned backend callable"):
+        trusted_test_plan.invoke(
+            _forged_fake_kernel,
+            *inputs,
+            backend_manifest=trusted_test_plan.backend_manifest,
+            device_kind="TPU7x",
+        )
 
     with pytest.raises(ValueError, match="source manifest"):
         plan.invoke(
-            lambda *_args, **_kwargs: (),
+            _bad_result_fake_kernel,
             *inputs,
             backend_manifest=(("wrong.py", "0" * 64),),
             device_kind="TPU7x",
@@ -105,10 +168,7 @@ def test_fused_rpa_plan_rejects_unverified_backend_and_bad_results() -> None:
 
     with pytest.raises(ValueError, match="result 0"):
         plan.invoke(
-            lambda *_args, **_kwargs: (
-                np.zeros((1,), dtype=np.float32),
-                jnp.zeros(plan.fused_cache_shape, dtype=plan.output_dtypes[1]),
-            ),
+            _bad_result_fake_kernel,
             *inputs,
             backend_manifest=plan.backend_manifest,
             device_kind="TPU7x",
@@ -117,14 +177,14 @@ def test_fused_rpa_plan_rejects_unverified_backend_and_bad_results() -> None:
 
 @pytest.mark.parametrize("device_kind", ("TPU7x", "TPU v7x"))
 def test_fused_rpa_plan_accepts_exact_tpu7_device_names(device_kind: str) -> None:
-    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    plan = _trust_test_callable(
+        lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule()),
+        _successful_fake_kernel,
+    )
     inputs = _valid_inputs(plan)
 
     output, cache = plan.invoke(
-        lambda *_args, **_kwargs: (
-            jnp.zeros(plan.output_shape, dtype=plan.output_dtypes[0]),
-            jnp.zeros(plan.fused_cache_shape, dtype=plan.output_dtypes[1]),
-        ),
+        _successful_fake_kernel,
         *inputs,
         backend_manifest=plan.backend_manifest,
         device_kind=device_kind,
@@ -136,12 +196,15 @@ def test_fused_rpa_plan_accepts_exact_tpu7_device_names(device_kind: str) -> Non
 
 @pytest.mark.parametrize("device_kind", ("not-TPU7-emulator", "TPU v6e", "gpu"))
 def test_fused_rpa_plan_rejects_non_tpu7_device_names(device_kind: str) -> None:
-    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    plan = _trust_test_callable(
+        lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule()),
+        _successful_fake_kernel,
+    )
     inputs = _valid_inputs(plan)
 
     with pytest.raises(ValueError, match="requires TPU7x"):
         plan.invoke(
-            lambda *_args, **_kwargs: (),
+            _successful_fake_kernel,
             *inputs,
             backend_manifest=plan.backend_manifest,
             device_kind=device_kind,
@@ -223,15 +286,15 @@ def test_fused_rpa_preflight_is_enforced_before_kernel_execution() -> None:
 
 
 def test_fused_rpa_traced_invocation_has_no_host_array_conversion() -> None:
-    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    plan = _trust_test_callable(
+        lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule()),
+        _successful_fake_kernel,
+    )
     inputs = _valid_inputs(plan)
-
-    def fake_kernel(*args, **_kwargs):
-        return args[0], args[3]
 
     invoked = jax.jit(
         lambda *values: plan.invoke(
-            fake_kernel,
+            _successful_fake_kernel,
             *values,
             backend_manifest=plan.backend_manifest,
             device_kind="TPU7x",

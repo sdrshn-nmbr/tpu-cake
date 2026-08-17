@@ -134,6 +134,20 @@ def _profile_planes(xplane: Path) -> tuple[tuple[PlaneEvidence, ...], CounterEvi
     )
 
 
+def count_profile_events(root: Path, event_name: str) -> int:
+    xplane = _single(root.resolve(), "*.xplane.pb")
+    profile = profile_data.ProfileData.from_file(xplane)
+    try:
+        return sum(
+            event.name == event_name
+            for plane in profile.planes
+            for line in plane.lines
+            for event in line.events
+        )
+    finally:
+        profile.close()
+
+
 def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvidence:
     root = root.resolve()
     xplane = _single(root, "*.xplane.pb")
@@ -253,6 +267,17 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
                     message=f"capture has no {label.lower()} hardware counters",
                 )
             )
+    if any(required for required, _observed, _label in counter_requirements) and not any(
+        name.upper().startswith("COUNT_MXU_BUSY")
+        for name in capture.counters.periodic_counter_names
+    ):
+        findings.append(
+            Finding(
+                code="MISSING_PERIODIC_MXU_BUSY_COUNTER",
+                severity=FindingSeverity.ERROR,
+                message="capture has no periodic MXU-busy counter series",
+            )
+        )
 
     counter_planes = len(capture.counters.periodic_samples_per_tpu_core)
     if counter_planes < expectation.minimum_counter_device_planes:
@@ -269,7 +294,9 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
         )
 
     timed_programs = [
-        program for program in capture.programs if program.program_id in capture.timed_program_ids
+        program
+        for program in capture.programs
+        if program.program_id in capture.timed_program_ids and program.timed_self_us > 0
     ]
     if not timed_programs:
         findings.append(
@@ -343,8 +370,7 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
                 code="PERIODIC_COUNTER_SERIES_NOT_DERIVABLE",
                 severity=FindingSeverity.ERROR,
                 message=(
-                    "periodic hardware-counter series have fewer than two samples "
-                    "per TPU core"
+                    "periodic hardware-counter series have fewer than two samples per TPU core"
                 ),
             )
         )

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import jax.numpy as jnp
@@ -32,7 +35,7 @@ INKLING_RPA_BASE_TUNING_SHA256 = (
 INKLING_RPA_MODULE = (
     "sgl_jax.srt.kernels.ragged_paged_attention.ragged_paged_attention_v3"
 )
-RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-adapter-v1"
+RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-adapter-v2"
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,7 @@ class FusedRpaPlan:
     sliding_window: int
     vmem_limit_bytes: int
     backend_module: str = INKLING_RPA_MODULE
+    backend_executor_qualname: str = "ragged_paged_attention"
     backend_repository_revision: str = INKLE_REPOSITORY_REVISION
     backend_file_revision: str = INKLING_RPA_FILE_REVISION
     backend_sha256: str = INKLING_RPA_SOURCE_SHA256
@@ -70,6 +74,44 @@ class FusedRpaPlan:
         ("util.py", INKLING_RPA_UTIL_SHA256),
     )
     execution_scope: str = "local-shard-caller-owned-sharding"
+
+    def validate_backend_callable(
+        self, kernel: Callable[..., tuple[Any, Any]]
+    ) -> tuple[str, str]:
+        unwrapped = inspect.unwrap(kernel)
+        module = getattr(kernel, "__module__", None)
+        qualname = getattr(kernel, "__qualname__", None)
+        source = inspect.getsourcefile(unwrapped)
+        loaded_module = sys.modules.get(self.backend_module)
+        resolved = (
+            getattr(loaded_module, self.backend_executor_qualname, None)
+            if loaded_module is not None
+            else None
+        )
+        if (
+            module != self.backend_module
+            or qualname != self.backend_executor_qualname
+            or source is None
+            or kernel is not resolved
+        ):
+            raise ValueError("fused RPA executor does not match the pinned backend callable")
+        source_path = Path(source)
+        source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        live_manifest: list[tuple[str, str]] = []
+        for name, _expected_sha256 in self.backend_manifest:
+            dependency = source_path.parent / name
+            if not dependency.is_file():
+                raise ValueError(f"fused RPA backend dependency is missing: {name}")
+            live_manifest.append(
+                (name, hashlib.sha256(dependency.read_bytes()).hexdigest())
+            )
+        if (
+            source_sha256 != self.backend_sha256
+            or (source_path.name, source_sha256) not in self.backend_manifest
+            or tuple(live_manifest) != self.backend_manifest
+        ):
+            raise ValueError("fused RPA executor source does not match the pinned backend")
+        return f"{module}.{qualname}", source_sha256
 
     @property
     def input_shapes(self) -> tuple[tuple[int, ...], ...]:
@@ -175,6 +217,7 @@ class FusedRpaPlan:
         device_kind: str,
     ) -> tuple[Any, Any]:
         self._validate_signature(inputs)
+        self.validate_backend_callable(kernel)
         if backend_manifest != self.backend_manifest:
             raise ValueError("fused RPA backend source manifest does not match the plan")
         normalized_device_kind = device_kind.strip().lower()
@@ -259,6 +302,7 @@ VMEM_LIMIT_BYTES = {self.vmem_limit_bytes}
 BACKEND_REPOSITORY_REVISION = {self.backend_repository_revision!r}
 BACKEND_FILE_REVISION = {self.backend_file_revision!r}
 BACKEND_SHA256 = {self.backend_sha256!r}
+BACKEND_EXECUTOR_QUALNAME = {self.backend_executor_qualname!r}
 BACKEND_MANIFEST = {self.backend_manifest!r}
 EXECUTION_SCOPE = {self.execution_scope!r}
 
@@ -288,6 +332,7 @@ PLAN = FusedRpaPlan(
     backend_repository_revision=BACKEND_REPOSITORY_REVISION,
     backend_file_revision=BACKEND_FILE_REVISION,
     backend_sha256=BACKEND_SHA256,
+    backend_executor_qualname=BACKEND_EXECUTOR_QUALNAME,
     backend_manifest=BACKEND_MANIFEST,
     execution_scope=EXECUTION_SCOPE,
 )

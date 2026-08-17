@@ -38,6 +38,11 @@ class EvidencePhaseName(StrEnum):
     AGGREGATE = "aggregate"
 
 
+class EvidenceProfile(StrEnum):
+    DISTRIBUTED_MATMUL = "distributed_matmul_v1"
+    OPAQUE_RPA_ADAPTER = "opaque_rpa_adapter_v1"
+
+
 class ArtifactRole(StrEnum):
     EXPERIMENT = "experiment"
     DISTRIBUTED_IR = "distributed_ir"
@@ -67,6 +72,7 @@ class ArtifactRole(StrEnum):
     SOURCE_DIFF = "source_diff"
     BACKEND_MANIFEST = "backend_manifest"
     PREFLIGHT_RESULT = "preflight_result"
+    XPROF_EXPORT = "xprof_export"
     SEARCH_CONTRACT = "search_contract"
     SEARCH_RESULT = "search_result"
     SEARCH_EVIDENCE = "search_evidence"
@@ -291,9 +297,7 @@ PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
             ArtifactRole.SOURCE_DIFF,
         }
     ),
-    EvidencePhaseName.FINALIZER: frozenset(
-        {ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}
-    ),
+    EvidencePhaseName.FINALIZER: frozenset({ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}),
     EvidencePhaseName.AGGREGATE: frozenset(
         {
             ArtifactRole.PROFILE_ASSESSMENT,
@@ -302,6 +306,64 @@ PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
             ArtifactRole.ROOFLINE_METRICS,
         }
     ),
+}
+
+RPA_PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
+    EvidencePhaseName.TIMING: frozenset(
+        {
+            ArtifactRole.EXPERIMENT,
+            ArtifactRole.PHYSICAL_IR,
+            ArtifactRole.PALLAS_SOURCE,
+            ArtifactRole.STABLEHLO,
+            ArtifactRole.COMPILER_HLO,
+            ArtifactRole.CORRECTNESS_INPUT,
+            ArtifactRole.CORRECTNESS_OUTPUT,
+            ArtifactRole.ORACLE_OUTPUT,
+            ArtifactRole.TIMING_SAMPLES,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+            ArtifactRole.BACKEND_MANIFEST,
+            ArtifactRole.PREFLIGHT_RESULT,
+        }
+    ),
+    EvidencePhaseName.TRACE: frozenset(
+        {
+            ArtifactRole.TRACE_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.TIMING_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+            ArtifactRole.BACKEND_MANIFEST,
+            ArtifactRole.PREFLIGHT_RESULT,
+        }
+    ),
+    EvidencePhaseName.COUNTERS: frozenset(
+        {
+            ArtifactRole.COUNTER_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.COUNTER_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+            ArtifactRole.BACKEND_MANIFEST,
+            ArtifactRole.PREFLIGHT_RESULT,
+        }
+    ),
+    EvidencePhaseName.FINALIZER: frozenset({ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}),
+    EvidencePhaseName.AGGREGATE: frozenset({ArtifactRole.PROFILE_ASSESSMENT}),
+}
+
+PHASE_REQUIRED_ROLES_BY_PROFILE = {
+    EvidenceProfile.DISTRIBUTED_MATMUL: PHASE_REQUIRED_ROLES,
+    EvidenceProfile.OPAQUE_RPA_ADAPTER: RPA_PHASE_REQUIRED_ROLES,
 }
 
 
@@ -359,6 +421,7 @@ class SearchProvenance(BaseModel):
 class RunReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     experiment_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_profile: EvidenceProfile = EvidenceProfile.DISTRIBUTED_MATMUL
     schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: RunStatus
     runtime: RuntimeIdentity
@@ -383,34 +446,40 @@ class RunReceipt(BaseModel):
         if len(paths) != len(set(paths)):
             raise ValueError("receipt artifact paths must be unique")
         if self.status is RunStatus.PASSED:
-            required_roles = {
-                ArtifactRole.EXPERIMENT,
-                ArtifactRole.DISTRIBUTED_IR,
-                ArtifactRole.PHYSICAL_IR,
-                ArtifactRole.PALLAS_SOURCE,
-                ArtifactRole.STABLEHLO,
-                ArtifactRole.COMPILER_HLO,
-                ArtifactRole.CORRECTNESS_INPUT,
-                ArtifactRole.CORRECTNESS_OUTPUT,
-                ArtifactRole.ORACLE_OUTPUT,
-                ArtifactRole.TIMING_SAMPLES,
-                ArtifactRole.TIMING_TRACE,
-                ArtifactRole.COUNTER_TRACE,
-                ArtifactRole.PROFILE_ASSESSMENT,
-                ArtifactRole.COST_MODEL_INPUT,
-                ArtifactRole.COST_MODEL,
-                ArtifactRole.ROOFLINE_INPUT,
-                ArtifactRole.ROOFLINE_REPORT,
-                ArtifactRole.ROOFLINE_METRICS,
-                ArtifactRole.EXECUTION_LEDGER,
-                ArtifactRole.TRACE_RESULT,
-                ArtifactRole.COUNTER_RESULT,
-                ArtifactRole.HLO_STATS,
-                ArtifactRole.INVOCATION,
-                ArtifactRole.PROFILER_CONFIG,
-                ArtifactRole.SOURCE_STATE,
-                ArtifactRole.SOURCE_DIFF,
-            }
+            required_roles = set().union(
+                *PHASE_REQUIRED_ROLES_BY_PROFILE[self.evidence_profile].values()
+            )
+            if self.evidence_profile is EvidenceProfile.DISTRIBUTED_MATMUL:
+                required_roles.update(
+                    {
+                        ArtifactRole.EXPERIMENT,
+                        ArtifactRole.DISTRIBUTED_IR,
+                        ArtifactRole.PHYSICAL_IR,
+                        ArtifactRole.PALLAS_SOURCE,
+                        ArtifactRole.STABLEHLO,
+                        ArtifactRole.COMPILER_HLO,
+                        ArtifactRole.CORRECTNESS_INPUT,
+                        ArtifactRole.CORRECTNESS_OUTPUT,
+                        ArtifactRole.ORACLE_OUTPUT,
+                        ArtifactRole.TIMING_SAMPLES,
+                        ArtifactRole.TIMING_TRACE,
+                        ArtifactRole.COUNTER_TRACE,
+                        ArtifactRole.PROFILE_ASSESSMENT,
+                        ArtifactRole.COST_MODEL_INPUT,
+                        ArtifactRole.COST_MODEL,
+                        ArtifactRole.ROOFLINE_INPUT,
+                        ArtifactRole.ROOFLINE_REPORT,
+                        ArtifactRole.ROOFLINE_METRICS,
+                        ArtifactRole.EXECUTION_LEDGER,
+                        ArtifactRole.TRACE_RESULT,
+                        ArtifactRole.COUNTER_RESULT,
+                        ArtifactRole.HLO_STATS,
+                        ArtifactRole.INVOCATION,
+                        ArtifactRole.PROFILER_CONFIG,
+                        ArtifactRole.SOURCE_STATE,
+                        ArtifactRole.SOURCE_DIFF,
+                    }
+                )
             roles = {artifact.role for artifact in self.artifacts}
             missing = sorted(role.value for role in required_roles - roles)
             if missing:
@@ -433,13 +502,13 @@ class RunReceipt(BaseModel):
                 raise ValueError("passed receipt needs every evidence phase exactly once")
             phase_paths = [path for phase in self.phases for path in phase.artifact_paths]
             if len(phase_paths) != len(set(phase_paths)) or set(phase_paths) != set(paths):
-                raise ValueError(
-                    "passed receipt phases must partition every artifact exactly once"
-                )
+                raise ValueError("passed receipt phases must partition every artifact exactly once")
             artifacts_by_path = {artifact.path: artifact for artifact in self.artifacts}
             for phase in self.phases:
                 phase_roles = {artifacts_by_path[path].role for path in phase.artifact_paths}
-                missing_phase_roles = PHASE_REQUIRED_ROLES[phase.name] - phase_roles
+                missing_phase_roles = (
+                    PHASE_REQUIRED_ROLES_BY_PROFILE[self.evidence_profile][phase.name] - phase_roles
+                )
                 if missing_phase_roles:
                     missing_names = sorted(role.value for role in missing_phase_roles)
                     raise ValueError(

@@ -145,13 +145,25 @@ def test_required_markers_must_share_one_timed_program() -> None:
     }
 
 
+def test_zero_time_program_does_not_satisfy_marker_contract() -> None:
+    capture = _capture(rpa_markers=1, forbidden_hits=0)
+    zero_time = capture.model_copy(
+        update={"programs": (capture.programs[0].model_copy(update={"timed_self_us": 0}),)}
+    )
+
+    assessment = assess_evidence(zero_time, _expectation())
+
+    assert not assessment.accepted
+    assert {"NO_TIMED_MODEL_PROGRAM", "REQUIRED_TIMED_HLO_MARKER_MISSING"} <= {
+        finding.code for finding in assessment.findings
+    }
+
+
 def test_counter_contract_rejects_missing_device_planes() -> None:
     expectation = _expectation().model_copy(update={"minimum_counter_device_planes": 2})
     assessment = assess_evidence(_capture(rpa_markers=1, forbidden_hits=0), expectation)
     assert not assessment.accepted
-    assert "INSUFFICIENT_COUNTER_DEVICE_PLANES" in {
-        finding.code for finding in assessment.findings
-    }
+    assert "INSUFFICIENT_COUNTER_DEVICE_PLANES" in {finding.code for finding in assessment.findings}
 
 
 def test_profile_contract_rejects_empty_physical_device_planes() -> None:
@@ -167,9 +179,7 @@ def test_profile_contract_rejects_empty_physical_device_planes() -> None:
     )
     assessment = assess_evidence(empty, _expectation())
     assert not assessment.accepted
-    assert "INSUFFICIENT_TPU_DEVICE_EVENTS" in {
-        finding.code for finding in assessment.findings
-    }
+    assert "INSUFFICIENT_TPU_DEVICE_EVENTS" in {finding.code for finding in assessment.findings}
 
 
 def test_periodic_counter_series_are_fail_closed_when_requested() -> None:
@@ -191,5 +201,24 @@ def test_periodic_counter_series_are_fail_closed_when_requested() -> None:
     assessment = assess_evidence(one_snapshot, expectation)
     assert not assessment.accepted
     assert "PERIODIC_COUNTER_SERIES_NOT_DERIVABLE" in {
+        finding.code for finding in assessment.findings
+    }
+
+
+def test_hardware_counter_contract_requires_periodic_mxu_busy_series() -> None:
+    capture = _capture(rpa_markers=1, forbidden_hits=0)
+    p_state_only = capture.model_copy(
+        update={
+            "counters": capture.counters.model_copy(
+                update={"periodic_counter_names": ("COUNT_PSTATE",)}
+            )
+        }
+    )
+    expectation = _expectation().model_copy(update={"require_cycle_counters": True})
+
+    assessment = assess_evidence(p_state_only, expectation)
+
+    assert not assessment.accepted
+    assert "MISSING_PERIODIC_MXU_BUSY_COUNTER" in {
         finding.code for finding in assessment.findings
     }

@@ -20,10 +20,12 @@ from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
 from tpu_cake.receipt import validate_receipt
+from tpu_cake.rpa_bundle import build_fused_rpa_receipt, validate_fused_rpa_receipt
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
 from tpu_cake.search import MatmulSearchContract, run_matmul_search
 from tpu_cake.workloads import (
+    inkling_fused_rpa_experiment,
     inkling_rpa_experiment,
     inkling_rpa_schedule,
     matmul_experiment,
@@ -76,6 +78,12 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_bundle = commands.add_parser("verify-matmul-bundle")
     verify_bundle.add_argument("run_root", type=Path)
+
+    finalize_rpa = commands.add_parser("finalize-rpa-run")
+    finalize_rpa.add_argument("run_root", type=Path)
+
+    verify_rpa_bundle = commands.add_parser("verify-rpa-bundle")
+    verify_rpa_bundle.add_argument("run_root", type=Path)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -145,6 +153,19 @@ def _experiment(workload: str, output: Path | None) -> int:
     return 0
 
 
+def _verify_rpa_bundle(root: Path) -> int:
+    root = root.resolve()
+    receipt = RunReceipt.model_validate_json((root / "receipt.json").read_text())
+    experiment = inkling_fused_rpa_experiment()
+    validate_fused_rpa_receipt(receipt, experiment, root=root)
+    verdict = "ACCEPTED" if receipt.status.value == "passed" else "REJECTED"
+    print(
+        f"RPA_BUNDLE_{verdict} status={receipt.status.value} "
+        f"artifacts={len(receipt.artifacts)} metrics={len(receipt.metrics)}"
+    )
+    return 0 if receipt.status.value == "passed" else 1
+
+
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "verify-schedule":
@@ -188,6 +209,12 @@ def main() -> None:
             f"artifacts={len(receipt.artifacts)} metrics={len(receipt.metrics)}"
         )
         code = 0
+    elif args.command == "finalize-rpa-run":
+        receipt = build_fused_rpa_receipt(args.run_root)
+        print(receipt.model_dump_json(indent=2))
+        code = 0 if receipt.status.value == "passed" else 1
+    elif args.command == "verify-rpa-bundle":
+        code = _verify_rpa_bundle(args.run_root)
     elif args.command == "search-matmul":
         contract = MatmulSearchContract.model_validate_json(args.contract.read_text())
         result = run_matmul_search(args.output_dir, contract, interpret=args.interpret)

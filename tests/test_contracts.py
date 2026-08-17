@@ -7,10 +7,12 @@ from pydantic import ValidationError
 
 from tpu_cake.contracts import (
     PHASE_REQUIRED_ROLES,
+    RPA_PHASE_REQUIRED_ROLES,
     ArtifactReference,
     ArtifactRole,
     CorrectnessResult,
     EvidencePhase,
+    EvidenceProfile,
     KernelExperiment,
     ProfileExpectation,
     RunReceipt,
@@ -205,6 +207,46 @@ def _complete_receipt(root: Path) -> tuple[RunReceipt, KernelExperiment]:
     return receipt, experiment
 
 
+def test_opaque_rpa_receipt_uses_its_own_evidence_profile(tmp_path) -> None:
+    root = tmp_path / "rpa-bundle"
+    experiment = inkling_fused_rpa_experiment()
+    artifacts = []
+    phases = []
+    for phase, roles in RPA_PHASE_REQUIRED_ROLES.items():
+        phase_paths = []
+        for role in roles:
+            path = root / phase.value / f"{role.value}.artifact"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{phase.value}:{role.value}")
+            relative = path.relative_to(root).as_posix()
+            phase_paths.append(relative)
+            artifacts.append(
+                ArtifactReference(
+                    path=relative,
+                    size_bytes=path.stat().st_size,
+                    sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                    role=role,
+                )
+            )
+        phases.append(EvidencePhase(name=phase, artifact_paths=tuple(phase_paths)))
+
+    receipt = RunReceipt(
+        experiment_id=experiment.experiment_id,
+        evidence_profile=EvidenceProfile.OPAQUE_RPA_ADAPTER,
+        schedule_sha256=experiment.schedule_sha256,
+        status="passed",
+        runtime=RuntimeIdentity(python="3.13"),
+        correctness=CorrectnessResult(passed=True, oracle="exact"),
+        required_semantic_properties=(),
+        metrics=(),
+        artifacts=tuple(artifacts),
+        phases=tuple(phases),
+    )
+
+    assert receipt.evidence_profile is EvidenceProfile.OPAQUE_RPA_ADAPTER
+    assert ArtifactRole.DISTRIBUTED_IR not in {artifact.role for artifact in receipt.artifacts}
+
+
 def test_receipt_survives_moving_its_complete_bundle(tmp_path) -> None:
     original = tmp_path / "original"
     receipt, experiment = _complete_receipt(original)
@@ -266,8 +308,7 @@ def test_receipt_rejects_a_phase_with_only_generic_role_coverage(tmp_path) -> No
     removed = next(
         artifact
         for artifact in payload["artifacts"]
-        if artifact["path"] in trace["artifact_paths"]
-        and artifact["role"] == "trace_result"
+        if artifact["path"] in trace["artifact_paths"] and artifact["role"] == "trace_result"
     )
     trace["artifact_paths"].remove(removed["path"])
     aggregate = next(phase for phase in payload["phases"] if phase["name"] == "aggregate")
@@ -280,9 +321,7 @@ def test_receipt_rejects_a_phase_with_only_generic_role_coverage(tmp_path) -> No
 @pytest.mark.parametrize(
     ("phase_name", "role"),
     tuple(
-        (phase.value, role.value)
-        for phase, roles in PHASE_REQUIRED_ROLES.items()
-        for role in roles
+        (phase.value, role.value) for phase, roles in PHASE_REQUIRED_ROLES.items() for role in roles
     ),
 )
 def test_every_required_phase_artifact_is_semantically_bound(

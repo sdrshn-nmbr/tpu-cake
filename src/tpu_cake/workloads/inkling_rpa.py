@@ -64,9 +64,7 @@ def inkling_rpa_reference(
         scores -= scores.max(axis=-1, keepdims=True)
         probabilities = np.exp(scores)
         probabilities /= probabilities.sum(axis=-1, keepdims=True)
-        output[request] = np.einsum(
-            "hl,lhd->hd", probabilities, query_values, dtype=np.float32
-        )
+        output[request] = np.einsum("hl,lhd->hd", probabilities, query_values, dtype=np.float32)
     return output
 
 
@@ -193,6 +191,7 @@ class FusedRpaOracleMutation(StrEnum):
     WRONG_SCALE = "wrong_scale"
     OMIT_RELATIVE_BIAS = "omit_relative_bias"
     WRONG_PAGE_INDEX = "wrong_page_index"
+    IGNORE_PAGE_INDICES = "ignore_page_indices"
     SWAP_KV_INTERLEAVE = "swap_kv_interleave"
     SKIP_CACHE_UPDATE = "skip_cache_update"
 
@@ -210,7 +209,43 @@ def inkling_fused_rpa_inputs(seed: int = 0) -> tuple[jax.Array, ...]:
         bf16((4, 2, 32)),
         bf16((32, 16, 2, 2, 128), scale=0.25),
         jnp.asarray((1, 17, 33, 49), dtype=jnp.int32),
-        jnp.arange(32, dtype=jnp.int32),
+        jnp.asarray(
+            (
+                7,
+                2,
+                19,
+                4,
+                25,
+                1,
+                16,
+                9,
+                30,
+                12,
+                0,
+                5,
+                8,
+                11,
+                14,
+                17,
+                20,
+                23,
+                26,
+                29,
+                3,
+                6,
+                10,
+                13,
+                15,
+                18,
+                21,
+                22,
+                24,
+                27,
+                28,
+                31,
+            ),
+            dtype=jnp.int32,
+        ),
         jnp.arange(5, dtype=jnp.int32),
         jnp.asarray((0, 16, 48, 96, 160), dtype=jnp.int32),
         jnp.full((3,), 4, dtype=jnp.int32),
@@ -243,9 +278,7 @@ def inkling_fused_rpa_reference(
     cache = np.asarray(cache_value, dtype=np.float32).copy()
     kv_lengths = np.asarray(kv_lengths_value, dtype=np.int32)
     page_indices = np.asarray(page_indices_value, dtype=np.int32).copy()
-    cumulative_query_lengths = np.asarray(
-        cumulative_query_lengths_value, dtype=np.int32
-    )
+    cumulative_query_lengths = np.asarray(cumulative_query_lengths_value, dtype=np.int32)
     cumulative_kv_lengths = np.asarray(cumulative_kv_lengths_value, dtype=np.int32)
     distribution = np.asarray(distribution_value, dtype=np.int32)
     relative_states = np.asarray(relative_states_value, dtype=np.float32)
@@ -258,12 +291,16 @@ def inkling_fused_rpa_reference(
         np.arange(sequence_count + 1, dtype=np.int32),
     ):
         raise ValueError("fused RPA oracle requires one query token per sequence")
-    if mutation is FusedRpaOracleMutation.WRONG_PAGE_INDEX:
+    if mutation is FusedRpaOracleMutation.IGNORE_PAGE_INDICES:
+        page_indices = np.arange(page_indices.size, dtype=np.int32)
+    elif mutation is FusedRpaOracleMutation.WRONG_PAGE_INDEX:
         page_indices[0] = (page_indices[0] + 1) % cache.shape[0]
 
     page_size = cache.shape[1]
     packing = cache.shape[3]
-    key_slot, value_slot = (1, 0) if mutation is FusedRpaOracleMutation.SWAP_KV_INTERLEAVE else (0, 1)
+    key_slot, value_slot = (
+        (1, 0) if mutation is FusedRpaOracleMutation.SWAP_KV_INTERLEAVE else (0, 1)
+    )
     if mutation is not FusedRpaOracleMutation.SKIP_CACHE_UPDATE:
         for sequence in range(sequence_count):
             position = int(kv_lengths[sequence]) - 1
@@ -294,21 +331,20 @@ def inkling_fused_rpa_reference(
         page_offset = int(cumulative_kv_lengths[sequence]) // page_size
         page_count = math.ceil(length / page_size)
         pages = page_indices[page_offset : page_offset + page_count]
-        sequence_cache = unpacked[pages].reshape(-1, unpacked.shape[2], unpacked.shape[3])[
-            :length
-        ]
+        sequence_cache = unpacked[pages].reshape(-1, unpacked.shape[2], unpacked.shape[3])[:length]
         key_cache = sequence_cache[:, key_slot::2, : queries.shape[-1]][:, : keys.shape[1]]
-        value_cache = sequence_cache[:, value_slot::2, : queries.shape[-1]][
-            :, : values.shape[1]
-        ]
+        value_cache = sequence_cache[:, value_slot::2, : queries.shape[-1]][:, : values.shape[1]]
         query_heads_per_kv_head = queries.shape[1] // keys.shape[1]
         head_index = np.arange(queries.shape[1]) // query_heads_per_kv_head
-        scores = np.einsum(
-            "hd,lhd->hl",
-            queries[sequence],
-            key_cache[:, head_index],
-            dtype=np.float32,
-        ) * scale
+        scores = (
+            np.einsum(
+                "hd,lhd->hl",
+                queries[sequence],
+                key_cache[:, head_index],
+                dtype=np.float32,
+            )
+            * scale
+        )
         if mutation is not FusedRpaOracleMutation.OMIT_RELATIVE_BIAS:
             distances = (length - 1) - np.arange(length, dtype=np.int32)
             clipped = np.clip(distances, 0, relative_projection.shape[1] - 1)
@@ -460,14 +496,15 @@ def inkling_fused_rpa_experiment() -> KernelExperiment:
             warmup_iterations=5,
             measured_iterations=50,
             synchronization="block until output and updated cache are ready",
-            statistic="median local-shard device duration",
+            statistic="median synchronized local-shard invocation wall duration",
         ),
-        search=SearchPolicy(objective_metric="median_device_duration_ns"),
+        search=SearchPolicy(objective_metric="median_synchronized_invocation_ns"),
         profile=ProfileExpectation(
             name="inkling-fused-rpa-local-shard-decode",
             stage="steady_decode",
             minimum_tpu_device_planes=1,
-            required_timed_hlo_markers=("ragged_paged_attention",),
+            require_tensor_core_activity=False,
+            required_timed_hlo_markers=("ragged_paged_attention", "pallas_call"),
             forbidden_timed_hlo_fragments=("native_backend.py:500",),
         ),
         schedule_sha256=plan.schedule_sha256,
