@@ -13,7 +13,7 @@ write a schedule
 
 TPU-cake applies that idea to Pallas and Mosaic. It describes TPU schedules, checks them before execution, and keeps the evidence needed to compare them honestly.
 
-## How MatX inspired me
+## How MatX inspired
 
 [MatX](https://matx.com/research) follows a similar way of model x software x hardware co-design:
 
