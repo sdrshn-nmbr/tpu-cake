@@ -22,6 +22,24 @@ class RunStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class ArtifactRole(StrEnum):
+    EXPERIMENT = "experiment"
+    DISTRIBUTED_IR = "distributed_ir"
+    PHYSICAL_IR = "physical_ir"
+    PALLAS_SOURCE = "pallas_source"
+    STABLEHLO = "stablehlo"
+    COMPILER_HLO = "compiler_hlo"
+    CORRECTNESS_INPUT = "correctness_input"
+    CORRECTNESS_OUTPUT = "correctness_output"
+    ORACLE_OUTPUT = "oracle_output"
+    TIMING_SAMPLES = "timing_samples"
+    TIMING_TRACE = "timing_trace"
+    COUNTER_TRACE = "counter_trace"
+    PROFILE_ASSESSMENT = "profile_assessment"
+    COST_MODEL_INPUT = "cost_model_input"
+    COST_MODEL = "cost_model"
+
+
 class SemanticPropertyKind(StrEnum):
     PREFIX_INVARIANCE = "prefix_invariance"
     PREFILL_DECODE_EQUIVALENCE = "prefill_decode_equivalence"
@@ -138,6 +156,7 @@ class ArtifactReference(BaseModel):
     path: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    role: ArtifactRole
 
 
 class CorrectnessResult(BaseModel):
@@ -188,4 +207,29 @@ class RunReceipt(BaseModel):
         observed = {result.property for result in self.correctness.semantic_properties}
         if self.status is RunStatus.PASSED and observed != required:
             raise ValueError("a passed receipt must contain every required semantic property")
+        paths = [artifact.path for artifact in self.artifacts]
+        if len(paths) != len(set(paths)):
+            raise ValueError("receipt artifact paths must be unique")
+        if self.status is RunStatus.PASSED:
+            required_roles = {
+                ArtifactRole.EXPERIMENT,
+                ArtifactRole.DISTRIBUTED_IR,
+                ArtifactRole.PHYSICAL_IR,
+                ArtifactRole.PALLAS_SOURCE,
+                ArtifactRole.STABLEHLO,
+                ArtifactRole.COMPILER_HLO,
+                ArtifactRole.CORRECTNESS_INPUT,
+                ArtifactRole.CORRECTNESS_OUTPUT,
+                ArtifactRole.ORACLE_OUTPUT,
+                ArtifactRole.TIMING_SAMPLES,
+                ArtifactRole.TIMING_TRACE,
+                ArtifactRole.COUNTER_TRACE,
+                ArtifactRole.PROFILE_ASSESSMENT,
+                ArtifactRole.COST_MODEL_INPUT,
+                ArtifactRole.COST_MODEL,
+            }
+            roles = {artifact.role for artifact in self.artifacts}
+            missing = sorted(role.value for role in required_roles - roles)
+            if missing:
+                raise ValueError(f"passed receipt is missing artifact roles: {missing}")
         return self

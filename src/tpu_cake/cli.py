@@ -14,6 +14,7 @@ from tpu_cake.contracts import ProfileExpectation
 from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
+from tpu_cake.runner import RunMode, run_distributed_matmul
 from tpu_cake.workloads import (
     inkling_rpa_experiment,
     inkling_rpa_schedule,
@@ -47,6 +48,17 @@ def _parser() -> argparse.ArgumentParser:
     experiment = commands.add_parser("experiment")
     experiment.add_argument("workload", choices=tuple(_WORKLOADS))
     experiment.add_argument("--output", type=Path)
+
+    run = commands.add_parser("run-matmul")
+    run.add_argument("--output-dir", required=True, type=Path)
+    run.add_argument("--mode", choices=tuple(RunMode), default=RunMode.TIMING)
+    run.add_argument("--mesh-size", type=int, default=8)
+    run.add_argument("--m", type=int, default=128)
+    run.add_argument("--k", type=int, default=1024)
+    run.add_argument("--n", type=int, default=1024)
+    run.add_argument("--warmup-iterations", type=int, default=10)
+    run.add_argument("--measured-iterations", type=int, default=100)
+    run.add_argument("--interpret", action="store_true")
     return parser
 
 
@@ -118,6 +130,20 @@ def main() -> None:
         code = _inspect_profile(args.capture, args.contract, args.output)
     elif args.command == "render-workload":
         code = _render_workload(args.workload, args.output)
+    elif args.command == "run-matmul":
+        result = run_distributed_matmul(
+            args.output_dir,
+            mode=RunMode(args.mode),
+            mesh_size=args.mesh_size,
+            m=args.m,
+            k=args.k,
+            n=args.n,
+            warmup_iterations=args.warmup_iterations,
+            measured_iterations=args.measured_iterations,
+            interpret=args.interpret,
+        )
+        print(result.model_dump_json(indent=2))
+        code = 0 if result.passed else 1
     else:
         code = _experiment(args.workload, args.output)
     sys.exit(code)

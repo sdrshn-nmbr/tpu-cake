@@ -16,6 +16,7 @@ class Unit(StrEnum):
     BYTE_PER_SECOND = "byte/s"
     FLOP = "flop"
     FLOP_PER_SECOND = "flop/s"
+    FLOP_PER_BYTE = "flop/byte"
     TOKEN_PER_SECOND = "token/s"
     RATIO = "ratio"
     PERCENT = "percent"

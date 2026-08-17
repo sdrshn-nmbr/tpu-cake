@@ -7,10 +7,13 @@ import numpy as np
 
 
 def semantic_seed(*parts: str) -> int:
+    return int.from_bytes(bytes.fromhex(semantic_sha256(*parts))[:8], "big", signed=False)
+
+
+def semantic_sha256(*parts: str) -> str:
     if not parts or any(not part for part in parts):
-        raise ValueError("semantic seed parts must be non-empty")
-    digest = hashlib.sha256("\x1f".join(parts).encode()).digest()
-    return int.from_bytes(digest[:8], "big", signed=False)
+        raise ValueError("semantic identity parts must be non-empty")
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 
 
 def workload_rng(

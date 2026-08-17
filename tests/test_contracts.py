@@ -68,7 +68,7 @@ def test_run_receipt_is_immutable() -> None:
     receipt = RunReceipt(
         experiment_id=experiment.experiment_id,
         schedule_sha256=experiment.schedule_sha256,
-        status="passed",
+        status="rejected",
         runtime=RuntimeIdentity(python="3.13"),
         correctness=CorrectnessResult(passed=True, oracle="numpy"),
         required_semantic_properties=(),
