@@ -219,7 +219,7 @@ def run_matmul_search(
 ) -> MatmulSearchResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     contract_path = output_dir / "contract.json"
-    contract_text = contract.model_dump_json(indent=2) + "\n"
+    contract_text = contract.model_dump_json(indent=2, exclude_computed_fields=True) + "\n"
     if contract_path.exists():
         if contract_path.read_text() != contract_text:
             raise ValueError("SEARCH_CONTRACT_CHANGED")

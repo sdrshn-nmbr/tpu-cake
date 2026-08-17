@@ -119,3 +119,9 @@ def test_search_contract_rejects_nondividing_tile() -> None:
                 ],
             }
         )
+
+
+def test_saved_search_contract_round_trips_through_strict_schema() -> None:
+    contract = _contract()
+    encoded = contract.model_dump_json(indent=2, exclude_computed_fields=True)
+    assert MatmulSearchContract.model_validate_json(encoded) == contract
