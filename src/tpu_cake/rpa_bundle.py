@@ -587,14 +587,19 @@ def _ensure_exports(mode_root: Path) -> None:
         export_xprof_capture(mode_root / "profile", mode_root / "xprof")
 
 
-def build_fused_rpa_receipt(root: Path) -> RunReceipt:
+def build_fused_rpa_receipt(
+    root: Path,
+    decode_block_sizes: tuple[int, int, int, int] = (8, 128, 8, 128),
+    *,
+    write_receipt: bool = True,
+) -> RunReceipt:
     root = root.resolve()
     finalizer_root = root / "finalizer"
     _source_state(Path(__file__).resolve().parents[2], finalizer_root)
     timing = _load_result(root / "timing" / "result.json", RunMode.TIMING)
     trace = _load_result(root / "trace" / "result.json", RunMode.TRACE)
     counters = _load_result(root / "counters" / "result.json", RunMode.COUNTERS)
-    experiment = inkling_fused_rpa_experiment()
+    experiment = inkling_fused_rpa_experiment(decode_block_sizes)
     _require_shared_canonical_identity((timing, trace, counters), experiment)
     source_identities = {
         _source_identity(
@@ -701,7 +706,11 @@ def build_fused_rpa_receipt(root: Path) -> RunReceipt:
         phases=phases,
     )
     validate_fused_rpa_receipt(receipt, experiment, root=root)
-    (root / "receipt.json").write_text(receipt.model_dump_json(indent=2) + "\n")
+    if write_receipt:
+        receipt_path = root / "receipt.json"
+        temporary_path = root / "receipt.json.tmp"
+        temporary_path.write_text(receipt.model_dump_json(indent=2) + "\n")
+        temporary_path.replace(receipt_path)
     return receipt
 
 

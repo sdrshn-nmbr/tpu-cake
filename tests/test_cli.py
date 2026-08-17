@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from tpu_cake.cli import _parser, _render_workload, _verify_rpa_bundle, _verify_schedule
 from tpu_cake.contracts import CorrectnessResult, RunReceipt, RuntimeIdentity
 from tpu_cake.workloads import inkling_fused_rpa_experiment
@@ -15,6 +17,16 @@ def test_rpa_bundle_commands_are_public() -> None:
     parser = _parser()
 
     assert parser.parse_args(["finalize-rpa-run", "bundle"]).command == "finalize-rpa-run"
+    assert parser.parse_args(
+        [
+            "finalize-rpa-run",
+            "bundle",
+            "--search-root",
+            "search",
+            "--search-contract",
+            "contract.json",
+        ]
+    ).search_root == Path("search")
     assert parser.parse_args(["verify-rpa-bundle", "bundle"]).command == "verify-rpa-bundle"
     assert parser.parse_args(
         ["verify-rpa-search", "search", "--contract", "contract.json"]
@@ -47,6 +59,28 @@ def test_public_rpa_verifier_uses_trusted_experiment_and_rejects_rejected_receip
 
     monkeypatch.setattr("tpu_cake.cli.validate_fused_rpa_receipt", capture_authority)
 
-    assert _verify_rpa_bundle(tmp_path) == 1
+    assert _verify_rpa_bundle(tmp_path, None) == 1
     assert observed["experiment"] == experiment
     assert observed["root"] == tmp_path.resolve()
+
+
+def test_public_rpa_verifier_cannot_ignore_a_supplied_search_contract(
+    tmp_path: Path,
+) -> None:
+    experiment = inkling_fused_rpa_experiment()
+    receipt = RunReceipt(
+        experiment_id=experiment.experiment_id,
+        evidence_profile="opaque_rpa_adapter_v1",
+        schedule_sha256=experiment.schedule_sha256,
+        status="rejected",
+        runtime=RuntimeIdentity(python="3.13"),
+        correctness=CorrectnessResult(passed=False, oracle="trusted"),
+        required_semantic_properties=(),
+        metrics=(),
+        artifacts=(),
+        phases=(),
+    )
+    (tmp_path / "receipt.json").write_text(receipt.model_dump_json())
+
+    with pytest.raises(ValueError, match="RPA_SEARCH_PROVENANCE_REQUIRED"):
+        _verify_rpa_bundle(tmp_path, Path("contract.json"))

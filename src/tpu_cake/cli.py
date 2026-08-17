@@ -21,6 +21,10 @@ from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
 from tpu_cake.receipt import validate_receipt
 from tpu_cake.rpa_bundle import build_fused_rpa_receipt, validate_fused_rpa_receipt
+from tpu_cake.rpa_receipt_search import (
+    build_search_bound_fused_rpa_receipt,
+    validate_search_bound_fused_rpa_receipt,
+)
 from tpu_cake.rpa_search import RpaSearchContract, validate_rpa_search_result
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
@@ -82,9 +86,12 @@ def _parser() -> argparse.ArgumentParser:
 
     finalize_rpa = commands.add_parser("finalize-rpa-run")
     finalize_rpa.add_argument("run_root", type=Path)
+    finalize_rpa.add_argument("--search-root", type=Path)
+    finalize_rpa.add_argument("--search-contract", type=Path)
 
     verify_rpa_bundle = commands.add_parser("verify-rpa-bundle")
     verify_rpa_bundle.add_argument("run_root", type=Path)
+    verify_rpa_bundle.add_argument("--search-contract", type=Path)
     verify_rpa_search = commands.add_parser("verify-rpa-search")
     verify_rpa_search.add_argument("run_root", type=Path)
     verify_rpa_search.add_argument("--contract", type=Path, required=True)
@@ -157,11 +164,22 @@ def _experiment(workload: str, output: Path | None) -> int:
     return 0
 
 
-def _verify_rpa_bundle(root: Path) -> int:
+def _verify_rpa_bundle(root: Path, search_contract_path: Path | None) -> int:
     root = root.resolve()
     receipt = RunReceipt.model_validate_json((root / "receipt.json").read_text())
-    experiment = inkling_fused_rpa_experiment()
-    validate_fused_rpa_receipt(receipt, experiment, root=root)
+    if receipt.rpa_search_provenance is None:
+        if search_contract_path is not None:
+            raise ValueError("RPA_SEARCH_PROVENANCE_REQUIRED")
+        validate_fused_rpa_receipt(receipt, inkling_fused_rpa_experiment(), root=root)
+    else:
+        if search_contract_path is None:
+            raise ValueError("RPA_SEARCH_CONTRACT_REQUIRED")
+        contract = RpaSearchContract.model_validate_json(search_contract_path.read_text())
+        validate_search_bound_fused_rpa_receipt(
+            receipt,
+            root=root,
+            expected_contract=contract,
+        )
     verdict = "ACCEPTED" if receipt.status.value == "passed" else "REJECTED"
     print(
         f"RPA_BUNDLE_{verdict} status={receipt.status.value} "
@@ -214,11 +232,23 @@ def main() -> None:
         )
         code = 0
     elif args.command == "finalize-rpa-run":
-        receipt = build_fused_rpa_receipt(args.run_root)
+        if (args.search_root is None) != (args.search_contract is None):
+            raise ValueError("RPA_SEARCH_ROOT_AND_CONTRACT_REQUIRED_TOGETHER")
+        if args.search_root is None:
+            receipt = build_fused_rpa_receipt(args.run_root)
+        else:
+            contract = RpaSearchContract.model_validate_json(
+                args.search_contract.read_text()
+            )
+            receipt = build_search_bound_fused_rpa_receipt(
+                args.run_root,
+                args.search_root,
+                contract,
+            )
         print(receipt.model_dump_json(indent=2))
         code = 0 if receipt.status.value == "passed" else 1
     elif args.command == "verify-rpa-bundle":
-        code = _verify_rpa_bundle(args.run_root)
+        code = _verify_rpa_bundle(args.run_root, args.search_contract)
     elif args.command == "verify-rpa-search":
         contract = RpaSearchContract.model_validate_json(args.contract.read_text())
         result = validate_rpa_search_result(args.run_root, contract)

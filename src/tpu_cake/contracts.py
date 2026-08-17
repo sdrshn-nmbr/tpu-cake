@@ -418,6 +418,30 @@ class SearchProvenance(BaseModel):
     run_count: int = Field(gt=0)
 
 
+class RpaSearchSelection(StrEnum):
+    CHALLENGER_PROMOTED = "challenger_promoted"
+    BASELINE_RETAINED_NO_PROMOTABLE_CHALLENGER = (
+        "baseline_retained_no_promotable_challenger"
+    )
+    BASELINE_RETAINED_CONFIRMATION_FAILED = "baseline_retained_confirmation_failed"
+
+
+class RpaSearchProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    search_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selection: RpaSearchSelection
+    baseline: str = Field(min_length=1)
+    selected_candidate: str = Field(min_length=1)
+    selected_block_sizes: tuple[int, int, int, int]
+    selected_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_run_path: str = Field(min_length=1, pattern=r"^[a-zA-Z0-9._/-]+$")
+    selected_run_result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_profiler_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_count: int = Field(gt=0)
+
+
 class RunReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     experiment_id: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -431,6 +455,7 @@ class RunReceipt(BaseModel):
     artifacts: tuple[ArtifactReference, ...]
     phases: tuple[EvidencePhase, ...]
     search_provenance: SearchProvenance | None = None
+    rpa_search_provenance: RpaSearchProvenance | None = None
 
     @model_validator(mode="after")
     def pass_requires_correctness(self) -> RunReceipt:
@@ -445,6 +470,8 @@ class RunReceipt(BaseModel):
         paths = [artifact.path for artifact in self.artifacts]
         if len(paths) != len(set(paths)):
             raise ValueError("receipt artifact paths must be unique")
+        if self.search_provenance is not None and self.rpa_search_provenance is not None:
+            raise ValueError("receipt cannot contain two search provenance contracts")
         if self.status is RunStatus.PASSED:
             required_roles = set().union(
                 *PHASE_REQUIRED_ROLES_BY_PROFILE[self.evidence_profile].values()
@@ -484,7 +511,10 @@ class RunReceipt(BaseModel):
             missing = sorted(role.value for role in required_roles - roles)
             if missing:
                 raise ValueError(f"passed receipt is missing artifact roles: {missing}")
-            if self.search_provenance is not None:
+            if (
+                self.search_provenance is not None
+                or self.rpa_search_provenance is not None
+            ):
                 search_roles = {
                     ArtifactRole.SEARCH_CONTRACT,
                     ArtifactRole.SEARCH_RESULT,
