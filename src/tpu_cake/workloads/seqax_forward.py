@@ -3,16 +3,45 @@ from __future__ import annotations
 from xdsl.dialects.builtin import IntegerType, ModuleOp, Signedness, bf16, f32, i1
 from xdsl.ir import SSAValue
 
+from tpu_cake.contracts import (
+    BenchmarkProtocol,
+    ExecutionContract,
+    KernelExperiment,
+    NumericalContract,
+    ProfileExpectation,
+    SearchPolicy,
+    TargetHardware,
+    TensorContract,
+    WorkloadContract,
+    WorkloadStage,
+)
 from tpu_cake.distributed_frontend import (
     DistributedProgramBuilder,
     DistributedTensorSpec,
     tensor,
 )
+from tpu_cake.jax_lowering import JaxDistributedMeshPlan, JaxTensorContract
 from tpu_cake.source import SourceLocation
 
 SEQAX_REVISION = "b418a2d9059a1bfcff801d22b7088cc444257703"
 SEQAX_FORWARD_SOURCE = "seqax/train.py"
 U32 = IntegerType(32, Signedness.UNSIGNED)
+
+SEQAX_FORWARD_INPUT_NAMES = (
+    "tokens",
+    "sequence_starts",
+    "embedding",
+    "layer_norm_1",
+    "layer_norm_2",
+    "query_weights",
+    "key_value_weights",
+    "output_weights",
+    "gate_weights",
+    "up_weights",
+    "down_weights",
+    "final_layer_norm",
+    "unembedding",
+)
 
 
 def _source(line: int) -> SourceLocation:
@@ -687,3 +716,81 @@ def seqax_forward_schedule(
         source=_source(207),
     )
     return builder.module(logits)
+
+
+def _tensor_contract(name: str, value: JaxTensorContract) -> TensorContract:
+    return TensorContract(
+        name=name,
+        shape=tuple(size for _, size in value.shape),
+        logical_shape=tuple(dimension for dimension, _ in value.shape),
+        dtype=value.dtype,
+        sharding=tuple("+".join(axes) for axes in value.declared_sharding),
+    )
+
+
+def seqax_forward_experiment(
+    plan: JaxDistributedMeshPlan,
+    *,
+    warmup_iterations: int,
+    measured_iterations: int,
+    absolute_tolerance: float,
+    relative_tolerance: float,
+) -> KernelExperiment:
+    if len(plan.input_contracts) != len(SEQAX_FORWARD_INPUT_NAMES):
+        raise ValueError("SEQAX_FORWARD_INPUT_CONTRACT_COUNT_MISMATCH")
+    if len(plan.output_contracts) != 1:
+        raise ValueError("SEQAX_FORWARD_OUTPUT_CONTRACT_COUNT_MISMATCH")
+    return KernelExperiment(
+        workload=WorkloadContract(
+            name="seqax-complete-forward",
+            stage=WorkloadStage.CONTROL,
+            inputs=tuple(
+                _tensor_contract(name, value)
+                for name, value in zip(
+                    SEQAX_FORWARD_INPUT_NAMES,
+                    plan.input_contracts,
+                    strict=True,
+                )
+            ),
+            outputs=(_tensor_contract("logits", plan.output_contracts[0]),),
+            numerical=NumericalContract(
+                reference="independent NumPy Seqax forward reference",
+                absolute_tolerance=absolute_tolerance,
+                relative_tolerance=relative_tolerance,
+            ),
+            execution=ExecutionContract(
+                executor="tpu_cake.jax_lowering.JaxDistributedMeshPlan.build",
+                scope=plan.execution_scope,
+                source_revision=SEQAX_REVISION,
+            ),
+        ),
+        target=TargetHardware(
+            accelerator="TPU7x",
+            topology="mesh(d=2,t=4)",
+            chip_count=4,
+            vmem_budget_bytes_per_core=128 << 20,
+            smem_budget_bytes_per_core=32 << 20,
+            runtime_target="JAX/XLA distributed shard_map",
+        ),
+        benchmark=BenchmarkProtocol(
+            warmup_iterations=warmup_iterations,
+            measured_iterations=measured_iterations,
+            synchronization="block until every output shard is ready",
+            statistic="median synchronized distributed forward duration",
+        ),
+        search=SearchPolicy(
+            objective_metric="median_synchronized_forward_duration_ns",
+        ),
+        profile=ProfileExpectation(
+            name="seqax-complete-distributed-forward",
+            stage=WorkloadStage.CONTROL,
+            minimum_tpu_device_planes=plan.device_count,
+            require_tensor_core_activity=False,
+            required_timed_hlo_markers=(
+                "all-gather",
+                "reduce_scatter",
+                "dot_general",
+            ),
+        ),
+        schedule_sha256=plan.schedule_sha256,
+    )

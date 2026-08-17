@@ -11,7 +11,12 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tpu_cake.canonical import canonical_text
-from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
+from tpu_cake.contracts import (
+    ArtifactReference,
+    ArtifactRole,
+    RuntimeIdentity,
+    experiment_artifact_json,
+)
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, array_sha256, semantic_sha256
 from tpu_cake.jax_lowering import (
@@ -33,7 +38,10 @@ from tpu_cake.runner import (
     _write_text,
 )
 from tpu_cake.seqax_cost_model import estimate_seqax_forward
-from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import (
+    seqax_forward_experiment,
+    seqax_forward_schedule,
+)
 from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_inputs,
     seqax_forward_reference,
@@ -58,6 +66,34 @@ SEQAX_EVIDENCE_PARAMETERS = {
 }
 SEQAX_OUTPUT_ATOL = 0.006
 SEQAX_OUTPUT_RTOL = 0.05
+SEQAX_LIBTPU_INIT_ARGS = " --xla_tpu_use_enhanced_launch_barrier=true"
+
+
+def expected_seqax_profiler_contract(mode: RunMode) -> dict[str, object]:
+    advanced: dict[str, object] = {"tpu_num_chips_to_profile_per_task": 4}
+    if mode is RunMode.COUNTERS:
+        advanced.update(
+            {
+                "tpu_enable_periodic_counter_sampling": True,
+                "tpu_tc_perf_counter_sampling_options": (
+                    "interval_us:1 scaling:0 counter_size_bits:1 "
+                    "indices:1 indices:3 indices:4 indices:10 indices:11 "
+                    "indices:31 indices:32 indices:33 indices:34 indices:35 "
+                    "indices:37 indices:38 indices:56 indices:57 indices:58 "
+                    "indices:73 indices:74 indices:75 indices:105"
+                ),
+                "num_tensor_cores_to_trace_per_device": 1,
+            }
+        )
+    return {
+        "mode": mode.value,
+        "raise_error_on_start_failure": True,
+        "enable_hlo_proto": True,
+        "host_tracer_level": 1,
+        "python_tracer_level": 0,
+        "advanced_configuration": advanced,
+        "libtpu_init_args": SEQAX_LIBTPU_INIT_ARGS,
+    }
 
 
 class SeqaxForwardInvocation(BaseModel):
@@ -115,7 +151,7 @@ class SeqaxForwardRunResult(BaseModel):
     warmup_iterations: int = Field(ge=0)
     measured_iterations: int = Field(gt=0)
     samples_ns: tuple[int, ...]
-    median_ns: int | None = Field(default=None, ge=0)
+    median_ns: float | None = Field(default=None, ge=0)
     p90_ns: int | None = Field(default=None, ge=0)
     coefficient_of_variation: float | None = Field(default=None, ge=0)
     runtime: RuntimeIdentity
@@ -171,6 +207,16 @@ def run_seqax_forward(
             f"SEQAX_DEVICE_COUNT_MISMATCH expected={plan.device_count} observed={len(devices)}"
         )
     source = plan.render_executable_source()
+    experiment = seqax_forward_experiment(
+        plan,
+        warmup_iterations=SEQAX_EVIDENCE_WARMUP_ITERATIONS,
+        measured_iterations=SEQAX_EVIDENCE_MEASURED_ITERATIONS,
+        absolute_tolerance=SEQAX_OUTPUT_ATOL,
+        relative_tolerance=SEQAX_OUTPUT_RTOL,
+    )
+    profiler_contract = _profiler_contract(mode)
+    if profiler_contract != expected_seqax_profiler_contract(mode):
+        raise ValueError("SEQAX_PROFILER_CONTRACT_MISMATCH")
     invocation = SeqaxForwardInvocation(
         identity_schema=SEMANTIC_IDENTITY_SCHEMA,
         execution_schema=JAX_DISTRIBUTED_EXECUTION_SCHEMA,
@@ -191,6 +237,11 @@ def run_seqax_forward(
         str(SEQAX_EVIDENCE_SEED),
     )
     artifacts = [
+        _write_text(
+            output_dir / "experiment.json",
+            experiment_artifact_json(experiment) + "\n",
+            ArtifactRole.EXPERIMENT,
+        ),
         _write_json(
             output_dir / "invocation.json",
             invocation.model_dump(mode="json"),
@@ -198,7 +249,7 @@ def run_seqax_forward(
         ),
         _write_json(
             output_dir / "profiler_config.json",
-            _profiler_contract(mode),
+            profiler_contract,
             ArtifactRole.PROFILER_CONFIG,
         ),
         *_source_state(Path(__file__).resolve().parents[2], output_dir),
@@ -382,7 +433,7 @@ def run_seqax_forward(
         ArtifactRole.ORACLE_OUTPUT,
     )
     artifacts.extend((*input_artifacts, output_artifact, oracle_artifact))
-    median_ns = int(statistics.median(samples)) if samples else None
+    median_ns = statistics.median(samples) if samples else None
     p90_ns = _percentile(samples, 0.9) if samples else None
     coefficient = (
         statistics.pstdev(samples) / statistics.mean(samples)

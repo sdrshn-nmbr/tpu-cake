@@ -11,9 +11,14 @@ from tpu_cake.seqax_runner import (
     SEQAX_EVIDENCE_SEED,
     SEQAX_EVIDENCE_WARMUP_ITERATIONS,
     SeqaxForwardInvocation,
+    expected_seqax_profiler_contract,
     run_seqax_forward,
 )
-from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import (
+    SEQAX_FORWARD_INPUT_NAMES,
+    seqax_forward_experiment,
+    seqax_forward_schedule,
+)
 
 
 def test_seqax_evidence_invocation_binds_the_complete_plan() -> None:
@@ -53,6 +58,47 @@ def test_seqax_evidence_invocation_rejects_protocol_drift() -> None:
             jax_source_sha256=plan.source_sha256(),
             execution_scope=plan.execution_scope,
         )
+
+
+def test_seqax_experiment_binds_the_full_distributed_abi() -> None:
+    plan = lower_distributed_program_to_jax_mesh(
+        seqax_forward_schedule(**SEQAX_EVIDENCE_PARAMETERS)
+    )
+    experiment = seqax_forward_experiment(
+        plan,
+        warmup_iterations=SEQAX_EVIDENCE_WARMUP_ITERATIONS,
+        measured_iterations=SEQAX_EVIDENCE_MEASURED_ITERATIONS,
+        absolute_tolerance=0.006,
+        relative_tolerance=0.05,
+    )
+
+    assert tuple(value.name for value in experiment.workload.inputs) == (
+        SEQAX_FORWARD_INPUT_NAMES
+    )
+    assert experiment.workload.outputs[0].name == "logits"
+    assert experiment.workload.execution is not None
+    assert experiment.workload.execution.scope == "multi-device-local-shards"
+    assert experiment.profile.minimum_tpu_device_planes == 8
+    assert experiment.profile.required_timed_hlo_markers == (
+        "all-gather",
+        "reduce_scatter",
+        "dot_general",
+    )
+
+
+def test_seqax_profiler_contract_is_exact() -> None:
+    trace = expected_seqax_profiler_contract(RunMode.TRACE)
+    counters = expected_seqax_profiler_contract(RunMode.COUNTERS)
+
+    assert trace["advanced_configuration"] == {
+        "tpu_num_chips_to_profile_per_task": 4
+    }
+    assert counters["advanced_configuration"][
+        "tpu_enable_periodic_counter_sampling"
+    ] is True
+    assert counters["advanced_configuration"][
+        "num_tensor_cores_to_trace_per_device"
+    ] == 1
 
 
 def test_seqax_device_runner_rejects_a_non_tpu_backend(

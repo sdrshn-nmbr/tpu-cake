@@ -158,6 +158,15 @@ def test_complete_seqax_forward_expands_layer_scan_and_emits_typed_bounds() -> N
     assert report.counts.materialized_hbm_bytes_per_device > 0
     assert report.counts.ici_bidirectional_bytes_per_device > 0
     assert report.counts.peak_local_logical_live_bytes_per_device > 0
+    metrics = {metric.name: metric for metric in report.metrics}
+    assert (
+        metrics["seqax_global_logical_tensor_bytes"].interval.scope
+        == "one complete logical Seqax forward across the full device mesh"
+    )
+    assert (
+        metrics["seqax_local_logical_tensor_bytes_per_device"].interval.scope
+        == "one complete logical Seqax forward on one JAX TPU device"
+    )
     assert report.balance.maximum_to_minimum_work_ratio == Decimal(1)
     assert report.predicted_limiting_resource in {"compute", "hbm", "ici"}
     assert any("none of its values are device measurements" in item for item in report.omissions)

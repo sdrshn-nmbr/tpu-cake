@@ -29,6 +29,11 @@ from tpu_cake.rpa_search import RpaSearchContract, validate_rpa_search_result
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
 from tpu_cake.search import MatmulSearchContract, run_matmul_search
+from tpu_cake.seqax_bundle import (
+    build_seqax_forward_receipt,
+    validate_seqax_forward_receipt,
+)
+from tpu_cake.seqax_runner import run_seqax_forward
 from tpu_cake.workloads import (
     inkling_fused_rpa_experiment,
     inkling_rpa_experiment,
@@ -95,6 +100,16 @@ def _parser() -> argparse.ArgumentParser:
     verify_rpa_search = commands.add_parser("verify-rpa-search")
     verify_rpa_search.add_argument("run_root", type=Path)
     verify_rpa_search.add_argument("--contract", type=Path, required=True)
+
+    run_seqax = commands.add_parser("run-seqax-forward")
+    run_seqax.add_argument("--output-dir", required=True, type=Path)
+    run_seqax.add_argument("--mode", choices=tuple(RunMode), default=RunMode.TIMING)
+
+    finalize_seqax = commands.add_parser("finalize-seqax-forward")
+    finalize_seqax.add_argument("run_root", type=Path)
+
+    verify_seqax = commands.add_parser("verify-seqax-forward")
+    verify_seqax.add_argument("run_root", type=Path)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -257,6 +272,24 @@ def main() -> None:
             f"runs={len(result.runs)}"
         )
         code = 0
+    elif args.command == "run-seqax-forward":
+        result = run_seqax_forward(args.output_dir, mode=RunMode(args.mode))
+        print(result.model_dump_json(indent=2))
+        code = 0 if result.passed else 1
+    elif args.command == "finalize-seqax-forward":
+        receipt = build_seqax_forward_receipt(args.run_root)
+        print(receipt.model_dump_json(indent=2))
+        code = 0 if receipt.status.value == "passed" else 1
+    elif args.command == "verify-seqax-forward":
+        root = args.run_root.resolve()
+        receipt = RunReceipt.model_validate_json((root / "receipt.json").read_text())
+        validate_seqax_forward_receipt(receipt, root=root)
+        verdict = "ACCEPTED" if receipt.status.value == "passed" else "REJECTED"
+        print(
+            f"SEQAX_FORWARD_{verdict} status={receipt.status.value} "
+            f"artifacts={len(receipt.artifacts)} metrics={len(receipt.metrics)}"
+        )
+        code = 0 if receipt.status.value == "passed" else 1
     elif args.command == "search-matmul":
         contract = MatmulSearchContract.model_validate_json(args.contract.read_text())
         result = run_matmul_search(args.output_dir, contract, interpret=args.interpret)

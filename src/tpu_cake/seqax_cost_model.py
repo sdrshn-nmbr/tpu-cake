@@ -559,6 +559,7 @@ def _metric(
     formula_name: str,
     expression: str,
     *,
+    scope: str = "one complete logical Seqax forward on one JAX TPU device",
     numerator: Quantity | None = None,
     denominator: Quantity | None = None,
 ) -> Metric:
@@ -566,9 +567,7 @@ def _metric(
         name=name,
         quantity=Quantity(value=Decimal(value), unit=unit),
         kind=MeasurementKind.ESTIMATED,
-        interval=MeasurementInterval(
-            scope="one complete logical Seqax forward on one JAX TPU device"
-        ),
+        interval=MeasurementInterval(scope=scope),
         sources=(source,),
         formula=FormulaIdentity(name=formula_name, version="1", expression=expression),
         numerator=numerator,
@@ -720,6 +719,7 @@ def estimate_seqax_forward(
             source,
             "seqax_global_logical_traffic",
             "sum(global_operand_bytes+global_result_bytes)*scan_trip_count",
+            scope="one complete logical Seqax forward across the full device mesh",
         ),
         _metric(
             "seqax_local_logical_tensor_bytes_per_device",
@@ -808,6 +808,7 @@ def estimate_seqax_forward(
             source,
             "seqax_uniform_static_sharding_balance",
             "maximum_per_device_declared_work/minimum_per_device_declared_work",
+            scope="one complete logical Seqax forward across the full device mesh",
             numerator=imbalance_numerator,
             denominator=imbalance_denominator,
         ),

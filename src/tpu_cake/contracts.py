@@ -364,9 +364,61 @@ RPA_PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
     EvidencePhaseName.AGGREGATE: frozenset({ArtifactRole.PROFILE_ASSESSMENT}),
 }
 
+SEQAX_PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
+    EvidencePhaseName.TIMING: frozenset(
+        {
+            ArtifactRole.EXPERIMENT,
+            ArtifactRole.DISTRIBUTED_IR,
+            ArtifactRole.JAX_SOURCE,
+            ArtifactRole.PLAN_MANIFEST,
+            ArtifactRole.STABLEHLO,
+            ArtifactRole.COMPILER_HLO,
+            ArtifactRole.CORRECTNESS_INPUT,
+            ArtifactRole.CORRECTNESS_OUTPUT,
+            ArtifactRole.ORACLE_OUTPUT,
+            ArtifactRole.TIMING_SAMPLES,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.COST_MODEL,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.TRACE: frozenset(
+        {
+            ArtifactRole.TRACE_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.TIMING_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.COUNTERS: frozenset(
+        {
+            ArtifactRole.COUNTER_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.COUNTER_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.FINALIZER: frozenset(
+        {ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}
+    ),
+    EvidencePhaseName.AGGREGATE: frozenset({ArtifactRole.PROFILE_ASSESSMENT}),
+}
+
 PHASE_REQUIRED_ROLES_BY_PROFILE = {
     EvidenceProfile.DISTRIBUTED_MATMUL: PHASE_REQUIRED_ROLES,
     EvidenceProfile.OPAQUE_RPA_ADAPTER: RPA_PHASE_REQUIRED_ROLES,
+    EvidenceProfile.SEQAX_DISTRIBUTED_FORWARD: SEQAX_PHASE_REQUIRED_ROLES,
 }
 
 
