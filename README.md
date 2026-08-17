@@ -62,6 +62,14 @@ uv run tpu-cake run-matmul \
 
 uv run tpu-cake finalize-matmul-run RUN_ROOT
 uv run tpu-cake search-matmul SEARCH_CONTRACT.json --output-dir SEARCH_ROOT
+
+uv run tpu-cake verify-rpa-search RPA_SEARCH_ROOT \
+  --contract contracts/inkling-fused-rpa-block-search.json
+uv run tpu-cake finalize-rpa-run RPA_RUN_ROOT \
+  --search-root RPA_SEARCH_ROOT \
+  --search-contract contracts/inkling-fused-rpa-block-search.json
+uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
+  --search-contract contracts/inkling-fused-rpa-block-search.json
 ```
 
 ## Layout
@@ -76,7 +84,9 @@ uv run tpu-cake search-matmul SEARCH_CONTRACT.json --output-dir SEARCH_ROOT
 
 ## Current boundary
 
-The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed tensor dialect is still deliberately narrow: it covers the algebra needed for this vertical slice, not the complete Seqax forward pass. The Inkling RPA workload has typed contracts and physical schedule examples, but it does not yet lower through the same complete Pallas, search, and receipt path.
+The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed-tensor dialect represents the pinned Seqax forward algebra and has an independent numerical interpreter, but physical Pallas lowering remains deliberately narrow and currently accepts the distributed matmul slice.
+
+Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution, bounded block-size search, separate timing/trace/counter captures, and a search-bound receipt. It delegates execution to the pinned upstream RPA Pallas wrapper and covers one fixed decode-only local-shard fixture. It does not yet represent the wrapper's internal Pallas schedule, own the outer multi-device `shard_map`, prove full Inkling serving, or establish a global block-size optimum.
 
 ## Ideas and source material
 
