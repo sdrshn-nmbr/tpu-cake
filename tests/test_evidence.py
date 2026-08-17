@@ -8,7 +8,7 @@ from tpu_cake.evidence import (
     PlaneEvidence,
     ProgramEvidence,
 )
-from tpu_cake.xprof_evidence import assess_evidence, capture_metrics
+from tpu_cake.xprof_evidence import _hlo_proto_paths, assess_evidence, capture_metrics
 
 
 def _artifact(path: str) -> ArtifactEvidence:
@@ -46,6 +46,16 @@ def _capture(*, rpa_markers: int, forbidden_hits: int) -> CaptureEvidence:
         ),
         timed_program_ids=frozenset({"7"}),
     )
+
+
+def test_hlo_discovery_accepts_any_program_name_with_an_xprof_program_id(
+    tmp_path,
+) -> None:
+    expected = tmp_path / "jit_distributed(7).hlo_proto.pb"
+    expected.write_bytes(b"hlo")
+    (tmp_path / "unrelated.pb").write_bytes(b"not hlo")
+
+    assert _hlo_proto_paths(tmp_path) == (expected,)
 
 
 def _expectation() -> ProfileExpectation:

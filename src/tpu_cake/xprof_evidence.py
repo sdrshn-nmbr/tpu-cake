@@ -61,6 +61,10 @@ def _single(root: Path, pattern: str) -> Path:
     return matches[0]
 
 
+def _hlo_proto_paths(root: Path) -> tuple[Path, ...]:
+    return tuple(sorted(root.rglob("*.hlo_proto.pb")))
+
+
 def _gviz_rows(path: Path) -> list[dict[str, Any]]:
     table = json.loads(path.read_bytes())
     columns = [column["id"] for column in table["cols"]]
@@ -144,7 +148,7 @@ def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvide
 
     programs = []
     captured_program_ids: set[str] = set()
-    for hlo_path in sorted(root.rglob("*run_model*.hlo_proto.pb")):
+    for hlo_path in _hlo_proto_paths(root):
         match = _PROGRAM_ID.search(hlo_path.name)
         if match is None:
             continue
