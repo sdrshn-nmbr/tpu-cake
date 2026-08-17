@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -153,6 +154,14 @@ def _require_fully_reduced(*tensors: DTensorType) -> None:
         raise VerifyException("operation cannot consume a partially reduced tensor")
 
 
+def _is_float_type(value: Attribute) -> bool:
+    return isinstance(value, (BFloat16Type, Float16Type, Float32Type))
+
+
+def _is_boolean_type(value: Attribute) -> bool:
+    return isinstance(value, IntegerType) and value.width.data == 1
+
+
 @irdl_op_definition
 class ElementwiseOp(IRDLOperation):
     name = "dtensor.elementwise"
@@ -198,6 +207,296 @@ class ElementwiseOp(IRDLOperation):
             result.element_type, (BFloat16Type, Float16Type, Float32Type)
         ):
             raise VerifyException("nonlinear elementwise functions require floating-point values")
+
+
+@irdl_op_definition
+class CastOp(IRDLOperation):
+    name = "dtensor.cast"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+
+    def __init__(self, value: SSAValue | IRDLOperation, result_type: DTensorType) -> None:
+        super().__init__(operands=[value], result_types=[result_type])
+
+    def verify_(self) -> None:
+        before, after = self.value.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        _require_fully_reduced(before)
+        if before.logical_shape() != after.logical_shape():
+            raise VerifyException("cast cannot change logical shape")
+        if before.sharding_axes() != after.sharding_axes():
+            raise VerifyException("cast cannot change sharding")
+        if after.pending_reductions():
+            raise VerifyException("cast cannot introduce pending reductions")
+        supported = _is_float_type(before.element_type) or isinstance(
+            before.element_type, IntegerType
+        )
+        supported = supported and (
+            _is_float_type(after.element_type)
+            or isinstance(after.element_type, IntegerType)
+        )
+        if not supported or before.element_type == after.element_type:
+            raise VerifyException("cast needs distinct supported numeric types")
+
+
+@irdl_op_definition
+class RmsNormOp(IRDLOperation):
+    name = "dtensor.rms_norm"
+    value = operand_def(DTensorType)
+    scale = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    dimension = prop_def(StringAttr)
+    epsilon = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        scale: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        dimension: str,
+        epsilon: str = "0.000001",
+    ) -> None:
+        super().__init__(
+            operands=[value, scale],
+            result_types=[result_type],
+            properties={
+                "dimension": StringAttr(dimension),
+                "epsilon": StringAttr(epsilon),
+            },
+        )
+
+    def verify_(self) -> None:
+        value, scale, result = self.value.type, self.scale.type, self.result.type
+        assert isinstance(value, DTensorType)
+        assert isinstance(scale, DTensorType)
+        assert isinstance(result, DTensorType)
+        _require_fully_reduced(value, scale, result)
+        if not all(
+            _is_float_type(tensor.element_type) for tensor in (value, scale, result)
+        ):
+            raise VerifyException("RMSNorm requires floating-point tensors")
+        if value.logical_shape() != result.logical_shape() or (
+            value.sharding_axes() != result.sharding_axes()
+        ):
+            raise VerifyException("RMSNorm result must preserve value shape and sharding")
+        dimension = self.dimension.data
+        value_shape = dict(value.logical_shape())
+        if scale.logical_shape() != ((dimension, value_shape.get(dimension, -1)),):
+            raise VerifyException("RMSNorm scale must match exactly one normalized dimension")
+        if scale.sharding_axes() != ((),):
+            raise VerifyException("RMSNorm scale must be locally replicated")
+        try:
+            epsilon = Decimal(self.epsilon.data)
+        except InvalidOperation as error:
+            raise VerifyException("RMSNorm epsilon must be a finite decimal") from error
+        if not epsilon.is_finite() or epsilon <= 0:
+            raise VerifyException("RMSNorm epsilon must be positive and finite")
+
+
+@irdl_op_definition
+class RotaryEmbeddingOp(IRDLOperation):
+    name = "dtensor.rotary_embedding"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    sequence_dimension = prop_def(StringAttr)
+    head_dimension = prop_def(StringAttr)
+    maximum_timescale = prop_def(IntAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        sequence_dimension: str,
+        head_dimension: str,
+        maximum_timescale: int,
+    ) -> None:
+        super().__init__(
+            operands=[value],
+            result_types=[result_type],
+            properties={
+                "sequence_dimension": StringAttr(sequence_dimension),
+                "head_dimension": StringAttr(head_dimension),
+                "maximum_timescale": IntAttr(maximum_timescale),
+            },
+        )
+
+    def verify_(self) -> None:
+        before, after = self.value.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        _require_fully_reduced(before, after)
+        if before != after or not _is_float_type(before.element_type):
+            raise VerifyException(
+                "rotary embedding must preserve one floating-point distributed tensor type"
+            )
+        shape = dict(before.logical_shape())
+        sequence = self.sequence_dimension.data
+        head = self.head_dimension.data
+        if sequence not in shape or head not in shape or shape[head] % 2:
+            raise VerifyException(
+                "rotary embedding needs a sequence dimension and even head dimension"
+            )
+        if self.maximum_timescale.data <= 0:
+            raise VerifyException("rotary embedding maximum timescale must be positive")
+
+
+@irdl_op_definition
+class SliceOp(IRDLOperation):
+    name = "dtensor.slice"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    dimension = prop_def(StringAttr)
+    index = prop_def(IntAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        dimension: str,
+        index: int,
+    ) -> None:
+        super().__init__(
+            operands=[value],
+            result_types=[result_type],
+            properties={"dimension": StringAttr(dimension), "index": IntAttr(index)},
+        )
+
+    def verify_(self) -> None:
+        before, after = self.value.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        dimension = self.dimension.data
+        indexes = _dimension_index(before)
+        if dimension not in indexes:
+            raise VerifyException("slice references an unknown dimension")
+        index = indexes[dimension]
+        if before.sharding_axes()[index]:
+            raise VerifyException("slice cannot index a sharded dimension")
+        if not 0 <= self.index.data < before.logical_shape()[index][1]:
+            raise VerifyException("slice index is out of bounds")
+        expected_shape = tuple(
+            value for offset, value in enumerate(before.logical_shape()) if offset != index
+        )
+        expected_sharding = tuple(
+            value for offset, value in enumerate(before.sharding_axes()) if offset != index
+        )
+        if (
+            after.logical_shape() != expected_shape
+            or after.sharding_axes() != expected_sharding
+            or before.element_type != after.element_type
+            or before.pending_reductions() != after.pending_reductions()
+        ):
+            raise VerifyException(
+                "slice result must remove only its indexed unsharded dimension"
+            )
+
+
+@irdl_op_definition
+class PackedCausalMaskOp(IRDLOperation):
+    name = "dtensor.packed_causal_mask"
+    sequence_starts = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    sequence_dimension = prop_def(StringAttr)
+    query_dimension = prop_def(StringAttr)
+    key_dimension = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        sequence_starts: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        sequence_dimension: str,
+        query_dimension: str,
+        key_dimension: str,
+    ) -> None:
+        super().__init__(
+            operands=[sequence_starts],
+            result_types=[result_type],
+            properties={
+                "sequence_dimension": StringAttr(sequence_dimension),
+                "query_dimension": StringAttr(query_dimension),
+                "key_dimension": StringAttr(key_dimension),
+            },
+        )
+
+    def verify_(self) -> None:
+        before, after = self.sequence_starts.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        _require_fully_reduced(before, after)
+        if not _is_boolean_type(before.element_type) or not _is_boolean_type(
+            after.element_type
+        ):
+            raise VerifyException("packed causal masks require boolean tensors")
+        sequence = self.sequence_dimension.data
+        query = self.query_dimension.data
+        key = self.key_dimension.data
+        before_shape = dict(before.logical_shape())
+        if sequence not in before_shape or query == key:
+            raise VerifyException("packed causal mask dimensions are invalid")
+        expected_shape = tuple(
+            (name, size)
+            for name, size in before.logical_shape()
+            if name != sequence
+        ) + ((query, before_shape[sequence]), (key, before_shape[sequence]))
+        sequence_index = _dimension_index(before)[sequence]
+        expected_sharding = tuple(
+            axes
+            for index, axes in enumerate(before.sharding_axes())
+            if index != sequence_index
+        ) + ((), ())
+        if after.logical_shape() != expected_shape or after.sharding_axes() != expected_sharding:
+            raise VerifyException("packed causal mask result has the wrong shape or sharding")
+
+
+@irdl_op_definition
+class MaskedSoftmaxOp(IRDLOperation):
+    name = "dtensor.masked_softmax"
+    value = operand_def(DTensorType)
+    mask = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    dimension = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        mask: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        dimension: str,
+    ) -> None:
+        super().__init__(
+            operands=[value, mask],
+            result_types=[result_type],
+            properties={"dimension": StringAttr(dimension)},
+        )
+
+    def verify_(self) -> None:
+        value, mask, result = self.value.type, self.mask.type, self.result.type
+        assert isinstance(value, DTensorType)
+        assert isinstance(mask, DTensorType)
+        assert isinstance(result, DTensorType)
+        _require_fully_reduced(value, mask, result)
+        if not _is_float_type(value.element_type) or not _is_float_type(result.element_type):
+            raise VerifyException("masked softmax values must be floating point")
+        if not _is_boolean_type(mask.element_type):
+            raise VerifyException("masked softmax mask must be boolean")
+        if (
+            value.logical_shape() != result.logical_shape()
+            or value.sharding_axes() != result.sharding_axes()
+        ):
+            raise VerifyException("masked softmax result must preserve shape and sharding")
+        value_shape = dict(value.logical_shape())
+        value_sharding = dict(zip(value_shape, value.sharding_axes(), strict=True))
+        if self.dimension.data not in value_shape:
+            raise VerifyException("masked softmax references an unknown dimension")
+        for (name, size), axes in zip(
+            mask.logical_shape(), mask.sharding_axes(), strict=True
+        ):
+            if value_shape.get(name) != size or value_sharding[name] != axes:
+                raise VerifyException(
+                    "masked softmax mask dimensions must be a named subset of its values"
+                )
 
 
 @irdl_op_definition
@@ -694,7 +993,7 @@ class ReturnOp(IRDLOperation):
     traits = traits_def(IsTerminator())
 
     def __init__(self, *values: SSAValue | IRDLOperation) -> None:
-        super().__init__(operands=list(values))
+        super().__init__(operands=[list(values)])
 
     def verify_(self) -> None:
         for value in self.values:
@@ -759,6 +1058,12 @@ DistributedTensor = Dialect(
     [
         ProgramOp,
         ElementwiseOp,
+        CastOp,
+        RmsNormOp,
+        RotaryEmbeddingOp,
+        SliceOp,
+        PackedCausalMaskOp,
+        MaskedSoftmaxOp,
         ReduceLocalOp,
         TransposeOp,
         BroadcastOp,

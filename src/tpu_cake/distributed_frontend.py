@@ -11,19 +11,25 @@ from tpu_cake.dialects.distributed_tensor import (
     AllReduceOp,
     AxisListAttr,
     BroadcastOp,
+    CastOp,
     DimensionAttr,
     DTensorType,
     EinsumLocalOp,
     EinsumOp,
     ElementwiseOp,
     EmbeddingLookupOp,
+    MaskedSoftmaxOp,
     MeshAttr,
+    PackedCausalMaskOp,
     PendingReductionsAttr,
     ProgramOp,
     ReduceLocalOp,
     ReduceScatterOp,
     ReturnOp,
+    RmsNormOp,
+    RotaryEmbeddingOp,
     ShardingAttr,
+    SliceOp,
     TransposeOp,
 )
 from tpu_cake.source import SourceLocation, attach_source, verify_with_sources
@@ -154,6 +160,124 @@ class DistributedProgramBuilder:
             ElementwiseOp(tuple(values), result.to_type(), function), source
         )
         assert isinstance(operation, ElementwiseOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def cast(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(CastOp(value, result.to_type()), source)
+        assert isinstance(operation, CastOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def rms_norm(
+        self,
+        value: SSAValue,
+        scale: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        dimension: str,
+        epsilon: str = "0.000001",
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            RmsNormOp(
+                value,
+                scale,
+                result.to_type(),
+                dimension=dimension,
+                epsilon=epsilon,
+            ),
+            source,
+        )
+        assert isinstance(operation, RmsNormOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def rotary_embedding(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        sequence_dimension: str,
+        head_dimension: str,
+        maximum_timescale: int,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            RotaryEmbeddingOp(
+                value,
+                result.to_type(),
+                sequence_dimension=sequence_dimension,
+                head_dimension=head_dimension,
+                maximum_timescale=maximum_timescale,
+            ),
+            source,
+        )
+        assert isinstance(operation, RotaryEmbeddingOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def slice(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        dimension: str,
+        index: int,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            SliceOp(value, result.to_type(), dimension=dimension, index=index),
+            source,
+        )
+        assert isinstance(operation, SliceOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def packed_causal_mask(
+        self,
+        sequence_starts: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        sequence_dimension: str,
+        query_dimension: str,
+        key_dimension: str,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            PackedCausalMaskOp(
+                sequence_starts,
+                result.to_type(),
+                sequence_dimension=sequence_dimension,
+                query_dimension=query_dimension,
+                key_dimension=key_dimension,
+            ),
+            source,
+        )
+        assert isinstance(operation, PackedCausalMaskOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def masked_softmax(
+        self,
+        value: SSAValue,
+        mask: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        dimension: str,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            MaskedSoftmaxOp(value, mask, result.to_type(), dimension=dimension),
+            source,
+        )
+        assert isinstance(operation, MaskedSoftmaxOp)
         self.block.add_op(operation)
         return operation.result
 

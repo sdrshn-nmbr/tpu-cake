@@ -1,5 +1,5 @@
 import pytest
-from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f16, f32, i32
+from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f16, f32, i1, i32
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.distributed_tensor import MeshAttr, PendingReductionsAttr
@@ -437,4 +437,181 @@ def test_general_einsum_cannot_drop_a_shared_batch_dimension() -> None:
     )
 
     with pytest.raises(VerifyException, match="every noncontracted dimension"):
+        builder.module(result)
+
+
+def test_seqax_normalization_rope_mask_and_softmax_semantics_verify() -> None:
+    value = tensor(f32, (("B", 8), ("L", 16), ("M", 32)), sharding={"B": ("d",)})
+    scale = tensor(f32, (("M", 32),))
+    sequence_starts = tensor(i1, (("B", 8), ("L", 16)), sharding={"B": ("d",)})
+    query = tensor(
+        bf16,
+        (("B", 8), ("Qlen", 16), ("Q", 4), ("K", 4), ("D", 8)),
+        sharding={"B": ("d",), "K": ("t",)},
+    )
+    logits = tensor(
+        f32,
+        (("B", 8), ("Qlen", 16), ("Klen", 16), ("Q", 4), ("K", 4)),
+        sharding={"B": ("d",), "K": ("t",)},
+    )
+    builder = DistributedProgramBuilder(
+        "seqax_semantics",
+        {"d": 2, "t": 4},
+        (value, scale, sequence_starts, query, logits),
+    )
+    cast = builder.cast(
+        builder.inputs[0],
+        tensor(bf16, value.dimensions, sharding={"B": ("d",)}),
+    )
+    normalized = builder.rms_norm(
+        cast,
+        builder.inputs[1],
+        tensor(bf16, value.dimensions, sharding={"B": ("d",)}),
+        dimension="M",
+    )
+    rotated = builder.rotary_embedding(
+        builder.inputs[3],
+        query,
+        sequence_dimension="Qlen",
+        head_dimension="D",
+        maximum_timescale=10_000,
+    )
+    mask = builder.packed_causal_mask(
+        builder.inputs[2],
+        tensor(
+            i1,
+            (("B", 8), ("Qlen", 16), ("Klen", 16)),
+            sharding={"B": ("d",)},
+        ),
+        sequence_dimension="L",
+        query_dimension="Qlen",
+        key_dimension="Klen",
+    )
+    probabilities = builder.masked_softmax(
+        builder.inputs[4],
+        mask,
+        tensor(bf16, logits.dimensions, sharding={"B": ("d",), "K": ("t",)}),
+        dimension="Klen",
+    )
+
+    builder.module(normalized, rotated, probabilities).verify()
+
+
+def test_slice_removes_only_one_unsharded_dimension() -> None:
+    qkv = tensor(
+        bf16,
+        (("KV", 2), ("B", 8), ("L", 16), ("K", 4), ("D", 8)),
+        sharding={"B": ("d",), "K": ("t",)},
+    )
+    builder = DistributedProgramBuilder("slice", {"d": 2, "t": 4}, (qkv,))
+    key = builder.slice(
+        builder.inputs[0],
+        tensor(
+            bf16,
+            (("B", 8), ("L", 16), ("K", 4), ("D", 8)),
+            sharding={"B": ("d",), "K": ("t",)},
+        ),
+        dimension="KV",
+        index=0,
+    )
+
+    builder.module(key).verify()
+
+
+def test_slice_cannot_index_a_sharded_dimension() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"B": ("d",)})
+    builder = DistributedProgramBuilder("bad_slice", {"d": 2}, (value,))
+    result = builder.slice(
+        builder.inputs[0],
+        tensor(bf16, (("M", 32),)),
+        dimension="B",
+        index=0,
+    )
+
+    with pytest.raises(VerifyException, match="cannot index a sharded dimension"):
+        builder.module(result)
+
+
+def test_rms_norm_rejects_a_sharded_scale() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"B": ("d",)})
+    scale = tensor(bf16, (("M", 32),), sharding={"M": ("t",)})
+    builder = DistributedProgramBuilder("bad_norm", {"d": 2, "t": 4}, (value, scale))
+    result = builder.rms_norm(
+        builder.inputs[0],
+        builder.inputs[1],
+        value,
+        dimension="M",
+    )
+
+    with pytest.raises(VerifyException, match="locally replicated"):
+        builder.module(result)
+
+
+def test_rotary_embedding_rejects_an_odd_head_dimension() -> None:
+    value = tensor(bf16, (("B", 8), ("L", 16), ("D", 7)))
+    builder = DistributedProgramBuilder("bad_rope", {}, (value,))
+    result = builder.rotary_embedding(
+        builder.inputs[0],
+        value,
+        sequence_dimension="L",
+        head_dimension="D",
+        maximum_timescale=10_000,
+    )
+
+    with pytest.raises(VerifyException, match="even head dimension"):
+        builder.module(result)
+
+
+def test_packed_causal_mask_rejects_invented_query_sharding() -> None:
+    starts = tensor(i1, (("B", 8), ("L", 16)), sharding={"B": ("d",)})
+    builder = DistributedProgramBuilder("bad_mask", {"d": 2, "t": 4}, (starts,))
+    result = builder.packed_causal_mask(
+        builder.inputs[0],
+        tensor(
+            i1,
+            (("B", 8), ("Qlen", 16), ("Klen", 16)),
+            sharding={"B": ("d",), "Qlen": ("t",)},
+        ),
+        sequence_dimension="L",
+        query_dimension="Qlen",
+        key_dimension="Klen",
+    )
+
+    with pytest.raises(VerifyException, match="wrong shape or sharding"):
+        builder.module(result)
+
+
+def test_masked_softmax_rejects_mask_sharding_that_differs_from_logits() -> None:
+    logits = tensor(
+        f32,
+        (("B", 8), ("Qlen", 16), ("Klen", 16)),
+        sharding={"B": ("d",)},
+    )
+    mask = tensor(
+        i1,
+        (("B", 8), ("Qlen", 16), ("Klen", 16)),
+        sharding={"B": ("d",), "Qlen": ("t",)},
+    )
+    builder = DistributedProgramBuilder("bad_softmax", {"d": 2, "t": 4}, (logits, mask))
+    result = builder.masked_softmax(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(bf16, logits.dimensions, sharding={"B": ("d",)}),
+        dimension="Klen",
+    )
+
+    with pytest.raises(VerifyException, match="named subset"):
+        builder.module(result)
+
+
+def test_cast_rejects_a_partially_reduced_value() -> None:
+    partial = tensor(
+        f32,
+        (("B", 8), ("M", 32)),
+        pending_reductions={"t": "sum"},
+    )
+    builder = DistributedProgramBuilder("bad_cast", {"t": 4}, (partial,))
+    result = builder.cast(builder.inputs[0], tensor(bf16, partial.dimensions))
+
+    with pytest.raises(VerifyException, match="partially reduced"):
         builder.module(result)
