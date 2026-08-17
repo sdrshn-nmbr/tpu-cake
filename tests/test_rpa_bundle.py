@@ -1,7 +1,12 @@
+from pathlib import Path
+
+import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.rpa_bundle import (
+    _load_declared_array,
     _require_shared_canonical_identity,
     _require_timing_sample_protocol,
 )
@@ -73,3 +78,14 @@ def test_timing_sample_protocol_requires_exactly_fifty_positive_samples(
 
 def test_timing_sample_protocol_accepts_declared_run() -> None:
     _require_timing_sample_protocol(_result(samples_ns=(1,) * 50, measured_iterations=50))
+
+
+def test_bfloat16_artifact_round_trip_restores_declared_dtype(tmp_path: Path) -> None:
+    path = tmp_path / "values.npy"
+    expected = np.asarray(jnp.arange(4, dtype=jnp.bfloat16))
+    np.save(path, expected, allow_pickle=False)
+
+    observed = _load_declared_array(path, "bfloat16")
+
+    assert str(observed.dtype) == "bfloat16"
+    np.testing.assert_array_equal(observed, expected)

@@ -74,6 +74,13 @@ def _reference(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
     )
 
 
+def _load_declared_array(path: Path, dtype: str) -> np.ndarray:
+    value = np.load(path, allow_pickle=False)
+    if dtype == "bfloat16" and value.dtype == np.dtype("V2"):
+        value = value.view(np.dtype(jnp.bfloat16))
+    return value
+
+
 def _load_result(path: Path, mode: RunMode) -> FusedRpaRunResult:
     result = FusedRpaRunResult.model_validate_json(path.read_text())
     if result.mode is not mode:
@@ -277,9 +284,18 @@ def _validate_phase(
         artifacts[f"oracle/{index:02d}-{tensor.name}.npy"]
         for index, tensor in enumerate(experiment.workload.outputs)
     )
-    inputs = tuple(np.load(path, allow_pickle=False) for path in input_paths)
-    outputs = tuple(np.load(path, allow_pickle=False) for path in output_paths)
-    saved_oracles = tuple(np.load(path, allow_pickle=False) for path in oracle_paths)
+    inputs = tuple(
+        _load_declared_array(path, tensor.dtype)
+        for path, tensor in zip(input_paths, experiment.workload.inputs, strict=True)
+    )
+    outputs = tuple(
+        _load_declared_array(path, tensor.dtype)
+        for path, tensor in zip(output_paths, experiment.workload.outputs, strict=True)
+    )
+    saved_oracles = tuple(
+        _load_declared_array(path, tensor.dtype)
+        for path, tensor in zip(oracle_paths, experiment.workload.outputs, strict=True)
+    )
     for value, tensor in zip(inputs, experiment.workload.inputs, strict=True):
         if value.shape != tensor.shape or str(value.dtype) != tensor.dtype:
             raise ValueError(f"RPA_INPUT_CONTRACT_MISMATCH phase={phase} tensor={tensor.name}")
