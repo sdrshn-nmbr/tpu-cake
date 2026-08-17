@@ -9,7 +9,10 @@ from tpu_cake.dialects.tpu_schedule import (
     DmaWaitOp,
     KernelOp,
     MemorySpace,
+    MxuMatmulOp,
     Ownership,
+    PipelineLoopOp,
+    PipelineYieldOp,
     SemaphoreAllocOp,
     YieldOp,
 )
@@ -348,3 +351,100 @@ def test_capacity_sweep_includes_declared_lifetime_endpoints() -> None:
 
     with pytest.raises(VerifyException, match="VMEM capacity exceeded at stage 5"):
         builder.module()
+
+
+def _pipeline_matmul_kernel(
+    *,
+    initiation_interval: int,
+    accumulator_rotations: int,
+    vmem_capacity_bytes: int = 4096,
+):
+    lhs_external = buffer(
+        (8, 8),
+        "M K",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 3),
+    )
+    rhs_external = buffer(
+        (8, 8),
+        "K N",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 3),
+    )
+    accumulator_external = buffer(
+        (8, 8),
+        "M N",
+        f32,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 3),
+    )
+    builder = KernelBuilder(
+        "pipeline",
+        "tpu7x",
+        (lhs_external, rhs_external, accumulator_external),
+        vmem_capacity_bytes=vmem_capacity_bytes,
+        smem_capacity_bytes=1024,
+        dma_engine_count=3,
+        mxu_count=1,
+    )
+    local_specs = (
+        buffer((8, 8), "M K", bf16, memory=MemorySpace.VMEM, lifetime=(0, 2)),
+        buffer((8, 8), "K N", bf16, memory=MemorySpace.VMEM, lifetime=(0, 2)),
+        buffer((8, 8), "M N", f32, memory=MemorySpace.VMEM, lifetime=(0, 2)),
+    )
+    captures = []
+    transfers = []
+    for index, (source, spec) in enumerate(
+        zip(builder.inputs, local_specs, strict=True)
+    ):
+        destination = builder.alloc(spec, f"capture_{index}")
+        transfers.append(
+            builder.dma_start(source, destination, builder.semaphore(), stage=0)
+        )
+        captures.append(destination)
+    for transfer in transfers:
+        builder.dma_wait(transfer, stage=1)
+    body = Block(arg_types=[capture.buffer.type for capture in captures])
+    body.add_ops(
+        [
+            MxuMatmulOp(body.args[0], body.args[1], body.args[2], 0),
+            MxuMatmulOp(body.args[0], body.args[1], body.args[2], 1),
+            PipelineYieldOp(*body.args),
+        ]
+    )
+    builder.block.add_op(
+        PipelineLoopOp(
+            tuple(captures),
+            body,
+            trip_count=4,
+            initiation_interval=initiation_interval,
+            pipeline_stages=3,
+            rotation_counts=(1, 1, accumulator_rotations),
+        )
+    )
+    return builder.module()
+
+
+def test_pipeline_loop_proves_rotation_and_overlapped_resource_capacity() -> None:
+    _pipeline_matmul_kernel(initiation_interval=2, accumulator_rotations=2).verify()
+    with pytest.raises(VerifyException, match="needs 2 rotating buffers"):
+        _pipeline_matmul_kernel(initiation_interval=2, accumulator_rotations=1)
+    with pytest.raises(VerifyException, match="exceeds MXU capacity"):
+        _pipeline_matmul_kernel(initiation_interval=1, accumulator_rotations=3)
+
+
+def test_pipeline_rotation_banks_are_charged_to_vmem_capacity() -> None:
+    with pytest.raises(
+        VerifyException,
+        match="VMEM capacity exceeded at stage 0: 768 > 600",
+    ):
+        _pipeline_matmul_kernel(
+            initiation_interval=2,
+            accumulator_rotations=2,
+            vmem_capacity_bytes=600,
+        )

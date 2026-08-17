@@ -138,8 +138,10 @@ class KernelBuilder:
         self._add(operation)
         return operation
 
-    def semaphore(self, *, source: SourceLocation | None = None) -> SemaphoreAllocOp:
-        operation = attach_source(SemaphoreAllocOp(), source)
+    def semaphore(
+        self, *, slots: int = 1, source: SourceLocation | None = None
+    ) -> SemaphoreAllocOp:
+        operation = attach_source(SemaphoreAllocOp(slots), source)
         assert isinstance(operation, SemaphoreAllocOp)
         self._add(operation)
         return operation

@@ -14,6 +14,7 @@ from xdsl.dialects.builtin import (
     StringAttr,
 )
 from xdsl.ir import (
+    Block,
     Dialect,
     EnumAttribute,
     Operation,
@@ -33,6 +34,8 @@ from xdsl.irdl import (
     region_def,
     result_def,
     traits_def,
+    var_operand_def,
+    var_result_def,
 )
 from xdsl.traits import IsolatedFromAbove, IsTerminator
 from xdsl.utils.exceptions import VerifyException
@@ -655,6 +658,230 @@ class RaggedPagedAttentionOp(IRDLOperation):
 
 
 @irdl_op_definition
+class PipelineYieldOp(IRDLOperation):
+    name = "tpu_schedule.pipeline_yield"
+    values = var_operand_def(BufferType)
+    traits = traits_def(IsTerminator())
+
+    def __init__(self, *values: SSAValue | Operation):
+        super().__init__(operands=[list(values)])
+
+    def verify_(self) -> None:
+        if not isinstance(self.parent_op(), PipelineLoopOp):
+            raise VerifyException(
+                "tpu_schedule.pipeline_yield must terminate a pipeline loop"
+            )
+
+
+@irdl_op_definition
+class PipelineLoopOp(IRDLOperation):
+    name = "tpu_schedule.pipeline_loop"
+    captures = var_operand_def(BufferType)
+    outputs = var_result_def(BufferType)
+    body = region_def("single_block")
+    trip_count = prop_def(IntAttr)
+    initiation_interval = prop_def(IntAttr)
+    pipeline_stages = prop_def(IntAttr)
+    rotation_counts = prop_def(ArrayAttr[IntAttr])
+
+    def __init__(
+        self,
+        captures: tuple[SSAValue | Operation, ...],
+        body: Region | Block,
+        *,
+        trip_count: int,
+        initiation_interval: int,
+        pipeline_stages: int,
+        rotation_counts: tuple[int, ...] | None = None,
+    ) -> None:
+        if isinstance(body, Block):
+            body = Region(body)
+        capture_types = [SSAValue.get(value).type for value in captures]
+        rotations = rotation_counts or (1,) * len(captures)
+        super().__init__(
+            operands=[list(captures)],
+            result_types=[capture_types],
+            regions=[body],
+            properties={
+                "trip_count": IntAttr(trip_count),
+                "initiation_interval": IntAttr(initiation_interval),
+                "pipeline_stages": IntAttr(pipeline_stages),
+                "rotation_counts": ArrayAttr(IntAttr(value) for value in rotations),
+            },
+        )
+
+    def verify_(self) -> None:
+        if (
+            self.trip_count.data <= 0
+            or self.initiation_interval.data <= 0
+            or self.pipeline_stages.data <= 0
+        ):
+            raise VerifyException(
+                "pipeline trip count, initiation interval, and stages must be positive"
+            )
+        block = self.body.block
+        terminator = block.last_op
+        if not isinstance(terminator, PipelineYieldOp):
+            raise VerifyException("pipeline loop must end with tpu_schedule.pipeline_yield")
+        rotations = tuple(value.data for value in self.rotation_counts)
+        if len(rotations) != len(self.captures) or any(value <= 0 for value in rotations):
+            raise VerifyException(
+                "pipeline rotation counts must be positive and match captured buffers"
+            )
+        if len(block.args) != len(self.captures):
+            raise VerifyException("pipeline block arguments must match captured buffers")
+        if len(self.outputs) != len(self.captures) or len(terminator.values) != len(
+            self.captures
+        ):
+            raise VerifyException("pipeline results and yields must match captured buffers")
+        for capture, argument, result, yielded in zip(
+            self.captures,
+            block.args,
+            self.outputs,
+            terminator.values,
+            strict=True,
+        ):
+            if not (
+                capture.type == argument.type == result.type == yielded.type
+            ):
+                raise VerifyException(
+                    "pipeline captures, block arguments, yields, and results must have equal types"
+                )
+
+        operations = list(block.ops)
+        scheduled = [operation for operation in operations if _stage(operation) is not None]
+        if any(operation.regions for operation in operations):
+            raise VerifyException("nested pipeline regions are not supported")
+        allowed_unscheduled = (ViewOp, SemaphoreAllocOp, PipelineYieldOp)
+        if any(
+            _stage(operation) is None and not isinstance(operation, allowed_unscheduled)
+            for operation in operations
+        ):
+            raise VerifyException("pipeline body contains an unscheduled operation")
+        stages = tuple(_stage(operation) for operation in scheduled)
+        if stages != tuple(sorted(stages)):
+            raise VerifyException("pipeline body stages must be monotonic")
+        if any(
+            stage is None or stage < 0 or stage >= self.pipeline_stages.data
+            for stage in stages
+        ):
+            raise VerifyException("pipeline operation stage is outside the declared pipeline")
+
+        positions = {operation: index for index, operation in enumerate(operations)}
+        initialized: set[SSAValue] = set(block.args)
+        pending_dma: dict[Operation, DmaStartOp] = {}
+
+        def root(value: SSAValue) -> SSAValue:
+            while isinstance(value.owner, ViewOp):
+                value = value.owner.base
+            return value
+
+        written: set[SSAValue] = set()
+        for operation in operations:
+            if isinstance(operation, DmaStartOp):
+                if root(operation.source) not in initialized:
+                    raise VerifyException("pipeline DMA reads an uninitialized source")
+                semaphore = operation.semaphore.owner
+                if semaphore in pending_dma:
+                    raise VerifyException("pipeline semaphore is reused before its wait")
+                uses = list(operation.token.uses)
+                if len(uses) != 1 or not isinstance(uses[0].operation, DmaWaitOp):
+                    raise VerifyException("pipeline DMA token must have exactly one wait")
+                if positions[uses[0].operation] <= positions[operation]:
+                    raise VerifyException("pipeline DMA wait must follow its start")
+                pending_dma[semaphore] = operation
+                written.add(root(operation.destination))
+            elif isinstance(operation, DmaWaitOp):
+                start = operation.token.owner
+                assert isinstance(start, DmaStartOp)
+                pending_dma.pop(start.semaphore.owner, None)
+                initialized.add(root(start.destination))
+            elif isinstance(operation, MxuMatmulOp):
+                if any(root(value) not in initialized for value in (operation.lhs, operation.rhs)):
+                    raise VerifyException("pipeline MXU reads an uninitialized operand")
+                initialized.add(root(operation.accumulator))
+                written.add(root(operation.accumulator))
+            elif isinstance(operation, CollectiveReduceScatterOp):
+                if root(operation.source) not in initialized:
+                    raise VerifyException("pipeline collective reads an uninitialized source")
+                initialized.add(root(operation.destination))
+                written.add(root(operation.destination))
+            elif isinstance(operation, RaggedPagedAttentionOp):
+                if any(root(value) not in initialized for value in operation.operands[:-1]):
+                    raise VerifyException("pipeline RPA reads an uninitialized operand")
+                initialized.add(root(operation.output))
+                written.add(root(operation.output))
+        if pending_dma:
+            raise VerifyException("pipeline iteration ends with DMA operations in flight")
+        if any(root(value) not in initialized for value in terminator.values):
+            raise VerifyException("pipeline yields an uninitialized buffer")
+
+        for index, (argument, rotation_count) in enumerate(
+            zip(block.args, rotations, strict=True)
+        ):
+            if root(argument) not in written:
+                continue
+            buffer = argument.type
+            assert isinstance(buffer, BufferType)
+            live_stages = buffer.lifetime.end.data - buffer.lifetime.start.data + 1
+            required = math.ceil(live_stages / self.initiation_interval.data)
+            if rotation_count < required:
+                raise VerifyException(
+                    f"pipeline capture {index} needs {required} rotating buffers, "
+                    f"but declares {rotation_count}"
+                )
+
+        kernel = self.parent_op()
+        if not isinstance(kernel, KernelOp):
+            raise VerifyException("pipeline loop must be directly contained by a TPU kernel")
+        horizon = (
+            (self.trip_count.data - 1) * self.initiation_interval.data
+            + self.pipeline_stages.data
+        )
+        for absolute_stage in range(horizon):
+            active_dma = 0
+            mxu_uses = 0
+            ici_uses = 0
+            semaphore_uses: dict[Operation, int] = {}
+            for iteration in range(self.trip_count.data):
+                logical_stage = absolute_stage - iteration * self.initiation_interval.data
+                if logical_stage < 0 or logical_stage >= self.pipeline_stages.data:
+                    continue
+                for operation in scheduled:
+                    if isinstance(operation, DmaStartOp):
+                        wait = next(
+                            use.operation
+                            for use in operation.token.uses
+                            if isinstance(use.operation, DmaWaitOp)
+                        )
+                        if operation.stage.data <= logical_stage <= wait.stage.data:
+                            active_dma += 1
+                            owner = operation.semaphore.owner
+                            semaphore_uses[owner] = semaphore_uses.get(owner, 0) + 1
+                    elif isinstance(operation, (MxuMatmulOp, RaggedPagedAttentionOp)):
+                        mxu_uses += operation.stage.data == logical_stage
+                    elif isinstance(operation, CollectiveReduceScatterOp):
+                        ici_uses += operation.stage.data == logical_stage
+            if active_dma > kernel.dma_engine_count.data:
+                raise VerifyException(
+                    f"pipeline exceeds DMA capacity at absolute stage {absolute_stage}"
+                )
+            if mxu_uses > kernel.mxu_count.data:
+                raise VerifyException(
+                    f"pipeline exceeds MXU capacity at absolute stage {absolute_stage}"
+                )
+            if ici_uses > kernel.ici_link_count.data:
+                raise VerifyException(
+                    f"pipeline exceeds ICI capacity at absolute stage {absolute_stage}"
+                )
+            for owner, uses in semaphore_uses.items():
+                if not isinstance(owner, SemaphoreAllocOp) or uses > owner.slot_count:
+                    raise VerifyException(
+                        f"pipeline exceeds semaphore slots at absolute stage {absolute_stage}"
+                    )
+
+
+@irdl_op_definition
 class YieldOp(IRDLOperation):
     name = "tpu_schedule.yield"
     traits = traits_def(IsTerminator())
@@ -769,6 +996,7 @@ class KernelOp(IRDLOperation):
         views_by_root: dict[SSAValue, list[tuple[ViewOp, TileRegionAttr]]] = {}
         initialized: set[SSAValue] = set(block.args)
         pending_dma_destinations: dict[Operation, tuple[SSAValue, TileRegionAttr]] = {}
+        rotation_copies: list[tuple[BufferType, int]] = []
 
         def root_region(value: SSAValue) -> tuple[SSAValue, TileRegionAttr]:
             chain: list[ViewOp] = []
@@ -910,6 +1138,24 @@ class KernelOp(IRDLOperation):
                 ):
                     require_initialized(value, operation)
                 initialized.add(root(operation.output))
+            if isinstance(operation, PipelineLoopOp):
+                for value in operation.captures:
+                    require_initialized(value, operation)
+                capture_roots = [root(value) for value in operation.captures]
+                if len(capture_roots) != len(set(capture_roots)):
+                    raise VerifyException("pipeline captures must reference distinct buffers")
+                for value, rotation in zip(
+                    capture_roots, operation.rotation_counts, strict=True
+                ):
+                    buffer = value.type
+                    assert isinstance(buffer, BufferType)
+                    if (
+                        buffer.ownership.data is not Ownership.EXTERNAL
+                        and rotation.data > 1
+                    ):
+                        rotation_copies.append((buffer, rotation.data - 1))
+                for value in operation.outputs:
+                    initialized.add(root(value))
 
         for buffer in buffers:
             buffer.verify()
@@ -988,6 +1234,12 @@ class KernelOp(IRDLOperation):
                     if buffer.space.data is space
                     and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
                 )
+                live_bytes += sum(
+                    buffer_bytes(buffer) * copies
+                    for buffer, copies in rotation_copies
+                    if buffer.space.data is space
+                    and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
+                )
                 if live_bytes > capacity:
                     raise VerifyException(
                         f"{label} capacity exceeded at stage {stage}: {live_bytes} > {capacity}"
@@ -1006,6 +1258,8 @@ TPUSchedule = Dialect(
         MxuMatmulOp,
         CollectiveReduceScatterOp,
         RaggedPagedAttentionOp,
+        PipelineLoopOp,
+        PipelineYieldOp,
         YieldOp,
     ],
     [
