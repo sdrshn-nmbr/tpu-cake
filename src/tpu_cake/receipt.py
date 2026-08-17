@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import statistics
 from pathlib import Path
 
@@ -104,6 +105,26 @@ def _resolve_result_artifact(
     return root / phase / declared.name
 
 
+def _source_identity(
+    state_path: Path, diff_path: Path, *, require_clean: bool = True
+) -> tuple[str, str]:
+    state = json.loads(state_path.read_text())
+    commit = state.get("git_commit")
+    lock = state.get("uv_lock_sha256")
+    if (
+        not isinstance(state.get("git_dirty"), bool)
+        or not isinstance(commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+        or not isinstance(lock, str)
+        or re.fullmatch(r"[0-9a-f]{64}", lock) is None
+        or state.get("source_diff_sha256") != _sha256(diff_path)
+        or (state.get("git_dirty") is False and bool(diff_path.read_bytes()))
+        or (require_clean and state.get("git_dirty") is not False)
+    ):
+        raise ValueError(f"SOURCE_STATE_INVALID path={state_path}")
+    return commit, lock
+
+
 def _validate_result_artifact_bindings(
     root: Path,
     receipt: RunReceipt,
@@ -196,11 +217,11 @@ def _validate_saved_matmul_phase(
     validate_profiler_contract(
         result.mode, json.loads(artifacts["profiler_config.json"].read_text())
     )
-    source_state = json.loads(artifacts["source_state.json"].read_text())
-    if receipt.status is RunStatus.PASSED and source_state.get("git_dirty") is not False:
-        raise ValueError(f"RUN_SOURCE_IS_DIRTY phase={phase}")
-    if source_state.get("source_diff_sha256") != _sha256(artifacts["source_diff.patch"]):
-        raise ValueError(f"RUN_SOURCE_DIFF_MISMATCH phase={phase}")
+    _source_identity(
+        artifacts["source_state.json"],
+        artifacts["source_diff.patch"],
+        require_clean=receipt.status is RunStatus.PASSED,
+    )
 
     expected_experiment = distributed_matmul_experiment(
         schedule_sha256=result.schedule_sha256,
@@ -479,6 +500,33 @@ def _validate_distributed_matmul_receipt(
             raise ValueError(f"RUN_MODE_MISMATCH phase={phase}")
         errors.append(_validate_saved_matmul_phase(root, receipt, experiment, phase, result))
         results.append(result)
+    source_identities = {
+        _source_identity(
+            root
+            / _phase_artifact(
+                receipt, ArtifactRole.SOURCE_STATE, phase, name="source_state.json"
+            ).path,
+            root
+            / _phase_artifact(
+                receipt, ArtifactRole.SOURCE_DIFF, phase, name="source_diff.patch"
+            ).path,
+        )
+        for phase, _, _ in result_specs
+    }
+    if len(source_identities) != 1:
+        raise ValueError("RUN_PHASE_SOURCE_IDENTITIES_DO_NOT_MATCH")
+    finalizer_identity = _source_identity(
+        root
+        / _phase_artifact(
+            receipt, ArtifactRole.SOURCE_STATE, "finalizer", name="source_state.json"
+        ).path,
+        root
+        / _phase_artifact(
+            receipt, ArtifactRole.SOURCE_DIFF, "finalizer", name="source_diff.patch"
+        ).path,
+    )
+    if finalizer_identity[1] != next(iter(source_identities))[1]:
+        raise ValueError("FINALIZER_LOCK_IDENTITY_DOES_NOT_MATCH_RUNS")
     if len(
         {
             (

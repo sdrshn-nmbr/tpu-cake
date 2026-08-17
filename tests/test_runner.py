@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -17,7 +18,7 @@ from tpu_cake.contracts import (
     RuntimeIdentity,
 )
 from tpu_cake.ledger import ExperimentLedger, RunState
-from tpu_cake.receipt import _validate_saved_matmul_phase
+from tpu_cake.receipt import _source_identity, _validate_saved_matmul_phase
 from tpu_cake.runner import (
     MatmulRunResult,
     RunMode,
@@ -34,6 +35,25 @@ def test_counter_profiler_contract_retains_counter_only_options() -> None:
     assert counters["tpu_enable_periodic_counter_sampling"] is True
     assert counters["num_tensor_cores_to_trace_per_device"] == 1
     assert "tpu_tc_perf_counter_sampling_options" in counters
+
+
+def test_source_identity_rejects_a_clean_claim_with_a_nonempty_diff(tmp_path) -> None:
+    diff = tmp_path / "source_diff.patch"
+    diff.write_text("modified source\n")
+    state = tmp_path / "source_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "git_commit": "a" * 40,
+                "git_dirty": False,
+                "uv_lock_sha256": "b" * 64,
+                "source_diff_sha256": hashlib.sha256(diff.read_bytes()).hexdigest(),
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="SOURCE_STATE_INVALID"):
+        _source_identity(state, diff)
 
 
 @pytest.mark.parametrize(
