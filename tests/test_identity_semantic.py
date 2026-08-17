@@ -13,7 +13,14 @@ from tpu_cake.identity import (
     semantic_sha256,
     workload_rng,
 )
-from tpu_cake.semantic import batch_permutation_invariance, prefix_invariance
+from tpu_cake.semantic import (
+    batch_permutation_invariance,
+    cache_equivalence,
+    prefill_decode_equivalence,
+    prefix_invariance,
+    state_isolation,
+    stepwise_equivalence,
+)
 from tpu_cake.source import SourceLocation, attach_source
 
 
@@ -64,6 +71,23 @@ def test_batch_permutation_invariance_detects_slot_dependency() -> None:
     )
     assert invariant.passed
     assert not slot_dependent.passed
+
+
+def test_execution_path_properties_detect_state_and_cache_errors() -> None:
+    inputs = np.arange(12, dtype=np.float32).reshape(3, 4)
+    identity = lambda value: value * 2
+    shifted = lambda value: value * 2 + 1
+
+    assert prefill_decode_equivalence(identity, identity, inputs).passed
+    assert not prefill_decode_equivalence(identity, shifted, inputs).passed
+    assert stepwise_equivalence(identity, identity, inputs).passed
+    assert not cache_equivalence(identity, shifted, inputs).passed
+
+    together = lambda value: value * 2
+    isolated = lambda value: value * 2
+    contaminated = lambda value: value * 2 + np.arange(len(value))[:, None]
+    assert state_isolation(together, isolated, inputs).passed
+    assert not state_isolation(contaminated, isolated, inputs).passed
 
 
 def test_source_location_is_attached_without_entering_schedule_identity() -> None:

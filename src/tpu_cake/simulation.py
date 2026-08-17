@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import random
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.surfaces import (
+    AttentionWorkloadSurface,
+    ScenarioObservation,
+    SurfaceCandidateObservation,
+    SurfaceComparison,
+    compare_surface_candidates,
+)
 
 
 class SimulatedFault(StrEnum):
@@ -154,4 +162,171 @@ class LifecycleSimulator:
             fault=selected_fault,
             state=outcome_state,
             mode_histories=mode_histories,
+        )
+
+
+class SurfaceFault(StrEnum):
+    NONE = "none"
+    RESTART = "restart"
+    OUTPUT_CORRUPTION = "output_corruption"
+    INPUT_DRIFT = "input_drift"
+    RUNTIME_DRIFT = "runtime_drift"
+    PROFILED_TIMING = "profiled_timing"
+    WRONG_ORDER = "wrong_order"
+    SCENARIO_REGRESSION = "scenario_regression"
+    MISSING_SCENARIO = "missing_scenario"
+    FAILED_CORRECTNESS = "failed_correctness"
+
+
+UNMODELLED_SURFACE_FAILURES = (
+    "TPU timing and numerical behavior",
+    "compiler and runtime identity collection",
+    "host scheduling and device contention",
+    "profiler instrumentation overhead",
+    "artifact durability below the observation contract",
+)
+
+
+@dataclass(frozen=True)
+class SurfaceSimulationOutcome:
+    seed: int
+    fault: SurfaceFault
+    promotable: bool
+    rejection_reason: str | None
+    comparison: SurfaceComparison | None
+
+
+class WorkloadSurfaceSimulator:
+    """Seeded promotion simulation over the real workload-surface contracts.
+
+    The timing boundary is fake. Validation, matched comparison, deterministic
+    bootstrap, and promotion rules are production code. The harness can express
+    only SurfaceFault. It cannot prove any item in UNMODELLED_SURFACE_FAILURES;
+    those require clean live TPU runs and separate device evidence.
+    """
+
+    def __init__(self, surface: AttentionWorkloadSurface) -> None:
+        self.surface = surface
+
+    @staticmethod
+    def _digest(*parts: str) -> str:
+        return hashlib.sha256(":".join(parts).encode()).hexdigest()
+
+    def _observations(
+        self,
+        *,
+        seed: int,
+    ) -> tuple[SurfaceCandidateObservation, SurfaceCandidateObservation]:
+        generator = random.Random(seed)
+        baseline_scenarios: list[ScenarioObservation] = []
+        candidate_scenarios: list[ScenarioObservation] = []
+        baseline_starts = tuple(index % 2 == seed % 2 for index in range(7))
+        candidate_starts = tuple(not value for value in baseline_starts)
+        runtime = self._digest(self.surface.surface_id, "runtime")
+        for scenario in self.surface.scenarios:
+            base_ns = (
+                sum(scenario.context_lengths)
+                + scenario.batch_size * scenario.query_tokens_per_request
+            ) * 1_000
+            baseline_rounds = tuple(
+                max(1, round(base_ns * (1 + generator.uniform(-0.01, 0.01))))
+                for _ in range(7)
+            )
+            candidate_rounds = tuple(
+                max(1, round(value * (0.9 + generator.uniform(-0.002, 0.002))))
+                for value in baseline_rounds
+            )
+            shared = {
+                "scenario": scenario.name,
+                "input_sha256": self._digest(self.surface.surface_id, scenario.name, "input"),
+                "output_sha256": self._digest(self.surface.surface_id, scenario.name, "output"),
+                "runtime_sha256": runtime,
+                "profiled": False,
+                "passed": True,
+            }
+            baseline_scenarios.append(
+                ScenarioObservation(
+                    **shared,
+                    round_medians_ns=baseline_rounds,
+                    ran_first=baseline_starts,
+                )
+            )
+            candidate_scenarios.append(
+                ScenarioObservation(
+                    **shared,
+                    round_medians_ns=candidate_rounds,
+                    ran_first=candidate_starts,
+                )
+            )
+        return (
+            SurfaceCandidateObservation(
+                candidate="baseline",
+                scenarios=tuple(baseline_scenarios),
+            ),
+            SurfaceCandidateObservation(
+                candidate="candidate",
+                scenarios=tuple(candidate_scenarios),
+            ),
+        )
+
+    def run(
+        self,
+        *,
+        seed: int,
+        fault: SurfaceFault | None = None,
+    ) -> SurfaceSimulationOutcome:
+        selected_fault = fault or random.Random(seed).choice(tuple(SurfaceFault))
+        baseline, candidate = self._observations(seed=seed)
+        first = candidate.scenarios[0]
+        if selected_fault is SurfaceFault.RESTART:
+            baseline = SurfaceCandidateObservation.model_validate_json(
+                baseline.model_dump_json()
+            )
+            candidate = SurfaceCandidateObservation.model_validate_json(
+                candidate.model_dump_json()
+            )
+        elif selected_fault is SurfaceFault.OUTPUT_CORRUPTION:
+            first = first.model_copy(update={"output_sha256": "f" * 64})
+        elif selected_fault is SurfaceFault.INPUT_DRIFT:
+            first = first.model_copy(update={"input_sha256": "f" * 64})
+        elif selected_fault is SurfaceFault.RUNTIME_DRIFT:
+            first = first.model_copy(update={"runtime_sha256": "f" * 64})
+        elif selected_fault is SurfaceFault.PROFILED_TIMING:
+            first = first.model_copy(update={"profiled": True})
+        elif selected_fault is SurfaceFault.WRONG_ORDER:
+            first = first.model_copy(update={"ran_first": baseline.scenarios[0].ran_first})
+        elif selected_fault is SurfaceFault.SCENARIO_REGRESSION:
+            first = first.model_copy(
+                update={
+                    "round_medians_ns": tuple(
+                        round(value * 1.05)
+                        for value in baseline.scenarios[0].round_medians_ns
+                    )
+                }
+            )
+        elif selected_fault is SurfaceFault.FAILED_CORRECTNESS:
+            first = first.model_copy(update={"passed": False})
+        if first is not candidate.scenarios[0]:
+            candidate = candidate.model_copy(
+                update={"scenarios": (first, *candidate.scenarios[1:])}
+            )
+        if selected_fault is SurfaceFault.MISSING_SCENARIO:
+            candidate = candidate.model_copy(update={"scenarios": candidate.scenarios[:-1]})
+
+        try:
+            comparison = compare_surface_candidates(self.surface, baseline, candidate)
+        except ValueError as error:
+            return SurfaceSimulationOutcome(
+                seed=seed,
+                fault=selected_fault,
+                promotable=False,
+                rejection_reason=str(error),
+                comparison=None,
+            )
+        return SurfaceSimulationOutcome(
+            seed=seed,
+            fault=selected_fault,
+            promotable=comparison.promotable,
+            rejection_reason=None if comparison.promotable else "promotion criteria not met",
+            comparison=comparison,
         )

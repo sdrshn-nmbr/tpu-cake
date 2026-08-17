@@ -82,3 +82,85 @@ def batch_permutation_invariance(
         absolute_tolerance=absolute_tolerance,
         relative_tolerance=relative_tolerance,
     )
+
+
+def execution_equivalence(
+    name: str,
+    expected_run: Callable[[np.ndarray], np.ndarray],
+    actual_run: Callable[[np.ndarray], np.ndarray],
+    inputs: np.ndarray,
+    *,
+    absolute_tolerance: float = 0,
+    relative_tolerance: float = 0,
+) -> PropertyObservation:
+    return compare_arrays(
+        name,
+        expected_run(inputs.copy()),
+        actual_run(inputs.copy()),
+        absolute_tolerance=absolute_tolerance,
+        relative_tolerance=relative_tolerance,
+    )
+
+
+def prefill_decode_equivalence(
+    one_shot: Callable[[np.ndarray], np.ndarray],
+    prefill_then_decode: Callable[[np.ndarray], np.ndarray],
+    inputs: np.ndarray,
+    **tolerances: float,
+) -> PropertyObservation:
+    return execution_equivalence(
+        "prefill_decode_equivalence",
+        one_shot,
+        prefill_then_decode,
+        inputs,
+        **tolerances,
+    )
+
+
+def stepwise_equivalence(
+    parallel: Callable[[np.ndarray], np.ndarray],
+    stepwise: Callable[[np.ndarray], np.ndarray],
+    inputs: np.ndarray,
+    **tolerances: float,
+) -> PropertyObservation:
+    return execution_equivalence(
+        "stepwise_equivalence",
+        parallel,
+        stepwise,
+        inputs,
+        **tolerances,
+    )
+
+
+def cache_equivalence(
+    uncached: Callable[[np.ndarray], np.ndarray],
+    cached: Callable[[np.ndarray], np.ndarray],
+    inputs: np.ndarray,
+    **tolerances: float,
+) -> PropertyObservation:
+    return execution_equivalence(
+        "cache_equivalence",
+        uncached,
+        cached,
+        inputs,
+        **tolerances,
+    )
+
+
+def state_isolation(
+    run_together: Callable[[np.ndarray], np.ndarray],
+    run_one: Callable[[np.ndarray], np.ndarray],
+    inputs: np.ndarray,
+    *,
+    absolute_tolerance: float = 0,
+    relative_tolerance: float = 0,
+) -> PropertyObservation:
+    together = run_together(inputs.copy())
+    isolated = np.stack([run_one(value.copy()) for value in inputs])
+    return compare_arrays(
+        "state_isolation",
+        isolated,
+        together,
+        absolute_tolerance=absolute_tolerance,
+        relative_tolerance=relative_tolerance,
+    )
