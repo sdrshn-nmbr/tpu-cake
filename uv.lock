@@ -1666,7 +1666,7 @@ dev = [
 requires-dist = [
     { name = "jax", specifier = "==0.11.0" },
     { name = "numpy", specifier = ">=2.2,<3" },
-    { name = "pydantic", specifier = ">=2.11,<3" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "xdsl", specifier = ">=0.69,<0.70" },
     { name = "xprof", specifier = ">=2.23,<3" },
 ]
