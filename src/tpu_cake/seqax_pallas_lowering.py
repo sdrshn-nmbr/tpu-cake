@@ -95,13 +95,15 @@ def _pallas_einsum(
     rhs_contract = tuple(rhs_names.index(name) for name in contractions)
     lhs_batch = tuple(lhs_names.index(name) for name in batch_names)
     rhs_batch = tuple(rhs_names.index(name) for name in batch_names)
-    lhs_free = tuple(
+    lhs_free_names = tuple(
         name for name in lhs_names if name not in batch_names and name not in contractions
     )
-    rhs_free = tuple(
+    rhs_free_names = tuple(
         name for name in rhs_names if name not in batch_names and name not in contractions
     )
-    dot_names = (*batch_names, *lhs_free, *rhs_free)
+    lhs_free = tuple(lhs_names.index(name) for name in lhs_free_names)
+    rhs_free = tuple(rhs_names.index(name) for name in rhs_free_names)
+    dot_names = (*batch_names, *lhs_free_names, *rhs_free_names)
     if set(dot_names) != set(result_names):
         raise UnsupportedSeqaxPallasLoweringError(
             "physical Pallas einsum cannot reconstruct result dimensions"
@@ -114,14 +116,47 @@ def _pallas_einsum(
         raise UnsupportedSeqaxPallasLoweringError(
             "physical MXU operand shape does not match traced local shard"
         )
+    batch_shape = tuple(expected_lhs[index] for index in lhs_batch)
+    lhs_free_shape = tuple(expected_lhs[index] for index in lhs_free)
+    rhs_free_shape = tuple(expected_rhs[index] for index in rhs_free)
+    contraction_shape = tuple(expected_lhs[index] for index in lhs_contract)
+    if batch_shape != tuple(expected_rhs[index] for index in rhs_batch):
+        raise UnsupportedSeqaxPallasLoweringError(
+            "physical MXU batch dimensions do not match"
+        )
+    if contraction_shape != tuple(expected_rhs[index] for index in rhs_contract):
+        raise UnsupportedSeqaxPallasLoweringError(
+            "physical MXU contraction dimensions do not match"
+        )
+    batch_size = math.prod(batch_shape)
+    lhs_free_size = math.prod(lhs_free_shape)
+    rhs_free_size = math.prod(rhs_free_shape)
+    contraction_size = math.prod(contraction_shape)
+    lhs_permutation = (*lhs_batch, *lhs_free, *lhs_contract)
+    rhs_permutation = (*rhs_batch, *rhs_contract, *rhs_free)
 
     def kernel(lhs_ref, rhs_ref, output_ref) -> None:
-        value = lax.dot_general(
-            lhs_ref[...],
-            rhs_ref[...],
-            dimension_numbers=((lhs_contract, rhs_contract), (lhs_batch, rhs_batch)),
-            preferred_element_type=jnp.float32,
-        )
+        lhs_value = jnp.transpose(lhs_ref[...], lhs_permutation)
+        rhs_value = jnp.transpose(rhs_ref[...], rhs_permutation)
+        if batch_names:
+            lhs_value = lhs_value.reshape((batch_size, lhs_free_size, contraction_size))
+            rhs_value = rhs_value.reshape((batch_size, contraction_size, rhs_free_size))
+            value = lax.dot_general(
+                lhs_value,
+                rhs_value,
+                dimension_numbers=(((2,), (1,)), ((0,), (0,))),
+                preferred_element_type=jnp.float32,
+            )
+        else:
+            lhs_value = lhs_value.reshape((lhs_free_size, contraction_size))
+            rhs_value = rhs_value.reshape((contraction_size, rhs_free_size))
+            value = lax.dot_general(
+                lhs_value,
+                rhs_value,
+                dimension_numbers=(((1,), (0,)), ((), ())),
+                preferred_element_type=jnp.float32,
+            )
+        value = value.reshape((*batch_shape, *lhs_free_shape, *rhs_free_shape))
         if permutation != tuple(range(len(permutation))):
             value = jnp.transpose(value, permutation)
         output_ref[...] = value
