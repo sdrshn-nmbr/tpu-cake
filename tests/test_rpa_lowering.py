@@ -171,6 +171,18 @@ def test_fused_rpa_preflight_rejects_bad_decode_metadata() -> None:
     with pytest.raises(ValueError, match="aliases logical pages"):
         plan.preflight(*aliased_sequence)
 
+    shared_write_page = inputs[5].at[1].set(inputs[5][0])
+    cross_sequence_alias = (
+        *inputs[:4],
+        jnp.asarray((1, 2, 33, 49), dtype=jnp.int32),
+        shared_write_page,
+        inputs[6],
+        jnp.asarray((0, 16, 32, 80, 144), dtype=jnp.int32),
+        *inputs[8:],
+    )
+    with pytest.raises(ValueError, match="active write page is shared"):
+        plan.preflight(*cross_sequence_alias)
+
     huge_lengths = jnp.full((4,), np.iinfo(np.int32).max, dtype=jnp.int32)
     overflowed_cumulative = jnp.asarray(
         (0, np.iinfo(np.int32).min, 0, np.iinfo(np.int32).min, 0),
@@ -260,6 +272,46 @@ def test_fused_rpa_plan_uses_canonical_identity_and_source_location() -> None:
     assert first == second
     assert first.source_sha256() == second.source_sha256()
     assert str(attention.location) != "loc(unknown)"
+
+
+def test_fused_rpa_verifier_failure_names_the_pinned_source() -> None:
+    module = inkling_fused_rpa_schedule()
+    attention = next(
+        operation
+        for operation in module.walk()
+        if isinstance(operation, FusedRaggedPagedAttentionOp)
+    )
+    attention.properties["softmax_scale"] = StringAttr("1")
+
+    with pytest.raises(VerifyException, match=r"ragged_paged_attention_v3\.py.*1802.*1"):
+        lower_inkling_rpa_to_pallas(module)
+
+
+def test_fused_rpa_lowering_failure_names_the_pinned_source() -> None:
+    module = inkling_fused_rpa_schedule()
+    attention = next(
+        operation
+        for operation in module.walk()
+        if isinstance(operation, FusedRaggedPagedAttentionOp)
+    )
+    query_type = attention.queries.type
+    assert isinstance(query_type, BufferType)
+    attention.queries._type = BufferType(
+        query_type.storage,
+        query_type.shape,
+        query_type.space,
+        query_type.sharding,
+        LayoutAttr(ArrayAttr((IntAttr(1), IntAttr(0), IntAttr(2)))),
+        query_type.ownership,
+        query_type.lifetime,
+    )
+    module.verify()
+
+    with pytest.raises(
+        UnsupportedLoweringError,
+        match=r"ragged_paged_attention_v3\.py.*1802.*1",
+    ):
+        lower_inkling_rpa_to_pallas(module)
 
 
 def test_fused_rpa_adapter_rejects_custom_mask_mode() -> None:

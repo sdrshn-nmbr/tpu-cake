@@ -1,6 +1,7 @@
 import numpy as np
 
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
+from tpu_cake.rpa_lowering import lower_inkling_rpa_to_pallas
 from tpu_cake.workloads.inkling_rpa import (
     inkling_fused_rpa_contract,
     inkling_fused_rpa_experiment,
@@ -60,6 +61,7 @@ def test_schedule_text_and_hash_are_stable() -> None:
 def test_fused_rpa_experiment_binds_oracle_preflight_and_backend_sources() -> None:
     contract = inkling_fused_rpa_contract()
     experiment = inkling_fused_rpa_experiment()
+    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
 
     assert len(contract.inputs) == 11
     assert len(contract.outputs) == 2
@@ -68,3 +70,13 @@ def test_fused_rpa_experiment_binds_oracle_preflight_and_backend_sources() -> No
     assert len(contract.execution.source_manifest) == 4
     assert experiment.workload == contract
     assert experiment.schedule_sha256 == schedule_sha256(inkling_fused_rpa_schedule())
+    assert tuple(tensor.shape for tensor in contract.inputs) == plan.input_shapes
+    assert tuple(tensor.dtype for tensor in contract.inputs) == plan.input_dtypes
+    assert tuple(tensor.shape for tensor in contract.outputs) == (
+        plan.output_shape,
+        plan.fused_cache_shape,
+    )
+    assert tuple(tensor.dtype for tensor in contract.outputs) == plan.output_dtypes
+    assert tuple(
+        (source.path, source.sha256) for source in contract.execution.source_manifest
+    ) == plan.backend_manifest

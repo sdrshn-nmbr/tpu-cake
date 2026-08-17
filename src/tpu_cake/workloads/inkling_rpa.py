@@ -23,11 +23,8 @@ from tpu_cake.contracts import (
 from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership
 from tpu_cake.frontend import KernelBuilder, buffer, schedule_sha256
 from tpu_cake.rpa_lowering import (
-    INKLE_REPOSITORY_REVISION,
-    INKLING_RPA_BASE_TUNING_SHA256,
-    INKLING_RPA_SOURCE_SHA256,
-    INKLING_RPA_TUNING_SHA256,
-    INKLING_RPA_UTIL_SHA256,
+    FusedRpaPlan,
+    lower_inkling_rpa_to_pallas,
 )
 from tpu_cake.source import SourceLocation
 
@@ -367,7 +364,10 @@ def inkling_rpa_contract() -> WorkloadContract:
     )
 
 
-def inkling_fused_rpa_contract() -> WorkloadContract:
+def inkling_fused_rpa_contract(plan: FusedRpaPlan | None = None) -> WorkloadContract:
+    if plan is None:
+        plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+
     def tensor(
         name: str, shape: tuple[int, ...], logical: tuple[str, ...], dtype: str
     ) -> TensorContract:
@@ -379,36 +379,42 @@ def inkling_fused_rpa_contract() -> WorkloadContract:
             sharding=("",) * len(shape),
         )
 
+    input_metadata = (
+        ("queries", ("T", "Hq", "D")),
+        ("keys", ("T", "Hkv", "D")),
+        ("values", ("T", "Hkv", "D")),
+        ("fused_cache", ("P", "S", "Hkv2p", "Pack", "D")),
+        ("kv_lengths", ("N",)),
+        ("page_indices", ("PI",)),
+        ("cumulative_query_lengths", ("N1",)),
+        ("cumulative_kv_lengths", ("N1",)),
+        ("distribution", ("R3",)),
+        ("relative_states", ("T", "Hq", "R")),
+        ("relative_projection", ("R", "E")),
+    )
+    inputs = tuple(
+        tensor(name, shape, logical, dtype)
+        for (name, logical), shape, dtype in zip(
+            input_metadata,
+            plan.input_shapes,
+            plan.input_dtypes,
+            strict=True,
+        )
+    )
+    outputs = (
+        tensor("output", plan.output_shape, ("T", "Hq", "D"), plan.output_dtypes[0]),
+        tensor(
+            "updated_fused_cache",
+            plan.fused_cache_shape,
+            ("P", "S", "Hkv2p", "Pack", "D"),
+            plan.output_dtypes[1],
+        ),
+    )
     return WorkloadContract(
         name="inkling-fused-ragged-paged-relative-bias-decode-local-shard",
         stage="steady_decode",
-        inputs=(
-            tensor("queries", (4, 4, 32), ("T", "Hq", "D"), "bf16"),
-            tensor("keys", (4, 2, 32), ("T", "Hkv", "D"), "bf16"),
-            tensor("values", (4, 2, 32), ("T", "Hkv", "D"), "bf16"),
-            tensor(
-                "fused_cache",
-                (32, 16, 2, 2, 32),
-                ("P", "S", "Hkv2p", "Pack", "D"),
-                "bf16",
-            ),
-            tensor("kv_lengths", (4,), ("N",), "i32"),
-            tensor("page_indices", (32,), ("PI",), "i32"),
-            tensor("cumulative_query_lengths", (5,), ("N1",), "i32"),
-            tensor("cumulative_kv_lengths", (5,), ("N1",), "i32"),
-            tensor("distribution", (3,), ("R3",), "i32"),
-            tensor("relative_states", (4, 4, 16), ("T", "Hq", "R"), "bf16"),
-            tensor("relative_projection", (16, 128), ("R", "E"), "bf16"),
-        ),
-        outputs=(
-            tensor("output", (4, 4, 32), ("T", "Hq", "D"), "bf16"),
-            tensor(
-                "updated_fused_cache",
-                (32, 16, 2, 2, 32),
-                ("P", "S", "Hkv2p", "Pack", "D"),
-                "bf16",
-            ),
-        ),
+        inputs=inputs,
+        outputs=outputs,
         numerical=NumericalContract(
             reference="tpu_cake.workloads.inkling_rpa.inkling_fused_rpa_reference",
             absolute_tolerance=0.02,
@@ -421,21 +427,10 @@ def inkling_fused_rpa_contract() -> WorkloadContract:
             ),
             scope="local-shard-caller-owned-sharding",
             preflight="tpu_cake.rpa_lowering.FusedRpaPlan.preflight",
-            source_revision=INKLE_REPOSITORY_REVISION,
-            source_manifest=(
-                SourceFileContract(
-                    path="ragged_paged_attention_v3.py",
-                    sha256=INKLING_RPA_SOURCE_SHA256,
-                ),
-                SourceFileContract(
-                    path="tuned_block_sizes.py",
-                    sha256=INKLING_RPA_BASE_TUNING_SHA256,
-                ),
-                SourceFileContract(
-                    path="tuned_block_sizes_v3.py",
-                    sha256=INKLING_RPA_TUNING_SHA256,
-                ),
-                SourceFileContract(path="util.py", sha256=INKLING_RPA_UTIL_SHA256),
+            source_revision=plan.backend_repository_revision,
+            source_manifest=tuple(
+                SourceFileContract(path=path, sha256=sha256)
+                for path, sha256 in plan.backend_manifest
             ),
         ),
     )
@@ -443,8 +438,9 @@ def inkling_fused_rpa_contract() -> WorkloadContract:
 
 def inkling_fused_rpa_experiment() -> KernelExperiment:
     schedule = inkling_fused_rpa_schedule()
+    plan = lower_inkling_rpa_to_pallas(schedule)
     return KernelExperiment(
-        workload=inkling_fused_rpa_contract(),
+        workload=inkling_fused_rpa_contract(plan),
         target=TargetHardware(
             accelerator="TPU7x",
             topology="local shard; caller owns outer mesh",
@@ -467,7 +463,7 @@ def inkling_fused_rpa_experiment() -> KernelExperiment:
             required_timed_hlo_markers=("ragged_paged_attention",),
             forbidden_timed_hlo_fragments=("native_backend.py:500",),
         ),
-        schedule_sha256=schedule_sha256(schedule),
+        schedule_sha256=plan.schedule_sha256,
     )
 
 

@@ -9,6 +9,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 from xdsl.dialects.builtin import BFloat16Type, IntegerType, ModuleOp
+from xdsl.ir import Operation
 
 from tpu_cake.dialects.tpu_schedule import (
     BufferType,
@@ -18,6 +19,7 @@ from tpu_cake.dialects.tpu_schedule import (
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
+from tpu_cake.source import verify_with_sources
 
 INKLE_REPOSITORY_REVISION = "c3d805516e0f3bc0c6f621f2590489aff12f8a59"
 INKLING_RPA_FILE_REVISION = "e65c204fe42692254b0f7d6f678415dfc6fca401"
@@ -140,6 +142,7 @@ class FusedRpaPlan:
         total_pages = self.fused_cache_shape[0]
         if np.any(referenced_pages < 0) or np.any(referenced_pages >= total_pages):
             raise ValueError("fused RPA page index is outside the fused cache")
+        sequence_page_sets: list[set[int]] = []
         for sequence in range(sequence_count):
             first_page = int(cumulative_kv_lengths[sequence]) // page_size
             last_page = int(cumulative_kv_lengths[sequence + 1]) // page_size
@@ -148,6 +151,7 @@ class FusedRpaPlan:
                 raise ValueError(
                     "fused RPA page table aliases logical pages within one sequence"
                 )
+            sequence_page_sets.append({int(page) for page in sequence_pages})
         write_locations: list[tuple[int, int]] = []
         for sequence, length in enumerate(kv_lengths):
             position = int(length) - 1
@@ -156,6 +160,12 @@ class FusedRpaPlan:
             write_locations.append((page, position % page_size))
         if len(write_locations) != len(set(write_locations)):
             raise ValueError("fused RPA decode updates collide in the physical cache")
+        for writer, (write_page, _write_offset) in enumerate(write_locations):
+            for reader, used_pages in enumerate(sequence_page_sets):
+                if writer != reader and write_page in used_pages:
+                    raise ValueError(
+                        "fused RPA active write page is shared across sequences"
+                    )
 
     def invoke(
         self,
@@ -335,7 +345,16 @@ def _dtype(value) -> str:
     raise UnsupportedLoweringError(f"unsupported fused RPA dtype {element_type}")
 
 
-def _require_local_buffer_contract(value) -> None:
+def _unsupported(message: str, operation: Operation) -> UnsupportedLoweringError:
+    location = str(operation.location)
+    if location == "loc(unknown)":
+        return UnsupportedLoweringError(message)
+    return UnsupportedLoweringError(
+        f"{message}: relevant source site: {operation.name} at {location}"
+    )
+
+
+def _require_local_buffer_contract(value, operation: Operation) -> None:
     value_type = value.type
     if not isinstance(value_type, BufferType):
         raise UnsupportedLoweringError("fused RPA lowering expects physical buffers")
@@ -343,17 +362,19 @@ def _require_local_buffer_contract(value) -> None:
     layout = tuple(index.data for index in value_type.layout.order)
     sharding = tuple(axis.data for axis in value_type.sharding.axes)
     if layout != tuple(range(rank)):
-        raise UnsupportedLoweringError(
-            "local-shard fused RPA adapter supports default physical layout only"
+        raise _unsupported(
+            "local-shard fused RPA adapter supports default physical layout only",
+            operation,
         )
     if any(sharding):
-        raise UnsupportedLoweringError(
-            "local-shard fused RPA adapter leaves all outer sharding to its caller"
+        raise _unsupported(
+            "local-shard fused RPA adapter leaves all outer sharding to its caller",
+            operation,
         )
 
 
 def lower_inkling_rpa_to_pallas(module: ModuleOp) -> FusedRpaPlan:
-    module.verify()
+    verify_with_sources(module)
     kernels = tuple(
         operation for operation in module.body.block.ops if isinstance(operation, KernelOp)
     )
@@ -377,7 +398,7 @@ def lower_inkling_rpa_to_pallas(module: ModuleOp) -> FusedRpaPlan:
         )
     attention = operations[0]
     for value in attention.operands:
-        _require_local_buffer_contract(value)
+        _require_local_buffer_contract(value, attention)
     arguments = tuple(kernel.body.block.args)
     if len(arguments) != 11 or tuple(attention.operands[:11]) != arguments:
         raise UnsupportedLoweringError(
