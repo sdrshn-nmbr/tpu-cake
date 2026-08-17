@@ -26,7 +26,7 @@ TPU-cake applies that idea to Pallas and Mosaic. It describes TPU schedules, che
 
 TPU-cake began by combining CAKE's search loop with this MatX discipline (as seen in repos like https://github.com/MatX-inc/seqax and the public TPU tools already available in JAX, OpenXLA, Tokamax, etc.
 
-## What exists
+## Objects
 
 - A custom xDSL dialect for TPU schedules.
 - A high-level distributed-tensor xDSL dialect with explicit pending reductions and collectives.
@@ -34,7 +34,7 @@ TPU-cake began by combining CAKE's search loop with this MatX discipline (as see
 - Checks for DMA use, synchronization, operation shapes, and live memory.
 - A small Python frontend that emits canonical xDSL.
 - Immutable workload, experiment, metric, evidence, and run-receipt contracts.
-- Matmul and Inkling ragged paged attention examples.
+- Matmul and Thinking Machines Inkling ragged paged attention examples.
 - An XProf reader that rejects captures without the intended TPU work.
 - Verified distributed matmul lowering through Pallas and Mosaic.
 - Replayable full Seqax-forward lowering through multi-device JAX/XLA with exact
@@ -46,7 +46,7 @@ TPU-cake began by combining CAKE's search loop with this MatX discipline (as see
 
 xDSL is the canonical program and schedule format. Pydantic is used only for external contracts, normalized evidence, and receipts. The first complete lowering target is a distributed BF16 matmul followed by reduce-scatter.
 
-## Try it
+## Use
 
 ```bash
 uv sync
@@ -76,16 +76,6 @@ uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
 uv run tpu-cake run-seqax-surface --output-dir SURFACE_RUN_ROOT
 uv run tpu-cake verify-seqax-surface SURFACE_RUN_ROOT
 ```
-
-## Layout
-
-- `src/tpu_cake/dialects/`: canonical TPU schedule language and checks.
-- `src/tpu_cake/frontend.py`: Python schedule builder.
-- `src/tpu_cake/workloads/`: reference workloads and schedules.
-- `contracts/`: experiment and profile contracts.
-- `examples/`: generated xDSL schedules.
-- `evidence/`: normalized profile results.
-- `matx/` and `ecosystem/`: pinned research material.
 
 ## Current boundary
 
@@ -118,12 +108,3 @@ Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution,
 - [Accelerator Agents, MaxKernel, and JAXBench](https://github.com/AI-Hypercomputer/accelerator-agents)
 - [XProf](https://openxla.org/xprof/kernel-profiling)
 - [TPU accelerator microbenchmarks](https://github.com/AI-Hypercomputer/accelerator-microbenchmarks)
-
-Pinned copies, transcripts, hashes, and exact source URLs are stored under `matx/` and `ecosystem/`.
-
-Refresh them with:
-
-```bash
-uv run collect_matx.py
-uv run collect_ecosystem.py
-```
