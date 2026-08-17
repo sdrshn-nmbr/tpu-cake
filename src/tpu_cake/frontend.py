@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from io import StringIO
 
 from xdsl.dialects.builtin import ArrayAttr, IntAttr, MemRefType, ModuleOp, StringAttr
 from xdsl.ir import Attribute, Block, Operation, Region, SSAValue
-from xdsl.printer import Printer
 
+from tpu_cake.canonical import canonical_sha256, canonical_text
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
     BufferType,
+    CollectiveReduceScatterOp,
     DmaStartOp,
     DmaWaitOp,
     KernelOp,
@@ -28,6 +27,7 @@ from tpu_cake.dialects.tpu_schedule import (
     ShardingAttr,
     YieldOp,
 )
+from tpu_cake.source import SourceLocation, attach_source
 
 
 @dataclass(frozen=True)
@@ -95,12 +95,14 @@ class KernelBuilder:
         *,
         vmem_capacity_bytes: int,
         smem_capacity_bytes: int,
+        mesh: Mapping[str, int] | None = None,
     ) -> None:
         self._name = name
         self._target = target
         self._vmem_capacity_bytes = vmem_capacity_bytes
         self._smem_capacity_bytes = smem_capacity_bytes
         self._input_specs = tuple(inputs)
+        self._mesh = dict(sorted((mesh or {}).items()))
         self.block = Block(arg_types=[spec.to_type() for spec in self._input_specs])
 
     @property
@@ -111,13 +113,17 @@ class KernelBuilder:
         self.block.add_op(operation)
         return operation
 
-    def alloc(self, spec: BufferSpec, role: str) -> AllocOp:
-        operation = AllocOp(spec.to_type(), role)
+    def alloc(
+        self, spec: BufferSpec, role: str, *, source: SourceLocation | None = None
+    ) -> AllocOp:
+        operation = attach_source(AllocOp(spec.to_type(), role), source)
+        assert isinstance(operation, AllocOp)
         self._add(operation)
         return operation
 
-    def semaphore(self) -> SemaphoreAllocOp:
-        operation = SemaphoreAllocOp()
+    def semaphore(self, *, source: SourceLocation | None = None) -> SemaphoreAllocOp:
+        operation = attach_source(SemaphoreAllocOp(), source)
+        assert isinstance(operation, SemaphoreAllocOp)
         self._add(operation)
         return operation
 
@@ -129,9 +135,16 @@ class KernelBuilder:
         *,
         start_stage: int,
         wait_stage: int,
+        source_location: SourceLocation | None = None,
     ) -> DmaStartOp:
-        start = self.dma_start(source, destination, semaphore, stage=start_stage)
-        self.dma_wait(start, stage=wait_stage)
+        start = self.dma_start(
+            source,
+            destination,
+            semaphore,
+            stage=start_stage,
+            source_location=source_location,
+        )
+        self.dma_wait(start, stage=wait_stage, source=source_location)
         return start
 
     def dma_start(
@@ -141,13 +154,24 @@ class KernelBuilder:
         semaphore: SSAValue | Operation,
         *,
         stage: int,
+        source_location: SourceLocation | None = None,
     ) -> DmaStartOp:
-        operation = DmaStartOp(source, destination, semaphore, stage)
+        operation = attach_source(
+            DmaStartOp(source, destination, semaphore, stage), source_location
+        )
+        assert isinstance(operation, DmaStartOp)
         self._add(operation)
         return operation
 
-    def dma_wait(self, token: SSAValue | Operation, *, stage: int) -> DmaWaitOp:
-        operation = DmaWaitOp(token, stage)
+    def dma_wait(
+        self,
+        token: SSAValue | Operation,
+        *,
+        stage: int,
+        source: SourceLocation | None = None,
+    ) -> DmaWaitOp:
+        operation = attach_source(DmaWaitOp(token, stage), source)
+        assert isinstance(operation, DmaWaitOp)
         self._add(operation)
         return operation
 
@@ -158,8 +182,38 @@ class KernelBuilder:
         accumulator: SSAValue | Operation,
         *,
         stage: int,
+        source: SourceLocation | None = None,
     ) -> MxuMatmulOp:
-        operation = MxuMatmulOp(lhs, rhs, accumulator, stage)
+        operation = attach_source(MxuMatmulOp(lhs, rhs, accumulator, stage), source)
+        assert isinstance(operation, MxuMatmulOp)
+        self._add(operation)
+        return operation
+
+    def collective_reduce_scatter(
+        self,
+        source: SSAValue | Operation,
+        destination: SSAValue | Operation,
+        *,
+        stage: int,
+        mesh_axis: str,
+        group_size: int,
+        scatter_dimension: int,
+        reducer: str = "sum",
+        source_location: SourceLocation | None = None,
+    ) -> CollectiveReduceScatterOp:
+        operation = attach_source(
+            CollectiveReduceScatterOp(
+                source,
+                destination,
+                stage=stage,
+                mesh_axis=mesh_axis,
+                group_size=group_size,
+                scatter_dimension=scatter_dimension,
+                reducer=reducer,
+            ),
+            source_location,
+        )
+        assert isinstance(operation, CollectiveReduceScatterOp)
         self._add(operation)
         return operation
 
@@ -199,6 +253,8 @@ class KernelBuilder:
             self._target,
             self._vmem_capacity_bytes,
             self._smem_capacity_bytes,
+            ArrayAttr(StringAttr(axis) for axis in self._mesh),
+            ArrayAttr(IntAttr(size) for size in self._mesh.values()),
             Region(self.block),
         )
         module = ModuleOp([kernel])
@@ -207,10 +263,8 @@ class KernelBuilder:
 
 
 def canonical_module_text(module: ModuleOp) -> str:
-    stream = StringIO()
-    Printer(stream=stream, print_generic_format=True).print_op(module)
-    return stream.getvalue() + ("" if stream.getvalue().endswith("\n") else "\n")
+    return canonical_text(module)
 
 
 def schedule_sha256(module: ModuleOp) -> str:
-    return hashlib.sha256(canonical_module_text(module).encode()).hexdigest()
+    return canonical_sha256(module)

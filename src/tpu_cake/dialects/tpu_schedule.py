@@ -295,6 +295,69 @@ class MxuMatmulOp(IRDLOperation):
 
 
 @irdl_op_definition
+class CollectiveReduceScatterOp(IRDLOperation):
+    name = "tpu_schedule.collective_reduce_scatter"
+    source = operand_def(BufferType)
+    destination = operand_def(BufferType)
+    stage = prop_def(IntAttr)
+    mesh_axis = prop_def(StringAttr)
+    group_size = prop_def(IntAttr)
+    scatter_dimension = prop_def(IntAttr)
+    reducer = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        source: SSAValue | Operation,
+        destination: SSAValue | Operation,
+        *,
+        stage: int,
+        mesh_axis: str,
+        group_size: int,
+        scatter_dimension: int,
+        reducer: str = "sum",
+    ) -> None:
+        super().__init__(
+            operands=[source, destination],
+            properties={
+                "stage": IntAttr(stage),
+                "mesh_axis": StringAttr(mesh_axis),
+                "group_size": IntAttr(group_size),
+                "scatter_dimension": IntAttr(scatter_dimension),
+                "reducer": StringAttr(reducer),
+            },
+        )
+
+    def verify_(self) -> None:
+        source, destination = self.source.type, self.destination.type
+        assert isinstance(source, BufferType) and isinstance(destination, BufferType)
+        for buffer in (source, destination):
+            if buffer.space.data is not MemorySpace.VMEM:
+                raise VerifyException("reduce-scatter buffers must be resident in VMEM")
+            _check_live(buffer, self.stage.data)
+        if source.storage.element_type != destination.storage.element_type:
+            raise VerifyException("reduce-scatter cannot change element type")
+        source_shape = source.storage.get_shape()
+        destination_shape = destination.storage.get_shape()
+        if len(source_shape) != len(destination_shape):
+            raise VerifyException("reduce-scatter cannot change rank")
+        dimension = self.scatter_dimension.data
+        if dimension < 0 or dimension >= len(source_shape):
+            raise VerifyException("reduce-scatter dimension is out of range")
+        if self.group_size.data <= 0:
+            raise VerifyException("reduce-scatter group size must be positive")
+        expected = list(source_shape)
+        if expected[dimension] % self.group_size.data:
+            raise VerifyException("reduce-scatter dimension must divide by the group size")
+        expected[dimension] //= self.group_size.data
+        if tuple(expected) != destination_shape:
+            raise VerifyException("reduce-scatter destination has the wrong local shape")
+        if self.reducer.data not in {"sum", "max", "min"}:
+            raise VerifyException("unsupported reduce-scatter reducer")
+        if not self.mesh_axis.data:
+            raise VerifyException("reduce-scatter needs a mesh axis")
+
+
+@irdl_op_definition
 class RaggedPagedAttentionOp(IRDLOperation):
     name = "tpu_schedule.ragged_paged_attention"
     query = operand_def(BufferType)
@@ -396,6 +459,8 @@ class KernelOp(IRDLOperation):
     target = prop_def(StringAttr)
     vmem_capacity_bytes = prop_def(IntAttr)
     smem_capacity_bytes = prop_def(IntAttr)
+    mesh_axis_names = prop_def(ArrayAttr[StringAttr])
+    mesh_axis_sizes = prop_def(ArrayAttr[IntAttr])
     traits = traits_def(IsolatedFromAbove())
 
     def __init__(
@@ -404,6 +469,8 @@ class KernelOp(IRDLOperation):
         target: str | StringAttr,
         vmem_capacity_bytes: int | IntAttr,
         smem_capacity_bytes: int | IntAttr,
+        mesh_axis_names: ArrayAttr[StringAttr],
+        mesh_axis_sizes: ArrayAttr[IntAttr],
         body: Region,
     ):
         super().__init__(
@@ -416,12 +483,23 @@ class KernelOp(IRDLOperation):
                 "smem_capacity_bytes": IntAttr(smem_capacity_bytes)
                 if isinstance(smem_capacity_bytes, int)
                 else smem_capacity_bytes,
+                "mesh_axis_names": mesh_axis_names,
+                "mesh_axis_sizes": mesh_axis_sizes,
             },
             regions=[body],
         )
 
     def verify_(self) -> None:
         block = self.body.block
+        mesh_names = tuple(value.data for value in self.mesh_axis_names)
+        mesh_sizes = tuple(value.data for value in self.mesh_axis_sizes)
+        if len(mesh_names) != len(mesh_sizes):
+            raise VerifyException("kernel mesh axis names and sizes must have equal length")
+        if mesh_names != tuple(sorted(mesh_names)) or len(mesh_names) != len(set(mesh_names)):
+            raise VerifyException("kernel mesh axes must be unique and canonically ordered")
+        if any(size <= 0 for size in mesh_sizes):
+            raise VerifyException("kernel mesh axis sizes must be positive")
+        mesh = dict(zip(mesh_names, mesh_sizes, strict=True))
         if not isinstance(block.last_op, YieldOp):
             raise VerifyException("kernel must end with tpu_schedule.yield")
         operations = list(block.ops)
@@ -462,20 +540,36 @@ class KernelOp(IRDLOperation):
                 start = operation.token.owner
                 assert isinstance(start, DmaStartOp)
                 in_flight.pop(start.semaphore.owner, None)
+            if isinstance(operation, CollectiveReduceScatterOp):
+                axis = operation.mesh_axis.data
+                if axis not in mesh:
+                    raise VerifyException(f"reduce-scatter references unknown mesh axis {axis}")
+                if operation.group_size.data != mesh[axis]:
+                    raise VerifyException(
+                        "reduce-scatter group size must match its kernel mesh axis"
+                    )
 
         for buffer in buffers:
             buffer.verify()
-            for symbol, size in zip(
+            for symbol, size, sharding in zip(
                 (value.data for value in buffer.shape.dimensions),
                 buffer.storage.get_shape(),
+                (value.data for value in buffer.sharding.axes),
                 strict=True,
             ):
                 if symbol.isdecimal():
                     continue
-                previous = symbols.setdefault(symbol, size)
-                if previous != size:
+                shard_count = 1
+                for axis in filter(None, sharding.split("/")):
+                    if axis not in mesh:
+                        raise VerifyException(f"buffer references unknown mesh axis {axis}")
+                    shard_count *= mesh[axis]
+                global_size = size * shard_count
+                previous = symbols.setdefault(symbol, global_size)
+                if previous != global_size:
                     raise VerifyException(
-                        f"symbolic dimension {symbol} has conflicting sizes {previous} and {size}"
+                        f"symbolic dimension {symbol} has conflicting global sizes "
+                        f"{previous} and {global_size}"
                     )
 
         if in_flight:
@@ -510,6 +604,7 @@ TPUSchedule = Dialect(
         DmaStartOp,
         DmaWaitOp,
         MxuMatmulOp,
+        CollectiveReduceScatterOp,
         RaggedPagedAttentionOp,
         YieldOp,
     ],

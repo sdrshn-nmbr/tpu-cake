@@ -1,5 +1,5 @@
 import pytest
-from xdsl.dialects.builtin import bf16
+from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16
 from xdsl.ir import Block, Region
 from xdsl.utils.exceptions import VerifyException
 
@@ -74,7 +74,15 @@ def _dma_kernel(
             YieldOp(),
         ]
     )
-    return KernelOp("lifetime", "tpu7x", capacity, 1 << 16, Region(block))
+    return KernelOp(
+        "lifetime",
+        "tpu7x",
+        capacity,
+        1 << 16,
+        ArrayAttr[StringAttr](()),
+        ArrayAttr[IntAttr](()),
+        Region(block),
+    )
 
 
 def test_peak_memory_allows_nonoverlapping_allocations() -> None:

@@ -22,6 +22,15 @@ class RunStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class SemanticPropertyKind(StrEnum):
+    PREFIX_INVARIANCE = "prefix_invariance"
+    PREFILL_DECODE_EQUIVALENCE = "prefill_decode_equivalence"
+    STEPWISE_EQUIVALENCE = "stepwise_equivalence"
+    BATCH_PERMUTATION_INVARIANCE = "batch_permutation_invariance"
+    STATE_ISOLATION = "state_isolation"
+    CACHE_EQUIVALENCE = "cache_equivalence"
+
+
 class ProfileExpectation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str = Field(min_length=1)
@@ -72,6 +81,15 @@ class NumericalContract(BaseModel):
     absolute_tolerance: float = Field(ge=0)
     relative_tolerance: float = Field(ge=0)
     deterministic: bool = True
+    semantic_properties: tuple[SemanticPropertyKind, ...] = ()
+
+
+class SemanticPropertyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    property: SemanticPropertyKind
+    passed: bool
+    maximum_absolute_error: float = Field(ge=0)
+    details: str = Field(min_length=1)
 
 
 class BenchmarkProtocol(BaseModel):
@@ -128,6 +146,16 @@ class CorrectnessResult(BaseModel):
     oracle: str = Field(min_length=1)
     maximum_absolute_error: float | None = Field(default=None, ge=0)
     maximum_relative_error: float | None = Field(default=None, ge=0)
+    semantic_properties: tuple[SemanticPropertyResult, ...] = ()
+
+    @model_validator(mode="after")
+    def passed_result_has_no_failed_or_duplicate_properties(self) -> CorrectnessResult:
+        properties = [result.property for result in self.semantic_properties]
+        if len(properties) != len(set(properties)):
+            raise ValueError("correctness result has duplicate semantic properties")
+        if self.passed and any(not result.passed for result in self.semantic_properties):
+            raise ValueError("passed correctness cannot contain a failed semantic property")
+        return self
 
 
 class RuntimeIdentity(BaseModel):
@@ -146,6 +174,7 @@ class RunReceipt(BaseModel):
     status: RunStatus
     runtime: RuntimeIdentity
     correctness: CorrectnessResult
+    required_semantic_properties: tuple[SemanticPropertyKind, ...]
     metrics: tuple[Metric, ...]
     artifacts: tuple[ArtifactReference, ...]
 
@@ -153,4 +182,10 @@ class RunReceipt(BaseModel):
     def pass_requires_correctness(self) -> RunReceipt:
         if self.status is RunStatus.PASSED and not self.correctness.passed:
             raise ValueError("a passed receipt requires passed correctness")
+        required = set(self.required_semantic_properties)
+        if len(required) != len(self.required_semantic_properties):
+            raise ValueError("receipt semantic-property requirements must be unique")
+        observed = {result.property for result in self.correctness.semantic_properties}
+        if self.status is RunStatus.PASSED and observed != required:
+            raise ValueError("a passed receipt must contain every required semantic property")
         return self

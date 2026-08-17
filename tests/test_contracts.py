@@ -3,7 +3,13 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from tpu_cake.contracts import CorrectnessResult, ProfileExpectation, RunReceipt, RuntimeIdentity
+from tpu_cake.contracts import (
+    CorrectnessResult,
+    ProfileExpectation,
+    RunReceipt,
+    RuntimeIdentity,
+    SemanticPropertyResult,
+)
 from tpu_cake.metrics import (
     MeasurementInterval,
     MeasurementKind,
@@ -65,8 +71,40 @@ def test_run_receipt_is_immutable() -> None:
         status="passed",
         runtime=RuntimeIdentity(python="3.13"),
         correctness=CorrectnessResult(passed=True, oracle="numpy"),
+        required_semantic_properties=(),
         metrics=(),
         artifacts=(),
     )
     with pytest.raises(ValidationError):
         receipt.status = "failed"
+
+
+def test_passed_receipt_requires_all_semantic_properties() -> None:
+    experiment = matmul_experiment()
+    with pytest.raises(ValidationError, match="every required semantic property"):
+        RunReceipt(
+            experiment_id=experiment.experiment_id,
+            schedule_sha256=experiment.schedule_sha256,
+            status="passed",
+            runtime=RuntimeIdentity(python="3.13"),
+            correctness=CorrectnessResult(passed=True, oracle="numpy"),
+            required_semantic_properties=("batch_permutation_invariance",),
+            metrics=(),
+            artifacts=(),
+        )
+
+
+def test_passed_correctness_rejects_failed_semantic_property() -> None:
+    with pytest.raises(ValidationError, match="failed semantic property"):
+        CorrectnessResult(
+            passed=True,
+            oracle="numpy",
+            semantic_properties=(
+                SemanticPropertyResult(
+                    property="batch_permutation_invariance",
+                    passed=False,
+                    maximum_absolute_error=1,
+                    details="slot-dependent output",
+                ),
+            ),
+        )

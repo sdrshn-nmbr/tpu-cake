@@ -11,6 +11,7 @@ from xdsl.dialects.builtin import Builtin
 from xdsl.parser import Parser
 
 from tpu_cake.contracts import ProfileExpectation
+from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
 from tpu_cake.workloads import (
@@ -52,6 +53,7 @@ def _parser() -> argparse.ArgumentParser:
 def _verify_schedule(path: Path) -> int:
     context = Context()
     context.load_dialect(Builtin)
+    context.load_dialect(DistributedTensor)
     context.load_dialect(TPUSchedule)
     module = Parser(context, path.read_text(), name=str(path)).parse_module()
     module.verify()
