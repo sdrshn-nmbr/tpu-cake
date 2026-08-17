@@ -255,6 +255,17 @@ def run_matmul_search(
     runtime_identities = {result.runtime for _, _, result, _ in run_results}
     if len(runtime_identities) != 1:
         raise ValueError("SEARCH_RUNTIME_IDENTITIES_ARE_NOT_MATCHED")
+    source_states = [
+        json.loads((path / "source_state.json").read_text())
+        for _, _, _, path in run_results
+    ]
+    if any(state["git_dirty"] for state in source_states):
+        raise ValueError("SEARCH_REQUIRES_CLEAN_COMMITTED_SOURCE")
+    source_identities = {
+        (state["git_commit"], state["uv_lock_sha256"]) for state in source_states
+    }
+    if len(source_identities) != 1:
+        raise ValueError("SEARCH_SOURCE_IDENTITIES_ARE_NOT_MATCHED")
     round_medians: dict[str, dict[int, float]] = {
         candidate.name: {} for candidate in contract.candidates
     }

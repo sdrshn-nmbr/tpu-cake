@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -56,9 +58,17 @@ def _result(name: str, samples: tuple[int, ...], *, lhs: str = "1" * 64) -> Matm
     )
 
 
+def _write_source_state(path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "source_state.json").write_text(
+        json.dumps({"git_dirty": False, "git_commit": "a" * 40, "uv_lock_sha256": "b" * 64})
+    )
+
+
 def test_search_alternates_order_and_promotes_only_clear_winner(tmp_path, monkeypatch) -> None:
     def fake_load(_path, _contract, candidate, *, interpret):
         assert interpret is False
+        _write_source_state(_path)
         samples = (
             (100, 101, 99, 100, 100)
             if candidate.name == "whole"
@@ -81,6 +91,7 @@ def test_search_alternates_order_and_promotes_only_clear_winner(tmp_path, monkey
 
 def test_search_rejects_unmatched_inputs(tmp_path, monkeypatch) -> None:
     def fake_load(_path, _contract, candidate, *, interpret):
+        _write_source_state(_path)
         lhs = "1" * 64 if candidate.name == "whole" else "9" * 64
         return _result(candidate.name, (100, 100, 100), lhs=lhs)
 
