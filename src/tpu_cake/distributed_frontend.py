@@ -10,15 +10,20 @@ from tpu_cake.dialects.distributed_tensor import (
     AllGatherOp,
     AllReduceOp,
     AxisListAttr,
+    BroadcastOp,
     DimensionAttr,
     DTensorType,
     EinsumLocalOp,
+    ElementwiseOp,
+    EmbeddingLookupOp,
     MeshAttr,
     PendingReductionsAttr,
     ProgramOp,
+    ReduceLocalOp,
     ReduceScatterOp,
     ReturnOp,
     ShardingAttr,
+    TransposeOp,
 )
 from tpu_cake.source import SourceLocation, attach_source
 
@@ -110,6 +115,85 @@ class DistributedProgramBuilder:
             source,
         )
         assert isinstance(operation, EinsumLocalOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def elementwise(
+        self,
+        *values: SSAValue,
+        result: DistributedTensorSpec,
+        function: str,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            ElementwiseOp(tuple(values), result.to_type(), function), source
+        )
+        assert isinstance(operation, ElementwiseOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def reduce_local(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        dimensions: tuple[str, ...],
+        reducer: str,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            ReduceLocalOp(value, result.to_type(), dimensions, reducer), source
+        )
+        assert isinstance(operation, ReduceLocalOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def transpose(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        permutation: tuple[int, ...],
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            TransposeOp(value, result.to_type(), permutation), source
+        )
+        assert isinstance(operation, TransposeOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def broadcast(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(BroadcastOp(value, result.to_type()), source)
+        assert isinstance(operation, BroadcastOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def embedding_lookup(
+        self,
+        table: SSAValue,
+        indices: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        vocabulary_dimension: str,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            EmbeddingLookupOp(
+                table,
+                indices,
+                result.to_type(),
+                vocabulary_dimension,
+            ),
+            source,
+        )
+        assert isinstance(operation, EmbeddingLookupOp)
         self.block.add_op(operation)
         return operation.result
 

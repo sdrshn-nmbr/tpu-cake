@@ -8,6 +8,7 @@ from xdsl.dialects.builtin import (
     Float16Type,
     Float32Type,
     IntAttr,
+    IntegerType,
     StringAttr,
     f32,
 )
@@ -133,6 +134,243 @@ def _same_value_shape(lhs: DTensorType, rhs: DTensorType) -> bool:
 
 def _string_array(values: tuple[str, ...] | list[str]) -> ArrayAttr[StringAttr]:
     return ArrayAttr(StringAttr(value) for value in values)
+
+
+def _dimension_index(tensor: DTensorType) -> dict[str, int]:
+    return {name: index for index, (name, _) in enumerate(tensor.logical_shape())}
+
+
+def _require_fully_reduced(*tensors: DTensorType) -> None:
+    if any(tensor.pending_reductions() for tensor in tensors):
+        raise VerifyException("operation cannot consume a partially reduced tensor")
+
+
+@irdl_op_definition
+class ElementwiseOp(IRDLOperation):
+    name = "dtensor.elementwise"
+    values = var_operand_def(DTensorType)
+    result = result_def(DTensorType)
+    function = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        values: tuple[SSAValue | IRDLOperation, ...],
+        result_type: DTensorType,
+        function: str,
+    ) -> None:
+        super().__init__(
+            operands=[list(values)],
+            result_types=[result_type],
+            properties={"function": StringAttr(function)},
+        )
+
+    def verify_(self) -> None:
+        if not self.values:
+            raise VerifyException("elementwise operation needs at least one input")
+        result = self.result.type
+        assert isinstance(result, DTensorType)
+        if self.function.data not in {"add", "multiply", "silu", "gelu", "relu", "exp"}:
+            raise VerifyException("unsupported elementwise function")
+        for value in self.values:
+            tensor = value.type
+            assert isinstance(tensor, DTensorType)
+            if tensor != result:
+                raise VerifyException(
+                    "elementwise inputs and result must have identical distributed tensor types"
+                )
+
+
+@irdl_op_definition
+class ReduceLocalOp(IRDLOperation):
+    name = "dtensor.reduce_local"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    dimensions = prop_def(ArrayAttr[StringAttr])
+    reducer = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        dimensions: tuple[str, ...],
+        reducer: str,
+    ) -> None:
+        super().__init__(
+            operands=[value],
+            result_types=[result_type],
+            properties={
+                "dimensions": _string_array(tuple(sorted(dimensions))),
+                "reducer": StringAttr(reducer),
+            },
+        )
+
+    def verify_(self) -> None:
+        before, after = self.value.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        _require_fully_reduced(before)
+        dimensions = tuple(value.data for value in self.dimensions)
+        if not dimensions or dimensions != tuple(sorted(set(dimensions))):
+            raise VerifyException(
+                "local reduction dimensions must be non-empty, unique, and canonical"
+            )
+        if self.reducer.data not in {"sum", "max", "min"}:
+            raise VerifyException("unsupported local reduction")
+        indexes = _dimension_index(before)
+        if any(dimension not in indexes for dimension in dimensions):
+            raise VerifyException("local reduction references an unknown dimension")
+        retained = tuple(
+            (shape, sharding)
+            for shape, sharding in zip(
+                before.logical_shape(), before.sharding_axes(), strict=True
+            )
+            if shape[0] not in dimensions
+        )
+        if after.logical_shape() != tuple(shape for shape, _ in retained):
+            raise VerifyException("local reduction result has the wrong logical shape")
+        if after.sharding_axes() != tuple(sharding for _, sharding in retained):
+            raise VerifyException("local reduction result has the wrong retained sharding")
+        reduced_axes = sorted(
+            {
+                axis
+                for dimension in dimensions
+                for axis in before.sharding_axes()[indexes[dimension]]
+            }
+        )
+        expected_pending = {axis: self.reducer.data for axis in reduced_axes}
+        if after.pending_reductions() != expected_pending:
+            raise VerifyException(
+                "local reduction must expose reductions over sharded dimensions as pending"
+            )
+        if before.element_type != after.element_type:
+            raise VerifyException("local reduction cannot change element type")
+
+
+@irdl_op_definition
+class TransposeOp(IRDLOperation):
+    name = "dtensor.transpose"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    permutation = prop_def(ArrayAttr[IntAttr])
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        permutation: tuple[int, ...],
+    ) -> None:
+        super().__init__(
+            operands=[value],
+            result_types=[result_type],
+            properties={"permutation": ArrayAttr(IntAttr(index) for index in permutation)},
+        )
+
+    def verify_(self) -> None:
+        before, after = self.value.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        permutation = tuple(value.data for value in self.permutation)
+        if sorted(permutation) != list(range(len(before.dimensions))):
+            raise VerifyException("transpose permutation must cover every dimension exactly once")
+        if after.logical_shape() != tuple(before.logical_shape()[index] for index in permutation):
+            raise VerifyException("transpose result has the wrong logical shape")
+        if after.sharding_axes() != tuple(
+            before.sharding_axes()[index] for index in permutation
+        ):
+            raise VerifyException("transpose result has the wrong sharding")
+        if before.element_type != after.element_type:
+            raise VerifyException("transpose cannot change element type")
+        if before.pending_reductions() != after.pending_reductions():
+            raise VerifyException("transpose cannot complete pending reductions")
+
+
+@irdl_op_definition
+class BroadcastOp(IRDLOperation):
+    name = "dtensor.broadcast"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+
+    def __init__(self, value: SSAValue | IRDLOperation, result_type: DTensorType) -> None:
+        super().__init__(operands=[value], result_types=[result_type])
+
+    def verify_(self) -> None:
+        before, after = self.value.type, self.result.type
+        assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
+        before_shape = dict(before.logical_shape())
+        after_shape = dict(after.logical_shape())
+        if any(after_shape.get(name) != size for name, size in before_shape.items()):
+            raise VerifyException("broadcast must preserve every input dimension and size")
+        before_sharding = dict(
+            zip((name for name, _ in before.logical_shape()), before.sharding_axes(), strict=True)
+        )
+        after_sharding = dict(
+            zip((name for name, _ in after.logical_shape()), after.sharding_axes(), strict=True)
+        )
+        if any(after_sharding[name] != axes for name, axes in before_sharding.items()):
+            raise VerifyException("broadcast must preserve input sharding")
+        new_dimensions = set(after_shape) - set(before_shape)
+        if any(after_sharding[name] for name in new_dimensions):
+            raise VerifyException("new broadcast dimensions must be replicated")
+        if before.element_type != after.element_type:
+            raise VerifyException("broadcast cannot change element type")
+        if before.pending_reductions() != after.pending_reductions():
+            raise VerifyException("broadcast cannot complete pending reductions")
+
+
+@irdl_op_definition
+class EmbeddingLookupOp(IRDLOperation):
+    name = "dtensor.embedding_lookup"
+    table = operand_def(DTensorType)
+    indices = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    vocabulary_dimension = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        table: SSAValue | IRDLOperation,
+        indices: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        vocabulary_dimension: str,
+    ) -> None:
+        super().__init__(
+            operands=[table, indices],
+            result_types=[result_type],
+            properties={"vocabulary_dimension": StringAttr(vocabulary_dimension)},
+        )
+
+    def verify_(self) -> None:
+        table, indices, result = self.table.type, self.indices.type, self.result.type
+        assert isinstance(table, DTensorType)
+        assert isinstance(indices, DTensorType)
+        assert isinstance(result, DTensorType)
+        _require_fully_reduced(table, indices)
+        if not isinstance(indices.element_type, IntegerType):
+            raise VerifyException("embedding indices must have integer element type")
+        vocabulary = self.vocabulary_dimension.data
+        table_indexes = _dimension_index(table)
+        if vocabulary not in table_indexes:
+            raise VerifyException("embedding vocabulary dimension is absent from the table")
+        retained_table = tuple(
+            (shape, sharding)
+            for shape, sharding in zip(table.logical_shape(), table.sharding_axes(), strict=True)
+            if shape[0] != vocabulary
+        )
+        expected_shape = (*indices.logical_shape(), *(shape for shape, _ in retained_table))
+        if len(dict(expected_shape)) != len(expected_shape):
+            raise VerifyException("embedding result dimensions must be unique")
+        if result.logical_shape() != expected_shape:
+            raise VerifyException("embedding result has the wrong logical shape")
+        expected_sharding = (
+            *indices.sharding_axes(),
+            *(sharding for _, sharding in retained_table),
+        )
+        if result.sharding_axes() != expected_sharding:
+            raise VerifyException("embedding result has the wrong sharding")
+        vocabulary_axes = table.sharding_axes()[table_indexes[vocabulary]]
+        if result.pending_reductions() != {axis: "sum" for axis in vocabulary_axes}:
+            raise VerifyException(
+                "sharded embedding lookup must expose its cross-device sum as pending"
+            )
+        if result.element_type != table.element_type:
+            raise VerifyException("embedding result must use the table element type")
 
 
 @irdl_op_definition
@@ -397,6 +635,18 @@ class ProgramOp(IRDLOperation):
 
 DistributedTensor = Dialect(
     "dtensor",
-    [ProgramOp, EinsumLocalOp, AllGatherOp, ReduceScatterOp, AllReduceOp, ReturnOp],
+    [
+        ProgramOp,
+        ElementwiseOp,
+        ReduceLocalOp,
+        TransposeOp,
+        BroadcastOp,
+        EmbeddingLookupOp,
+        EinsumLocalOp,
+        AllGatherOp,
+        ReduceScatterOp,
+        AllReduceOp,
+        ReturnOp,
+    ],
     [DimensionAttr, AxisListAttr, MeshAttr, ShardingAttr, PendingReductionsAttr, DTensorType],
 )

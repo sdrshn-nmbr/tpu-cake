@@ -1,5 +1,5 @@
 import pytest
-from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f16, f32
+from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f16, f32, i32
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.distributed_tensor import MeshAttr, PendingReductionsAttr
@@ -186,3 +186,118 @@ def test_all_reduce_rejects_duplicate_axes() -> None:
     )
     with pytest.raises(VerifyException, match="axes must be unique"):
         builder.module(complete)
+
+
+def test_seqax_style_embedding_and_mlp_primitives_verify_together() -> None:
+    table = tensor(bf16, (("V", 64), ("D", 32)), sharding={"V": ("t",)})
+    indices = tensor(i32, (("B", 8), ("S", 4)), sharding={"B": ("d",)})
+    builder = DistributedProgramBuilder("forward_fragment", {"d": 2, "t": 4}, (table, indices))
+    partial = builder.embedding_lookup(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(
+            bf16,
+            (("B", 8), ("S", 4), ("D", 32)),
+            sharding={"B": ("d",)},
+            pending_reductions={"t": "sum"},
+        ),
+        vocabulary_dimension="V",
+    )
+    complete = builder.all_reduce(
+        partial,
+        tensor(
+            bf16,
+            (("B", 8), ("S", 4), ("D", 32)),
+            sharding={"B": ("d",)},
+        ),
+        axes=("t",),
+    )
+    activated = builder.elementwise(
+        complete,
+        result=tensor(
+            bf16,
+            (("B", 8), ("S", 4), ("D", 32)),
+            sharding={"B": ("d",)},
+        ),
+        function="silu",
+    )
+    reduced = builder.reduce_local(
+        activated,
+        tensor(bf16, (("B", 8), ("S", 4)), sharding={"B": ("d",)}),
+        dimensions=("D",),
+        reducer="sum",
+    )
+    broadcast = builder.broadcast(
+        reduced,
+        tensor(
+            bf16,
+            (("B", 8), ("S", 4), ("D", 32)),
+            sharding={"B": ("d",)},
+        ),
+    )
+    result = builder.transpose(
+        broadcast,
+        tensor(
+            bf16,
+            (("S", 4), ("B", 8), ("D", 32)),
+            sharding={"B": ("d",)},
+        ),
+        permutation=(1, 0, 2),
+    )
+
+    builder.module(result).verify()
+
+
+def test_sharded_embedding_cannot_hide_its_pending_sum() -> None:
+    table = tensor(bf16, (("V", 64), ("D", 32)), sharding={"V": ("t",)})
+    indices = tensor(i32, (("B", 8),))
+    builder = DistributedProgramBuilder("bad_embedding", {"t": 4}, (table, indices))
+    result = builder.embedding_lookup(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(bf16, (("B", 8), ("D", 32))),
+        vocabulary_dimension="V",
+    )
+
+    with pytest.raises(VerifyException, match="cross-device sum as pending"):
+        builder.module(result)
+
+
+def test_local_reduction_over_sharded_dimension_must_remain_pending() -> None:
+    value = tensor(bf16, (("B", 8), ("D", 32)), sharding={"D": ("t",)})
+    builder = DistributedProgramBuilder("bad_reduction", {"t": 4}, (value,))
+    result = builder.reduce_local(
+        builder.inputs[0],
+        tensor(bf16, (("B", 8),)),
+        dimensions=("D",),
+        reducer="sum",
+    )
+
+    with pytest.raises(VerifyException, match="as pending"):
+        builder.module(result)
+
+
+def test_broadcast_cannot_invent_sharding_for_a_new_dimension() -> None:
+    value = tensor(bf16, (("B", 8),))
+    builder = DistributedProgramBuilder("bad_broadcast", {"t": 4}, (value,))
+    result = builder.broadcast(
+        builder.inputs[0],
+        tensor(bf16, (("B", 8), ("D", 32)), sharding={"D": ("t",)}),
+    )
+
+    with pytest.raises(VerifyException, match="new broadcast dimensions must be replicated"):
+        builder.module(result)
+
+
+def test_elementwise_requires_identical_distributed_types() -> None:
+    lhs = tensor(bf16, (("B", 8),), sharding={"B": ("t",)})
+    rhs = tensor(bf16, (("B", 8),))
+    builder = DistributedProgramBuilder("bad_elementwise", {"t": 4}, (lhs, rhs))
+    result = builder.elementwise(
+        *builder.inputs,
+        result=lhs,
+        function="add",
+    )
+
+    with pytest.raises(VerifyException, match="identical distributed tensor types"):
+        builder.module(result)
