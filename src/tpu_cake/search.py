@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from tpu_cake.artifacts import resolve_recorded_artifact
 from tpu_cake.contracts import ArtifactReference, ArtifactRole
 from tpu_cake.identity import (
     LEGACY_SEMANTIC_IDENTITY_SCHEMA,
@@ -138,16 +139,12 @@ def _validate_artifact(path: Path, size_bytes: int, sha256: str) -> None:
 
 
 def _resolve_artifact(run_path: Path, artifact: ArtifactReference) -> Path:
-    declared = Path(artifact.path)
-    candidates = (
-        declared,
-        run_path / declared,
-        run_path / declared.name,
+    return resolve_recorded_artifact(
+        run_path,
+        artifact.path,
+        size_bytes=artifact.size_bytes,
+        sha256=artifact.sha256,
     )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return run_path / declared.name
 
 
 def _named_artifact(

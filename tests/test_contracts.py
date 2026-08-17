@@ -209,6 +209,33 @@ def test_receipt_rejects_a_deleted_required_artifact(tmp_path) -> None:
         validate_receipt(receipt, experiment, root=root)
 
 
+def test_receipt_rejects_an_artifact_symlink_outside_bundle(tmp_path) -> None:
+    root = tmp_path / "bundle"
+    receipt, experiment = _complete_receipt(root)
+    artifact = receipt.artifacts[0]
+    outside = tmp_path / "outside"
+    outside.write_bytes((root / artifact.path).read_bytes())
+    (root / artifact.path).unlink()
+    (root / artifact.path).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="ARTIFACT_SYMLINK_FORBIDDEN"):
+        validate_receipt(receipt, experiment, root=root)
+
+
+def test_receipt_does_not_resolve_artifacts_from_process_cwd(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "bundle"
+    receipt, experiment = _complete_receipt(root)
+    artifact = receipt.artifacts[0]
+    (root / artifact.path).unlink()
+    shadow = tmp_path / artifact.path
+    shadow.parent.mkdir(parents=True, exist_ok=True)
+    shadow.write_bytes(b"cwd shadow")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ValueError, match="artifact is missing"):
+        validate_receipt(receipt, experiment, root=root)
+
+
 def test_receipt_rejects_a_phase_with_only_generic_role_coverage(tmp_path) -> None:
     receipt, _ = _complete_receipt(tmp_path / "bundle")
     payload = receipt.model_dump(mode="json")

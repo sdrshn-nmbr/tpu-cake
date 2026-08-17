@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from tpu_cake.artifacts import resolve_bundle_artifact, resolve_recorded_artifact
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
@@ -24,11 +25,12 @@ from tpu_cake.cost_model import (
 )
 from tpu_cake.identity import (
     LEGACY_SEMANTIC_IDENTITY_SCHEMA,
+    SEMANTIC_IDENTITY_SCHEMA,
     array_sha256,
     semantic_sha256,
 )
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
-from tpu_cake.pallas_lowering import validate_saved_pallas_plan
+from tpu_cake.pallas_lowering import PALLAS_EXECUTION_SCHEMA, validate_saved_pallas_plan
 from tpu_cake.receipt_metrics import build_receipt_metrics
 from tpu_cake.runner import MatmulRunResult, RunMode, validate_profiler_contract
 from tpu_cake.search import (
@@ -102,11 +104,19 @@ def _resolve_result_artifact(
     artifact: ArtifactReference,
 ) -> Path:
     declared = Path(artifact.path)
-    candidates = (declared, root / declared, root / phase / declared.name)
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return root / phase / declared.name
+    if declared.parts[0] == phase:
+        return resolve_recorded_artifact(
+            root,
+            declared.as_posix(),
+            size_bytes=artifact.size_bytes,
+            sha256=artifact.sha256,
+        )
+    return resolve_recorded_artifact(
+        root / phase,
+        declared.as_posix(),
+        size_bytes=artifact.size_bytes,
+        sha256=artifact.sha256,
+    )
 
 
 def _source_identity(
@@ -122,11 +132,29 @@ def _source_identity(
         or not isinstance(lock, str)
         or re.fullmatch(r"[0-9a-f]{64}", lock) is None
         or state.get("source_diff_sha256") != _sha256(diff_path)
+        or not isinstance(state.get("git_status"), list)
+        or (state.get("git_dirty") is False and bool(state["git_status"]))
         or (state.get("git_dirty") is False and bool(diff_path.read_bytes()))
         or (require_clean and state.get("git_dirty") is not False)
     ):
         raise ValueError(f"SOURCE_STATE_INVALID path={state_path}")
     return commit, lock
+
+
+def _validate_invocation_schemas(invocation: dict[str, object], phase: str) -> str:
+    identity_schema = invocation.get(
+        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
+    )
+    if not isinstance(identity_schema, str):
+        raise TypeError(f"RUN_IDENTITY_SCHEMA_INVALID phase={phase}")
+    if "identity_schema" in invocation and identity_schema != SEMANTIC_IDENTITY_SCHEMA:
+        raise ValueError(f"RUN_IDENTITY_SCHEMA_UNSUPPORTED phase={phase}")
+    if (
+        "pallas_execution_schema" in invocation
+        and invocation["pallas_execution_schema"] != PALLAS_EXECUTION_SCHEMA
+    ):
+        raise ValueError(f"RUN_PALLAS_EXECUTION_SCHEMA_UNSUPPORTED phase={phase}")
+    return identity_schema
 
 
 def _validate_result_artifact_bindings(
@@ -201,9 +229,7 @@ def _validate_saved_matmul_phase(
     )
 
     invocation = json.loads(artifacts["invocation.json"].read_text())
-    identity_schema = invocation.get(
-        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
-    )
+    identity_schema = _validate_invocation_schemas(invocation, phase)
     if invocation.get("mode") != result.mode.value:
         raise ValueError(f"RUN_INVOCATION_MODE_MISMATCH phase={phase}")
     expected_fields = {
@@ -630,10 +656,11 @@ def validate_receipt(
         raise ValueError("receipt semantic requirements do not match the experiment")
     if receipt.status is not RunStatus.PASSED:
         return
+    if root is None:
+        raise ValueError("passed receipt validation requires its bundle root")
+    root = root.resolve()
     for artifact in receipt.artifacts:
-        path = Path(artifact.path)
-        if root is not None and not path.is_absolute():
-            path = root / path
+        path = resolve_bundle_artifact(root, artifact.path)
         if not path.is_file():
             raise ValueError(f"receipt artifact is missing: {path}")
         if path.stat().st_size != artifact.size_bytes:
@@ -649,9 +676,7 @@ def validate_receipt(
                     f"metric source is not bound to a receipt artifact: {source.artifact_path}"
                 )
     if experiment.workload.name.startswith("distributed-matmul-"):
-        if root is None:
-            raise ValueError("distributed matmul receipt replay requires its bundle root")
-        _validate_distributed_matmul_receipt(receipt, experiment, root.resolve())
+        _validate_distributed_matmul_receipt(receipt, experiment, root)
     provenance = receipt.search_provenance
     if provenance is None:
         return
@@ -664,12 +689,8 @@ def validate_receipt(
     contract_artifact = by_role[ArtifactRole.SEARCH_CONTRACT][0]
     result_artifact = by_role[ArtifactRole.SEARCH_RESULT][0]
 
-    def resolve(path: str) -> Path:
-        value = Path(path)
-        return root / value if root is not None and not value.is_absolute() else value
-
-    contract_path = resolve(contract_artifact.path)
-    result_path = resolve(result_artifact.path)
+    contract_path = resolve_bundle_artifact(root, contract_artifact.path)
+    result_path = resolve_bundle_artifact(root, result_artifact.path)
     if provenance.contract_sha256 != contract_artifact.sha256:
         raise ValueError("search contract identity does not match provenance")
     if provenance.result_sha256 != result_artifact.sha256:

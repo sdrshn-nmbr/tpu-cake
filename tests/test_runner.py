@@ -18,7 +18,11 @@ from tpu_cake.contracts import (
     RuntimeIdentity,
 )
 from tpu_cake.ledger import ExperimentLedger, RunState
-from tpu_cake.receipt import _source_identity, _validate_saved_matmul_phase
+from tpu_cake.receipt import (
+    _source_identity,
+    _validate_invocation_schemas,
+    _validate_saved_matmul_phase,
+)
 from tpu_cake.runner import (
     MatmulRunResult,
     RunMode,
@@ -54,6 +58,46 @@ def test_source_identity_rejects_a_clean_claim_with_a_nonempty_diff(tmp_path) ->
 
     with pytest.raises(ValueError, match="SOURCE_STATE_INVALID"):
         _source_identity(state, diff)
+
+
+def test_source_identity_rejects_a_clean_claim_with_nonempty_status(tmp_path) -> None:
+    diff = tmp_path / "source_diff.patch"
+    diff.write_text("")
+    state = tmp_path / "source_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "git_commit": "a" * 40,
+                "git_dirty": False,
+                "git_status": ["?? injected.py"],
+                "uv_lock_sha256": "b" * 64,
+                "source_diff_sha256": hashlib.sha256(diff.read_bytes()).hexdigest(),
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="SOURCE_STATE_INVALID"):
+        _source_identity(state, diff)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("identity_schema", "separator-v1", "RUN_IDENTITY_SCHEMA_UNSUPPORTED"),
+        (
+            "pallas_execution_schema",
+            "standalone-rendering-v1",
+            "RUN_PALLAS_EXECUTION_SCHEMA_UNSUPPORTED",
+        ),
+    ),
+)
+def test_explicit_legacy_schemas_are_rejected(field: str, value: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        _validate_invocation_schemas({field: value}, "timing")
+
+
+def test_absent_schema_fields_select_the_legacy_reader() -> None:
+    assert _validate_invocation_schemas({}, "timing") == "separator-v1"
 
 
 @pytest.mark.parametrize(

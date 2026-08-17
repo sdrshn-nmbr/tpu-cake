@@ -5,11 +5,12 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from tpu_cake.contracts import RuntimeIdentity
+from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.runner import MatmulRunResult, RunMode
 from tpu_cake.search import (
     MatmulSearchCandidate,
     MatmulSearchContract,
+    _resolve_artifact,
     run_matmul_search,
     validate_matmul_search_result,
 )
@@ -157,3 +158,39 @@ def test_saved_search_contract_round_trips_through_strict_schema() -> None:
     contract = _contract()
     encoded = contract.model_dump_json(indent=2, exclude_computed_fields=True)
     assert MatmulSearchContract.model_validate_json(encoded) == contract
+
+
+def test_search_artifact_resolution_is_confined_to_the_run(tmp_path, monkeypatch) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    real = run / "physical.xdsl"
+    real.write_text("real")
+    shadow_root = tmp_path / "shadow"
+    shadow_root.mkdir()
+    (shadow_root / "physical.xdsl").write_text("shadow")
+    monkeypatch.chdir(shadow_root)
+    artifact = ArtifactReference(
+        path="physical.xdsl",
+        size_bytes=4,
+        sha256="0" * 64,
+        role=ArtifactRole.PHYSICAL_IR,
+    )
+
+    assert _resolve_artifact(run, artifact) == real
+
+
+def test_search_artifact_resolution_rejects_symlinks(tmp_path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("outside")
+    (run / "physical.xdsl").symlink_to(outside)
+    artifact = ArtifactReference(
+        path="physical.xdsl",
+        size_bytes=7,
+        sha256="0" * 64,
+        role=ArtifactRole.PHYSICAL_IR,
+    )
+
+    with pytest.raises(ValueError, match="ARTIFACT_SYMLINK_FORBIDDEN"):
+        _resolve_artifact(run, artifact)
