@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.ledger import RunState, read_ledger_history
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.pallas_lowering import lower_physical_matmul_to_pallas
 from tpu_cake.runner import MatmulRunResult, RunMode, run_distributed_matmul
@@ -169,8 +169,7 @@ def _validate_resumed_result(
     ledger_path = path / "ledger.sqlite"
     if not ledger_path.is_file():
         raise ValueError(f"SEARCH_LEDGER_MISSING candidate={candidate.name}")
-    with ExperimentLedger(ledger_path) as ledger:
-        history = tuple(event.state for event in ledger.history(result.run_id))
+    history = tuple(event.state for event in read_ledger_history(ledger_path, result.run_id))
     if history != (
         RunState.CREATED,
         RunState.VERIFIED,
@@ -216,13 +215,16 @@ def run_matmul_search(
     contract: MatmulSearchContract,
     *,
     interpret: bool = False,
+    write_result: bool = True,
 ) -> MatmulSearchResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     contract_path = output_dir / "contract.json"
     contract_text = contract.model_dump_json(indent=2) + "\n"
-    if contract_path.exists() and contract_path.read_text() != contract_text:
-        raise ValueError("SEARCH_CONTRACT_CHANGED")
-    contract_path.write_text(contract_text)
+    if contract_path.exists():
+        if contract_path.read_text() != contract_text:
+            raise ValueError("SEARCH_CONTRACT_CHANGED")
+    else:
+        contract_path.write_text(contract_text)
 
     run_results: list[tuple[int, str, MatmulRunResult, Path]] = []
     execution_orders: list[tuple[str, ...]] = []
@@ -330,5 +332,23 @@ def run_matmul_search(
         candidates=tuple(statistics_by_candidate),
         run_results=tuple(str(path.relative_to(output_dir)) for _, _, _, path in run_results),
     )
-    (output_dir / "result.json").write_text(result.model_dump_json(indent=2) + "\n")
+    if write_result:
+        (output_dir / "result.json").write_text(result.model_dump_json(indent=2) + "\n")
     return result
+
+
+def validate_matmul_search_result(
+    output_dir: Path,
+    contract: MatmulSearchContract,
+    expected: MatmulSearchResult,
+    *,
+    interpret: bool = False,
+) -> None:
+    observed = run_matmul_search(
+        output_dir,
+        contract,
+        interpret=interpret,
+        write_result=False,
+    )
+    if observed != expected:
+        raise ValueError("SEARCH_RESULT_DOES_NOT_MATCH_VERIFIED_RUNS")

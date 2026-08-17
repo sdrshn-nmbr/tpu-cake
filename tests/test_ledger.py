@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
-from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 
 RUN_ID = "1" * 64
 
@@ -63,3 +65,13 @@ def test_duplicate_completion_is_idempotent_only_for_same_evidence(tmp_path) -> 
         assert first == second
         with pytest.raises(ValueError, match="conflicting duplicate"):
             ledger.transition(RUN_ID, RunState.VERIFIED, {"hash": "b"})
+
+
+def test_evidence_validation_reads_ledger_without_mutating_it(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite"
+    with ExperimentLedger(path) as ledger:
+        ledger.create(RUN_ID, {"schedule": "a"})
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert read_ledger_history(path, RUN_ID)[0].state is RunState.CREATED
+    after = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert after == before

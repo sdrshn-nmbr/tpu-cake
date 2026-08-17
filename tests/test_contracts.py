@@ -231,3 +231,20 @@ def test_every_required_phase_artifact_is_semantically_bound(
     other["artifact_paths"].append(removed["path"])
     with pytest.raises(ValidationError, match=f"phase {phase_name} is missing roles"):
         RunReceipt.model_validate(payload)
+
+
+def test_search_provenance_requires_search_evidence_roles(tmp_path) -> None:
+    receipt, _ = _complete_receipt(tmp_path / "bundle")
+    payload = receipt.model_dump(mode="json")
+    payload["search_provenance"] = {
+        "search_id": "1" * 64,
+        "winner": "tile-128",
+        "tile_m": 128,
+        "tile_n": 128,
+        "winner_schedule_sha256": receipt.schedule_sha256,
+        "contract_sha256": "2" * 64,
+        "result_sha256": "3" * 64,
+        "run_count": 10,
+    }
+    with pytest.raises(ValidationError, match="search provenance is missing artifact roles"):
+        RunReceipt.model_validate(payload)

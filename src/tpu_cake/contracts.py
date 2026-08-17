@@ -57,6 +57,9 @@ class ArtifactRole(StrEnum):
     PROFILER_CONFIG = "profiler_config"
     SOURCE_STATE = "source_state"
     SOURCE_DIFF = "source_diff"
+    SEARCH_CONTRACT = "search_contract"
+    SEARCH_RESULT = "search_result"
+    SEARCH_EVIDENCE = "search_evidence"
 
 
 class SemanticPropertyKind(StrEnum):
@@ -278,6 +281,18 @@ class RuntimeIdentity(BaseModel):
     xla: str | None = None
 
 
+class SearchProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    search_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    winner: str = Field(min_length=1)
+    tile_m: int = Field(gt=0)
+    tile_n: int = Field(gt=0)
+    winner_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_count: int = Field(gt=0)
+
+
 class RunReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     experiment_id: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -289,6 +304,7 @@ class RunReceipt(BaseModel):
     metrics: tuple[Metric, ...]
     artifacts: tuple[ArtifactReference, ...]
     phases: tuple[EvidencePhase, ...]
+    search_provenance: SearchProvenance | None = None
 
     @model_validator(mode="after")
     def pass_requires_correctness(self) -> RunReceipt:
@@ -336,6 +352,17 @@ class RunReceipt(BaseModel):
             missing = sorted(role.value for role in required_roles - roles)
             if missing:
                 raise ValueError(f"passed receipt is missing artifact roles: {missing}")
+            if self.search_provenance is not None:
+                search_roles = {
+                    ArtifactRole.SEARCH_CONTRACT,
+                    ArtifactRole.SEARCH_RESULT,
+                    ArtifactRole.SEARCH_EVIDENCE,
+                }
+                missing_search = sorted(role.value for role in search_roles - roles)
+                if missing_search:
+                    raise ValueError(
+                        f"search provenance is missing artifact roles: {missing_search}"
+                    )
             phase_names = tuple(phase.name for phase in self.phases)
             if set(phase_names) != set(EvidencePhaseName) or len(phase_names) != len(
                 EvidencePhaseName

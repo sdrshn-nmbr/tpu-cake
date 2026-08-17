@@ -177,3 +177,23 @@ class ExperimentLedger:
             )
             for row in rows
         )
+
+
+def read_ledger_history(path: Path, run_id: str) -> tuple[LedgerEvent, ...]:
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as connection:
+        rows = connection.execute(
+            "SELECT sequence, state, timestamp_ns, payload_sha256 FROM events "
+            "WHERE run_id = ? ORDER BY sequence",
+            (run_id,),
+        ).fetchall()
+    return tuple(
+        LedgerEvent(
+            sequence=row[0],
+            run_id=run_id,
+            state=RunState(row[1]),
+            timestamp_ns=row[2],
+            payload_sha256=row[3],
+        )
+        for row in rows
+    )

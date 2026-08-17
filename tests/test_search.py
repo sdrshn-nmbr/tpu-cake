@@ -11,6 +11,7 @@ from tpu_cake.search import (
     MatmulSearchCandidate,
     MatmulSearchContract,
     run_matmul_search,
+    validate_matmul_search_result,
 )
 
 
@@ -87,6 +88,13 @@ def test_search_alternates_order_and_promotes_only_clear_winner(tmp_path, monkey
     )
     assert result.winner == "tile-128"
     assert result.candidates[1].improvement_confidence_interval[0] > 0
+    validate_matmul_search_result(tmp_path / "search", _contract(), result)
+    with pytest.raises(ValueError, match="DOES_NOT_MATCH_VERIFIED_RUNS"):
+        validate_matmul_search_result(
+            tmp_path / "search",
+            _contract(),
+            result.model_copy(update={"winner": "whole"}),
+        )
 
 
 def test_search_rejects_unmatched_inputs(tmp_path, monkeypatch) -> None:

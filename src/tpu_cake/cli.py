@@ -66,6 +66,7 @@ def _parser() -> argparse.ArgumentParser:
 
     finalize = commands.add_parser("finalize-matmul-run")
     finalize.add_argument("run_root", type=Path)
+    finalize.add_argument("--search-root", type=Path)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -159,7 +160,10 @@ def main() -> None:
         print(result.model_dump_json(indent=2))
         code = 0 if result.passed else 1
     elif args.command == "finalize-matmul-run":
-        receipt = build_distributed_matmul_receipt(args.run_root)
+        receipt = build_distributed_matmul_receipt(
+            args.run_root,
+            search_root=args.search_root,
+        )
         print(receipt.model_dump_json(indent=2))
         code = 0 if receipt.status.value == "passed" else 1
     elif args.command == "search-matmul":

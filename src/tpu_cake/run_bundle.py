@@ -16,9 +16,10 @@ from tpu_cake.contracts import (
     ProfileExpectation,
     RunReceipt,
     RunStatus,
+    SearchProvenance,
 )
 from tpu_cake.cost_model import CostModelReport
-from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.ledger import RunState, read_ledger_history
 from tpu_cake.metrics import (
     FormulaIdentity,
     MeasurementInterval,
@@ -30,6 +31,11 @@ from tpu_cake.metrics import (
 )
 from tpu_cake.receipt import validate_receipt
 from tpu_cake.runner import MatmulRunResult, RunMode, _source_state
+from tpu_cake.search import (
+    MatmulSearchContract,
+    MatmulSearchResult,
+    validate_matmul_search_result,
+)
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_experiment
 from tpu_cake.xprof_evidence import assess_capture, capture_metrics
 from tpu_cake.xprof_export import export_xprof_capture
@@ -76,8 +82,7 @@ def _validate_execution_ledger(path: Path, result: MatmulRunResult) -> None:
         RunState.CORRECT,
         terminal,
     )
-    with ExperimentLedger(path) as ledger:
-        observed = tuple(event.state for event in ledger.history(result.run_id))
+    observed = tuple(event.state for event in read_ledger_history(path, result.run_id))
     if observed != expected:
         raise ValueError(
             f"EXECUTION_LEDGER_HISTORY_MISMATCH mode={result.mode.value} "
@@ -222,7 +227,9 @@ def _relative_json(value: object, root: Path) -> object:
     return value
 
 
-def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
+def build_distributed_matmul_receipt(
+    root: Path, *, search_root: Path | None = None
+) -> RunReceipt:
     root = root.resolve()
     finalizer_root = root / "finalizer"
     _source_state(Path(__file__).resolve().parents[2], finalizer_root)
@@ -265,6 +272,89 @@ def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
     }
     if len(source_identities) != 1:
         raise ValueError("RUNS_DO_NOT_SHARE_SOURCE_AND_DEPENDENCY_IDENTITY")
+
+    search_provenance = None
+    search_artifact_specs: list[tuple[Path, ArtifactRole]] = []
+    if search_root is not None:
+        search_root = search_root.resolve()
+        if not search_root.is_relative_to(root):
+            raise ValueError("SEARCH_EVIDENCE_MUST_BE_INSIDE_RUN_ROOT")
+        contract_path = search_root / "contract.json"
+        result_path = search_root / "result.json"
+        contract = MatmulSearchContract.model_validate_json(contract_path.read_text())
+        search_result = MatmulSearchResult.model_validate_json(result_path.read_text())
+        validate_matmul_search_result(search_root, contract, search_result)
+        if search_result.winner is None:
+            raise ValueError("SEARCH_DID_NOT_PROMOTE_A_WINNER")
+        winner = next(
+            candidate
+            for candidate in contract.candidates
+            if candidate.name == search_result.winner
+        )
+        expected_shape = (
+            int(model_input["mesh_size"]),
+            int(model_input["m"]),
+            int(model_input["k"]),
+            int(model_input["n"]),
+            timing.warmup_iterations,
+            timing.measured_iterations,
+        )
+        if (
+            contract.mesh_size,
+            contract.m,
+            contract.k,
+            contract.n,
+            contract.warmup_iterations,
+            contract.measured_iterations,
+        ) != expected_shape:
+            raise ValueError("SEARCH_WORKLOAD_DOES_NOT_MATCH_FINALIST")
+        invocation = json.loads((root / "timing" / "invocation.json").read_text())
+        if (invocation.get("tile_m"), invocation.get("tile_n")) != (
+            winner.tile_m,
+            winner.tile_n,
+        ):
+            raise ValueError("SEARCH_WINNER_TILE_DOES_NOT_MATCH_FINALIST")
+        winner_results = [
+            MatmulRunResult.model_validate_json(
+                (search_root / run_path / "result.json").read_text()
+            )
+            for run_path in search_result.run_results
+            if Path(run_path).name == winner.name
+        ]
+        if {result.schedule_sha256 for result in winner_results} != {
+            timing.schedule_sha256
+        }:
+            raise ValueError("SEARCH_WINNER_SCHEDULE_DOES_NOT_MATCH_FINALIST")
+        search_sources = [
+            json.loads((search_root / run_path / "source_state.json").read_text())
+            for run_path in search_result.run_results
+        ]
+        search_source_identities = {
+            (state["git_commit"], state["uv_lock_sha256"]) for state in search_sources
+        }
+        if search_source_identities != source_identities:
+            raise ValueError("SEARCH_SOURCE_DOES_NOT_MATCH_FINALIST")
+        search_provenance = SearchProvenance(
+            search_id=contract.search_id,
+            winner=winner.name,
+            tile_m=winner.tile_m,
+            tile_n=winner.tile_n,
+            winner_schedule_sha256=timing.schedule_sha256,
+            contract_sha256=_sha256(contract_path),
+            result_sha256=_sha256(result_path),
+            run_count=len(search_result.run_results),
+        )
+        for path in sorted(search_root.rglob("*")):
+            if not path.is_file():
+                continue
+            role = (
+                ArtifactRole.SEARCH_CONTRACT
+                if path == contract_path
+                else ArtifactRole.SEARCH_RESULT
+                if path == result_path
+                else ArtifactRole.SEARCH_EVIDENCE
+            )
+            search_artifact_specs.append((path, role))
 
     _ensure_exports(root / "trace")
     _ensure_exports(root / "counters")
@@ -348,6 +438,7 @@ def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
         (root / "counters" / "source_diff.patch", ArtifactRole.SOURCE_DIFF),
         (finalizer_root / "source_state.json", ArtifactRole.SOURCE_STATE),
         (finalizer_root / "source_diff.patch", ArtifactRole.SOURCE_DIFF),
+        *search_artifact_specs,
     )
     artifacts = tuple(_reference(root, path, role) for path, role in artifact_specs)
     phase_paths: dict[EvidencePhaseName, list[str]] = {
@@ -399,6 +490,7 @@ def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
         metrics=tuple(metrics),
         artifacts=artifacts,
         phases=phases,
+        search_provenance=search_provenance,
     )
     if receipt.status is RunStatus.PASSED:
         validate_receipt(receipt, experiment, root=root)
