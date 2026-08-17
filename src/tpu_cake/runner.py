@@ -24,7 +24,12 @@ from tpu_cake.cost_model import (
     estimate_distributed_matmul_input,
     tpu7x_tensorcore_rates,
 )
-from tpu_cake.identity import array_sha256, semantic_sha256, workload_rng
+from tpu_cake.identity import (
+    SEMANTIC_IDENTITY_SCHEMA,
+    array_sha256,
+    semantic_sha256,
+    workload_rng,
+)
 from tpu_cake.ledger import ExperimentLedger, RunState
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.metrics import MetricSource
@@ -255,6 +260,7 @@ def run_distributed_matmul(
         raise ValueError("device traces and hardware counters require a TPU backend")
     output_dir.mkdir(parents=True, exist_ok=False)
     invocation = {
+        "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
         "mode": mode.value,
         "mesh_size": mesh_size,
         "m": m,
@@ -291,6 +297,7 @@ def run_distributed_matmul(
         run_id,
         RunState.CREATED,
         {
+            "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
             "mode": mode.value,
             "mesh_size": mesh_size,
             "m": m,

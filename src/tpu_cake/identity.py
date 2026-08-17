@@ -5,15 +5,30 @@ from collections.abc import Iterable
 
 import numpy as np
 
+LEGACY_SEMANTIC_IDENTITY_SCHEMA = "separator-v1"
+SEMANTIC_IDENTITY_SCHEMA = "length-prefixed-v2"
 
-def semantic_seed(*parts: str) -> int:
-    return int.from_bytes(bytes.fromhex(semantic_sha256(*parts))[:8], "big", signed=False)
+
+def semantic_seed(*parts: str, schema: str = SEMANTIC_IDENTITY_SCHEMA) -> int:
+    return int.from_bytes(
+        bytes.fromhex(semantic_sha256(*parts, schema=schema))[:8], "big", signed=False
+    )
 
 
-def semantic_sha256(*parts: str) -> str:
+def semantic_sha256(*parts: str, schema: str = SEMANTIC_IDENTITY_SCHEMA) -> str:
     if not parts or any(not part for part in parts):
         raise ValueError("semantic identity parts must be non-empty")
-    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+    if schema == LEGACY_SEMANTIC_IDENTITY_SCHEMA:
+        return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+    if schema != SEMANTIC_IDENTITY_SCHEMA:
+        raise ValueError(f"unsupported semantic identity schema: {schema}")
+    digest = hashlib.sha256()
+    digest.update(b"tpu-cake-semantic-identity\x00length-prefixed-v2\x00")
+    for part in parts:
+        encoded = part.encode()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 def workload_rng(

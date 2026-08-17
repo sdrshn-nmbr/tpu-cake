@@ -10,7 +10,12 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.contracts import ArtifactReference, ArtifactRole
-from tpu_cake.identity import array_sha256, semantic_sha256
+from tpu_cake.identity import (
+    LEGACY_SEMANTIC_IDENTITY_SCHEMA,
+    SEMANTIC_IDENTITY_SCHEMA,
+    array_sha256,
+    semantic_sha256,
+)
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.pallas_lowering import (
@@ -271,6 +276,13 @@ def _validate_saved_run_evidence(
         run_path, result, "profiler_config.json", ArtifactRole.PROFILER_CONFIG
     )
     validate_profiler_contract(RunMode.TIMING, json.loads(profiler_path.read_text()))
+    invocation_path = _named_artifact(
+        run_path, result, "invocation.json", ArtifactRole.INVOCATION
+    )
+    invocation = json.loads(invocation_path.read_text())
+    identity_schema = invocation.get(
+        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
+    )
     source_state_path = _named_artifact(
         run_path, result, "source_state.json", ArtifactRole.SOURCE_STATE
     )
@@ -294,6 +306,7 @@ def _validate_saved_run_evidence(
         str(contract.n),
         str(candidate.tile_m),
         str(candidate.tile_n),
+        schema=identity_schema,
     )
     if result.run_id != expected_run_id:
         raise ValueError(f"SEARCH_RUN_ID_MISMATCH candidate={candidate.name}")
@@ -308,8 +321,7 @@ def _validate_saved_run_evidence(
     ledger = _named_artifact(
         run_path, result, "ledger.sqlite", ArtifactRole.EXECUTION_LEDGER
     )
-    expected_payloads = (
-        {
+    created_payload = {
             "mode": RunMode.TIMING.value,
             "mesh_size": contract.mesh_size,
             "m": contract.m,
@@ -317,7 +329,11 @@ def _validate_saved_run_evidence(
             "n": contract.n,
             "tile_m": candidate.tile_m,
             "tile_n": candidate.tile_n,
-        },
+        }
+    if "identity_schema" in invocation:
+        created_payload["identity_schema"] = identity_schema
+    expected_payloads = (
+        created_payload,
         {"distributed_ir_sha256": hashlib.sha256(distributed.read_bytes()).hexdigest()},
         {
             "physical_ir_sha256": result.schedule_sha256,
@@ -380,6 +396,13 @@ def _validate_resumed_result(
         "tile_n": candidate.tile_n,
         "interpret": interpret,
     }
+    identity_schema = invocation.get(
+        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
+    )
+    if "identity_schema" in invocation:
+        if identity_schema != SEMANTIC_IDENTITY_SCHEMA:
+            raise ValueError(f"STALE_SEARCH_IDENTITY_SCHEMA candidate={candidate.name}")
+        expected_invocation["identity_schema"] = identity_schema
     if invocation != expected_invocation:
         raise ValueError(f"STALE_SEARCH_INVOCATION candidate={candidate.name}")
     expected_backend = "cpu" if interpret else "tpu"

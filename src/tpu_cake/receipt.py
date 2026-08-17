@@ -22,7 +22,11 @@ from tpu_cake.cost_model import (
     MatmulCostModelInput,
     estimate_distributed_matmul_input,
 )
-from tpu_cake.identity import array_sha256, semantic_sha256
+from tpu_cake.identity import (
+    LEGACY_SEMANTIC_IDENTITY_SCHEMA,
+    array_sha256,
+    semantic_sha256,
+)
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.pallas_lowering import validate_saved_pallas_plan
 from tpu_cake.receipt_metrics import build_receipt_metrics
@@ -197,6 +201,9 @@ def _validate_saved_matmul_phase(
     )
 
     invocation = json.loads(artifacts["invocation.json"].read_text())
+    identity_schema = invocation.get(
+        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
+    )
     if invocation.get("mode") != result.mode.value:
         raise ValueError(f"RUN_INVOCATION_MODE_MISMATCH phase={phase}")
     expected_fields = {
@@ -287,6 +294,7 @@ def _validate_saved_matmul_phase(
         str(invocation["n"]),
         str(invocation["tile_m"]),
         str(invocation["tile_n"]),
+        schema=identity_schema,
     )
     if result.run_id != expected_run_id:
         raise ValueError(f"RUN_ID_MISMATCH phase={phase}")
@@ -348,8 +356,7 @@ def _validate_saved_matmul_phase(
             xplane_sha256=_sha256(xplanes[0]),
             xplane_size_bytes=xplanes[0].stat().st_size,
         )
-    expected_payloads = (
-        {
+    created_payload = {
             "mode": result.mode.value,
             "mesh_size": invocation["mesh_size"],
             "m": invocation["m"],
@@ -357,7 +364,11 @@ def _validate_saved_matmul_phase(
             "n": invocation["n"],
             "tile_m": invocation["tile_m"],
             "tile_n": invocation["tile_n"],
-        },
+        }
+    if "identity_schema" in invocation:
+        created_payload["identity_schema"] = identity_schema
+    expected_payloads = (
+        created_payload,
         {"distributed_ir_sha256": _sha256(artifacts["distributed.xdsl"])},
         {
             "physical_ir_sha256": result.schedule_sha256,

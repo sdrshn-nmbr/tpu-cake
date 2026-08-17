@@ -6,7 +6,13 @@ from xdsl.utils.exceptions import VerifyException
 from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership, SemaphoreAllocOp
 from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
 from tpu_cake.frontend import KernelBuilder, buffer, schedule_sha256
-from tpu_cake.identity import array_sha256, candidate_rng, semantic_seed, workload_rng
+from tpu_cake.identity import (
+    array_sha256,
+    candidate_rng,
+    semantic_seed,
+    semantic_sha256,
+    workload_rng,
+)
 from tpu_cake.semantic import batch_permutation_invariance, prefix_invariance
 from tpu_cake.source import SourceLocation, attach_source
 
@@ -19,6 +25,10 @@ def test_semantic_identity_is_order_independent_of_other_candidates() -> None:
     np.testing.assert_array_equal(first, second)
     assert semantic_seed(*parts) == semantic_seed(*parts)
     assert array_sha256(first) == array_sha256(second)
+
+
+def test_semantic_identity_is_unambiguous_across_part_boundaries() -> None:
+    assert semantic_sha256("a", "b\x1fc") != semantic_sha256("a\x1fb", "c")
 
 
 def test_workload_inputs_are_matched_across_candidates() -> None:
