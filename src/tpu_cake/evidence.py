@@ -63,6 +63,7 @@ class CaptureEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     xplane: ArtifactEvidence
+    hlo_stats: ArtifactEvidence
     planes: tuple[PlaneEvidence, ...]
     counters: CounterEvidence
     programs: tuple[ProgramEvidence, ...]

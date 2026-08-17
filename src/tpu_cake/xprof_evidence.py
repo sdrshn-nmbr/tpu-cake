@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,15 @@ from tpu_cake.evidence import (
     PlaneEvidence,
     ProgramEvidence,
 )
+from tpu_cake.metrics import (
+    FormulaIdentity,
+    MeasurementInterval,
+    MeasurementKind,
+    Metric,
+    MetricSource,
+    Quantity,
+    Unit,
+)
 
 _PROGRAM_ID = re.compile(r"\((\d+)\)\.hlo_proto\.pb$")
 _TPU_CORE = re.compile(r"^/device:TPU:(\d+)$")
@@ -34,6 +44,7 @@ _MARKERS = (
 
 
 def _artifact(path: Path) -> ArtifactEvidence:
+    path = path.resolve()
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -153,6 +164,7 @@ def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvide
     planes, counters = _profile_planes(xplane)
     return CaptureEvidence(
         xplane=_artifact(xplane),
+        hlo_stats=_artifact(hlo_stats),
         planes=planes,
         counters=counters,
         programs=tuple(programs),
@@ -264,3 +276,87 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
 
 def assess_capture(root: Path, expectation: ProfileExpectation) -> CaptureAssessment:
     return assess_evidence(collect_capture(root, expectation), expectation)
+
+
+def capture_metrics(capture: CaptureEvidence) -> tuple[Metric, ...]:
+    xplane_source = MetricSource(
+        artifact_sha256=capture.xplane.sha256,
+        artifact_path=str(capture.xplane.path),
+        tool="XPlane",
+        field="planes",
+    )
+    hlo_source = MetricSource(
+        artifact_sha256=capture.hlo_stats.sha256,
+        artifact_path=str(capture.hlo_stats.path),
+        tool="XProf",
+        field="total_self_time",
+    )
+    interval = MeasurementInterval(scope="complete captured interval")
+    tpu_planes = sum(bool(_TPU_CORE.fullmatch(plane.name)) for plane in capture.planes)
+    tensor_core_events = sum(
+        plane.tensor_core_event_count for plane in capture.planes if _TPU_CORE.fullmatch(plane.name)
+    )
+    timed_self_us = sum(
+        program.timed_self_us
+        for program in capture.programs
+        if program.program_id in capture.timed_program_ids
+    )
+
+    def count_metric(name: str, value: int, field: str, expression: str) -> Metric:
+        return Metric(
+            name=name,
+            quantity=Quantity(value=Decimal(value), unit=Unit.COUNT),
+            kind=MeasurementKind.DERIVED,
+            interval=interval,
+            sources=(xplane_source.model_copy(update={"field": field}),),
+            formula=FormulaIdentity(
+                name=name,
+                version="1",
+                expression=expression,
+            ),
+        )
+
+    return (
+        count_metric(
+            "tpu_device_plane_count",
+            tpu_planes,
+            "planes",
+            "count(plane where name matches /device:TPU:<core>)",
+        ),
+        count_metric(
+            "tensor_core_event_count",
+            tensor_core_events,
+            "Tensor Core line events",
+            "sum(event count for Tensor Core lines on TPU device planes)",
+        ),
+        count_metric(
+            "hbm_read_counter_name_count",
+            capture.counters.hbm_read_names,
+            "HBM read counter names",
+            "count(distinct counter names containing RD_RSP_BEAT_FROM_HBM)",
+        ),
+        count_metric(
+            "hbm_write_counter_name_count",
+            capture.counters.hbm_write_names,
+            "HBM write counter names",
+            "count(distinct counter names containing WR_REQ_BEAT_TO_HBM)",
+        ),
+        count_metric(
+            "cycle_counter_name_count",
+            capture.counters.cycle_names,
+            "cycle counter names",
+            "count(distinct counter names containing CYCLE_COUNT_WINDOW)",
+        ),
+        Metric(
+            name="summed_timed_hlo_self_time",
+            quantity=Quantity(value=Decimal(str(timed_self_us)), unit=Unit.MICROSECOND),
+            kind=MeasurementKind.DERIVED,
+            interval=MeasurementInterval(scope="sum of timed HLO rows across device rows"),
+            sources=(hlo_source,),
+            formula=FormulaIdentity(
+                name="sum_timed_hlo_self_time",
+                version="1",
+                expression="sum(program.timed_self_us for timed programs)",
+            ),
+        ),
+    )

@@ -5,6 +5,7 @@ description = "Verified TPU schedule search built on xDSL"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "numpy>=2.2,<3",
     "pydantic>=2.11,<3",
     "xdsl>=0.69,<0.70",
     "xprof>=2.23,<3",
@@ -31,4 +32,3 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-

@@ -1,0 +1,182 @@
+{
+  "workload": {
+    "name": "inkling-ragged-paged-relative-bias-attention",
+    "stage": "steady_decode",
+    "inputs": [
+      {
+        "name": "query",
+        "shape": [
+          4,
+          4,
+          32
+        ],
+        "logical_shape": [
+          "B",
+          "H",
+          "D"
+        ],
+        "dtype": "bf16",
+        "sharding": [
+          "",
+          "",
+          ""
+        ]
+      },
+      {
+        "name": "key_cache",
+        "shape": [
+          32,
+          16,
+          4,
+          32
+        ],
+        "logical_shape": [
+          "P",
+          "S",
+          "H",
+          "D"
+        ],
+        "dtype": "bf16",
+        "sharding": [
+          "",
+          "",
+          "",
+          ""
+        ]
+      },
+      {
+        "name": "value_cache",
+        "shape": [
+          32,
+          16,
+          4,
+          32
+        ],
+        "logical_shape": [
+          "P",
+          "S",
+          "H",
+          "D"
+        ],
+        "dtype": "bf16",
+        "sharding": [
+          "",
+          "",
+          "",
+          ""
+        ]
+      },
+      {
+        "name": "page_table",
+        "shape": [
+          4,
+          8
+        ],
+        "logical_shape": [
+          "B",
+          "MP"
+        ],
+        "dtype": "i32",
+        "sharding": [
+          "",
+          ""
+        ]
+      },
+      {
+        "name": "sequence_lengths",
+        "shape": [
+          4
+        ],
+        "logical_shape": [
+          "B"
+        ],
+        "dtype": "i32",
+        "sharding": [
+          ""
+        ]
+      },
+      {
+        "name": "relative_bias",
+        "shape": [
+          4,
+          128
+        ],
+        "logical_shape": [
+          "H",
+          "L"
+        ],
+        "dtype": "bf16",
+        "sharding": [
+          "",
+          ""
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "output",
+        "shape": [
+          4,
+          4,
+          32
+        ],
+        "logical_shape": [
+          "B",
+          "H",
+          "D"
+        ],
+        "dtype": "bf16",
+        "sharding": [
+          "",
+          "",
+          ""
+        ]
+      }
+    ],
+    "numerical": {
+      "reference": "tpu_cake.workloads.inkling_rpa.inkling_rpa_reference",
+      "absolute_tolerance": 0.02,
+      "relative_tolerance": 0.02,
+      "deterministic": true
+    }
+  },
+  "target": {
+    "accelerator": "TPU7x",
+    "topology": "4x1",
+    "chip_count": 4,
+    "vmem_budget_bytes_per_core": 2097152,
+    "smem_budget_bytes_per_core": 65536,
+    "peak_hbm_bytes_per_second": null,
+    "peak_flops_per_second": null,
+    "runtime_target": "Pallas Mosaic TPU"
+  },
+  "benchmark": {
+    "warmup_iterations": 5,
+    "measured_iterations": 50,
+    "synchronization": "block until device result is ready",
+    "statistic": "median device duration"
+  },
+  "search": {
+    "objective_metric": "median_device_duration_ns",
+    "require_correctness": true,
+    "require_profile_acceptance": true
+  },
+  "profile": {
+    "name": "inkling-rpa-steady-decode",
+    "stage": "steady_decode",
+    "minimum_tpu_device_planes": 8,
+    "require_tensor_core_activity": true,
+    "require_hbm_read_counters": false,
+    "require_hbm_write_counters": false,
+    "require_cycle_counters": false,
+    "required_timed_hlo_markers": [
+      "ragged_paged_attention"
+    ],
+    "forbidden_timed_hlo_fragments": [
+      "12582912,16",
+      "native_backend.py:500"
+    ]
+  },
+  "schedule_sha256": "b97d16b523329ed57890184ad9d6b0ed893d3c666874e919ccf857aa6591f4cc",
+  "experiment_id": "b288837a2a06fc716e66c3508f761d0d4d01e110df248dadb9fa542b31296932"
+}

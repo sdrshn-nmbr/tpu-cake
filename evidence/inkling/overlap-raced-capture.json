@@ -1,317 +1,494 @@
 {
-  "expectation": {
-    "name": "inkling-small-v7x-steady-decode",
-    "stage": "steady_decode",
-    "minimum_tpu_device_planes": 8,
-    "require_tensor_core_activity": true,
-    "require_hbm_read_counters": true,
-    "require_hbm_write_counters": true,
-    "require_cycle_counters": true,
-    "required_timed_hlo_markers": [
-      "ragged_paged_attention"
-    ],
-    "forbidden_timed_hlo_fragments": [
-      "12582912,16",
-      "native_backend.py:500"
-    ]
-  },
-  "capture": {
-    "xplane": {
-      "path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane.pb",
-      "size_bytes": 1061109156,
-      "sha256": "8fdda6c1b8f5ba795bb95ee1de253dd60fee8c0eec42ba2cb9de6336f884443c"
-    },
-    "planes": [
-      {
-        "name": "/host:metadata",
-        "device_type": null,
-        "line_count": 0,
-        "event_count": 0,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:0",
-        "device_type": "TPU v7x",
-        "line_count": 13,
-        "event_count": 4444829,
-        "tensor_core_event_count": 35135
-      },
-      {
-        "name": "/device:TPU:1",
-        "device_type": "TPU v7x",
-        "line_count": 12,
-        "event_count": 55387,
-        "tensor_core_event_count": 39054
-      },
-      {
-        "name": "/device:TPU:0 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 269,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:0 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 278,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:1 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 261,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:1 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 278,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:2",
-        "device_type": "TPU v7x",
-        "line_count": 13,
-        "event_count": 4524810,
-        "tensor_core_event_count": 31904
-      },
-      {
-        "name": "/device:TPU:3",
-        "device_type": "TPU v7x",
-        "line_count": 12,
-        "event_count": 49524,
-        "tensor_core_event_count": 34219
-      },
-      {
-        "name": "/device:TPU:2 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 131,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:2 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 131,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:3 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 131,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:3 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 131,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:4",
-        "device_type": "TPU v7x",
-        "line_count": 11,
-        "event_count": 4414484,
-        "tensor_core_event_count": 37589
-      },
-      {
-        "name": "/device:TPU:5",
-        "device_type": "TPU v7x",
-        "line_count": 10,
-        "event_count": 45125,
-        "tensor_core_event_count": 39879
-      },
-      {
-        "name": "/device:TPU:4 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 127,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:4 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 127,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:5 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 127,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:5 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 127,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:6",
-        "device_type": "TPU v7x",
-        "line_count": 12,
-        "event_count": 4386868,
-        "tensor_core_event_count": 38708
-      },
-      {
-        "name": "/device:TPU:7",
-        "device_type": "TPU v7x",
-        "line_count": 11,
-        "event_count": 46842,
-        "tensor_core_event_count": 41133
-      },
-      {
-        "name": "/device:TPU:6 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 164,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:6 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 166,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:7 SparseCore 0",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 164,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:TPU:7 SparseCore 1",
-        "device_type": "TPU v7x",
-        "line_count": 22,
-        "event_count": 166,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/device:CUSTOM:Megascale Trace",
-        "device_type": null,
-        "line_count": 0,
-        "event_count": 0,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "Task Environment",
-        "device_type": null,
-        "line_count": 0,
-        "event_count": 0,
-        "tensor_core_event_count": 0
-      },
-      {
-        "name": "/host:CPU",
-        "device_type": null,
-        "line_count": 60,
-        "event_count": 88384,
-        "tensor_core_event_count": 0
-      }
-    ],
-    "counters": {
-      "hbm_read_names": 64,
-      "hbm_write_names": 64,
-      "cycle_names": 61,
-      "snapshots_per_tpu_core": {
-        "0": 1,
-        "1": 1,
-        "2": 1,
-        "3": 1
-      },
-      "rates_derivable": false
-    },
-    "programs": [
-      {
-        "program_id": "16011797577769936587",
-        "name": "jit_jitted_run_model(16011797577769936587)",
-        "timed_self_us": 0.0,
-        "hlo": {
-          "path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/jit_jitted_run_model(16011797577769936587).hlo_proto.pb",
-          "size_bytes": 56130910,
-          "sha256": "27fa808912db149bdc47a40c9effb303c9feea7c6b180a117b1bb10733a3c5fa"
-        },
-        "marker_counts": {
-          "ragged_paged_attention": 736,
-          "pallas_call": 1044,
-          "EPMoE": 4990,
-          "gmm_v2": 603,
-          "ragged_causal_conv1d": 2708,
-          "NativeAttention": 1629
-        },
-        "forbidden_fragment_hits": {
-          "12582912,16": 0,
-          "native_backend.py:500": 0
-        }
-      },
-      {
-        "program_id": "5932467093886504553",
-        "name": "jit_jitted_run_model(5932467093886504553)",
-        "timed_self_us": 2257856.1981149763,
-        "hlo": {
-          "path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/jit_jitted_run_model(5932467093886504553).hlo_proto.pb",
-          "size_bytes": 166623768,
-          "sha256": "d3ea5096067a1581863046da9c85e64d15c55e8f10e009f13d2f433ccc40bc69"
-        },
-        "marker_counts": {
-          "ragged_paged_attention": 0,
-          "pallas_call": 834,
-          "EPMoE": 4342,
-          "gmm_v2": 603,
-          "ragged_causal_conv1d": 3020,
-          "NativeAttention": 5265
-        },
-        "forbidden_fragment_hits": {
-          "12582912,16": 8,
-          "native_backend.py:500": 16
-        }
-      }
-    ],
-    "timed_program_ids": [
-      "5932467093886504553"
-    ]
-  },
-  "findings": [
-    {
-      "code": "REQUIRED_TIMED_HLO_MARKER_MISSING",
-      "severity": "error",
-      "message": "required marker 'ragged_paged_attention' is absent from every timed model program",
-      "evidence": []
-    },
-    {
-      "code": "FORBIDDEN_TIMED_HLO_FRAGMENT",
-      "severity": "error",
-      "message": "timed program contains forbidden HLO fragment '12582912,16'",
-      "evidence": [
-        "program_id=5932467093886504553",
-        "hits=8"
+  "assessment": {
+    "expectation": {
+      "name": "inkling-small-v7x-steady-decode",
+      "stage": "steady_decode",
+      "minimum_tpu_device_planes": 8,
+      "require_tensor_core_activity": true,
+      "require_hbm_read_counters": true,
+      "require_hbm_write_counters": true,
+      "require_cycle_counters": true,
+      "required_timed_hlo_markers": [
+        "ragged_paged_attention"
+      ],
+      "forbidden_timed_hlo_fragments": [
+        "12582912,16",
+        "native_backend.py:500"
       ]
     },
-    {
-      "code": "FORBIDDEN_TIMED_HLO_FRAGMENT",
-      "severity": "error",
-      "message": "timed program contains forbidden HLO fragment 'native_backend.py:500'",
-      "evidence": [
-        "program_id=5932467093886504553",
-        "hits=16"
+    "capture": {
+      "xplane": {
+        "path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane.pb",
+        "size_bytes": 1061109156,
+        "sha256": "8fdda6c1b8f5ba795bb95ee1de253dd60fee8c0eec42ba2cb9de6336f884443c"
+      },
+      "hlo_stats": {
+        "path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/xprof-exports/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane/hlo_stats.json",
+        "size_bytes": 3220268,
+        "sha256": "70fc3995a14b1a62be6379c928c81aa66e399601c7455e58dcbaeb8f13263bf7"
+      },
+      "planes": [
+        {
+          "name": "/host:metadata",
+          "device_type": null,
+          "line_count": 0,
+          "event_count": 0,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:0",
+          "device_type": "TPU v7x",
+          "line_count": 13,
+          "event_count": 4444829,
+          "tensor_core_event_count": 35135
+        },
+        {
+          "name": "/device:TPU:1",
+          "device_type": "TPU v7x",
+          "line_count": 12,
+          "event_count": 55387,
+          "tensor_core_event_count": 39054
+        },
+        {
+          "name": "/device:TPU:0 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 269,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:0 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 278,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:1 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 261,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:1 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 278,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:2",
+          "device_type": "TPU v7x",
+          "line_count": 13,
+          "event_count": 4524810,
+          "tensor_core_event_count": 31904
+        },
+        {
+          "name": "/device:TPU:3",
+          "device_type": "TPU v7x",
+          "line_count": 12,
+          "event_count": 49524,
+          "tensor_core_event_count": 34219
+        },
+        {
+          "name": "/device:TPU:2 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 131,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:2 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 131,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:3 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 131,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:3 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 131,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:4",
+          "device_type": "TPU v7x",
+          "line_count": 11,
+          "event_count": 4414484,
+          "tensor_core_event_count": 37589
+        },
+        {
+          "name": "/device:TPU:5",
+          "device_type": "TPU v7x",
+          "line_count": 10,
+          "event_count": 45125,
+          "tensor_core_event_count": 39879
+        },
+        {
+          "name": "/device:TPU:4 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 127,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:4 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 127,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:5 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 127,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:5 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 127,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:6",
+          "device_type": "TPU v7x",
+          "line_count": 12,
+          "event_count": 4386868,
+          "tensor_core_event_count": 38708
+        },
+        {
+          "name": "/device:TPU:7",
+          "device_type": "TPU v7x",
+          "line_count": 11,
+          "event_count": 46842,
+          "tensor_core_event_count": 41133
+        },
+        {
+          "name": "/device:TPU:6 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 164,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:6 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 166,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:7 SparseCore 0",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 164,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:TPU:7 SparseCore 1",
+          "device_type": "TPU v7x",
+          "line_count": 22,
+          "event_count": 166,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/device:CUSTOM:Megascale Trace",
+          "device_type": null,
+          "line_count": 0,
+          "event_count": 0,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "Task Environment",
+          "device_type": null,
+          "line_count": 0,
+          "event_count": 0,
+          "tensor_core_event_count": 0
+        },
+        {
+          "name": "/host:CPU",
+          "device_type": null,
+          "line_count": 60,
+          "event_count": 88384,
+          "tensor_core_event_count": 0
+        }
+      ],
+      "counters": {
+        "hbm_read_names": 64,
+        "hbm_write_names": 64,
+        "cycle_names": 61,
+        "snapshots_per_tpu_core": {
+          "0": 1,
+          "1": 1,
+          "2": 1,
+          "3": 1
+        },
+        "rates_derivable": false
+      },
+      "programs": [
+        {
+          "program_id": "16011797577769936587",
+          "name": "jit_jitted_run_model(16011797577769936587)",
+          "timed_self_us": 0.0,
+          "hlo": {
+            "path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/jit_jitted_run_model(16011797577769936587).hlo_proto.pb",
+            "size_bytes": 56130910,
+            "sha256": "27fa808912db149bdc47a40c9effb303c9feea7c6b180a117b1bb10733a3c5fa"
+          },
+          "marker_counts": {
+            "ragged_paged_attention": 736,
+            "pallas_call": 1044,
+            "EPMoE": 4990,
+            "gmm_v2": 603,
+            "ragged_causal_conv1d": 2708,
+            "NativeAttention": 1629
+          },
+          "forbidden_fragment_hits": {
+            "12582912,16": 0,
+            "native_backend.py:500": 0
+          }
+        },
+        {
+          "program_id": "5932467093886504553",
+          "name": "jit_jitted_run_model(5932467093886504553)",
+          "timed_self_us": 2257856.1981149763,
+          "hlo": {
+            "path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/jit_jitted_run_model(5932467093886504553).hlo_proto.pb",
+            "size_bytes": 166623768,
+            "sha256": "d3ea5096067a1581863046da9c85e64d15c55e8f10e009f13d2f433ccc40bc69"
+          },
+          "marker_counts": {
+            "ragged_paged_attention": 0,
+            "pallas_call": 834,
+            "EPMoE": 4342,
+            "gmm_v2": 603,
+            "ragged_causal_conv1d": 3020,
+            "NativeAttention": 5265
+          },
+          "forbidden_fragment_hits": {
+            "12582912,16": 8,
+            "native_backend.py:500": 16
+          }
+        }
+      ],
+      "timed_program_ids": [
+        "5932467093886504553"
       ]
     },
+    "findings": [
+      {
+        "code": "REQUIRED_TIMED_HLO_MARKER_MISSING",
+        "severity": "error",
+        "message": "required marker 'ragged_paged_attention' is absent from every timed model program",
+        "evidence": []
+      },
+      {
+        "code": "FORBIDDEN_TIMED_HLO_FRAGMENT",
+        "severity": "error",
+        "message": "timed program contains forbidden HLO fragment '12582912,16'",
+        "evidence": [
+          "program_id=5932467093886504553",
+          "hits=8"
+        ]
+      },
+      {
+        "code": "FORBIDDEN_TIMED_HLO_FRAGMENT",
+        "severity": "error",
+        "message": "timed program contains forbidden HLO fragment 'native_backend.py:500'",
+        "evidence": [
+          "program_id=5932467093886504553",
+          "hits=16"
+        ]
+      },
+      {
+        "code": "COUNTER_RATES_NOT_DERIVABLE",
+        "severity": "warning",
+        "message": "hardware counters exist but have fewer than two snapshots per TPU core",
+        "evidence": []
+      }
+    ],
+    "accepted": false
+  },
+  "metrics": [
     {
-      "code": "COUNTER_RATES_NOT_DERIVABLE",
-      "severity": "warning",
-      "message": "hardware counters exist but have fewer than two snapshots per TPU core",
-      "evidence": []
+      "name": "tpu_device_plane_count",
+      "quantity": {
+        "value": "8",
+        "unit": "count"
+      },
+      "kind": "derived",
+      "interval": {
+        "scope": "complete captured interval",
+        "start_ns": null,
+        "end_ns": null
+      },
+      "sources": [
+        {
+          "artifact_sha256": "8fdda6c1b8f5ba795bb95ee1de253dd60fee8c0eec42ba2cb9de6336f884443c",
+          "artifact_path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane.pb",
+          "tool": "XPlane",
+          "field": "planes"
+        }
+      ],
+      "formula": {
+        "name": "tpu_device_plane_count",
+        "version": "1",
+        "expression": "count(plane where name matches /device:TPU:<core>)"
+      },
+      "numerator": null,
+      "denominator": null
+    },
+    {
+      "name": "tensor_core_event_count",
+      "quantity": {
+        "value": "297621",
+        "unit": "count"
+      },
+      "kind": "derived",
+      "interval": {
+        "scope": "complete captured interval",
+        "start_ns": null,
+        "end_ns": null
+      },
+      "sources": [
+        {
+          "artifact_sha256": "8fdda6c1b8f5ba795bb95ee1de253dd60fee8c0eec42ba2cb9de6336f884443c",
+          "artifact_path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane.pb",
+          "tool": "XPlane",
+          "field": "Tensor Core line events"
+        }
+      ],
+      "formula": {
+        "name": "tensor_core_event_count",
+        "version": "1",
+        "expression": "sum(event count for Tensor Core lines on TPU device planes)"
+      },
+      "numerator": null,
+      "denominator": null
+    },
+    {
+      "name": "hbm_read_counter_name_count",
+      "quantity": {
+        "value": "64",
+        "unit": "count"
+      },
+      "kind": "derived",
+      "interval": {
+        "scope": "complete captured interval",
+        "start_ns": null,
+        "end_ns": null
+      },
+      "sources": [
+        {
+          "artifact_sha256": "8fdda6c1b8f5ba795bb95ee1de253dd60fee8c0eec42ba2cb9de6336f884443c",
+          "artifact_path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane.pb",
+          "tool": "XPlane",
+          "field": "HBM read counter names"
+        }
+      ],
+      "formula": {
+        "name": "hbm_read_counter_name_count",
+        "version": "1",
+        "expression": "count(distinct counter names containing RD_RSP_BEAT_FROM_HBM)"
+      },
+      "numerator": null,
+      "denominator": null
+    },
+    {
+      "name": "hbm_write_counter_name_count",
+      "quantity": {
+        "value": "64",
+        "unit": "count"
+      },
+      "kind": "derived",
+      "interval": {
+        "scope": "complete captured interval",
+        "start_ns": null,
+        "end_ns": null
+      },
+      "sources": [
+        {
+          "artifact_sha256": "8fdda6c1b8f5ba795bb95ee1de253dd60fee8c0eec42ba2cb9de6336f884443c",
+          "artifact_path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane.pb",
+          "tool": "XPlane",
+          "field": "HBM write counter names"
+        }
+      ],
+      "formula": {
+        "name": "hbm_write_counter_name_count",
+        "version": "1",
+        "expression": "count(distinct counter names containing WR_REQ_BEAT_TO_HBM)"
+      },
+      "numerator": null,
+      "denominator": null
+    },
+    {
+      "name": "cycle_counter_name_count",
+      "quantity": {
+        "value": "61",
+        "unit": "count"
+      },
+      "kind": "derived",
+      "interval": {
+        "scope": "complete captured interval",
+        "start_ns": null,
+        "end_ns": null
+      },
+      "sources": [
+        {
+          "artifact_sha256": "8fdda6c1b8f5ba795bb95ee1de253dd60fee8c0eec42ba2cb9de6336f884443c",
+          "artifact_path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/profile/inkling-steady-decode/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane.pb",
+          "tool": "XPlane",
+          "field": "cycle counter names"
+        }
+      ],
+      "formula": {
+        "name": "cycle_counter_name_count",
+        "version": "1",
+        "expression": "count(distinct counter names containing CYCLE_COUNT_WINDOW)"
+      },
+      "numerator": null,
+      "denominator": null
+    },
+    {
+      "name": "summed_timed_hlo_self_time",
+      "quantity": {
+        "value": "2257856.1981149763",
+        "unit": "us"
+      },
+      "kind": "derived",
+      "interval": {
+        "scope": "sum of timed HLO rows across device rows",
+        "start_ns": null,
+        "end_ns": null
+      },
+      "sources": [
+        {
+          "artifact_sha256": "70fc3995a14b1a62be6379c928c81aa66e399601c7455e58dcbaeb8f13263bf7",
+          "artifact_path": "/Users/sudarshan/Code/inkle/autoresearch/jax011-counter-upgrade-20260816-131651/xprof-exports/decode/plugins/profile/2026_08_16_21_03_10/inkle-small-v7x-prof-9924.xplane/hlo_stats.json",
+          "tool": "XProf",
+          "field": "total_self_time"
+        }
+      ],
+      "formula": {
+        "name": "sum_timed_hlo_self_time",
+        "version": "1",
+        "expression": "sum(program.timed_self_us for timed programs)"
+      },
+      "numerator": null,
+      "denominator": null
     }
-  ],
-  "accepted": false
+  ]
 }

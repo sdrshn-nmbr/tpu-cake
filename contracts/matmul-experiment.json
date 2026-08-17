@@ -1,0 +1,100 @@
+{
+  "workload": {
+    "name": "dense-matmul-16x32x16",
+    "stage": "control",
+    "inputs": [
+      {
+        "name": "lhs",
+        "shape": [
+          16,
+          32
+        ],
+        "logical_shape": [
+          "M",
+          "K"
+        ],
+        "dtype": "bf16",
+        "sharding": [
+          "",
+          ""
+        ]
+      },
+      {
+        "name": "rhs",
+        "shape": [
+          32,
+          16
+        ],
+        "logical_shape": [
+          "K",
+          "N"
+        ],
+        "dtype": "bf16",
+        "sharding": [
+          "",
+          ""
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "output",
+        "shape": [
+          16,
+          16
+        ],
+        "logical_shape": [
+          "M",
+          "N"
+        ],
+        "dtype": "f32",
+        "sharding": [
+          "",
+          ""
+        ]
+      }
+    ],
+    "numerical": {
+      "reference": "tpu_cake.workloads.matmul.matmul_reference",
+      "absolute_tolerance": 0.01,
+      "relative_tolerance": 0.01,
+      "deterministic": true
+    }
+  },
+  "target": {
+    "accelerator": "TPU7x",
+    "topology": "4x1",
+    "chip_count": 4,
+    "vmem_budget_bytes_per_core": 1048576,
+    "smem_budget_bytes_per_core": 65536,
+    "peak_hbm_bytes_per_second": null,
+    "peak_flops_per_second": null,
+    "runtime_target": "Pallas Mosaic TPU"
+  },
+  "benchmark": {
+    "warmup_iterations": 5,
+    "measured_iterations": 50,
+    "synchronization": "block until device result is ready",
+    "statistic": "median device duration"
+  },
+  "search": {
+    "objective_metric": "median_device_duration_ns",
+    "require_correctness": true,
+    "require_profile_acceptance": true
+  },
+  "profile": {
+    "name": "matmul-control",
+    "stage": "control",
+    "minimum_tpu_device_planes": 1,
+    "require_tensor_core_activity": true,
+    "require_hbm_read_counters": false,
+    "require_hbm_write_counters": false,
+    "require_cycle_counters": false,
+    "required_timed_hlo_markers": [
+      "pallas_call"
+    ],
+    "forbidden_timed_hlo_fragments": []
+  },
+  "schedule_sha256": "42aa9acaf6c1918dc6515fec6ee8ca32f7ab8345fb9409394ede46874e85355d",
+  "experiment_id": "6e4ea4fe317966797dc060ff98a2e5a434e101cbf2ba2ed698c33f762dd156cd"
+}

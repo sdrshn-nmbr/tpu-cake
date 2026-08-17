@@ -5,18 +5,26 @@ checking, measuring, and improving Pallas kernel schedules. Inkling is an early
 workload and source of real serving shapes, but the system is not part of the
 Inkling serving engine.
 
-The first checked-in component is the source-backed research corpus below. The
-schedule representation, verifier, cost model, and search loop will be added as
-independent packages rather than embedded in a model-specific runtime.
+The source-backed corpus below informs an executable prototype. The cost model,
+Pallas lowering, and search loop remain separate future components rather than
+being embedded in a model-specific runtime.
 
 ## Current prototype
 
 The canonical schedule representation is the `tpu_schedule` xDSL dialect in
-`src/tpu_cake/dialects/tpu_schedule.py`. It currently models HBM, VMEM, and
-SMEM buffers; local allocation; DMA start and wait tokens; semaphores; ordered
-pipeline stages; and MXU matrix multiplication. Its verifier checks buffer
-types, DMA pairing, semaphore reuse, stage order, matrix shapes, accumulation
-type, and conservative VMEM and SMEM capacity.
+`src/tpu_cake/dialects/tpu_schedule.py`. Buffer types carry physical and
+symbolic shape, sharding, layout, memory space, ownership, and lifetime. The
+dialect models local allocation, DMA start and wait tokens, semaphores, ordered
+pipeline stages, MXU matrix multiplication, and ragged paged attention. Its
+verifier checks buffer contracts, DMA pairing, semaphore reuse, stage order,
+matrix and attention shapes, accumulation type, lifetime-safe use, symbolic
+dimension consistency, and peak live VMEM and SMEM use.
+
+`src/tpu_cake/frontend.py` is a small Python authoring layer. It emits the same
+canonical xDSL and has no separate schedule schema. Pydantic remains at the
+system boundary for workload, experiment, profile, normalized metric, and run
+receipt contracts. Derived metrics require their unit, evidence source,
+measurement interval, and versioned formula.
 
 Pydantic is restricted to external profile contracts and normalized evidence.
 Schedules use textual xDSL IR. The initial Inkling contract and evidence prove
@@ -26,6 +34,8 @@ counters.
 
 ```bash
 uv run tpu-cake verify-schedule examples/matmul.mlir
+uv run tpu-cake render-workload inkling-rpa
+uv run tpu-cake experiment inkling-rpa
 uv run tpu-cake inspect-profile CAPTURE_ROOT \
   --contract contracts/inkling-steady-decode.toml
 ```

@@ -4,6 +4,7 @@ import math
 from enum import StrEnum
 
 from xdsl.dialects.builtin import (
+    ArrayAttr,
     BFloat16Type,
     Float16Type,
     Float32Type,
@@ -42,9 +43,83 @@ class MemorySpace(StrEnum):
     SMEM = "smem"
 
 
+class Ownership(StrEnum):
+    EXTERNAL = "external"
+    KERNEL = "kernel"
+    CORE = "core"
+    DEVICE = "device"
+
+
 @irdl_attr_definition
 class MemorySpaceAttr(EnumAttribute[MemorySpace], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.memory_space"
+
+
+@irdl_attr_definition
+class OwnershipAttr(EnumAttribute[Ownership], SpacedOpaqueSyntaxAttribute):
+    name = "tpu_schedule.ownership"
+
+
+@irdl_attr_definition
+class ShapeAttr(ParametrizedAttribute):
+    name = "tpu_schedule.shape"
+    dimensions: ArrayAttr[StringAttr]
+
+
+@irdl_attr_definition
+class ShardingAttr(ParametrizedAttribute):
+    name = "tpu_schedule.sharding"
+    axes: ArrayAttr[StringAttr]
+
+
+@irdl_attr_definition
+class LayoutAttr(ParametrizedAttribute):
+    name = "tpu_schedule.layout"
+    order: ArrayAttr[IntAttr]
+
+
+@irdl_attr_definition
+class LifetimeAttr(ParametrizedAttribute):
+    name = "tpu_schedule.lifetime"
+    start: IntAttr
+    end: IntAttr
+
+    def verify(self) -> None:
+        if self.start.data < 0 or self.end.data < self.start.data:
+            raise VerifyException("buffer lifetime must be a nonnegative closed stage interval")
+
+
+@irdl_attr_definition
+class BufferType(ParametrizedAttribute, TypeAttribute):
+    name = "tpu_schedule.buffer"
+    storage: MemRefType
+    shape: ShapeAttr
+    space: MemorySpaceAttr
+    sharding: ShardingAttr
+    layout: LayoutAttr
+    ownership: OwnershipAttr
+    lifetime: LifetimeAttr
+
+    def verify(self) -> None:
+        if not self.storage.has_static_shape():
+            raise VerifyException("schedule buffers must have static shapes")
+        physical_shape = self.storage.get_shape()
+        logical_shape = tuple(value.data for value in self.shape.dimensions)
+        sharding = tuple(value.data for value in self.sharding.axes)
+        layout = tuple(value.data for value in self.layout.order)
+        rank = len(physical_shape)
+        if len(logical_shape) != rank:
+            raise VerifyException("logical shape rank must match storage rank")
+        if len(sharding) != rank:
+            raise VerifyException("sharding rank must match storage rank")
+        if sorted(layout) != list(range(rank)):
+            raise VerifyException("layout must be a permutation of buffer dimensions")
+        for name, size in zip(logical_shape, physical_shape, strict=True):
+            if name.isdecimal() and int(name) != size:
+                raise VerifyException(
+                    f"numeric logical dimension {name} does not match physical size {size}"
+                )
+        self.lifetime.verify()
 
 
 @irdl_attr_definition
@@ -57,14 +132,8 @@ class SemaphoreType(ParametrizedAttribute, TypeAttribute):
     name = "tpu_schedule.semaphore"
 
 
-def _space(memref: MemRefType) -> MemorySpace:
-    if not isinstance(memref.memory_space, MemorySpaceAttr):
-        raise VerifyException("buffer must use #tpu_schedule.memory_space")
-    return memref.memory_space.data
-
-
-def _element_bytes(memref: MemRefType) -> int:
-    element_type = memref.element_type
+def _element_bytes(buffer: BufferType) -> int:
+    element_type = buffer.storage.element_type
     if isinstance(element_type, BFloat16Type | Float16Type):
         return 2
     if isinstance(element_type, Float32Type):
@@ -74,35 +143,49 @@ def _element_bytes(memref: MemRefType) -> int:
     raise VerifyException(f"unsupported buffer element type: {element_type}")
 
 
-def buffer_bytes(memref: MemRefType) -> int:
-    if not memref.has_static_shape():
-        raise VerifyException("schedule buffers must have static shapes")
-    return math.prod(memref.get_shape()) * _element_bytes(memref)
+def buffer_bytes(buffer: BufferType) -> int:
+    buffer.verify()
+    return math.prod(buffer.storage.get_shape()) * _element_bytes(buffer)
+
+
+def _stage(operation: Operation) -> int | None:
+    value = getattr(operation, "stage", None)
+    return value.data if isinstance(value, IntAttr) else None
+
+
+def _check_live(buffer: BufferType, stage: int) -> None:
+    if not buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data:
+        raise VerifyException(
+            f"buffer used at stage {stage} outside lifetime "
+            f"[{buffer.lifetime.start.data}, {buffer.lifetime.end.data}]"
+        )
 
 
 @irdl_op_definition
 class AllocOp(IRDLOperation):
     name = "tpu_schedule.alloc"
-
-    buffer = result_def(MemRefType)
+    buffer = result_def(BufferType)
     role = prop_def(StringAttr)
 
-    def __init__(self, result_type: MemRefType, role: str | StringAttr):
-        if isinstance(role, str):
-            role = StringAttr(role)
-        super().__init__(result_types=[result_type], properties={"role": role})
+    def __init__(self, result_type: BufferType, role: str | StringAttr):
+        super().__init__(
+            result_types=[result_type],
+            properties={"role": StringAttr(role) if isinstance(role, str) else role},
+        )
 
     def verify_(self) -> None:
-        space = _space(self.buffer.type)
-        if space is MemorySpace.HBM:
+        buffer = self.buffer.type
+        assert isinstance(buffer, BufferType)
+        if buffer.space.data is MemorySpace.HBM:
             raise VerifyException("HBM buffers are kernel inputs, not local allocations")
-        buffer_bytes(self.buffer.type)
+        if buffer.ownership.data is Ownership.EXTERNAL:
+            raise VerifyException("local allocations cannot have external ownership")
+        buffer_bytes(buffer)
 
 
 @irdl_op_definition
 class SemaphoreAllocOp(IRDLOperation):
     name = "tpu_schedule.semaphore_alloc"
-
     semaphore = result_def(SemaphoreType)
 
     def __init__(self):
@@ -112,9 +195,8 @@ class SemaphoreAllocOp(IRDLOperation):
 @irdl_op_definition
 class DmaStartOp(IRDLOperation):
     name = "tpu_schedule.dma_start"
-
-    source = operand_def(MemRefType)
-    destination = operand_def(MemRefType)
+    source = operand_def(BufferType)
+    destination = operand_def(BufferType)
     semaphore = operand_def(SemaphoreType)
     token = result_def(DmaTokenType)
     stage = prop_def(IntAttr)
@@ -126,39 +208,36 @@ class DmaStartOp(IRDLOperation):
         semaphore: SSAValue | Operation,
         stage: int | IntAttr,
     ):
-        if isinstance(stage, int):
-            stage = IntAttr(stage)
         super().__init__(
             operands=[source, destination, semaphore],
             result_types=[DmaTokenType()],
-            properties={"stage": stage},
+            properties={"stage": IntAttr(stage) if isinstance(stage, int) else stage},
         )
 
     def verify_(self) -> None:
-        source = self.source.type
-        destination = self.destination.type
-        assert isinstance(source, MemRefType)
-        assert isinstance(destination, MemRefType)
-        if _space(source) is _space(destination):
+        source, destination = self.source.type, self.destination.type
+        assert isinstance(source, BufferType) and isinstance(destination, BufferType)
+        if source.space.data is destination.space.data:
             raise VerifyException("DMA source and destination must use different memory spaces")
-        if source.get_shape() != destination.get_shape():
+        if source.storage.get_shape() != destination.storage.get_shape():
             raise VerifyException("DMA source and destination shapes must match")
-        if source.element_type != destination.element_type:
+        if source.storage.element_type != destination.storage.element_type:
             raise VerifyException("DMA source and destination element types must match")
-        buffer_bytes(source)
+        _check_live(source, self.stage.data)
+        _check_live(destination, self.stage.data)
 
 
 @irdl_op_definition
 class DmaWaitOp(IRDLOperation):
     name = "tpu_schedule.dma_wait"
-
     token = operand_def(DmaTokenType)
     stage = prop_def(IntAttr)
 
     def __init__(self, token: SSAValue | Operation, stage: int | IntAttr):
-        if isinstance(stage, int):
-            stage = IntAttr(stage)
-        super().__init__(operands=[token], properties={"stage": stage})
+        super().__init__(
+            operands=[token],
+            properties={"stage": IntAttr(stage) if isinstance(stage, int) else stage},
+        )
 
     def verify_(self) -> None:
         owner = self.token.owner
@@ -166,15 +245,18 @@ class DmaWaitOp(IRDLOperation):
             raise VerifyException("DMA wait token must come from tpu_schedule.dma_start")
         if self.stage.data < owner.stage.data:
             raise VerifyException("DMA wait cannot precede its start stage")
+        source, destination = owner.source.type, owner.destination.type
+        assert isinstance(source, BufferType) and isinstance(destination, BufferType)
+        _check_live(source, self.stage.data)
+        _check_live(destination, self.stage.data)
 
 
 @irdl_op_definition
 class MxuMatmulOp(IRDLOperation):
     name = "tpu_schedule.mxu_matmul"
-
-    lhs = operand_def(MemRefType)
-    rhs = operand_def(MemRefType)
-    accumulator = operand_def(MemRefType)
+    lhs = operand_def(BufferType)
+    rhs = operand_def(BufferType)
+    accumulator = operand_def(BufferType)
     stage = prop_def(IntAttr)
 
     def __init__(
@@ -184,37 +266,118 @@ class MxuMatmulOp(IRDLOperation):
         accumulator: SSAValue | Operation,
         stage: int | IntAttr,
     ):
-        if isinstance(stage, int):
-            stage = IntAttr(stage)
-        super().__init__(operands=[lhs, rhs, accumulator], properties={"stage": stage})
+        super().__init__(
+            operands=[lhs, rhs, accumulator],
+            properties={"stage": IntAttr(stage) if isinstance(stage, int) else stage},
+        )
 
     def verify_(self) -> None:
-        lhs = self.lhs.type
-        rhs = self.rhs.type
-        accumulator = self.accumulator.type
-        assert isinstance(lhs, MemRefType)
-        assert isinstance(rhs, MemRefType)
-        assert isinstance(accumulator, MemRefType)
-        if any(_space(buffer) is not MemorySpace.VMEM for buffer in (lhs, rhs, accumulator)):
-            raise VerifyException("MXU operands must be resident in VMEM")
-        if any(len(buffer.get_shape()) != 2 for buffer in (lhs, rhs, accumulator)):
+        lhs, rhs, accumulator = self.lhs.type, self.rhs.type, self.accumulator.type
+        assert isinstance(lhs, BufferType)
+        assert isinstance(rhs, BufferType)
+        assert isinstance(accumulator, BufferType)
+        for buffer in (lhs, rhs, accumulator):
+            if buffer.space.data is not MemorySpace.VMEM:
+                raise VerifyException("MXU operands must be resident in VMEM")
+            _check_live(buffer, self.stage.data)
+        if any(len(buffer.storage.get_shape()) != 2 for buffer in (lhs, rhs, accumulator)):
             raise VerifyException("MXU matmul requires rank-2 buffers")
-        m, k = lhs.get_shape()
-        rhs_k, n = rhs.get_shape()
-        if k != rhs_k or accumulator.get_shape() != (m, n):
+        m, k = lhs.storage.get_shape()
+        rhs_k, n = rhs.storage.get_shape()
+        if k != rhs_k or accumulator.storage.get_shape() != (m, n):
             raise VerifyException("MXU matmul shapes must be MxK, KxN, and MxN")
-        if not isinstance(lhs.element_type, BFloat16Type | Float16Type):
+        if not isinstance(lhs.storage.element_type, BFloat16Type | Float16Type):
             raise VerifyException("MXU input buffers must use bf16 or f16")
-        if rhs.element_type != lhs.element_type:
+        if rhs.storage.element_type != lhs.storage.element_type:
             raise VerifyException("MXU input element types must match")
-        if not isinstance(accumulator.element_type, Float32Type):
+        if not isinstance(accumulator.storage.element_type, Float32Type):
             raise VerifyException("MXU accumulation must use f32")
+
+
+@irdl_op_definition
+class RaggedPagedAttentionOp(IRDLOperation):
+    name = "tpu_schedule.ragged_paged_attention"
+    query = operand_def(BufferType)
+    key_cache = operand_def(BufferType)
+    value_cache = operand_def(BufferType)
+    page_table = operand_def(BufferType)
+    sequence_lengths = operand_def(BufferType)
+    bias = operand_def(BufferType)
+    output = operand_def(BufferType)
+    stage = prop_def(IntAttr)
+    query_block_size = prop_def(IntAttr)
+    kv_block_size = prop_def(IntAttr)
+
+    def __init__(
+        self,
+        query: SSAValue | Operation,
+        key_cache: SSAValue | Operation,
+        value_cache: SSAValue | Operation,
+        page_table: SSAValue | Operation,
+        sequence_lengths: SSAValue | Operation,
+        bias: SSAValue | Operation,
+        output: SSAValue | Operation,
+        stage: int,
+        query_block_size: int,
+        kv_block_size: int,
+    ):
+        super().__init__(
+            operands=[query, key_cache, value_cache, page_table, sequence_lengths, bias, output],
+            properties={
+                "stage": IntAttr(stage),
+                "query_block_size": IntAttr(query_block_size),
+                "kv_block_size": IntAttr(kv_block_size),
+            },
+        )
+
+    def verify_(self) -> None:
+        buffers = tuple(value.type for value in self.operands)
+        assert all(isinstance(value, BufferType) for value in buffers)
+        query, key_cache, value_cache, page_table, lengths, bias, output = buffers
+        for buffer in buffers:
+            assert isinstance(buffer, BufferType)
+            _check_live(buffer, self.stage.data)
+        assert isinstance(query, BufferType)
+        assert isinstance(key_cache, BufferType)
+        assert isinstance(value_cache, BufferType)
+        assert isinstance(page_table, BufferType)
+        assert isinstance(lengths, BufferType)
+        assert isinstance(bias, BufferType)
+        assert isinstance(output, BufferType)
+        if query.space.data is not MemorySpace.VMEM or output.space.data is not MemorySpace.VMEM:
+            raise VerifyException("RPA query and output must be resident in VMEM")
+        if bias.space.data is not MemorySpace.VMEM:
+            raise VerifyException("RPA relative-position bias must be resident in VMEM")
+        if any(
+            value.space.data is not MemorySpace.HBM
+            for value in (key_cache, value_cache, page_table, lengths)
+        ):
+            raise VerifyException("RPA cache and page metadata must reside in HBM")
+        if key_cache.storage.get_shape() != value_cache.storage.get_shape():
+            raise VerifyException("RPA key and value cache shapes must match")
+        if query.storage.get_shape() != output.storage.get_shape():
+            raise VerifyException("RPA query and output shapes must match")
+        if len(query.storage.get_shape()) != 3 or len(key_cache.storage.get_shape()) != 4:
+            raise VerifyException(
+                "RPA expects query [batch, heads, dim] and cache [pages, page, heads, dim]"
+            )
+        batch, heads, dimension = query.storage.get_shape()
+        _, page_size, cache_heads, cache_dimension = key_cache.storage.get_shape()
+        if heads != cache_heads or dimension != cache_dimension:
+            raise VerifyException("RPA query and cache head dimensions must match")
+        if page_table.storage.get_shape()[0] != batch or lengths.storage.get_shape() != (batch,):
+            raise VerifyException("RPA page metadata batch dimensions must match query")
+        if bias.storage.get_shape()[0] != heads:
+            raise VerifyException("RPA bias head dimension must match query")
+        if self.kv_block_size.data <= 0 or page_size % self.kv_block_size.data:
+            raise VerifyException("RPA KV block size must be positive and divide page size")
+        if self.query_block_size.data <= 0:
+            raise VerifyException("RPA query block size must be positive")
 
 
 @irdl_op_definition
 class YieldOp(IRDLOperation):
     name = "tpu_schedule.yield"
-
     traits = traits_def(IsTerminator())
 
     def __init__(self):
@@ -228,13 +391,11 @@ class YieldOp(IRDLOperation):
 @irdl_op_definition
 class KernelOp(IRDLOperation):
     name = "tpu_schedule.kernel"
-
     body = region_def("single_block")
     sym_name = prop_def(StringAttr)
     target = prop_def(StringAttr)
     vmem_capacity_bytes = prop_def(IntAttr)
     smem_capacity_bytes = prop_def(IntAttr)
-
     traits = traits_def(IsolatedFromAbove())
 
     def __init__(
@@ -245,20 +406,16 @@ class KernelOp(IRDLOperation):
         smem_capacity_bytes: int | IntAttr,
         body: Region,
     ):
-        if isinstance(sym_name, str):
-            sym_name = StringAttr(sym_name)
-        if isinstance(target, str):
-            target = StringAttr(target)
-        if isinstance(vmem_capacity_bytes, int):
-            vmem_capacity_bytes = IntAttr(vmem_capacity_bytes)
-        if isinstance(smem_capacity_bytes, int):
-            smem_capacity_bytes = IntAttr(smem_capacity_bytes)
         super().__init__(
             properties={
-                "sym_name": sym_name,
-                "target": target,
-                "vmem_capacity_bytes": vmem_capacity_bytes,
-                "smem_capacity_bytes": smem_capacity_bytes,
+                "sym_name": StringAttr(sym_name) if isinstance(sym_name, str) else sym_name,
+                "target": StringAttr(target) if isinstance(target, str) else target,
+                "vmem_capacity_bytes": IntAttr(vmem_capacity_bytes)
+                if isinstance(vmem_capacity_bytes, int)
+                else vmem_capacity_bytes,
+                "smem_capacity_bytes": IntAttr(smem_capacity_bytes)
+                if isinstance(smem_capacity_bytes, int)
+                else smem_capacity_bytes,
             },
             regions=[body],
         )
@@ -267,35 +424,30 @@ class KernelOp(IRDLOperation):
         block = self.body.block
         if not isinstance(block.last_op, YieldOp):
             raise VerifyException("kernel must end with tpu_schedule.yield")
-
         operations = list(block.ops)
         positions = {operation: index for index, operation in enumerate(operations)}
         previous_stage = -1
         in_flight: dict[Operation, DmaStartOp] = {}
-        vmem_bytes = 0
-        smem_bytes = 0
+        symbols: dict[str, int] = {}
+        buffers: list[BufferType] = []
 
         for argument in block.args:
-            if not isinstance(argument.type, MemRefType):
-                raise VerifyException("kernel arguments must be memrefs")
-            if _space(argument.type) is not MemorySpace.HBM:
+            if not isinstance(argument.type, BufferType):
+                raise VerifyException("kernel arguments must be tpu_schedule buffers")
+            if argument.type.space.data is not MemorySpace.HBM:
                 raise VerifyException("kernel arguments must reside in HBM")
+            if argument.type.ownership.data is not Ownership.EXTERNAL:
+                raise VerifyException("kernel arguments must have external ownership")
+            buffers.append(argument.type)
 
         for operation in operations:
-            stage = getattr(operation, "stage", None)
-            if isinstance(stage, IntAttr):
-                if stage.data < previous_stage:
+            stage = _stage(operation)
+            if stage is not None:
+                if stage < previous_stage:
                     raise VerifyException("scheduled stages must be monotonic")
-                previous_stage = stage.data
-
+                previous_stage = stage
             if isinstance(operation, AllocOp):
-                size = buffer_bytes(operation.buffer.type)
-                space = _space(operation.buffer.type)
-                if space is MemorySpace.VMEM:
-                    vmem_bytes += size
-                elif space is MemorySpace.SMEM:
-                    smem_bytes += size
-
+                buffers.append(operation.buffer.type)
             if isinstance(operation, DmaStartOp):
                 semaphore_owner = operation.semaphore.owner
                 if semaphore_owner in in_flight:
@@ -306,22 +458,47 @@ class KernelOp(IRDLOperation):
                     raise VerifyException("every DMA token must have exactly one DMA wait")
                 if positions[uses[0].operation] <= positions[operation]:
                     raise VerifyException("DMA wait must occur after DMA start")
-
             if isinstance(operation, DmaWaitOp):
                 start = operation.token.owner
                 assert isinstance(start, DmaStartOp)
                 in_flight.pop(start.semaphore.owner, None)
 
+        for buffer in buffers:
+            buffer.verify()
+            for symbol, size in zip(
+                (value.data for value in buffer.shape.dimensions),
+                buffer.storage.get_shape(),
+                strict=True,
+            ):
+                if symbol.isdecimal():
+                    continue
+                previous = symbols.setdefault(symbol, size)
+                if previous != size:
+                    raise VerifyException(
+                        f"symbolic dimension {symbol} has conflicting sizes {previous} and {size}"
+                    )
+
         if in_flight:
             raise VerifyException("kernel ends with DMA operations still in flight")
-        if vmem_bytes > self.vmem_capacity_bytes.data:
-            raise VerifyException(
-                f"VMEM capacity exceeded: {vmem_bytes} > {self.vmem_capacity_bytes.data}"
-            )
-        if smem_bytes > self.smem_capacity_bytes.data:
-            raise VerifyException(
-                f"SMEM capacity exceeded: {smem_bytes} > {self.smem_capacity_bytes.data}"
-            )
+        local_buffers = [
+            buffer for buffer in buffers if buffer.ownership.data is not Ownership.EXTERNAL
+        ]
+        max_stage = max((_stage(operation) or 0 for operation in operations), default=0)
+        for stage in range(max_stage + 1):
+            for space, capacity, label in (
+                (MemorySpace.VMEM, self.vmem_capacity_bytes.data, "VMEM"),
+                (MemorySpace.SMEM, self.smem_capacity_bytes.data, "SMEM"),
+            ):
+                live_bytes = sum(
+                    buffer_bytes(buffer)
+                    for buffer in local_buffers
+                    if buffer.space.data is space
+                    and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
+                )
+                if live_bytes > capacity:
+                    raise VerifyException(
+                        f"{label} capacity exceeded at stage {stage}: {live_bytes} > {capacity}"
+                    )
 
 
 TPUSchedule = Dialect(
@@ -333,7 +510,18 @@ TPUSchedule = Dialect(
         DmaStartOp,
         DmaWaitOp,
         MxuMatmulOp,
+        RaggedPagedAttentionOp,
         YieldOp,
     ],
-    [MemorySpaceAttr, DmaTokenType, SemaphoreType],
+    [
+        MemorySpaceAttr,
+        OwnershipAttr,
+        ShapeAttr,
+        ShardingAttr,
+        LayoutAttr,
+        LifetimeAttr,
+        BufferType,
+        DmaTokenType,
+        SemaphoreType,
+    ],
 )

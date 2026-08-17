@@ -8,7 +8,7 @@ from tpu_cake.evidence import (
     PlaneEvidence,
     ProgramEvidence,
 )
-from tpu_cake.xprof_evidence import assess_evidence
+from tpu_cake.xprof_evidence import assess_evidence, capture_metrics
 
 
 def _artifact(path: str) -> ArtifactEvidence:
@@ -18,6 +18,7 @@ def _artifact(path: str) -> ArtifactEvidence:
 def _capture(*, rpa_markers: int, forbidden_hits: int) -> CaptureEvidence:
     return CaptureEvidence(
         xplane=_artifact("capture.xplane.pb"),
+        hlo_stats=_artifact("hlo_stats.json"),
         planes=(
             PlaneEvidence(
                 name="/device:TPU:0",
@@ -68,3 +69,17 @@ def test_wrong_timed_program_is_rejected() -> None:
         "REQUIRED_TIMED_HLO_MARKER_MISSING",
         "FORBIDDEN_TIMED_HLO_FRAGMENT",
     }
+
+
+def test_normalized_metrics_do_not_invent_counter_rates() -> None:
+    metrics = capture_metrics(_capture(rpa_markers=1, forbidden_hits=0))
+    assert {metric.name for metric in metrics} == {
+        "tpu_device_plane_count",
+        "tensor_core_event_count",
+        "hbm_read_counter_name_count",
+        "hbm_write_counter_name_count",
+        "cycle_counter_name_count",
+        "summed_timed_hlo_self_time",
+    }
+    assert not any("bytes_per_second" in metric.name or "mfu" in metric.name for metric in metrics)
+    assert all(metric.formula is not None for metric in metrics)
