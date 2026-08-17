@@ -814,7 +814,7 @@ def estimate_seqax_forward(
         ),
     )
     return SeqaxCostModelReport(
-        program_name=program.sym_name.data,
+        program_name="program",
         schedule_sha256=actual_schedule_sha256,
         mesh_axes=tuple(mesh.items()),
         canonical_operation_inventory=tuple(

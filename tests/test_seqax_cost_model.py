@@ -144,6 +144,7 @@ def test_complete_seqax_forward_expands_layer_scan_and_emits_typed_bounds() -> N
     executions = dict(report.counts.operation_executions)
 
     assert report.schedule_sha256
+    assert report.program_name == "program"
     assert report.schedule_sha256 == execution_plan.schedule_sha256
     assert report.mesh_axes == execution_plan.mesh_axes
     assert report.canonical_operation_inventory == execution_plan.operation_inventory
