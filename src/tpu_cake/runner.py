@@ -18,7 +18,12 @@ from jax.sharding import NamedSharding, PartitionSpec
 from pydantic import BaseModel, ConfigDict, Field
 
 from tpu_cake.canonical import canonical_text
-from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
+from tpu_cake.contracts import (
+    ArtifactReference,
+    ArtifactRole,
+    RuntimeIdentity,
+    experiment_artifact_json,
+)
 from tpu_cake.cost_model import (
     MatmulCostModelInput,
     estimate_distributed_matmul_input,
@@ -351,7 +356,7 @@ def run_distributed_matmul(
         *pre_artifacts,
         _write_text(
             output_dir / "experiment.json",
-            experiment.model_dump_json(indent=2, exclude_computed_fields=True) + "\n",
+            experiment_artifact_json(experiment) + "\n",
             ArtifactRole.EXPERIMENT,
         ),
         _write_text(

@@ -16,6 +16,7 @@ from tpu_cake.contracts import (
     RunReceipt,
     RuntimeIdentity,
     SemanticPropertyResult,
+    experiment_artifact_json,
 )
 from tpu_cake.metrics import (
     MeasurementInterval,
@@ -26,7 +27,7 @@ from tpu_cake.metrics import (
     Unit,
 )
 from tpu_cake.receipt import counter_expectation, validate_receipt
-from tpu_cake.workloads import matmul_experiment
+from tpu_cake.workloads import inkling_fused_rpa_experiment, matmul_experiment
 
 
 def _source() -> MetricSource:
@@ -57,11 +58,33 @@ def test_experiment_identity_is_stable() -> None:
     assert matmul_experiment().experiment_id == matmul_experiment().experiment_id
 
 
+def test_experiment_identity_preserves_absent_legacy_optional_fields() -> None:
+    experiment = matmul_experiment()
+    payload = experiment.model_dump(
+        mode="json",
+        exclude={"experiment_id"},
+        exclude_unset=True,
+    )
+
+    assert "execution" not in payload["workload"]
+    assert KernelExperiment.model_validate(payload).experiment_id == experiment.experiment_id
+
+
+def test_experiment_identity_is_stable_across_full_json_round_trip() -> None:
+    for experiment in (matmul_experiment(), inkling_fused_rpa_experiment()):
+        parsed = KernelExperiment.model_validate_json(
+            experiment.model_dump_json(exclude_computed_fields=True)
+        )
+
+        assert parsed.experiment_id == experiment.experiment_id
+
+
 def test_experiment_json_round_trips_without_serializing_derived_identity() -> None:
     experiment = matmul_experiment()
-    encoded = experiment.model_dump_json(exclude_computed_fields=True)
+    encoded = experiment_artifact_json(experiment, indent=0)
 
     assert "experiment_id" not in encoded
+    assert "execution" not in encoded
     assert KernelExperiment.model_validate_json(encoded) == experiment
 
 

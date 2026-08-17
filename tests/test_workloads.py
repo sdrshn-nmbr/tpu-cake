@@ -65,6 +65,6 @@ def test_fused_rpa_experiment_binds_oracle_preflight_and_backend_sources() -> No
     assert len(contract.outputs) == 2
     assert contract.execution.scope == "local-shard-caller-owned-sharding"
     assert contract.execution.preflight == "tpu_cake.rpa_lowering.FusedRpaPlan.preflight"
-    assert len(contract.execution.source_manifest) == 3
+    assert len(contract.execution.source_manifest) == 4
     assert experiment.workload == contract
     assert experiment.schedule_sha256 == schedule_sha256(inkling_fused_rpa_schedule())

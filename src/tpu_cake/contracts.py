@@ -200,9 +200,25 @@ class KernelExperiment(BaseModel):
     @computed_field
     @property
     def experiment_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude={"experiment_id"})
+        payload = self.model_dump(
+            mode="json",
+            exclude={"experiment_id"},
+        )
+        if payload["workload"]["execution"] is None:
+            del payload["workload"]["execution"]
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
+
+
+def experiment_artifact_json(experiment: KernelExperiment, *, indent: int = 2) -> str:
+    exclude: dict[str, object] | None = None
+    if experiment.workload.execution is None:
+        exclude = {"workload": {"execution"}}
+    return experiment.model_dump_json(
+        indent=indent,
+        exclude_computed_fields=True,
+        exclude=exclude,
+    )
 
 
 class ArtifactReference(BaseModel):

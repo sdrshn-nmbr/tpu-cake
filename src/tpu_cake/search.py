@@ -10,7 +10,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.artifacts import resolve_recorded_artifact
-from tpu_cake.contracts import ArtifactReference, ArtifactRole
+from tpu_cake.contracts import ArtifactReference, ArtifactRole, experiment_artifact_json
 from tpu_cake.identity import (
     LEGACY_SEMANTIC_IDENTITY_SCHEMA,
     SEMANTIC_IDENTITY_SCHEMA,
@@ -265,9 +265,7 @@ def _validate_saved_run_evidence(
         warmup_iterations=contract.warmup_iterations,
         measured_iterations=contract.measured_iterations,
     )
-    if experiment_path.read_text() != (
-        expected_experiment.model_dump_json(indent=2, exclude_computed_fields=True) + "\n"
-    ):
+    if experiment_path.read_text() != experiment_artifact_json(expected_experiment) + "\n":
         raise ValueError(f"SEARCH_EXPERIMENT_MISMATCH candidate={candidate.name}")
 
     profiler_path = _named_artifact(

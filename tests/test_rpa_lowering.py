@@ -115,6 +115,39 @@ def test_fused_rpa_plan_rejects_unverified_backend_and_bad_results() -> None:
         )
 
 
+@pytest.mark.parametrize("device_kind", ("TPU7x", "TPU v7x"))
+def test_fused_rpa_plan_accepts_exact_tpu7_device_names(device_kind: str) -> None:
+    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    inputs = _valid_inputs(plan)
+
+    output, cache = plan.invoke(
+        lambda *_args, **_kwargs: (
+            jnp.zeros(plan.output_shape, dtype=plan.output_dtypes[0]),
+            jnp.zeros(plan.fused_cache_shape, dtype=plan.output_dtypes[1]),
+        ),
+        *inputs,
+        backend_manifest=plan.backend_manifest,
+        device_kind=device_kind,
+    )
+
+    assert output.shape == plan.output_shape
+    assert cache.shape == plan.fused_cache_shape
+
+
+@pytest.mark.parametrize("device_kind", ("not-TPU7-emulator", "TPU v6e", "gpu"))
+def test_fused_rpa_plan_rejects_non_tpu7_device_names(device_kind: str) -> None:
+    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    inputs = _valid_inputs(plan)
+
+    with pytest.raises(ValueError, match="requires TPU7x"):
+        plan.invoke(
+            lambda *_args, **_kwargs: (),
+            *inputs,
+            backend_manifest=plan.backend_manifest,
+            device_kind=device_kind,
+        )
+
+
 def test_fused_rpa_preflight_rejects_bad_decode_metadata() -> None:
     plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
     inputs = _valid_inputs(plan)
@@ -127,6 +160,54 @@ def test_fused_rpa_preflight_rejects_bad_decode_metadata() -> None:
     bad_pages = (*inputs[:5], jnp.full((32,), 99, dtype=jnp.int32), *inputs[6:])
     with pytest.raises(ValueError, match="outside the fused cache"):
         plan.preflight(*bad_pages)
+
+    colliding_pages = inputs[5].at[2].set(inputs[5][0])
+    collisions = (*inputs[:5], colliding_pages, *inputs[6:])
+    with pytest.raises(ValueError, match="updates collide"):
+        plan.preflight(*collisions)
+
+    duplicate_sequence_page = inputs[5].at[2].set(inputs[5][1])
+    aliased_sequence = (*inputs[:5], duplicate_sequence_page, *inputs[6:])
+    with pytest.raises(ValueError, match="aliases logical pages"):
+        plan.preflight(*aliased_sequence)
+
+    huge_lengths = jnp.full((4,), np.iinfo(np.int32).max, dtype=jnp.int32)
+    overflowed_cumulative = jnp.asarray(
+        (0, np.iinfo(np.int32).min, 0, np.iinfo(np.int32).min, 0),
+        dtype=jnp.int32,
+    )
+    overflow = (
+        *inputs[:4],
+        huge_lengths,
+        inputs[5],
+        inputs[6],
+        overflowed_cumulative,
+        *inputs[8:],
+    )
+    with pytest.raises(ValueError, match="exceeds total cache capacity"):
+        plan.preflight(*overflow)
+
+
+def test_fused_rpa_preflight_is_enforced_before_kernel_execution() -> None:
+    plan = lower_inkling_rpa_to_pallas(inkling_fused_rpa_schedule())
+    inputs = _valid_inputs(plan)
+    colliding_pages = inputs[5].at[2].set(inputs[5][0])
+    collisions = (*inputs[:5], colliding_pages, *inputs[6:])
+    kernel_called = False
+
+    def fake_kernel(*_args, **_kwargs):
+        nonlocal kernel_called
+        kernel_called = True
+        raise AssertionError("invalid metadata reached the kernel")
+
+    with pytest.raises(ValueError, match="updates collide"):
+        plan.run_preflighted(
+            fake_kernel,
+            *collisions,
+            backend_manifest=plan.backend_manifest,
+            device_kind="TPU7x",
+        )
+    assert not kernel_called
 
 
 def test_fused_rpa_traced_invocation_has_no_host_array_conversion() -> None:

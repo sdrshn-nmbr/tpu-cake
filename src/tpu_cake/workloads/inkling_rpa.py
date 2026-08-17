@@ -24,6 +24,7 @@ from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership
 from tpu_cake.frontend import KernelBuilder, buffer, schedule_sha256
 from tpu_cake.rpa_lowering import (
     INKLE_REPOSITORY_REVISION,
+    INKLING_RPA_BASE_TUNING_SHA256,
     INKLING_RPA_SOURCE_SHA256,
     INKLING_RPA_TUNING_SHA256,
     INKLING_RPA_UTIL_SHA256,
@@ -425,6 +426,10 @@ def inkling_fused_rpa_contract() -> WorkloadContract:
                 SourceFileContract(
                     path="ragged_paged_attention_v3.py",
                     sha256=INKLING_RPA_SOURCE_SHA256,
+                ),
+                SourceFileContract(
+                    path="tuned_block_sizes.py",
+                    sha256=INKLING_RPA_BASE_TUNING_SHA256,
                 ),
                 SourceFileContract(
                     path="tuned_block_sizes_v3.py",

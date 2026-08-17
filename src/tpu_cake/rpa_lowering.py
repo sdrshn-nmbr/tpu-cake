@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,9 @@ INKLING_RPA_FILE_REVISION = "e65c204fe42692254b0f7d6f678415dfc6fca401"
 INKLING_RPA_SOURCE_SHA256 = "56d00d027cf921def1908e4815ced12e79210e1ac3cf57bcd727c5e6c6168eaa"
 INKLING_RPA_UTIL_SHA256 = "fe76b20b6791ce3e6a30ff22a0e7de11b9a809113facbedb79b52079191f9562"
 INKLING_RPA_TUNING_SHA256 = "563d74378b319710c8a7c6cd89ec174563462695417f9167d65716d74a4a2d50"
+INKLING_RPA_BASE_TUNING_SHA256 = (
+    "4577624d0ef37726cbcceb5d570530399eb1f9113f8736e621a4e9aba9d3caef"
+)
 INKLING_RPA_MODULE = (
     "sgl_jax.srt.kernels.ragged_paged_attention.ragged_paged_attention_v3"
 )
@@ -59,6 +63,7 @@ class FusedRpaPlan:
     backend_sha256: str = INKLING_RPA_SOURCE_SHA256
     backend_manifest: tuple[tuple[str, str], ...] = (
         ("ragged_paged_attention_v3.py", INKLING_RPA_SOURCE_SHA256),
+        ("tuned_block_sizes.py", INKLING_RPA_BASE_TUNING_SHA256),
         ("tuned_block_sizes_v3.py", INKLING_RPA_TUNING_SHA256),
         ("util.py", INKLING_RPA_UTIL_SHA256),
     )
@@ -99,19 +104,19 @@ class FusedRpaPlan:
 
     def preflight(self, *inputs: Any) -> None:
         self._validate_signature(inputs)
-        kv_lengths = np.asarray(inputs[4])
-        page_indices = np.asarray(inputs[5])
-        cumulative_query_lengths = np.asarray(inputs[6])
-        cumulative_kv_lengths = np.asarray(inputs[7])
-        distribution = np.asarray(inputs[8])
+        kv_lengths = np.asarray(inputs[4], dtype=np.int64)
+        page_indices = np.asarray(inputs[5], dtype=np.int64)
+        cumulative_query_lengths = np.asarray(inputs[6], dtype=np.int64)
+        cumulative_kv_lengths = np.asarray(inputs[7], dtype=np.int64)
+        distribution = np.asarray(inputs[8], dtype=np.int64)
         sequence_count = self.kv_lengths_shape[0]
-        expected_distribution = np.full((3,), sequence_count, dtype=np.int32)
+        expected_distribution = np.full((3,), sequence_count, dtype=np.int64)
         if not np.array_equal(distribution, expected_distribution):
             raise ValueError(
                 "Inkling fused RPA adapter accepts decode-only distribution "
                 f"{tuple(expected_distribution)}, got {tuple(distribution)}"
             )
-        expected_query_lengths = np.arange(sequence_count + 1, dtype=np.int32)
+        expected_query_lengths = np.arange(sequence_count + 1, dtype=np.int64)
         if not np.array_equal(cumulative_query_lengths, expected_query_lengths):
             raise ValueError(
                 "Inkling fused RPA adapter requires one query token per sequence"
@@ -119,9 +124,12 @@ class FusedRpaPlan:
         if np.any(kv_lengths <= 0):
             raise ValueError("Inkling fused RPA requires positive KV lengths")
         page_size = self.fused_cache_shape[1]
+        maximum_sequence_capacity = self.fused_cache_shape[0] * page_size
+        if np.any(kv_lengths > maximum_sequence_capacity):
+            raise ValueError("fused RPA KV length exceeds total cache capacity")
         aligned_lengths = ((kv_lengths + page_size - 1) // page_size) * page_size
         expected_cumulative_kv = np.concatenate(
-            (np.zeros((1,), dtype=np.int32), np.cumsum(aligned_lengths, dtype=np.int32))
+            (np.zeros((1,), dtype=np.int64), np.cumsum(aligned_lengths, dtype=np.int64))
         )
         if not np.array_equal(cumulative_kv_lengths, expected_cumulative_kv):
             raise ValueError("fused RPA cumulative KV lengths must be page-aligned")
@@ -132,6 +140,22 @@ class FusedRpaPlan:
         total_pages = self.fused_cache_shape[0]
         if np.any(referenced_pages < 0) or np.any(referenced_pages >= total_pages):
             raise ValueError("fused RPA page index is outside the fused cache")
+        for sequence in range(sequence_count):
+            first_page = int(cumulative_kv_lengths[sequence]) // page_size
+            last_page = int(cumulative_kv_lengths[sequence + 1]) // page_size
+            sequence_pages = page_indices[first_page:last_page]
+            if sequence_pages.size != np.unique(sequence_pages).size:
+                raise ValueError(
+                    "fused RPA page table aliases logical pages within one sequence"
+                )
+        write_locations: list[tuple[int, int]] = []
+        for sequence, length in enumerate(kv_lengths):
+            position = int(length) - 1
+            page_offset = int(cumulative_kv_lengths[sequence]) // page_size
+            page = int(page_indices[page_offset + position // page_size])
+            write_locations.append((page, position % page_size))
+        if len(write_locations) != len(set(write_locations)):
+            raise ValueError("fused RPA decode updates collide in the physical cache")
 
     def invoke(
         self,
@@ -143,7 +167,8 @@ class FusedRpaPlan:
         self._validate_signature(inputs)
         if backend_manifest != self.backend_manifest:
             raise ValueError("fused RPA backend source manifest does not match the plan")
-        if "tpu7" not in device_kind.lower().replace(" ", ""):
+        normalized_device_kind = device_kind.strip().lower()
+        if re.fullmatch(r"tpu(?: v)?7x(?: lite)?", normalized_device_kind) is None:
             raise ValueError(f"fused RPA plan requires TPU7x, got {device_kind!r}")
         results = kernel(
             *inputs[:9],
@@ -169,6 +194,21 @@ class FusedRpaPlan:
                 )
         return results
 
+    def run_preflighted(
+        self,
+        kernel: Callable[..., tuple[Any, Any]],
+        *inputs: Any,
+        backend_manifest: tuple[tuple[str, str], ...],
+        device_kind: str,
+    ) -> tuple[Any, Any]:
+        self.preflight(*inputs)
+        return self.invoke(
+            kernel,
+            *inputs,
+            backend_manifest=backend_manifest,
+            device_kind=device_kind,
+        )
+
     def render_executable_source(self) -> str:
         return f'''from __future__ import annotations
 
@@ -178,6 +218,7 @@ from pathlib import Path
 
 import jax
 from {self.backend_module} import ragged_paged_attention
+from sgl_jax.srt.kernels.ragged_paged_attention.tuned_block_sizes import get_simplified_key
 from sgl_jax.srt.kernels.ragged_paged_attention.tuned_block_sizes_v3 import get_tuned_block_sizes_v3
 from sgl_jax.srt.kernels.ragged_paged_attention.util import get_dtype_packing
 from tpu_cake.rpa_lowering import FusedRpaPlan
@@ -243,7 +284,7 @@ PLAN = FusedRpaPlan(
 
 
 def _source_sha256(value):
-    source = inspect.getsourcefile(value)
+    source = inspect.getsourcefile(inspect.unwrap(value))
     if source is None:
         raise RuntimeError("cannot locate a fused RPA backend source")
     return hashlib.sha256(Path(source).read_bytes()).hexdigest()
@@ -252,6 +293,7 @@ def _source_sha256(value):
 def _backend_manifest():
     return (
         ("ragged_paged_attention_v3.py", _source_sha256(ragged_paged_attention)),
+        ("tuned_block_sizes.py", _source_sha256(get_simplified_key)),
         ("tuned_block_sizes_v3.py", _source_sha256(get_tuned_block_sizes_v3)),
         ("util.py", _source_sha256(get_dtype_packing)),
     )
@@ -261,8 +303,8 @@ def preflight(*inputs):
     PLAN.preflight(*inputs)
 
 
-def run(*inputs):
-    return PLAN.invoke(
+def run_preflighted(*inputs):
+    return PLAN.run_preflighted(
         ragged_paged_attention,
         *inputs,
         backend_manifest=_backend_manifest(),

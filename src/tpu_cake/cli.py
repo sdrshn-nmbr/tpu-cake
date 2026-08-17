@@ -10,7 +10,12 @@ from xdsl.context import Context
 from xdsl.dialects.builtin import Builtin
 from xdsl.parser import Parser
 
-from tpu_cake.contracts import KernelExperiment, ProfileExpectation, RunReceipt
+from tpu_cake.contracts import (
+    KernelExperiment,
+    ProfileExpectation,
+    RunReceipt,
+    experiment_artifact_json,
+)
 from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
@@ -130,7 +135,7 @@ def _render_workload(workload: str, output: Path | None) -> int:
 
 def _experiment(workload: str, output: Path | None) -> int:
     experiment = _WORKLOADS[workload][1]()
-    rendered = experiment.model_dump_json(indent=2, exclude_computed_fields=True) + "\n"
+    rendered = experiment_artifact_json(experiment) + "\n"
     if output is None:
         print(rendered, end="")
     else:
