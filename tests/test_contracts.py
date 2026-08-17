@@ -1,9 +1,13 @@
+import hashlib
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from tpu_cake.contracts import (
+    ArtifactReference,
+    ArtifactRole,
     CorrectnessResult,
     KernelExperiment,
     ProfileExpectation,
@@ -19,6 +23,7 @@ from tpu_cake.metrics import (
     Quantity,
     Unit,
 )
+from tpu_cake.receipt import validate_receipt
 from tpu_cake.workloads import matmul_experiment
 
 
@@ -117,3 +122,58 @@ def test_passed_correctness_rejects_failed_semantic_property() -> None:
                 ),
             ),
         )
+
+
+def _complete_receipt(root: Path) -> tuple[RunReceipt, KernelExperiment]:
+    experiment = matmul_experiment()
+    artifacts = []
+    for role in ArtifactRole:
+        path = root / f"{role.value}.artifact"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(role.value)
+        artifacts.append(
+            ArtifactReference(
+                path=path.name,
+                size_bytes=path.stat().st_size,
+                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                role=role,
+            )
+        )
+    receipt = RunReceipt(
+        experiment_id=experiment.experiment_id,
+        schedule_sha256=experiment.schedule_sha256,
+        status="passed",
+        runtime=RuntimeIdentity(python="3.13"),
+        correctness=CorrectnessResult(passed=True, oracle="exact"),
+        required_semantic_properties=(),
+        metrics=(),
+        artifacts=tuple(artifacts),
+    )
+    return receipt, experiment
+
+
+def test_receipt_survives_moving_its_complete_bundle(tmp_path) -> None:
+    original = tmp_path / "original"
+    receipt, experiment = _complete_receipt(original)
+    moved = tmp_path / "moved"
+    original.rename(moved)
+
+    validate_receipt(receipt, experiment, root=moved)
+
+
+def test_receipt_rejects_a_mutated_required_artifact(tmp_path) -> None:
+    root = tmp_path / "bundle"
+    receipt, experiment = _complete_receipt(root)
+    (root / receipt.artifacts[0].path).write_text("tampered")
+
+    with pytest.raises(ValueError, match="size changed|hash changed"):
+        validate_receipt(receipt, experiment, root=root)
+
+
+def test_receipt_rejects_a_deleted_required_artifact(tmp_path) -> None:
+    root = tmp_path / "bundle"
+    receipt, experiment = _complete_receipt(root)
+    (root / receipt.artifacts[0].path).unlink()
+
+    with pytest.raises(ValueError, match="artifact is missing"):
+        validate_receipt(receipt, experiment, root=root)
