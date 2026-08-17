@@ -474,6 +474,104 @@ class EinsumLocalOp(IRDLOperation):
 
 
 @irdl_op_definition
+class EinsumOp(IRDLOperation):
+    name = "dtensor.einsum"
+    lhs = operand_def(DTensorType)
+    rhs = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    contracting_dimensions = prop_def(ArrayAttr[StringAttr])
+    accumulation_type = prop_def(Attribute)
+
+    def __init__(
+        self,
+        lhs: SSAValue | IRDLOperation,
+        rhs: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        contracting_dimensions: tuple[str, ...],
+        accumulation_type: Attribute = f32,
+    ) -> None:
+        super().__init__(
+            operands=[lhs, rhs],
+            result_types=[result_type],
+            properties={
+                "contracting_dimensions": _string_array(
+                    tuple(sorted(contracting_dimensions))
+                ),
+                "accumulation_type": accumulation_type,
+            },
+        )
+
+    def verify_(self) -> None:
+        lhs, rhs, result = self.lhs.type, self.rhs.type, self.result.type
+        assert isinstance(lhs, DTensorType)
+        assert isinstance(rhs, DTensorType)
+        assert isinstance(result, DTensorType)
+        if not isinstance(lhs.element_type, (BFloat16Type, Float16Type)):
+            raise VerifyException("einsum supports bf16 or f16 inputs")
+        if lhs.element_type != rhs.element_type:
+            raise VerifyException("einsum inputs must have the same element type")
+        if not isinstance(self.accumulation_type, Float32Type):
+            raise VerifyException("einsum accumulation must be f32")
+        if result.element_type != self.accumulation_type:
+            raise VerifyException("einsum result must match its accumulation type")
+        if lhs.pending_reductions() or rhs.pending_reductions():
+            raise VerifyException("einsum cannot consume a partially reduced tensor")
+
+        contractions = tuple(value.data for value in self.contracting_dimensions)
+        if not contractions or contractions != tuple(sorted(set(contractions))):
+            raise VerifyException(
+                "einsum contracting dimensions must be nonempty, unique, and canonical"
+            )
+        lhs_shape = dict(lhs.logical_shape())
+        rhs_shape = dict(rhs.logical_shape())
+        lhs_sharding = dict(zip(lhs_shape, lhs.sharding_axes(), strict=True))
+        rhs_sharding = dict(zip(rhs_shape, rhs.sharding_axes(), strict=True))
+        shared = set(lhs_shape) & set(rhs_shape)
+        if not set(contractions) <= shared:
+            raise VerifyException(
+                "every einsum contracting dimension must exist in both operands"
+            )
+        for dimension in shared:
+            if lhs_shape[dimension] != rhs_shape[dimension]:
+                raise VerifyException(f"einsum dimension {dimension} has unequal sizes")
+            if lhs_sharding[dimension] != rhs_sharding[dimension]:
+                raise VerifyException(
+                    f"einsum shared dimension {dimension} has unequal local sharding"
+                )
+
+        expected_dimensions = (set(lhs_shape) | set(rhs_shape)) - set(contractions)
+        result_shape = dict(result.logical_shape())
+        if set(result_shape) != expected_dimensions:
+            raise VerifyException(
+                "einsum result must contain every noncontracted dimension exactly once"
+            )
+        expected_sharding: list[tuple[str, ...]] = []
+        for dimension, size in result.logical_shape():
+            source_shape = lhs_shape if dimension in lhs_shape else rhs_shape
+            source_sharding = (
+                lhs_sharding if dimension in lhs_sharding else rhs_sharding
+            )
+            if source_shape[dimension] != size:
+                raise VerifyException(
+                    f"einsum result dimension {dimension} has the wrong size"
+                )
+            expected_sharding.append(source_sharding[dimension])
+        if result.sharding_axes() != tuple(expected_sharding):
+            raise VerifyException(
+                "einsum result must preserve sharding on every retained dimension"
+            )
+        pending_axes = {
+            axis
+            for dimension in contractions
+            for axis in lhs_sharding[dimension]
+        }
+        if result.pending_reductions() != {
+            axis: "sum" for axis in sorted(pending_axes)
+        }:
+            raise VerifyException("einsum result has incorrect pending reductions")
+
+
+@irdl_op_definition
 class AllGatherOp(IRDLOperation):
     name = "dtensor.all_gather"
     value = operand_def(DTensorType)
@@ -666,6 +764,7 @@ DistributedTensor = Dialect(
         BroadcastOp,
         EmbeddingLookupOp,
         EinsumLocalOp,
+        EinsumOp,
         AllGatherOp,
         ReduceScatterOp,
         AllReduceOp,

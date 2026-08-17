@@ -358,3 +358,83 @@ def test_broadcast_cannot_silently_transpose_existing_dimensions() -> None:
 
     with pytest.raises(VerifyException, match="preserve input dimension order"):
         builder.module(result)
+
+
+def test_attention_einsum_preserves_shared_batch_and_head_dimensions() -> None:
+    query = tensor(
+        bf16,
+        (("B", 8), ("Qlen", 16), ("Q", 4), ("K", 4), ("D", 8)),
+        sharding={"B": ("d",), "K": ("t",)},
+    )
+    key = tensor(
+        bf16,
+        (("B", 8), ("Klen", 16), ("K", 4), ("D", 8)),
+        sharding={"B": ("d",), "K": ("t",)},
+    )
+    builder = DistributedProgramBuilder("attention", {"d": 2, "t": 4}, (query, key))
+    logits = builder.einsum(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(
+            f32,
+            (("B", 8), ("Qlen", 16), ("Klen", 16), ("Q", 4), ("K", 4)),
+            sharding={"B": ("d",), "K": ("t",)},
+        ),
+        contracting_dimensions=("D",),
+    )
+
+    builder.module(logits).verify()
+
+
+def test_general_einsum_exposes_reduction_over_every_sharded_contraction() -> None:
+    activation = tensor(
+        bf16,
+        (("B", 8), ("L", 16), ("Q", 4), ("K", 4), ("D", 8)),
+        sharding={"B": ("d",), "K": ("t",)},
+    )
+    weight = tensor(
+        bf16,
+        (("M", 32), ("Q", 4), ("K", 4), ("D", 8)),
+        sharding={"K": ("t",)},
+    )
+    builder = DistributedProgramBuilder(
+        "attention_projection", {"d": 2, "t": 4}, (activation, weight)
+    )
+    partial = builder.einsum(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(
+            f32,
+            (("B", 8), ("L", 16), ("M", 32)),
+            sharding={"B": ("d",)},
+            pending_reductions={"t": "sum"},
+        ),
+        contracting_dimensions=("D", "K", "Q"),
+    )
+    result = builder.reduce_scatter(
+        partial,
+        tensor(
+            f32,
+            (("B", 8), ("L", 16), ("M", 32)),
+            sharding={"B": ("d",), "M": ("t",)},
+        ),
+        axes=("t",),
+        scatter_dimensions=("M",),
+    )
+
+    builder.module(result).verify()
+
+
+def test_general_einsum_cannot_drop_a_shared_batch_dimension() -> None:
+    lhs = tensor(bf16, (("B", 8), ("M", 16), ("K", 32)))
+    rhs = tensor(bf16, (("B", 8), ("K", 32), ("N", 16)))
+    builder = DistributedProgramBuilder("bad_einsum", {}, (lhs, rhs))
+    result = builder.einsum(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(f32, (("M", 16), ("N", 16))),
+        contracting_dimensions=("K",),
+    )
+
+    with pytest.raises(VerifyException, match="every noncontracted dimension"):
+        builder.module(result)

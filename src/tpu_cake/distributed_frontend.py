@@ -14,6 +14,7 @@ from tpu_cake.dialects.distributed_tensor import (
     DimensionAttr,
     DTensorType,
     EinsumLocalOp,
+    EinsumOp,
     ElementwiseOp,
     EmbeddingLookupOp,
     MeshAttr,
@@ -115,6 +116,30 @@ class DistributedProgramBuilder:
             source,
         )
         assert isinstance(operation, EinsumLocalOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def einsum(
+        self,
+        lhs: SSAValue,
+        rhs: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        contracting_dimensions: tuple[str, ...],
+        accumulation_type: Float32Type = f32,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            EinsumOp(
+                lhs,
+                rhs,
+                result.to_type(),
+                contracting_dimensions,
+                accumulation_type,
+            ),
+            source,
+        )
+        assert isinstance(operation, EinsumOp)
         self.block.add_op(operation)
         return operation.result
 
