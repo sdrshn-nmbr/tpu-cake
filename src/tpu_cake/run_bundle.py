@@ -141,7 +141,12 @@ def build_distributed_matmul_receipt(
         result_path = search_root / "result.json"
         contract = MatmulSearchContract.model_validate_json(contract_path.read_text())
         search_result = MatmulSearchResult.model_validate_json(result_path.read_text())
-        validate_matmul_search_result(search_root, contract, search_result)
+        validate_matmul_search_result(
+            search_root,
+            contract,
+            search_result,
+            recompute_schedules=False,
+        )
         if search_result.winner is None:
             raise ValueError("SEARCH_DID_NOT_PROMOTE_A_WINNER")
         winner = next(
