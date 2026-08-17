@@ -140,6 +140,7 @@ def seqax_forward_workload_surface() -> SeqaxForwardWorkloadSurface:
         output_equivalence=(
             OutputEquivalencePolicy.INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE
         ),
+        oracle_quantization_decimals=4,
     )
 
 
@@ -563,7 +564,11 @@ def run_seqax_surface(output_dir: Path) -> SeqaxSurfaceReceipt:
     def oracle(scenario, inputs):
         host_inputs = tuple(np.asarray(jax.device_get(value)) for value in inputs)
         return (
-            seqax_forward_canonical_reference(host_inputs, **scenario.parameters()),
+            seqax_forward_canonical_reference(
+                host_inputs,
+                quantization_decimals=surface.oracle_quantization_decimals,
+                **scenario.parameters(),
+            ),
         )
 
     def baseline(scenario, inputs):
@@ -617,7 +622,9 @@ def run_seqax_surface(output_dir: Path) -> SeqaxSurfaceReceipt:
         inputs = host_inputs_by_scenario[scenario.name]
         resident_inputs = resident_inputs_by_scenario[scenario.name]
         oracle_value = seqax_forward_canonical_reference(
-            inputs, **scenario.parameters()
+            inputs,
+            quantization_decimals=surface.oracle_quantization_decimals,
+            **scenario.parameters(),
         )
         baseline_value = np.asarray(
             jax.block_until_ready(
@@ -797,7 +804,9 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
                 f"SEQAX_SURFACE_DETERMINISTIC_INPUT_MISMATCH scenario={scenario.name}"
             )
         expected_oracle = seqax_forward_canonical_reference(
-            expected_inputs, **scenario.parameters()
+            expected_inputs,
+            quantization_decimals=surface.oracle_quantization_decimals,
+            **scenario.parameters(),
         )
         saved_oracle = np.load(
             root / "oracle" / f"{scenario.name}.npy", allow_pickle=False

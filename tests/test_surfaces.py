@@ -165,6 +165,9 @@ def test_seqax_surface_exposes_complete_forward_parameters() -> None:
     assert scenario.parameters()["rope_max_timescale"] == 256
     assert "weight" not in scenario.parameters()
     assert len(surface.surface_id) == 64
+    assert surface.surface_id != surface.model_copy(
+        update={"oracle_quantization_decimals": 4}
+    ).surface_id
 
 
 def test_seqax_surface_rejects_dimensions_that_do_not_fit_the_mesh() -> None:

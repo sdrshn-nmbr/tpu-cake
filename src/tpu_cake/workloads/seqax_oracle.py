@@ -195,6 +195,7 @@ def seqax_forward_canonical_reference(
     inputs: tuple[np.ndarray, ...],
     *,
     rope_max_timescale: int,
+    quantization_decimals: int = SEQAX_REFERENCE_DECIMALS,
     **parameters: int,
 ) -> np.ndarray:
     cpu_devices = jax.devices("cpu")
@@ -206,4 +207,4 @@ def seqax_forward_canonical_reference(
             rope_max_timescale=rope_max_timescale,
             **parameters,
         )
-    return np.round(result, decimals=SEQAX_REFERENCE_DECIMALS).astype(np.float32)
+    return np.round(result, decimals=quantization_decimals).astype(np.float32)

@@ -129,6 +129,7 @@ class SeqaxForwardWorkloadSurface(BaseModel):
     maximum_scenario_regression: Decimal = Field(default=Decimal("0.01"), ge=0, lt=1)
     bootstrap_samples: int = Field(default=10_000, ge=1_000)
     output_equivalence: OutputEquivalencePolicy = OutputEquivalencePolicy.EXACT_IDENTITY
+    oracle_quantization_decimals: int = Field(default=6, ge=0, le=9)
 
     @model_validator(mode="after")
     def scenario_names_are_unique(self) -> SeqaxForwardWorkloadSurface:

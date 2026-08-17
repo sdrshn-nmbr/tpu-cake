@@ -12,7 +12,7 @@ from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dtensor_interpreter import interpret_distributed_program
-from tpu_cake.identity import semantic_seed, semantic_sha256
+from tpu_cake.identity import array_sha256, semantic_seed, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
 from tpu_cake.ledger import RunState
 from tpu_cake.metrics import MetricSource
@@ -150,7 +150,11 @@ def _receipt(tmp_path: Path, monkeypatch) -> SeqaxSurfaceReceipt:
             np.asarray(value)
             for value in seqax_forward_inputs(seed=seed, **scenario.parameters())
         )
-        output = seqax_forward_canonical_reference(inputs, **scenario.parameters())
+        output = seqax_forward_canonical_reference(
+            inputs,
+            quantization_decimals=surface.oracle_quantization_decimals,
+            **scenario.parameters(),
+        )
         artifacts.extend(
             _save_array(
                 tmp_path,
@@ -640,7 +644,11 @@ def test_seqax_surface_tolerance_still_rejects_swapped_mlp_weights() -> None:
     scenario = next(value for value in surface.scenarios if value.name == "deeper")
     seed = semantic_seed(surface.surface_id, scenario.name, "inputs")
     inputs = seqax_forward_inputs(seed=seed, **scenario.parameters())
-    expected = seqax_forward_canonical_reference(inputs, **scenario.parameters())
+    expected = seqax_forward_canonical_reference(
+        inputs,
+        quantization_decimals=surface.oracle_quantization_decimals,
+        **scenario.parameters(),
+    )
     swapped = (*inputs[:3], inputs[4], inputs[3], *inputs[5:])
     (wrong,) = interpret_distributed_program(
         seqax_forward_schedule(**scenario.parameters()),
@@ -648,6 +656,28 @@ def test_seqax_surface_tolerance_still_rejects_swapped_mlp_weights() -> None:
     )
 
     assert not np.allclose(wrong, expected, atol=0.016, rtol=0.05)
+
+
+def test_seqax_surface_canonical_oracles_have_stable_hashes() -> None:
+    expected_hashes = {
+        "tiny": "aa997227dfaba36fa7cba02fbc87bf3fe1dd5653fa5854739e2c213ccced7b45",
+        "wider": "bf6208630919a3f270c7f2a81c9765317fde6460c4d9cc08c1e06178280fef7d",
+        "deeper": "6c66c4ead702a76741928e78125acaa5b8fb9580526e785598186da60756bd99",
+    }
+    surface = seqax_forward_workload_surface()
+
+    for scenario in surface.scenarios:
+        inputs = seqax_forward_inputs(
+            seed=semantic_seed(surface.surface_id, scenario.name, "inputs"),
+            **scenario.parameters(),
+        )
+        oracle = seqax_forward_canonical_reference(
+            inputs,
+            quantization_decimals=surface.oracle_quantization_decimals,
+            **scenario.parameters(),
+        )
+
+        assert array_sha256(oracle) == expected_hashes[scenario.name]
 
 
 def test_seqax_surface_accepts_valid_cross_mode_rounding(tmp_path, monkeypatch) -> None:
