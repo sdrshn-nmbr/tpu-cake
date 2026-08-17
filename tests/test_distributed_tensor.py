@@ -472,7 +472,11 @@ def test_seqax_normalization_rope_mask_and_softmax_semantics_verify() -> None:
     )
     rotated = builder.rotary_embedding(
         builder.inputs[3],
-        query,
+        tensor(
+            f32,
+            query.dimensions,
+            sharding={"B": ("d",), "K": ("t",)},
+        ),
         sequence_dimension="Qlen",
         head_dimension="D",
         maximum_timescale=10_000,
@@ -563,7 +567,7 @@ def test_rotary_embedding_rejects_an_odd_head_dimension() -> None:
     builder = DistributedProgramBuilder("bad_rope", {}, (value,))
     result = builder.rotary_embedding(
         builder.inputs[0],
-        value,
+        tensor(f32, value.dimensions),
         sequence_dimension="L",
         head_dimension="D",
         maximum_timescale=10_000,
@@ -582,7 +586,7 @@ def test_rotary_embedding_rejects_sharded_semantic_dimensions() -> None:
     builder = DistributedProgramBuilder("bad_rope_axis", {"t": 4}, (value,))
     result = builder.rotary_embedding(
         builder.inputs[0],
-        value,
+        tensor(f32, value.dimensions, sharding={"D": ("t",)}),
         sequence_dimension="L",
         head_dimension="D",
         maximum_timescale=10_000,

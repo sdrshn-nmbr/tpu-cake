@@ -282,7 +282,7 @@ def seqax_forward_schedule(
         query = body.rotary_embedding(
             query,
             DistributedTensorSpec(
-                query.type.element_type,
+                f32,
                 query.type.logical_shape(),
                 query.type.sharding_axes(),
             ),
@@ -379,7 +379,11 @@ def seqax_forward_schedule(
         )
         key = body.rotary_embedding(
             key,
-            renamed_key_value,
+            tensor(
+                f32,
+                renamed_key_value.dimensions,
+                sharding={"B": ("d",), "K": ("t",)},
+            ),
             sequence_dimension="Klen",
             head_dimension="D",
             maximum_timescale=rope_max_timescale,

@@ -78,6 +78,7 @@ def test_seqax_forward_uses_configured_rope_timescale_and_source_locations() -> 
     )
 
     assert {operation.maximum_timescale.data for operation in rotations} == {256}
+    assert all(operation.result.type.element_type == f32 for operation in rotations)
     assert all(str(operation.location) != "loc(unknown)" for operation in renames)
 
 

@@ -29,15 +29,16 @@ def seqax_forward_inputs(
     sequence_starts[:, 0] = True
     if sequence >= 4:
         sequence_starts[1::2, sequence // 2] = True
-    layer_scale = np.ones((layers, model), dtype=np.float32)
+    ln1 = generator.uniform(0.75, 1.25, size=(layers, model)).astype(np.float32)
+    ln2 = generator.uniform(1.25, 1.75, size=(layers, model)).astype(np.float32)
     query_shape = (layers, model, query_groups, key_value_heads, head)
     feed_forward_shape = (layers, model, feed_forward)
     return (
         tokens,
         sequence_starts,
         weights((vocabulary, model)),
-        layer_scale.copy(),
-        layer_scale.copy(),
+        ln1,
+        ln2,
         weights(query_shape),
         weights((layers, 2, model, key_value_heads, head)),
         weights(query_shape),

@@ -337,12 +337,19 @@ def interpret_distributed_program(
     for argument, value in zip(program.body.block.args, inputs, strict=True):
         value_type = argument.type
         assert isinstance(value_type, DTensorType)
-        expected_shape = tuple(size for _, size in value_type.logical_shape())
-        if tuple(value.shape) != expected_shape:
+        actual_dtype = jnp.dtype(value.dtype)
+        expected_dtype = jnp.dtype(_dtype(value_type))
+        if actual_dtype != expected_dtype:
             raise ValueError(
-                f"input shape {tuple(value.shape)} does not match {expected_shape}"
+                f"input dtype {actual_dtype} does not match {expected_dtype}"
             )
-        environment[argument] = _cast(jnp.asarray(value), value_type)
+        array = jnp.asarray(value)
+        expected_shape = tuple(size for _, size in value_type.logical_shape())
+        if tuple(array.shape) != expected_shape:
+            raise ValueError(
+                f"input shape {tuple(array.shape)} does not match {expected_shape}"
+            )
+        environment[argument] = array
     outputs = _execute_block(program.body.block, environment)
     if outputs is None:
         raise UnsupportedInterpretationError("distributed program did not return")

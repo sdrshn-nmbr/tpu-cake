@@ -329,9 +329,18 @@ class RotaryEmbeddingOp(IRDLOperation):
         before, after = self.value.type, self.result.type
         assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
         _require_fully_reduced(before, after)
-        if before != after or not _is_float_type(before.element_type):
+        if not _is_float_type(before.element_type) or not isinstance(
+            after.element_type, Float32Type
+        ):
             raise VerifyException(
-                "rotary embedding must preserve one floating-point distributed tensor type"
+                "rotary embedding must promote a floating-point tensor to f32"
+            )
+        if (
+            before.logical_shape() != after.logical_shape()
+            or before.sharding_axes() != after.sharding_axes()
+        ):
+            raise VerifyException(
+                "rotary embedding must preserve logical shape and sharding"
             )
         shape = dict(before.logical_shape())
         sequence = self.sequence_dimension.data
@@ -870,8 +879,8 @@ class EinsumOp(IRDLOperation):
         assert isinstance(lhs, DTensorType)
         assert isinstance(rhs, DTensorType)
         assert isinstance(result, DTensorType)
-        if not isinstance(lhs.element_type, (BFloat16Type, Float16Type)):
-            raise VerifyException("einsum supports bf16 or f16 inputs")
+        if not isinstance(lhs.element_type, (BFloat16Type, Float16Type, Float32Type)):
+            raise VerifyException("einsum supports bf16, f16, or f32 inputs")
         if lhs.element_type != rhs.element_type:
             raise VerifyException("einsum inputs must have the same element type")
         if not isinstance(self.accumulation_type, Float32Type):
