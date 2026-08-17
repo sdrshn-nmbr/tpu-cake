@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from tpu_cake.contracts import (
     CorrectnessResult,
+    KernelExperiment,
     ProfileExpectation,
     RunReceipt,
     RuntimeIdentity,
@@ -39,6 +40,14 @@ def test_profile_expectation_rejects_unknown_fields() -> None:
 
 def test_experiment_identity_is_stable() -> None:
     assert matmul_experiment().experiment_id == matmul_experiment().experiment_id
+
+
+def test_experiment_json_round_trips_without_serializing_derived_identity() -> None:
+    experiment = matmul_experiment()
+    encoded = experiment.model_dump_json(exclude_computed_fields=True)
+
+    assert "experiment_id" not in encoded
+    assert KernelExperiment.model_validate_json(encoded) == experiment
 
 
 def test_derived_metric_requires_formula() -> None:

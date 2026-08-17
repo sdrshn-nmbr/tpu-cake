@@ -124,7 +124,7 @@ def _render_workload(workload: str, output: Path | None) -> int:
 
 def _experiment(workload: str, output: Path | None) -> int:
     experiment = _WORKLOADS[workload][1]()
-    rendered = experiment.model_dump_json(indent=2) + "\n"
+    rendered = experiment.model_dump_json(indent=2, exclude_computed_fields=True) + "\n"
     if output is None:
         print(rendered, end="")
     else:

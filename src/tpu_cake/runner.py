@@ -297,7 +297,7 @@ def run_distributed_matmul(
         *pre_artifacts,
         _write_text(
             output_dir / "experiment.json",
-            experiment.model_dump_json(indent=2) + "\n",
+            experiment.model_dump_json(indent=2, exclude_computed_fields=True) + "\n",
             ArtifactRole.EXPERIMENT,
         ),
         _write_text(
