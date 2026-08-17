@@ -336,4 +336,10 @@ def validate_saved_pallas_plan(
     }
     if any(constants.get(name) != value for name, value in expected.items()):
         raise ValueError("SAVED_PALLAS_SOURCE_PLAN_MISMATCH")
-    return plan
+    name = constants.get("NAME")
+    if not isinstance(name, str):
+        raise TypeError("SAVED_PALLAS_SOURCE_PLAN_MISMATCH")
+    rendering_plan = replace(plan, name=name)
+    if rendering_plan.render_source() != pallas_path.read_text():
+        raise ValueError("SAVED_PALLAS_RENDERING_MISMATCH")
+    return rendering_plan

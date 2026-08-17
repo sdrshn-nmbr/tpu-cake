@@ -10,10 +10,11 @@ from xdsl.context import Context
 from xdsl.dialects.builtin import Builtin
 from xdsl.parser import Parser
 
-from tpu_cake.contracts import ProfileExpectation
+from tpu_cake.contracts import KernelExperiment, ProfileExpectation, RunReceipt
 from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
+from tpu_cake.receipt import validate_receipt
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
 from tpu_cake.search import MatmulSearchContract, run_matmul_search
@@ -67,6 +68,9 @@ def _parser() -> argparse.ArgumentParser:
     finalize = commands.add_parser("finalize-matmul-run")
     finalize.add_argument("run_root", type=Path)
     finalize.add_argument("--search-root", type=Path)
+
+    verify_bundle = commands.add_parser("verify-matmul-bundle")
+    verify_bundle.add_argument("run_root", type=Path)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -167,6 +171,18 @@ def main() -> None:
         )
         print(receipt.model_dump_json(indent=2))
         code = 0 if receipt.status.value == "passed" else 1
+    elif args.command == "verify-matmul-bundle":
+        root = args.run_root.resolve()
+        receipt = RunReceipt.model_validate_json((root / "receipt.json").read_text())
+        experiment = KernelExperiment.model_validate_json(
+            (root / "timing" / "experiment.json").read_text()
+        )
+        validate_receipt(receipt, experiment, root=root)
+        print(
+            f"MATMUL_BUNDLE_ACCEPTED status={receipt.status.value} "
+            f"artifacts={len(receipt.artifacts)} metrics={len(receipt.metrics)}"
+        )
+        code = 0
     elif args.command == "search-matmul":
         contract = MatmulSearchContract.model_validate_json(args.contract.read_text())
         result = run_matmul_search(args.output_dir, contract, interpret=args.interpret)
