@@ -1,6 +1,69 @@
 # TPU-cake
 
-TPU-cake describes TPU kernel schedules, checks them before execution, and keeps the evidence needed to compare them honestly.
+[CAKE](https://arxiv.org/pdf/2608.12629) uses AI agents to write, test, and improve GPU kernels. Its implementation is not open source, so TPU-cake does not copy it. The paper does describe a useful loop that translates well to TPUs:
+
+```text
+write a schedule
+→ reject invalid work
+→ test correctness
+→ run it on hardware
+→ keep measured improvements
+→ turn failures into better checks
+```
+
+TPU-cake applies that idea to Pallas and Mosaic. It describes TPU schedules, checks them before execution, and keeps the evidence needed to compare them honestly.
+
+## What MatX adds
+
+[MatX](https://matx.com/research) follows a similar way of working across model design, software, and hardware:
+
+- Estimate compute and data movement before building.
+- Make memory, parallelism, and hardware choices explicit.
+- Choose useful specialization instead of blindly maximizing fusion.
+- Keep the workload and correctness rules outside generated code.
+- Use controlled experiments and real hardware measurements.
+- Turn repeated failures into checks, tests, or clearer limits.
+
+TPU-cake began by combining CAKE's search loop with this MatX discipline and the public TPU tools already available in JAX, OpenXLA, and Google Cloud.
+
+## What exists
+
+- A custom xDSL dialect for TPU schedules.
+- Typed shapes, sharding, layout, memory placement, ownership, and lifetime.
+- Checks for DMA use, synchronization, operation shapes, and live memory.
+- A small Python frontend that emits canonical xDSL.
+- Immutable workload, experiment, metric, evidence, and run-receipt contracts.
+- Matmul and Inkling ragged paged attention examples.
+- An XProf reader that rejects captures without the intended TPU work.
+
+xDSL is the schedule format. Pydantic is used only for inputs, evidence, and receipts. Pallas and Mosaic are future lowering targets.
+
+## Try it
+
+```bash
+uv sync
+uv run pytest
+
+uv run tpu-cake verify-schedule examples/matmul.mlir
+uv run tpu-cake render-workload inkling-rpa
+uv run tpu-cake experiment inkling-rpa
+uv run tpu-cake inspect-profile CAPTURE_ROOT \
+  --contract contracts/inkling-steady-decode.toml
+```
+
+## Layout
+
+- `src/tpu_cake/dialects/`: canonical TPU schedule language and checks.
+- `src/tpu_cake/frontend.py`: Python schedule builder.
+- `src/tpu_cake/workloads/`: reference workloads and schedules.
+- `contracts/`: experiment and profile contracts.
+- `examples/`: generated xDSL schedules.
+- `evidence/`: normalized profile results.
+- `matx/` and `ecosystem/`: pinned research material.
+
+## Current boundary
+
+The schedule language, contracts, examples, and profile checks work. Pallas lowering, cost prediction, and automated schedule search are not implemented yet.
 
 ## Ideas and source material
 
@@ -28,56 +91,7 @@ TPU-cake describes TPU kernel schedules, checks them before execution, and keeps
 
 Pinned copies, transcripts, hashes, and exact source URLs are stored under `matx/` and `ecosystem/`.
 
-## What exists
-
-- A custom xDSL dialect for TPU schedules.
-- Typed shapes, sharding, layout, memory placement, ownership, and lifetime.
-- Checks for DMA use, synchronization, operation shapes, and live memory.
-- A small Python frontend that emits canonical xDSL.
-- Immutable workload, experiment, metric, evidence, and run-receipt contracts.
-- Matmul and Inkling ragged paged attention examples.
-- An XProf reader that rejects captures without the intended TPU work.
-
-xDSL is the schedule format. Pydantic is used only for inputs, evidence, and receipts. Pallas and Mosaic are future lowering targets.
-
-## Try it
-
-```bash
-uv sync
-uv run pytest
-
-uv run tpu-cake verify-schedule examples/matmul.mlir
-uv run tpu-cake render-workload inkling-rpa
-uv run tpu-cake experiment inkling-rpa
-uv run tpu-cake inspect-profile CAPTURE_ROOT \
-  --contract contracts/inkling-steady-decode.toml
-```
-
-## Project rules
-
-- Describe important hardware choices explicitly.
-- Reject invalid schedules before using a TPU.
-- Estimate cost before compiling.
-- Compare candidates with the same inputs and conditions.
-- Keep timing traces separate from hardware-counter captures.
-- Treat real TPU measurements as the final result.
-- Turn repeated failures into checks or regression tests.
-
-## Layout
-
-- `src/tpu_cake/dialects/`: canonical TPU schedule language and checks.
-- `src/tpu_cake/frontend.py`: Python schedule builder.
-- `src/tpu_cake/workloads/`: reference workloads and schedules.
-- `contracts/`: experiment and profile contracts.
-- `examples/`: generated xDSL schedules.
-- `evidence/`: normalized profile results.
-- `matx/` and `ecosystem/`: pinned research material.
-
-## Current boundary
-
-The schedule language, contracts, examples, and profile checks work. Pallas lowering, cost prediction, and automated schedule search are not implemented yet.
-
-Refresh the research corpus with:
+Refresh them with:
 
 ```bash
 uv run collect_matx.py
