@@ -8,6 +8,7 @@ from tpu_cake.contracts import (
     EvidenceProfile,
 )
 from tpu_cake.seqax_bundle import (
+    _canonical_profile_assessment,
     _counter_experiment,
     _expected_result_role,
     _trusted_experiment,
@@ -82,3 +83,16 @@ def test_seqax_reference_uses_the_canonical_cpu_backend(monkeypatch) -> None:
 
     assert observed_platforms == ["cpu"]
     np.testing.assert_array_equal(result, np.asarray([0.123456], dtype=np.float32))
+
+
+def test_seqax_profile_assessment_canonicalizes_set_valued_program_ids() -> None:
+    first = {
+        "timing_trace": {"capture": {"timed_program_ids": ["2", "1"]}},
+        "counter_trace": {"capture": {"timed_program_ids": ["1", "2"]}},
+    }
+    second = {
+        "timing_trace": {"capture": {"timed_program_ids": ["1", "2"]}},
+        "counter_trace": {"capture": {"timed_program_ids": ["2", "1"]}},
+    }
+
+    assert _canonical_profile_assessment(first) == _canonical_profile_assessment(second)

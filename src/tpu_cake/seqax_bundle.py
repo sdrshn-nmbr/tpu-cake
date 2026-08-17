@@ -77,6 +77,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _canonical_profile_assessment(value: dict[str, object]) -> dict[str, object]:
+    normalized = json.loads(json.dumps(value))
+    for key in ("timing_trace", "counter_trace"):
+        assessment = normalized.get(key)
+        if not isinstance(assessment, dict):
+            continue
+        capture = assessment.get("capture")
+        if not isinstance(capture, dict):
+            continue
+        program_ids = capture.get("timed_program_ids")
+        if isinstance(program_ids, list):
+            capture["timed_program_ids"] = sorted(program_ids)
+    return normalized
+
+
 def _reference(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
     path = path.resolve()
     return ArtifactReference(
@@ -891,15 +906,18 @@ def build_seqax_forward_receipt(root: Path, *, write_receipt: bool = True) -> Ru
     _validate_capture_topology(trace_assessment, counters=False)
     _validate_capture_topology(counter_assessment, counters=True)
     assessment_path = root / "profile_assessment.json"
+    assessment_payload = _canonical_profile_assessment(
+        _relative_json(
+            {
+                "timing_trace": trace_assessment.model_dump(mode="json"),
+                "counter_trace": counter_assessment.model_dump(mode="json"),
+            },
+            root,
+        )
+    )
     assessment_path.write_text(
         json.dumps(
-            _relative_json(
-                {
-                    "timing_trace": trace_assessment.model_dump(mode="json"),
-                    "counter_trace": counter_assessment.model_dump(mode="json"),
-                },
-                root,
-            ),
+            assessment_payload,
             indent=2,
             sort_keys=True,
         )
@@ -1030,14 +1048,19 @@ def validate_seqax_forward_receipt(receipt: RunReceipt, *, root: Path) -> None:
         for artifact in receipt.artifacts
         if artifact.role is ArtifactRole.PROFILE_ASSESSMENT
     )
-    expected_assessment = _relative_json(
-        {
-            "timing_trace": trace_assessment.model_dump(mode="json"),
-            "counter_trace": counter_assessment.model_dump(mode="json"),
-        },
-        root,
+    expected_assessment = _canonical_profile_assessment(
+        _relative_json(
+            {
+                "timing_trace": trace_assessment.model_dump(mode="json"),
+                "counter_trace": counter_assessment.model_dump(mode="json"),
+            },
+            root,
+        )
     )
-    if json.loads((root / assessment.path).read_text()) != expected_assessment:
+    saved_assessment = _canonical_profile_assessment(
+        json.loads((root / assessment.path).read_text())
+    )
+    if saved_assessment != expected_assessment:
         raise ValueError("SEQAX_PROFILE_ASSESSMENT_REPLAY_MISMATCH")
     expected_metrics = _metrics(
         root,
