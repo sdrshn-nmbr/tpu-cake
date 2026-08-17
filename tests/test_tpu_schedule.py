@@ -409,6 +409,26 @@ def test_partial_remote_dma_does_not_initialize_unwritten_devices() -> None:
         )
 
 
+def test_remote_dma_rejects_an_implicit_logical_dimension_rename() -> None:
+    source = AllocOp(
+        buffer((8, 8), "X Y", bf16, memory=MemorySpace.VMEM).to_type(),
+        "source",
+    )
+    destination = AllocOp(
+        buffer((8, 8), "A B", bf16, memory=MemorySpace.VMEM).to_type(),
+        "destination",
+    )
+
+    with pytest.raises(VerifyException, match="cannot rename logical dimensions"):
+        RemoteDmaStartOp(
+            source,
+            destination,
+            SemaphoreAllocOp(),
+            stage=0,
+            transfer_plan="shift:t:+1",
+        ).verify_()
+
+
 def test_remote_dma_rejects_an_unknown_transfer_plan() -> None:
     module = _remote_dma_module(transfers=1, remote_dma_engines=1)
     transfer = next(

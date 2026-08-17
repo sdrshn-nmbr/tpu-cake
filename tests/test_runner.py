@@ -20,6 +20,7 @@ from tpu_cake.contracts import (
 from tpu_cake.ledger import ExperimentLedger, RunState
 from tpu_cake.receipt import (
     _source_identity,
+    _validate_cost_model,
     _validate_invocation_schemas,
     _validate_saved_matmul_phase,
 )
@@ -244,7 +245,18 @@ def test_saved_run_replay_recomputes_correctness_and_binds_every_artifact(tmp_pa
         phases=(),
     )
 
-    _validate_saved_matmul_phase(root, receipt, experiment, "timing", result)
+    _, _, saved_plan = _validate_saved_matmul_phase(
+        root, receipt, experiment, "timing", result
+    )
+    _validate_cost_model(root, receipt, saved_plan)
+    cost_input = output / "cost_model_input.json"
+    original_cost_input = cost_input.read_text()
+    forged_cost_input = json.loads(original_cost_input)
+    forged_cost_input["schedule_sha256"] = "0" * 64
+    cost_input.write_text(json.dumps(forged_cost_input))
+    with pytest.raises(ValueError, match="INPUT_DOES_NOT_MATCH_SAVED_PLAN"):
+        _validate_cost_model(root, receipt, saved_plan)
+    cost_input.write_text(original_cost_input)
     forged = result.model_copy(update={"maximum_absolute_error": 0.5})
     with pytest.raises(ValueError, match="REPORTED_ERROR_MISMATCH"):
         _validate_saved_matmul_phase(root, receipt, experiment, "timing", forged)

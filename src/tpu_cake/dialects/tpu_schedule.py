@@ -856,6 +856,8 @@ class RemoteDmaStartOp(IRDLOperation):
             _check_live(buffer, self.stage.data)
         if source.storage != destination.storage:
             raise VerifyException("remote DMA source and destination storage must match")
+        if source.shape != destination.shape:
+            raise VerifyException("remote DMA cannot rename logical dimensions")
         if source.sharding != destination.sharding or source.layout != destination.layout:
             raise VerifyException("remote DMA must preserve sharding and layout")
         if not self.transfer_plan.data:

@@ -22,6 +22,7 @@ from tpu_cake.cost_model import (
     CostModelReport,
     MatmulCostModelInput,
     estimate_distributed_matmul_input,
+    tpu7x_tensorcore_rates,
 )
 from tpu_cake.identity import (
     LEGACY_SEMANTIC_IDENTITY_SCHEMA,
@@ -30,7 +31,11 @@ from tpu_cake.identity import (
     semantic_sha256,
 )
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
-from tpu_cake.pallas_lowering import PALLAS_EXECUTION_SCHEMA, validate_saved_pallas_plan
+from tpu_cake.pallas_lowering import (
+    PALLAS_EXECUTION_SCHEMA,
+    PallasMatmulPlan,
+    validate_saved_pallas_plan,
+)
 from tpu_cake.receipt_metrics import build_receipt_metrics
 from tpu_cake.runner import MatmulRunResult, RunMode, validate_profiler_contract
 from tpu_cake.search import (
@@ -193,7 +198,7 @@ def _validate_saved_matmul_phase(
     experiment: KernelExperiment,
     phase: str,
     result: MatmulRunResult,
-) -> tuple[float, float]:
+) -> tuple[float, float, PallasMatmulPlan]:
     artifacts = _validate_result_artifact_bindings(root, receipt, phase, result)
     required = {
         "invocation.json",
@@ -428,10 +433,14 @@ def _validate_saved_matmul_phase(
         event.payload_sha256 for event in history
     ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
         raise ValueError(f"RUN_LEDGER_EVIDENCE_MISMATCH phase={phase}")
-    return maximum_absolute_error, maximum_relative_error
+    return maximum_absolute_error, maximum_relative_error, saved_plan
 
 
-def _validate_cost_model(root: Path, receipt: RunReceipt) -> CostModelReport:
+def _validate_cost_model(
+    root: Path,
+    receipt: RunReceipt,
+    saved_plan: PallasMatmulPlan,
+) -> CostModelReport:
     input_artifact = _phase_artifact(
         receipt, ArtifactRole.COST_MODEL_INPUT, "timing", name="cost_model_input.json"
     )
@@ -441,6 +450,20 @@ def _validate_cost_model(root: Path, receipt: RunReceipt) -> CostModelReport:
     input_path = root / input_artifact.path
     report_path = root / report_artifact.path
     model_input = MatmulCostModelInput.model_validate_json(input_path.read_text())
+    expected_input = MatmulCostModelInput(
+        schedule_sha256=saved_plan.schedule_sha256,
+        mesh_size=saved_plan.mesh_size,
+        m=saved_plan.global_lhs_shape[0],
+        k=saved_plan.global_lhs_shape[1],
+        n=saved_plan.global_rhs_shape[1],
+        tile_m=saved_plan.tile_m,
+        tile_k=saved_plan.tile_k,
+        tile_n=saved_plan.tile_n,
+        collective_link_bandwidths=saved_plan.collective_link_bandwidths,
+        hardware=tpu7x_tensorcore_rates(),
+    )
+    if model_input != expected_input:
+        raise ValueError("COST_MODEL_INPUT_DOES_NOT_MATCH_SAVED_PLAN")
     report = CostModelReport.model_validate_json(report_path.read_text())
     sources = {source for metric in report.metrics for source in metric.sources}
     if len(sources) != 1:
@@ -539,13 +562,20 @@ def _validate_distributed_matmul_receipt(
     )
     results: list[MatmulRunResult] = []
     errors: list[tuple[float, float]] = []
+    saved_plans: list[PallasMatmulPlan] = []
     for phase, role, mode in result_specs:
         artifact = _phase_artifact(receipt, role, phase, name="result.json")
         result = MatmulRunResult.model_validate_json((root / artifact.path).read_text())
         if result.mode is not mode:
             raise ValueError(f"RUN_MODE_MISMATCH phase={phase}")
-        errors.append(_validate_saved_matmul_phase(root, receipt, experiment, phase, result))
+        maximum_absolute, maximum_relative, saved_plan = _validate_saved_matmul_phase(
+            root, receipt, experiment, phase, result
+        )
+        errors.append((maximum_absolute, maximum_relative))
+        saved_plans.append(saved_plan)
         results.append(result)
+    if any(plan != saved_plans[0] for plan in saved_plans[1:]):
+        raise ValueError("RUN_PHASE_LOWERED_PLANS_DO_NOT_MATCH")
     source_identities = {
         _source_identity(
             root
@@ -628,7 +658,7 @@ def _validate_distributed_matmul_receipt(
     if saved_assessment != expected_assessment:
         raise ValueError("PROFILE_ASSESSMENT_DOES_NOT_MATCH_RAW_CAPTURE")
 
-    cost_report = _validate_cost_model(root, receipt)
+    cost_report = _validate_cost_model(root, receipt, saved_plans[0])
     _validate_roofline(root, receipt, results[0], cost_report)
     expected_metrics = build_receipt_metrics(
         root,
