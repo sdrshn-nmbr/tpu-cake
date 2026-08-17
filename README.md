@@ -1,6 +1,6 @@
 # TPU-cake
 
-[CAKE](https://arxiv.org/pdf/2608.12629) uses AI agents to write, test, and improve GPU kernels. Its implementation is not open source, so TPU-cake does not copy it. The paper does describe a useful loop that translates well to TPUs:
+[CAKE](https://arxiv.org/pdf/2608.12629) uses AI agents to write, test, and improve GPU kernels. Its implementation is not open source, but since I had experience from recent experiments with analyzing HLO dumps and XProf objects while writing Pallas kernels for TPUs, I thought it would be cool to port the idea to the TPU world. The CAKE paper describes a useful loop that translates well to TPUs:
 
 ```text
 write a schedule
@@ -13,9 +13,9 @@ write a schedule
 
 TPU-cake applies that idea to Pallas and Mosaic. It describes TPU schedules, checks them before execution, and keeps the evidence needed to compare them honestly.
 
-## What MatX adds
+## How MatX inspired me
 
-[MatX](https://matx.com/research) follows a similar way of working across model design, software, and hardware:
+[MatX](https://matx.com/research) follows a similar way of model x software x hardware co-design:
 
 - Estimate compute and data movement before building.
 - Make memory, parallelism, and hardware choices explicit.
@@ -24,7 +24,7 @@ TPU-cake applies that idea to Pallas and Mosaic. It describes TPU schedules, che
 - Use controlled experiments and real hardware measurements.
 - Turn repeated failures into checks, tests, or clearer limits.
 
-TPU-cake began by combining CAKE's search loop with this MatX discipline and the public TPU tools already available in JAX, OpenXLA, and Google Cloud.
+TPU-cake began by combining CAKE's search loop with this MatX discipline (as seen in repos like https://github.com/MatX-inc/seqax and the public TPU tools already available in JAX, OpenXLA, Tokamax, etc.
 
 ## What exists
 
