@@ -32,7 +32,8 @@ def _capture(*, rpa_markers: int, forbidden_hits: int) -> CaptureEvidence:
             hbm_read_names=1,
             hbm_write_names=1,
             cycle_names=1,
-            snapshots_per_tpu_core={"0": 2},
+            periodic_counter_names=("COUNT_MXU_BUSY_0",),
+            periodic_samples_per_tpu_core={"0": 2},
         ),
         programs=(
             ProgramEvidence(
@@ -89,6 +90,8 @@ def test_normalized_metrics_do_not_invent_counter_rates() -> None:
         "hbm_read_counter_name_count",
         "hbm_write_counter_name_count",
         "cycle_counter_name_count",
+        "periodic_counter_name_count",
+        "minimum_periodic_samples_per_tpu_core",
         "summed_timed_hlo_self_time",
     }
     assert not any("bytes_per_second" in metric.name or "mfu" in metric.name for metric in metrics)
@@ -152,7 +155,7 @@ def test_counter_rates_are_fail_closed_when_the_contract_requires_them() -> None
     one_snapshot = capture.model_copy(
         update={
             "counters": capture.counters.model_copy(
-                update={"snapshots_per_tpu_core": {"0": 1}}
+                update={"periodic_samples_per_tpu_core": {"0": 1}}
             )
         }
     )

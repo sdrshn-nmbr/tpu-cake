@@ -83,7 +83,8 @@ def _profile_planes(xplane: Path) -> tuple[tuple[PlaneEvidence, ...], CounterEvi
     hbm_read_names: set[str] = set()
     hbm_write_names: set[str] = set()
     cycle_names: set[str] = set()
-    snapshots: dict[str, set[float]] = defaultdict(set)
+    periodic_counter_names: set[str] = set()
+    periodic_samples: dict[str, set[float]] = defaultdict(set)
     try:
         for plane in profile.planes:
             plane_stats = dict(plane.stats)
@@ -94,18 +95,20 @@ def _profile_planes(xplane: Path) -> tuple[tuple[PlaneEvidence, ...], CounterEvi
                 event_count += len(line.events)
                 if line.name == "Tensor Core":
                     tensor_core_events += len(line.events)
+                if core_match and line.name == "_counters_":
+                    sample_points = {event.start_ns for event in line.events}
+                    if len(sample_points) >= 2:
+                        periodic_samples[core_match.group(1)].update(sample_points)
+                        periodic_counter_names.update(event.name for event in line.events)
                 if core_match and line.name.startswith("counters_"):
                     for event in line.events:
                         upper_name = event.name.upper()
                         if "RD_RSP_BEAT_FROM_HBM" in upper_name:
                             hbm_read_names.add(event.name)
-                            snapshots[core_match.group(1)].add(event.start_ns)
                         if "WR_REQ_BEAT_TO_HBM" in upper_name:
                             hbm_write_names.add(event.name)
-                            snapshots[core_match.group(1)].add(event.start_ns)
                         if "CYCLE_COUNT_WINDOW" in upper_name:
                             cycle_names.add(event.name)
-                            snapshots[core_match.group(1)].add(event.start_ns)
             planes.append(
                 PlaneEvidence(
                     name=plane.name,
@@ -123,8 +126,9 @@ def _profile_planes(xplane: Path) -> tuple[tuple[PlaneEvidence, ...], CounterEvi
             hbm_read_names=len(hbm_read_names),
             hbm_write_names=len(hbm_write_names),
             cycle_names=len(cycle_names),
-            snapshots_per_tpu_core={
-                core: len(points) for core, points in sorted(snapshots.items())
+            periodic_counter_names=tuple(sorted(periodic_counter_names)),
+            periodic_samples_per_tpu_core={
+                core: len(points) for core, points in sorted(periodic_samples.items())
             },
         ),
     )
@@ -250,7 +254,7 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
                 )
             )
 
-    counter_planes = len(capture.counters.snapshots_per_tpu_core)
+    counter_planes = len(capture.counters.periodic_samples_per_tpu_core)
     if counter_planes < expectation.minimum_counter_device_planes:
         findings.append(
             Finding(
@@ -417,6 +421,18 @@ def capture_metrics(capture: CaptureEvidence) -> tuple[Metric, ...]:
             capture.counters.cycle_names,
             "cycle counter names",
             "count(distinct counter names containing CYCLE_COUNT_WINDOW)",
+        ),
+        count_metric(
+            "periodic_counter_name_count",
+            len(capture.counters.periodic_counter_names),
+            "periodic counter names",
+            "count(distinct names sampled on periodic TPU counter lines)",
+        ),
+        count_metric(
+            "minimum_periodic_samples_per_tpu_core",
+            min(capture.counters.periodic_samples_per_tpu_core.values(), default=0),
+            "periodic sample timestamps",
+            "min(count(distinct periodic timestamps) per TPU core)",
         ),
         Metric(
             name="summed_timed_hlo_self_time",

@@ -38,13 +38,16 @@ class CounterEvidence(BaseModel):
     hbm_read_names: int = Field(ge=0)
     hbm_write_names: int = Field(ge=0)
     cycle_names: int = Field(ge=0)
-    snapshots_per_tpu_core: dict[str, int]
+    periodic_counter_names: tuple[str, ...]
+    periodic_samples_per_tpu_core: dict[str, int]
 
     @computed_field
     @property
     def rates_derivable(self) -> bool:
-        return bool(self.snapshots_per_tpu_core) and all(
-            snapshots >= 2 for snapshots in self.snapshots_per_tpu_core.values()
+        return bool(self.periodic_counter_names) and bool(
+            self.periodic_samples_per_tpu_core
+        ) and all(
+            samples >= 2 for samples in self.periodic_samples_per_tpu_core.values()
         )
 
 
