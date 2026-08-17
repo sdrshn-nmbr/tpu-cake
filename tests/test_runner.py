@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
 import sys
 
+import pytest
+
 from tpu_cake.ledger import ExperimentLedger, RunState
-from tpu_cake.runner import RunMode, _profiler_contract
+from tpu_cake.runner import RunMode, _profiler_contract, validate_profiler_contract
 
 
 def test_counter_profiler_contract_retains_counter_only_options() -> None:
@@ -17,6 +20,28 @@ def test_counter_profiler_contract_retains_counter_only_options() -> None:
     assert counters["tpu_enable_periodic_counter_sampling"] is True
     assert counters["num_tensor_cores_to_trace_per_device"] == 1
     assert "tpu_tc_perf_counter_sampling_options" in counters
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "tpu_enable_periodic_counter_sampling",
+        "tpu_tc_perf_counter_sampling_options",
+        "num_tensor_cores_to_trace_per_device",
+    ),
+)
+def test_counter_profiler_contract_mutations_fail_closed(field: str) -> None:
+    contract = copy.deepcopy(_profiler_contract(RunMode.COUNTERS))
+    del contract["advanced_configuration"][field]
+    with pytest.raises(ValueError, match="COUNTER_PROFILER_FIELDS_MISSING"):
+        validate_profiler_contract(RunMode.COUNTERS, contract)
+
+
+def test_trace_contract_rejects_counter_configuration_leakage() -> None:
+    contract = copy.deepcopy(_profiler_contract(RunMode.TRACE))
+    contract["advanced_configuration"]["tpu_enable_periodic_counter_sampling"] = True
+    with pytest.raises(ValueError, match="MUST_NOT_ENABLE_PERIODIC_COUNTERS"):
+        validate_profiler_contract(RunMode.TRACE, contract)
 
 
 def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:

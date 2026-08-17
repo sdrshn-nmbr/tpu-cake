@@ -142,7 +142,7 @@ def _profiler_options(mode: RunMode) -> jax.profiler.ProfileOptions:
 
 def _profiler_contract(mode: RunMode) -> dict[str, object]:
     options = _profiler_options(mode)
-    return {
+    contract = {
         "mode": mode.value,
         "raise_error_on_start_failure": options.raise_error_on_start_failure,
         "enable_hlo_proto": options.enable_hlo_proto,
@@ -151,6 +151,42 @@ def _profiler_contract(mode: RunMode) -> dict[str, object]:
         "advanced_configuration": dict(options.advanced_configuration),
         "libtpu_init_args": os.environ.get("LIBTPU_INIT_ARGS"),
     }
+    validate_profiler_contract(mode, contract)
+    return contract
+
+
+def validate_profiler_contract(mode: RunMode, contract: dict[str, object]) -> None:
+    if contract.get("mode") != mode.value:
+        raise ValueError("PROFILER_CONTRACT_MODE_MISMATCH")
+    if contract.get("raise_error_on_start_failure") is not True:
+        raise ValueError("PROFILER_START_FAILURES_MUST_RAISE")
+    if contract.get("enable_hlo_proto") is not True:
+        raise ValueError("PROFILER_HLO_CAPTURE_REQUIRED")
+    advanced = contract.get("advanced_configuration")
+    if not isinstance(advanced, dict):
+        raise TypeError("PROFILER_ADVANCED_CONFIGURATION_REQUIRED")
+    chips = advanced.get("tpu_num_chips_to_profile_per_task")
+    if not isinstance(chips, int) or isinstance(chips, bool) or chips <= 0:
+        raise ValueError("PROFILER_CHIP_COUNT_INVALID")
+    counter_fields = {
+        "tpu_enable_periodic_counter_sampling",
+        "tpu_tc_perf_counter_sampling_options",
+        "num_tensor_cores_to_trace_per_device",
+    }
+    if mode is RunMode.COUNTERS:
+        missing = counter_fields - advanced.keys()
+        if missing:
+            raise ValueError(f"COUNTER_PROFILER_FIELDS_MISSING fields={sorted(missing)}")
+        if advanced["tpu_enable_periodic_counter_sampling"] is not True:
+            raise ValueError("COUNTER_PERIODIC_SAMPLING_REQUIRED")
+        sampling = advanced["tpu_tc_perf_counter_sampling_options"]
+        if not isinstance(sampling, str) or "indices:" not in sampling:
+            raise ValueError("COUNTER_SELECTION_INVALID")
+        cores = advanced["num_tensor_cores_to_trace_per_device"]
+        if not isinstance(cores, int) or isinstance(cores, bool) or cores <= 0:
+            raise ValueError("COUNTER_CORE_COUNT_INVALID")
+    elif counter_fields & advanced.keys():
+        raise ValueError("TIMING_TRACE_MUST_NOT_ENABLE_PERIODIC_COUNTERS")
 
 
 def _source_state(repo_root: Path, output_dir: Path) -> tuple[ArtifactReference, ...]:

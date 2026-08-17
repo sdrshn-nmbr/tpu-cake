@@ -205,3 +205,29 @@ def test_receipt_rejects_a_phase_with_only_generic_role_coverage(tmp_path) -> No
 
     with pytest.raises(ValidationError, match="phase trace is missing roles"):
         RunReceipt.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("phase_name", "role"),
+    tuple(
+        (phase.value, role.value)
+        for phase, roles in PHASE_REQUIRED_ROLES.items()
+        for role in roles
+    ),
+)
+def test_every_required_phase_artifact_is_semantically_bound(
+    tmp_path, phase_name: str, role: str
+) -> None:
+    receipt, _ = _complete_receipt(tmp_path / f"{phase_name}-{role}")
+    payload = receipt.model_dump(mode="json")
+    phase = next(item for item in payload["phases"] if item["name"] == phase_name)
+    removed = next(
+        artifact
+        for artifact in payload["artifacts"]
+        if artifact["path"] in phase["artifact_paths"] and artifact["role"] == role
+    )
+    phase["artifact_paths"].remove(removed["path"])
+    other = next(item for item in payload["phases"] if item["name"] != phase_name)
+    other["artifact_paths"].append(removed["path"])
+    with pytest.raises(ValidationError, match=f"phase {phase_name} is missing roles"):
+        RunReceipt.model_validate(payload)
