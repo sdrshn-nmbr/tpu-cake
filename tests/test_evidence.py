@@ -22,10 +22,13 @@ def test_metric_source_relocation_uses_content_identity(tmp_path) -> None:
     artifact = tmp_path / "timing" / "cost_model_input.json"
     artifact.parent.mkdir()
     artifact.write_text("evidence\n")
+    duplicate = tmp_path / "counters" / artifact.name
+    duplicate.parent.mkdir()
+    duplicate.write_text("evidence\n")
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     source = MetricSource(
         artifact_sha256=digest,
-        artifact_path="runs/old-host/timing/cost_model_input.json",
+        artifact_path=f"runs/{tmp_path.name}/timing/cost_model_input.json",
         tool="tpu-cake",
         field="cost",
     )

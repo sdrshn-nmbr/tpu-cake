@@ -31,10 +31,14 @@ def _sha256(path: Path) -> str:
 
 def _relocate_metric_source(root: Path, source: MetricSource) -> MetricSource:
     declared = Path(source.artifact_path)
-    direct = declared if declared.is_absolute() else root / declared
-    if direct.is_file() and _sha256(direct) == source.artifact_sha256:
-        path = direct.resolve().relative_to(root.resolve())
-        return source.model_copy(update={"artifact_path": str(path)})
+    candidates = [declared if declared.is_absolute() else root / declared]
+    root_markers = [index for index, part in enumerate(declared.parts) if part == root.name]
+    if root_markers:
+        candidates.append(root.joinpath(*declared.parts[root_markers[-1] + 1 :]))
+    for candidate in candidates:
+        if candidate.is_file() and _sha256(candidate) == source.artifact_sha256:
+            path = candidate.resolve().relative_to(root.resolve())
+            return source.model_copy(update={"artifact_path": str(path)})
     matches = [
         candidate
         for candidate in root.rglob(declared.name)
