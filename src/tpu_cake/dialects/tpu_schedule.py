@@ -595,6 +595,10 @@ class KernelOp(IRDLOperation):
     smem_capacity_bytes = prop_def(IntAttr)
     mesh_axis_names = prop_def(ArrayAttr[StringAttr])
     mesh_axis_sizes = prop_def(ArrayAttr[IntAttr])
+    dma_engine_count = prop_def(IntAttr)
+    mxu_count = prop_def(IntAttr)
+    vector_unit_count = prop_def(IntAttr)
+    ici_link_count = prop_def(IntAttr)
     traits = traits_def(IsolatedFromAbove())
 
     def __init__(
@@ -606,6 +610,11 @@ class KernelOp(IRDLOperation):
         mesh_axis_names: ArrayAttr[StringAttr],
         mesh_axis_sizes: ArrayAttr[IntAttr],
         body: Region,
+        *,
+        dma_engine_count: int = 2,
+        mxu_count: int = 1,
+        vector_unit_count: int = 1,
+        ici_link_count: int = 1,
     ):
         super().__init__(
             properties={
@@ -619,6 +628,10 @@ class KernelOp(IRDLOperation):
                 else smem_capacity_bytes,
                 "mesh_axis_names": mesh_axis_names,
                 "mesh_axis_sizes": mesh_axis_sizes,
+                "dma_engine_count": IntAttr(dma_engine_count),
+                "mxu_count": IntAttr(mxu_count),
+                "vector_unit_count": IntAttr(vector_unit_count),
+                "ici_link_count": IntAttr(ici_link_count),
             },
             regions=[body],
         )
@@ -633,6 +646,14 @@ class KernelOp(IRDLOperation):
             raise VerifyException("kernel mesh axes must be unique and canonically ordered")
         if any(size <= 0 for size in mesh_sizes):
             raise VerifyException("kernel mesh axis sizes must be positive")
+        resource_capacities = {
+            "DMA": self.dma_engine_count.data,
+            "MXU": self.mxu_count.data,
+            "vector": self.vector_unit_count.data,
+            "ICI": self.ici_link_count.data,
+        }
+        if any(capacity <= 0 for capacity in resource_capacities.values()):
+            raise VerifyException("kernel hardware resource capacities must be positive")
         mesh = dict(zip(mesh_names, mesh_sizes, strict=True))
         if not isinstance(block.last_op, YieldOp):
             raise VerifyException("kernel must end with tpu_schedule.yield")
@@ -644,6 +665,22 @@ class KernelOp(IRDLOperation):
         buffers: list[BufferType] = []
         storage_buffers: list[BufferType] = []
         views_by_base: dict[SSAValue, list[ViewOp]] = {}
+        initialized: set[SSAValue] = set(block.args)
+        pending_dma_destinations: dict[Operation, SSAValue] = {}
+
+        def root(value: SSAValue) -> SSAValue:
+            while isinstance(value.owner, ViewOp):
+                value = value.owner.base
+            return value
+
+        def require_initialized(value: SSAValue, operation: Operation) -> None:
+            base = root(value)
+            if base not in initialized:
+                raise VerifyException(
+                    f"{operation.name} reads a buffer before its producing operation completes"
+                )
+            if base in pending_dma_destinations.values():
+                raise VerifyException(f"{operation.name} reads a buffer while DMA is in flight")
 
         for argument in block.args:
             if not isinstance(argument.type, BufferType):
@@ -679,6 +716,7 @@ class KernelOp(IRDLOperation):
                         )
                 views_by_base[base].append(operation)
             if isinstance(operation, DmaStartOp):
+                require_initialized(operation.source, operation)
                 semaphore_owner = operation.semaphore.owner
                 if semaphore_owner in in_flight:
                     raise VerifyException("semaphore reused before its DMA was waited on")
@@ -688,11 +726,19 @@ class KernelOp(IRDLOperation):
                     raise VerifyException("every DMA token must have exactly one DMA wait")
                 if positions[uses[0].operation] <= positions[operation]:
                     raise VerifyException("DMA wait must occur after DMA start")
+                pending_dma_destinations[semaphore_owner] = root(operation.destination)
             if isinstance(operation, DmaWaitOp):
                 start = operation.token.owner
                 assert isinstance(start, DmaStartOp)
                 in_flight.pop(start.semaphore.owner, None)
+                destination = pending_dma_destinations.pop(start.semaphore.owner)
+                initialized.add(destination)
+            if isinstance(operation, MxuMatmulOp):
+                require_initialized(operation.lhs, operation)
+                require_initialized(operation.rhs, operation)
+                initialized.add(root(operation.accumulator))
             if isinstance(operation, CollectiveReduceScatterOp):
+                require_initialized(operation.source, operation)
                 axis = operation.mesh_axis.data
                 if axis not in mesh:
                     raise VerifyException(f"reduce-scatter references unknown mesh axis {axis}")
@@ -700,6 +746,18 @@ class KernelOp(IRDLOperation):
                     raise VerifyException(
                         "reduce-scatter group size must match its kernel mesh axis"
                     )
+                initialized.add(root(operation.destination))
+            if isinstance(operation, RaggedPagedAttentionOp):
+                for value in (
+                    operation.query,
+                    operation.key_cache,
+                    operation.value_cache,
+                    operation.page_table,
+                    operation.sequence_lengths,
+                    operation.bias,
+                ):
+                    require_initialized(value, operation)
+                initialized.add(root(operation.output))
 
         for buffer in buffers:
             buffer.verify()
@@ -733,6 +791,36 @@ class KernelOp(IRDLOperation):
         ]
         max_stage = max((_stage(operation) or 0 for operation in operations), default=0)
         for stage in range(max_stage + 1):
+            active_dma = sum(
+                start.stage.data <= stage <= wait.operation.stage.data
+                for start in (op for op in operations if isinstance(op, DmaStartOp))
+                for wait in start.token.uses
+                if isinstance(wait.operation, DmaWaitOp)
+            )
+            mxu_uses = sum(
+                isinstance(operation, (MxuMatmulOp, RaggedPagedAttentionOp))
+                and operation.stage.data == stage
+                for operation in operations
+            )
+            ici_uses = sum(
+                isinstance(operation, CollectiveReduceScatterOp)
+                and operation.stage.data == stage
+                for operation in operations
+            )
+            if active_dma > self.dma_engine_count.data:
+                raise VerifyException(
+                    f"DMA engine capacity exceeded at stage {stage}: "
+                    f"{active_dma} > {self.dma_engine_count.data}"
+                )
+            if mxu_uses > self.mxu_count.data:
+                raise VerifyException(
+                    f"MXU capacity exceeded at stage {stage}: {mxu_uses} > {self.mxu_count.data}"
+                )
+            if ici_uses > self.ici_link_count.data:
+                raise VerifyException(
+                    f"ICI link capacity exceeded at stage {stage}: "
+                    f"{ici_uses} > {self.ici_link_count.data}"
+                )
             for space, capacity, label in (
                 (MemorySpace.VMEM, self.vmem_capacity_bytes.data, "VMEM"),
                 (MemorySpace.SMEM, self.smem_capacity_bytes.data, "SMEM"),

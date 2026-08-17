@@ -97,6 +97,10 @@ class KernelBuilder:
         vmem_capacity_bytes: int,
         smem_capacity_bytes: int,
         mesh: Mapping[str, int] | None = None,
+        dma_engine_count: int = 2,
+        mxu_count: int = 1,
+        vector_unit_count: int = 1,
+        ici_link_count: int = 1,
     ) -> None:
         self._name = name
         self._target = target
@@ -104,6 +108,10 @@ class KernelBuilder:
         self._smem_capacity_bytes = smem_capacity_bytes
         self._input_specs = tuple(inputs)
         self._mesh = dict(sorted((mesh or {}).items()))
+        self._dma_engine_count = dma_engine_count
+        self._mxu_count = mxu_count
+        self._vector_unit_count = vector_unit_count
+        self._ici_link_count = ici_link_count
         self.block = Block(arg_types=[spec.to_type() for spec in self._input_specs])
 
     @property
@@ -296,6 +304,10 @@ class KernelBuilder:
             ArrayAttr(StringAttr(axis) for axis in self._mesh),
             ArrayAttr(IntAttr(size) for size in self._mesh.values()),
             Region(self.block),
+            dma_engine_count=self._dma_engine_count,
+            mxu_count=self._mxu_count,
+            vector_unit_count=self._vector_unit_count,
+            ici_link_count=self._ici_link_count,
         )
         module = ModuleOp([kernel])
         module.verify()

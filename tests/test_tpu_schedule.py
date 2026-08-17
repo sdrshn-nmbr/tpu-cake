@@ -1,5 +1,5 @@
 import pytest
-from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16
+from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f32
 from xdsl.ir import Block, Region
 from xdsl.utils.exceptions import VerifyException
 
@@ -166,3 +166,95 @@ def test_overlapping_views_in_one_declared_alias_group_verify() -> None:
     builder.view(base, _tile(), offsets=(4, 4), alias_group="rotating_buffer")
 
     builder.module().verify()
+
+
+def test_kernel_rejects_more_inflight_dmas_than_declared_engines() -> None:
+    external = buffer(
+        (8, 8),
+        "M N",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 1),
+    )
+    builder = KernelBuilder(
+        "dma_pressure",
+        "tpu7x",
+        (external, external, external),
+        vmem_capacity_bytes=1024,
+        smem_capacity_bytes=1024,
+        dma_engine_count=2,
+    )
+    transfers = []
+    for index, source in enumerate(builder.inputs):
+        destination = builder.alloc(
+            buffer(
+                (8, 8),
+                f"m{index} n{index}",
+                bf16,
+                memory=MemorySpace.VMEM,
+                lifetime=(0, 1),
+            ),
+            f"tile_{index}",
+        )
+        semaphore = builder.semaphore()
+        transfers.append(builder.dma_start(source, destination, semaphore, stage=0))
+    for transfer in transfers:
+        builder.dma_wait(transfer, stage=1)
+
+    with pytest.raises(VerifyException, match="DMA engine capacity exceeded"):
+        builder.module()
+
+
+def test_consumer_cannot_read_a_tile_before_dma_wait() -> None:
+    lhs_external = buffer(
+        (8, 8),
+        "M K",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 1),
+    )
+    rhs_external = buffer(
+        (8, 8),
+        "K N",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 1),
+    )
+    builder = KernelBuilder(
+        "missing_wait",
+        "tpu7x",
+        (lhs_external, rhs_external),
+        vmem_capacity_bytes=4096,
+        smem_capacity_bytes=1024,
+    )
+    lhs = builder.alloc(
+        buffer((8, 8), "M K", bf16, memory=MemorySpace.VMEM, lifetime=(0, 1)),
+        "lhs",
+    )
+    rhs = builder.alloc(
+        buffer((8, 8), "K N", bf16, memory=MemorySpace.VMEM, lifetime=(0, 1)),
+        "rhs",
+    )
+    accumulator = builder.alloc(
+        buffer(
+            (8, 8),
+            "M N",
+            f32,
+            memory=MemorySpace.VMEM,
+            lifetime=(0, 1),
+        ),
+        "accumulator",
+    )
+    lhs_semaphore = builder.semaphore()
+    rhs_semaphore = builder.semaphore()
+    lhs_dma = builder.dma_start(builder.inputs[0], lhs, lhs_semaphore, stage=0)
+    rhs_dma = builder.dma_start(builder.inputs[1], rhs, rhs_semaphore, stage=0)
+    builder.matmul(lhs, rhs, accumulator, stage=0)
+    builder.dma_wait(lhs_dma, stage=1)
+    builder.dma_wait(rhs_dma, stage=1)
+
+    with pytest.raises(VerifyException, match="before its producing operation completes"):
+        builder.module()
