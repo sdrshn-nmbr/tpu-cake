@@ -94,11 +94,13 @@ def estimate_distributed_matmul(
     output_elements = plan.output_local_shape[0] * plan.output_local_shape[1]
     partial_elements = plan.partial_local_shape[0] * plan.partial_local_shape[1]
     operations = 2 * m * local_k * n
-    hbm_read = 2 * (m * local_k + local_k * n)
-    hbm_write = 4 * output_elements
     partial_bytes = 4 * partial_elements
+    hbm_read = 2 * (m * local_k + local_k * n) + partial_bytes
+    hbm_write = partial_bytes + 4 * output_elements
     ici_bidirectional = 2 * partial_bytes * (plan.mesh_size - 1) // plan.mesh_size
-    peak_live_vmem = max(hbm_read, partial_bytes + 4 * output_elements)
+    tile_input_bytes = 2 * (plan.tile_m * plan.tile_k + plan.tile_k * plan.tile_n)
+    tile_output_bytes = 4 * plan.tile_m * plan.tile_n
+    peak_live_vmem = tile_input_bytes + tile_output_bytes
     counts = MatmulPhysicalCounts(
         operations_per_device=operations,
         hbm_read_bytes_per_device=hbm_read,
@@ -195,7 +197,8 @@ def estimate_distributed_matmul(
         assumptions=(
             "A multiply-add counts as two BF16 floating-point operations.",
             "Per-JAX-device rates are one half of advertised per-chip rates.",
-            "HBM bytes are algorithmic minima and exclude compiler reloads and padding.",
+            "HBM bytes include one materialization of the Pallas partial before XLA reduce-scatter.",
+            "HBM bytes exclude additional compiler reloads, padding, and layout conversions.",
             "Reduce-scatter uses a ring-equivalent bidirectional byte lower bound.",
             "Launch, synchronization, collective startup, and compiler overhead are omitted.",
         ),

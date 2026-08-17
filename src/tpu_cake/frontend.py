@@ -182,9 +182,23 @@ class KernelBuilder:
         accumulator: SSAValue | Operation,
         *,
         stage: int,
+        tile_m: int | None = None,
+        tile_k: int | None = None,
+        tile_n: int | None = None,
         source: SourceLocation | None = None,
     ) -> MxuMatmulOp:
-        operation = attach_source(MxuMatmulOp(lhs, rhs, accumulator, stage), source)
+        operation = attach_source(
+            MxuMatmulOp(
+                lhs,
+                rhs,
+                accumulator,
+                stage,
+                tile_m=tile_m,
+                tile_k=tile_k,
+                tile_n=tile_n,
+            ),
+            source,
+        )
         assert isinstance(operation, MxuMatmulOp)
         self._add(operation)
         return operation

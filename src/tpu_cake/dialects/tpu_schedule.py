@@ -258,6 +258,9 @@ class MxuMatmulOp(IRDLOperation):
     rhs = operand_def(BufferType)
     accumulator = operand_def(BufferType)
     stage = prop_def(IntAttr)
+    tile_m = prop_def(IntAttr)
+    tile_k = prop_def(IntAttr)
+    tile_n = prop_def(IntAttr)
 
     def __init__(
         self,
@@ -265,10 +268,24 @@ class MxuMatmulOp(IRDLOperation):
         rhs: SSAValue | Operation,
         accumulator: SSAValue | Operation,
         stage: int | IntAttr,
+        *,
+        tile_m: int | None = None,
+        tile_k: int | None = None,
+        tile_n: int | None = None,
     ):
+        lhs_type = SSAValue.get(lhs).type
+        rhs_type = SSAValue.get(rhs).type
+        assert isinstance(lhs_type, BufferType) and isinstance(rhs_type, BufferType)
+        lhs_shape = lhs_type.storage.get_shape()
+        rhs_shape = rhs_type.storage.get_shape()
         super().__init__(
             operands=[lhs, rhs, accumulator],
-            properties={"stage": IntAttr(stage) if isinstance(stage, int) else stage},
+            properties={
+                "stage": IntAttr(stage) if isinstance(stage, int) else stage,
+                "tile_m": IntAttr(tile_m if tile_m is not None else lhs_shape[0]),
+                "tile_k": IntAttr(tile_k if tile_k is not None else lhs_shape[1]),
+                "tile_n": IntAttr(tile_n if tile_n is not None else rhs_shape[1]),
+            },
         )
 
     def verify_(self) -> None:
@@ -292,6 +309,13 @@ class MxuMatmulOp(IRDLOperation):
             raise VerifyException("MXU input element types must match")
         if not isinstance(accumulator.storage.element_type, Float32Type):
             raise VerifyException("MXU accumulation must use f32")
+        tile = (self.tile_m.data, self.tile_k.data, self.tile_n.data)
+        if any(size <= 0 for size in tile):
+            raise VerifyException("MXU tile dimensions must be positive")
+        if m % tile[0] or k % tile[1] or n % tile[2]:
+            raise VerifyException("MXU tile dimensions must divide the operand dimensions")
+        if tile[1] != k:
+            raise VerifyException("the current MXU schedule requires a complete K tile")
 
 
 @irdl_op_definition

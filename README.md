@@ -29,14 +29,20 @@ TPU-cake began by combining CAKE's search loop with this MatX discipline (as see
 ## What exists
 
 - A custom xDSL dialect for TPU schedules.
+- A high-level distributed-tensor xDSL dialect with explicit pending reductions and collectives.
 - Typed shapes, sharding, layout, memory placement, ownership, and lifetime.
 - Checks for DMA use, synchronization, operation shapes, and live memory.
 - A small Python frontend that emits canonical xDSL.
 - Immutable workload, experiment, metric, evidence, and run-receipt contracts.
 - Matmul and Inkling ragged paged attention examples.
 - An XProf reader that rejects captures without the intended TPU work.
+- Verified distributed matmul lowering through Pallas and Mosaic.
+- A physical compute, HBM, ICI, and live-memory cost model.
+- Separate timing, trace, and hardware-counter runs.
+- A resumable, matched-input tile search with alternating run order and bootstrap confidence intervals.
+- A durable experiment ledger and artifact-complete receipt validation.
 
-xDSL is the schedule format. Pydantic is used only for inputs, evidence, and receipts. Pallas and Mosaic are future lowering targets.
+xDSL is the canonical program and schedule format. Pydantic is used only for external contracts, normalized evidence, and receipts. The first complete lowering target is a distributed BF16 matmul followed by reduce-scatter.
 
 ## Try it
 
@@ -49,6 +55,13 @@ uv run tpu-cake render-workload inkling-rpa
 uv run tpu-cake experiment inkling-rpa
 uv run tpu-cake inspect-profile CAPTURE_ROOT \
   --contract contracts/inkling-steady-decode.toml
+
+uv run tpu-cake run-matmul \
+  --output-dir RUN_ROOT/timing \
+  --mode timing --mesh-size 8 --m 128 --k 1024 --n 1024
+
+uv run tpu-cake finalize-matmul-run RUN_ROOT
+uv run tpu-cake search-matmul SEARCH_CONTRACT.json --output-dir SEARCH_ROOT
 ```
 
 ## Layout
@@ -63,7 +76,7 @@ uv run tpu-cake inspect-profile CAPTURE_ROOT \
 
 ## Current boundary
 
-The schedule language, contracts, examples, and profile checks work. Pallas lowering, cost prediction, and automated schedule search are not implemented yet.
+The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed tensor dialect is still deliberately narrow: it covers the algebra needed for this vertical slice, not the complete Seqax forward pass. The Inkling RPA workload has typed contracts and physical schedule examples, but it does not yet lower through the same complete Pallas, search, and receipt path.
 
 ## Ideas and source material
 

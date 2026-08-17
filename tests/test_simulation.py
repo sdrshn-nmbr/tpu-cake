@@ -14,10 +14,15 @@ def test_every_simulated_fault_preserves_promotion_invariants(tmp_path) -> None:
         outcome = LifecycleSimulator(tmp_path / f"{index}.sqlite").run(seed=index + 1, fault=fault)
         if fault in benign:
             assert outcome.state is RunState.ACCEPTED
-            assert outcome.history[-2:] == (RunState.COUNTERED, RunState.ACCEPTED)
+            assert outcome.mode_histories["timing"][-1] is RunState.TIMED
+            assert outcome.mode_histories["trace"][-1] is RunState.TRACED
+            assert outcome.mode_histories["counters"][-1] is RunState.COUNTERED
         else:
             assert outcome.state is RunState.REJECTED
-            assert RunState.ACCEPTED not in outcome.history
+            assert all(
+                RunState.ACCEPTED not in history
+                for history in outcome.mode_histories.values()
+            )
 
 
 def test_seeded_fault_selection_is_replayable(tmp_path) -> None:
@@ -25,4 +30,4 @@ def test_seeded_fault_selection_is_replayable(tmp_path) -> None:
     second = LifecycleSimulator(tmp_path / "second.sqlite").run(seed=7919)
     assert first.fault is second.fault
     assert first.state is second.state
-    assert first.history == second.history
+    assert first.mode_histories == second.mode_histories

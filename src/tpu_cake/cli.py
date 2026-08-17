@@ -14,7 +14,9 @@ from tpu_cake.contracts import ProfileExpectation
 from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
+from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
+from tpu_cake.search import MatmulSearchContract, run_matmul_search
 from tpu_cake.workloads import (
     inkling_rpa_experiment,
     inkling_rpa_schedule,
@@ -58,7 +60,17 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--n", type=int, default=1024)
     run.add_argument("--warmup-iterations", type=int, default=10)
     run.add_argument("--measured-iterations", type=int, default=100)
+    run.add_argument("--tile-m", type=int)
+    run.add_argument("--tile-n", type=int)
     run.add_argument("--interpret", action="store_true")
+
+    finalize = commands.add_parser("finalize-matmul-run")
+    finalize.add_argument("run_root", type=Path)
+
+    search = commands.add_parser("search-matmul")
+    search.add_argument("contract", type=Path)
+    search.add_argument("--output-dir", required=True, type=Path)
+    search.add_argument("--interpret", action="store_true")
     return parser
 
 
@@ -140,10 +152,21 @@ def main() -> None:
             n=args.n,
             warmup_iterations=args.warmup_iterations,
             measured_iterations=args.measured_iterations,
+            tile_m=args.tile_m,
+            tile_n=args.tile_n,
             interpret=args.interpret,
         )
         print(result.model_dump_json(indent=2))
         code = 0 if result.passed else 1
+    elif args.command == "finalize-matmul-run":
+        receipt = build_distributed_matmul_receipt(args.run_root)
+        print(receipt.model_dump_json(indent=2))
+        code = 0 if receipt.status.value == "passed" else 1
+    elif args.command == "search-matmul":
+        contract = MatmulSearchContract.model_validate_json(args.contract.read_text())
+        result = run_matmul_search(args.output_dir, contract, interpret=args.interpret)
+        print(result.model_dump_json(indent=2))
+        code = 0
     else:
         code = _experiment(args.workload, args.output)
     sys.exit(code)

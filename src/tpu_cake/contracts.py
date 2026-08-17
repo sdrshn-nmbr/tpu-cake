@@ -38,6 +38,17 @@ class ArtifactRole(StrEnum):
     PROFILE_ASSESSMENT = "profile_assessment"
     COST_MODEL_INPUT = "cost_model_input"
     COST_MODEL = "cost_model"
+    ROOFLINE_INPUT = "roofline_input"
+    ROOFLINE_REPORT = "roofline_report"
+    ROOFLINE_METRICS = "roofline_metrics"
+    EXECUTION_LEDGER = "execution_ledger"
+    TRACE_RESULT = "trace_result"
+    COUNTER_RESULT = "counter_result"
+    HLO_STATS = "hlo_stats"
+    INVOCATION = "invocation"
+    PROFILER_CONFIG = "profiler_config"
+    SOURCE_STATE = "source_state"
+    SOURCE_DIFF = "source_diff"
 
 
 class SemanticPropertyKind(StrEnum):
@@ -58,6 +69,7 @@ class ProfileExpectation(BaseModel):
     require_hbm_read_counters: bool = False
     require_hbm_write_counters: bool = False
     require_cycle_counters: bool = False
+    minimum_counter_device_planes: int = Field(default=0, ge=0)
     required_timed_hlo_markers: tuple[str, ...] = ()
     forbidden_timed_hlo_fragments: tuple[str, ...] = ()
 
@@ -227,6 +239,17 @@ class RunReceipt(BaseModel):
                 ArtifactRole.PROFILE_ASSESSMENT,
                 ArtifactRole.COST_MODEL_INPUT,
                 ArtifactRole.COST_MODEL,
+                ArtifactRole.ROOFLINE_INPUT,
+                ArtifactRole.ROOFLINE_REPORT,
+                ArtifactRole.ROOFLINE_METRICS,
+                ArtifactRole.EXECUTION_LEDGER,
+                ArtifactRole.TRACE_RESULT,
+                ArtifactRole.COUNTER_RESULT,
+                ArtifactRole.HLO_STATS,
+                ArtifactRole.INVOCATION,
+                ArtifactRole.PROFILER_CONFIG,
+                ArtifactRole.SOURCE_STATE,
+                ArtifactRole.SOURCE_DIFF,
             }
             roles = {artifact.role for artifact in self.artifacts}
             missing = sorted(role.value for role in required_roles - roles)

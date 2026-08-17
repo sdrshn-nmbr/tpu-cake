@@ -40,6 +40,16 @@ TPU7X_TARGET = LoweringTarget(
 )
 
 
+@dataclass(frozen=True)
+class MatmulTile:
+    m: int
+    n: int
+
+    def __post_init__(self) -> None:
+        if self.m <= 0 or self.n <= 0:
+            raise ValueError("matmul tile dimensions must be positive")
+
+
 def _reject(operation: Operation, message: str) -> UnsupportedLoweringError:
     return UnsupportedLoweringError(f"{message}: {operation.name} at {operation.location}")
 
@@ -58,6 +68,7 @@ def lower_distributed_matmul(
     module: ModuleOp,
     *,
     target: LoweringTarget = TPU7X_TARGET,
+    tile: MatmulTile | None = None,
 ) -> ModuleOp:
     module.verify()
     top_level = list(module.body.block.ops)
@@ -219,7 +230,15 @@ def lower_distributed_matmul(
     rhs_dma = builder.dma_start(builder.inputs[1], rhs, rhs_semaphore, stage=0)
     builder.dma_wait(lhs_dma, stage=1)
     builder.dma_wait(rhs_dma, stage=1)
-    physical_matmul = builder.matmul(lhs, rhs, partial, stage=2)
+    physical_matmul = builder.matmul(
+        lhs,
+        rhs,
+        partial,
+        stage=2,
+        tile_m=tile.m if tile is not None else lhs_shape[0],
+        tile_k=lhs_shape[1],
+        tile_n=tile.n if tile is not None else rhs_shape[1],
+    )
     physical_matmul.location = einsum.location
     physical_collective = builder.collective_reduce_scatter(
         partial,

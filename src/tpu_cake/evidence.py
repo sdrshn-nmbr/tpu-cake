@@ -54,7 +54,7 @@ class ProgramEvidence(BaseModel):
     program_id: str
     name: str
     timed_self_us: float = Field(ge=0)
-    hlo: ArtifactEvidence
+    hlo: ArtifactEvidence | None = None
     marker_counts: dict[str, int]
     forbidden_fragment_hits: dict[str, int]
 

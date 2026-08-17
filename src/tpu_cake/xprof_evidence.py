@@ -34,6 +34,8 @@ from tpu_cake.metrics import (
 _PROGRAM_ID = re.compile(r"\((\d+)\)\.hlo_proto\.pb$")
 _TPU_CORE = re.compile(r"^/device:TPU:(\d+)$")
 _MARKERS = (
+    "distributed_matmul_physical",
+    "reduce-scatter",
     "ragged_paged_attention",
     "pallas_call",
     "EPMoE",
@@ -129,6 +131,7 @@ def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvide
     xplane = _single(root, "*.xplane.pb")
     hlo_stats = _single(root, "hlo_stats.json")
     rows = _gviz_rows(hlo_stats)
+    markers = tuple(dict.fromkeys((*_MARKERS, *expectation.required_timed_hlo_markers)))
     timed_us: dict[str, float] = defaultdict(float)
     timed_text: dict[str, list[str]] = defaultdict(list)
     for row in rows:
@@ -140,6 +143,7 @@ def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvide
         )
 
     programs = []
+    captured_program_ids: set[str] = set()
     for hlo_path in sorted(root.rglob("*run_model*.hlo_proto.pb")):
         match = _PROGRAM_ID.search(hlo_path.name)
         if match is None:
@@ -153,9 +157,25 @@ def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvide
                 name=hlo_path.name.removesuffix(".hlo_proto.pb"),
                 timed_self_us=timed_us.get(program_id, 0),
                 hlo=_artifact(hlo_path),
-                marker_counts={marker: payload.count(marker.encode()) for marker in _MARKERS},
+                marker_counts={marker: payload.count(marker.encode()) for marker in markers},
                 forbidden_fragment_hits={
                     fragment: timed_payload.count(fragment)
+                    for fragment in expectation.forbidden_timed_hlo_fragments
+                },
+            )
+        )
+        captured_program_ids.add(program_id)
+
+    for program_id in sorted(set(timed_us) - captured_program_ids):
+        payload = "\n".join(timed_text.get(program_id, ()))
+        programs.append(
+            ProgramEvidence(
+                program_id=program_id,
+                name=f"timed_program_{program_id}",
+                timed_self_us=timed_us[program_id],
+                marker_counts={marker: payload.count(marker) for marker in markers},
+                forbidden_fragment_hits={
+                    fragment: payload.count(fragment)
                     for fragment in expectation.forbidden_timed_hlo_fragments
                 },
             )
@@ -213,6 +233,20 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
                 )
             )
 
+    counter_planes = len(capture.counters.snapshots_per_tpu_core)
+    if counter_planes < expectation.minimum_counter_device_planes:
+        findings.append(
+            Finding(
+                code="INSUFFICIENT_COUNTER_DEVICE_PLANES",
+                severity=FindingSeverity.ERROR,
+                message="capture does not contain counters for the required number of device planes",
+                evidence=(
+                    f"observed={counter_planes}",
+                    f"required={expectation.minimum_counter_device_planes}",
+                ),
+            )
+        )
+
     timed_programs = [
         program for program in capture.programs if program.program_id in capture.timed_program_ids
     ]
@@ -237,6 +271,28 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
                     code="REQUIRED_TIMED_HLO_MARKER_MISSING",
                     severity=FindingSeverity.ERROR,
                     message=f"required marker {marker!r} is absent from every timed model program",
+                )
+            )
+
+    all_required_markers_present = all(
+        any(program.marker_counts.get(marker, 0) > 0 for program in timed_programs)
+        for marker in expectation.required_timed_hlo_markers
+    )
+    if expectation.required_timed_hlo_markers and all_required_markers_present:
+        bound_programs = [
+            program.program_id
+            for program in timed_programs
+            if all(
+                program.marker_counts.get(marker, 0) > 0
+                for marker in expectation.required_timed_hlo_markers
+            )
+        ]
+        if not bound_programs:
+            findings.append(
+                Finding(
+                    code="REQUIRED_MARKERS_SPLIT_ACROSS_PROGRAMS",
+                    severity=FindingSeverity.ERROR,
+                    message="no single timed program contains every required marker",
                 )
             )
 

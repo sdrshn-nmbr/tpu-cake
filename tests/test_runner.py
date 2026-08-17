@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 
+from tpu_cake.ledger import ExperimentLedger, RunState
+
 
 def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
     environment = os.environ.copy()
@@ -49,3 +51,59 @@ def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
     assert (output / "stablehlo.txt").exists()
     assert (output / "compiler_hlo.txt").exists()
     assert (output / "cost_model.json").exists()
+    assert (output / "experiment.json").exists()
+    assert (output / "invocation.json").exists()
+    assert (output / "profiler_config.json").exists()
+    assert (output / "source_state.json").exists()
+    with ExperimentLedger(output / "ledger.sqlite") as ledger:
+        history = tuple(event.state for event in ledger.history(result["run_id"]))
+    assert history == (
+        RunState.CREATED,
+        RunState.VERIFIED,
+        RunState.LOWERED,
+        RunState.COMPILED,
+        RunState.CORRECT,
+        RunState.TIMED,
+    )
+
+
+def test_candidates_use_identical_workload_inputs(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
+    hashes = []
+    for name, tile in (("whole", None), ("tiled", "8")):
+        command = [
+            sys.executable,
+            "-m",
+            "tpu_cake.cli",
+            "run-matmul",
+            "--output-dir",
+            str(tmp_path / name),
+            "--mode",
+            "timing",
+            "--mesh-size",
+            "4",
+            "--m",
+            "16",
+            "--k",
+            "32",
+            "--n",
+            "16",
+            "--warmup-iterations",
+            "0",
+            "--measured-iterations",
+            "1",
+            "--interpret",
+        ]
+        if tile is not None:
+            command.extend(("--tile-m", tile, "--tile-n", tile))
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        result = json.loads((tmp_path / name / "result.json").read_text())
+        hashes.append((result["lhs_sha256"], result["rhs_sha256"]))
+    assert hashes[0] == hashes[1]

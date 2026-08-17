@@ -4,7 +4,7 @@ from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import CollectiveReduceScatterOp, KernelOp, MxuMatmulOp
 from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
-from tpu_cake.lowering import UnsupportedLoweringError, lower_distributed_matmul
+from tpu_cake.lowering import MatmulTile, UnsupportedLoweringError, lower_distributed_matmul
 from tpu_cake.source import SourceLocation
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
 
@@ -111,3 +111,11 @@ def test_physical_collective_must_match_kernel_mesh(
             kernel.verify_()
         else:
             schedule.verify()
+
+
+def test_tile_must_divide_the_local_matmul_shape() -> None:
+    with pytest.raises(VerifyException, match="tile dimensions must divide"):
+        lower_distributed_matmul(
+            distributed_matmul_schedule(mesh_size=4, m=256, k=512, n=256),
+            tile=MatmulTile(96, 128),
+        )

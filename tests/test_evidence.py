@@ -83,3 +83,37 @@ def test_normalized_metrics_do_not_invent_counter_rates() -> None:
     }
     assert not any("bytes_per_second" in metric.name or "mfu" in metric.name for metric in metrics)
     assert all(metric.formula is not None for metric in metrics)
+
+
+def test_required_markers_must_share_one_timed_program() -> None:
+    capture = _capture(rpa_markers=1, forbidden_hits=0)
+    second = ProgramEvidence(
+        program_id="8",
+        name="jit_other(8)",
+        timed_self_us=10,
+        marker_counts={"other_required": 1},
+        forbidden_fragment_hits={"prompt_gather": 0},
+    )
+    split = capture.model_copy(
+        update={
+            "programs": (*capture.programs, second),
+            "timed_program_ids": frozenset({"7", "8"}),
+        }
+    )
+    expectation = _expectation().model_copy(
+        update={"required_timed_hlo_markers": ("ragged_paged_attention", "other_required")}
+    )
+    assessment = assess_evidence(split, expectation)
+    assert not assessment.accepted
+    assert "REQUIRED_MARKERS_SPLIT_ACROSS_PROGRAMS" in {
+        finding.code for finding in assessment.findings
+    }
+
+
+def test_counter_contract_rejects_missing_device_planes() -> None:
+    expectation = _expectation().model_copy(update={"minimum_counter_device_planes": 2})
+    assessment = assess_evidence(_capture(rpa_markers=1, forbidden_hits=0), expectation)
+    assert not assessment.accepted
+    assert "INSUFFICIENT_COUNTER_DEVICE_PLANES" in {
+        finding.code for finding in assessment.findings
+    }

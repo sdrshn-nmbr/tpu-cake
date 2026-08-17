@@ -42,7 +42,7 @@ class SimulationOutcome:
     seed: int
     fault: SimulatedFault
     state: RunState
-    history: tuple[RunState, ...]
+    mode_histories: dict[str, tuple[RunState, ...]]
 
 
 class StatefulBoundaryFake:
@@ -92,47 +92,66 @@ class LifecycleSimulator:
 
     def run(self, *, seed: int, fault: SimulatedFault | None = None) -> SimulationOutcome:
         selected_fault = fault or random.Random(seed).choice(SUPPORTED_FAULT_SPACE)
-        run_id = f"{seed:064x}"[-64:]
         boundary = StatefulBoundaryFake(selected_fault)
-        ledger = ExperimentLedger(self.ledger_path)
-        try:
-            ledger.create(run_id, {"seed": seed, "fault": selected_fault.value})
-            for state in (
-                RunState.VERIFIED,
-                RunState.LOWERED,
-                RunState.COMPILED,
-                RunState.CORRECT,
-                RunState.TIMED,
-                RunState.TRACED,
-                RunState.COUNTERED,
-            ):
-                payload = boundary.complete(state)
-                if payload.get("hardware_identity") != "expected":
-                    raise InjectedFailure("stale hardware identity")
-                if (
-                    state is RunState.TRACED
-                    and payload.get("profile_stage") != "distributed_matmul"
+        mode_histories: dict[str, tuple[RunState, ...]] = {}
+        terminal_by_mode = {
+            "timing": RunState.TIMED,
+            "trace": RunState.TRACED,
+            "counters": RunState.COUNTERED,
+        }
+        outcome_state = RunState.ACCEPTED
+        for mode_index, (mode, terminal) in enumerate(terminal_by_mode.items()):
+            run_id = f"{seed * 10 + mode_index:064x}"[-64:]
+            path = self.ledger_path.with_name(f"{self.ledger_path.stem}-{mode}.sqlite")
+            ledger = ExperimentLedger(path)
+            try:
+                ledger.create(
+                    run_id,
+                    {"seed": seed, "fault": selected_fault.value, "mode": mode},
+                )
+                for state in (
+                    RunState.VERIFIED,
+                    RunState.LOWERED,
+                    RunState.COMPILED,
+                    RunState.CORRECT,
+                    terminal,
                 ):
-                    raise InjectedFailure("wrong phase profile")
-                if payload.get("artifacts_complete") is False:
-                    raise InjectedFailure("partial artifact copy")
-                if payload.get("receipt_hash_valid") is False:
-                    raise InjectedFailure("corrupted receipt")
-                ledger.transition(run_id, state, payload)
-                if (
-                    selected_fault is SimulatedFault.DUPLICATE_COMPLETION
-                    and state is RunState.TIMED
-                ):
+                    payload = boundary.complete(state)
+                    if payload.get("hardware_identity") != "expected":
+                        raise InjectedFailure("stale hardware identity")
+                    if (
+                        state is RunState.TRACED
+                        and payload.get("profile_stage") != "distributed_matmul"
+                    ):
+                        raise InjectedFailure("wrong phase profile")
                     ledger.transition(run_id, state, payload)
-                if selected_fault is SimulatedFault.RESTART and state is RunState.LOWERED:
-                    ledger.close()
-                    ledger = ExperimentLedger(self.ledger_path)
-            ledger.transition(run_id, RunState.ACCEPTED, {"promotion": "complete"})
-        except InjectedFailure as error:
-            ledger.transition(run_id, RunState.REJECTED, {"reason": str(error)})
-        finally:
-            state = ledger.current_state(run_id)
-            assert state is not None
-            history = tuple(event.state for event in ledger.history(run_id))
-            ledger.close()
-        return SimulationOutcome(seed=seed, fault=selected_fault, state=state, history=history)
+                    if selected_fault is SimulatedFault.DUPLICATE_COMPLETION and state is terminal:
+                        ledger.transition(run_id, state, payload)
+                    if selected_fault is SimulatedFault.RESTART and state is RunState.LOWERED:
+                        ledger.close()
+                        ledger = ExperimentLedger(path)
+            except InjectedFailure as error:
+                ledger.transition(run_id, RunState.REJECTED, {"reason": str(error)})
+                outcome_state = RunState.REJECTED
+            finally:
+                mode_histories[mode] = tuple(
+                    event.state for event in ledger.history(run_id)
+                )
+                ledger.close()
+            if outcome_state is RunState.REJECTED:
+                break
+        if outcome_state is RunState.ACCEPTED:
+            try:
+                counter_payload = boundary.complete(RunState.COUNTERED)
+                if counter_payload.get("artifacts_complete") is False:
+                    raise InjectedFailure("partial artifact copy")
+                if counter_payload.get("receipt_hash_valid") is False:
+                    raise InjectedFailure("corrupted receipt")
+            except InjectedFailure:
+                outcome_state = RunState.REJECTED
+        return SimulationOutcome(
+            seed=seed,
+            fault=selected_fault,
+            state=outcome_state,
+            mode_histories=mode_histories,
+        )

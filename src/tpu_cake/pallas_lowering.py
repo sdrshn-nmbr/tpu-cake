@@ -49,6 +49,9 @@ class PallasMatmulPlan:
     rhs_sharding: tuple[str, str]
     output_sharding: tuple[str, str]
     scatter_dimension: int
+    tile_m: int
+    tile_k: int
+    tile_n: int
 
     @property
     def global_lhs_shape(self) -> tuple[int, int]:
@@ -84,11 +87,14 @@ class PallasMatmulPlan:
             _matmul_kernel,
             out_shape=jax.ShapeDtypeStruct(self.partial_local_shape, jnp.float32),
             in_specs=(
-                pl.BlockSpec(self.lhs_local_shape, lambda: (0, 0)),
-                pl.BlockSpec(self.rhs_local_shape, lambda: (0, 0)),
+                pl.BlockSpec((self.tile_m, self.tile_k), lambda i, _j: (i, 0)),
+                pl.BlockSpec((self.tile_k, self.tile_n), lambda _i, j: (0, j)),
             ),
-            out_specs=pl.BlockSpec(self.partial_local_shape, lambda: (0, 0)),
-            grid=(),
+            out_specs=pl.BlockSpec((self.tile_m, self.tile_n), lambda i, j: (i, j)),
+            grid=(
+                self.partial_local_shape[0] // self.tile_m,
+                self.partial_local_shape[1] // self.tile_n,
+            ),
             interpret=interpret_setting,
             name=self.name,
             metadata={"schedule_sha256": self.schedule_sha256},
@@ -116,18 +122,80 @@ class PallasMatmulPlan:
         return jax.jit(mapped), mesh
 
     def render_source(self) -> str:
-        fields = (
-            f"name={self.name!r}",
-            f"schedule_sha256={self.schedule_sha256!r}",
-            f"mesh_axis={self.mesh_axis!r}",
-            f"mesh_size={self.mesh_size}",
-            f"lhs_local_shape={self.lhs_local_shape!r}",
-            f"rhs_local_shape={self.rhs_local_shape!r}",
-            f"partial_local_shape={self.partial_local_shape!r}",
-            f"output_local_shape={self.output_local_shape!r}",
-            f"scatter_dimension={self.scatter_dimension}",
+        kernel_source = inspect.getsource(_matmul_kernel).rstrip()
+        return f'''from __future__ import annotations
+
+import jax
+import jax.numpy as jnp
+from jax import lax
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import tpu as pltpu
+from jax.sharding import Mesh, PartitionSpec
+
+{kernel_source}
+
+NAME = {self.name!r}
+SCHEDULE_SHA256 = {self.schedule_sha256!r}
+MESH_AXIS = {self.mesh_axis!r}
+MESH_SIZE = {self.mesh_size}
+LHS_LOCAL_SHAPE = {self.lhs_local_shape!r}
+RHS_LOCAL_SHAPE = {self.rhs_local_shape!r}
+PARTIAL_LOCAL_SHAPE = {self.partial_local_shape!r}
+OUTPUT_SHARDING = {self.output_sharding!r}
+LHS_SHARDING = {self.lhs_sharding!r}
+RHS_SHARDING = {self.rhs_sharding!r}
+SCATTER_DIMENSION = {self.scatter_dimension}
+TILE_M = {self.tile_m}
+TILE_K = {self.tile_k}
+TILE_N = {self.tile_n}
+
+
+def _partition_spec(sharding):
+    return PartitionSpec(*(axis or None for axis in sharding))
+
+
+def build(*, interpret=False, devices=None):
+    selected_devices = tuple(devices or jax.devices())
+    if len(selected_devices) != MESH_SIZE:
+        raise ValueError(f"expected {{MESH_SIZE}} devices, found {{len(selected_devices)}}")
+    mesh = Mesh(selected_devices, (MESH_AXIS,))
+    interpret_setting = (
+        pltpu.InterpretParams(detect_races=True, out_of_bounds_reads="raise")
+        if interpret
+        else False
+    )
+    local_call = pl.pallas_call(
+        _matmul_kernel,
+        out_shape=jax.ShapeDtypeStruct(PARTIAL_LOCAL_SHAPE, jnp.float32),
+        in_specs=(
+            pl.BlockSpec((TILE_M, TILE_K), lambda i, _j: (i, 0)),
+            pl.BlockSpec((TILE_K, TILE_N), lambda _i, j: (0, j)),
+        ),
+        out_specs=pl.BlockSpec((TILE_M, TILE_N), lambda i, j: (i, j)),
+        grid=(PARTIAL_LOCAL_SHAPE[0] // TILE_M, PARTIAL_LOCAL_SHAPE[1] // TILE_N),
+        interpret=interpret_setting,
+        name=NAME,
+        metadata={{"schedule_sha256": SCHEDULE_SHA256}},
+    )
+
+    def distributed(lhs, rhs):
+        partial = local_call(lhs, rhs)
+        return lax.psum_scatter(
+            partial,
+            MESH_AXIS,
+            scatter_dimension=SCATTER_DIMENSION,
+            tiled=True,
         )
-        return "\n".join((inspect.getsource(_matmul_kernel).rstrip(), *fields, ""))
+
+    mapped = jax.shard_map(
+        distributed,
+        mesh=mesh,
+        in_specs=(_partition_spec(LHS_SHARDING), _partition_spec(RHS_SHARDING)),
+        out_specs=_partition_spec(OUTPUT_SHARDING),
+        check_vma=False,
+    )
+    return jax.jit(mapped), mesh
+'''
 
     def source_sha256(self) -> str:
         return hashlib.sha256(self.render_source().encode()).hexdigest()
@@ -201,4 +269,7 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
         rhs_sharding=_sharding(rhs),
         output_sharding=_sharding(output),
         scatter_dimension=collective.scatter_dimension.data,
+        tile_m=matmul.tile_m.data,
+        tile_k=matmul.tile_k.data,
+        tile_n=matmul.tile_n.data,
     )

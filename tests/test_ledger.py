@@ -7,7 +7,7 @@ from tpu_cake.ledger import ExperimentLedger, RunState
 RUN_ID = "1" * 64
 
 
-def test_ledger_resumes_after_restart_and_reaches_acceptance_in_order(tmp_path) -> None:
+def test_ledger_resumes_after_restart_and_reaches_timing_evidence(tmp_path) -> None:
     path = tmp_path / "ledger.sqlite"
     clock = iter(range(100, 200)).__next__
     with ExperimentLedger(path, clock_ns=clock) as ledger:
@@ -20,13 +20,32 @@ def test_ledger_resumes_after_restart_and_reaches_acceptance_in_order(tmp_path) 
             RunState.COMPILED,
             RunState.CORRECT,
             RunState.TIMED,
-            RunState.TRACED,
-            RunState.COUNTERED,
-            RunState.ACCEPTED,
         ):
             ledger.transition(RUN_ID, state, {"state": state.value})
-        assert ledger.current_state(RUN_ID) is RunState.ACCEPTED
-        assert [event.state for event in ledger.history(RUN_ID)] == list(RunState)[:-1]
+        assert ledger.current_state(RUN_ID) is RunState.TIMED
+        assert [event.state for event in ledger.history(RUN_ID)] == [
+            RunState.CREATED,
+            RunState.VERIFIED,
+            RunState.LOWERED,
+            RunState.COMPILED,
+            RunState.CORRECT,
+            RunState.TIMED,
+        ]
+
+
+@pytest.mark.parametrize("terminal", (RunState.TIMED, RunState.TRACED, RunState.COUNTERED))
+def test_each_measurement_mode_has_an_independent_terminal_state(tmp_path, terminal) -> None:
+    with ExperimentLedger(tmp_path / f"{terminal.value}.sqlite") as ledger:
+        ledger.create(RUN_ID, {})
+        for state in (
+            RunState.VERIFIED,
+            RunState.LOWERED,
+            RunState.COMPILED,
+            RunState.CORRECT,
+            terminal,
+        ):
+            ledger.transition(RUN_ID, state, {"state": state.value})
+        assert ledger.current_state(RUN_ID) is terminal
 
 
 def test_ledger_rejects_skipped_profile_and_counter_gates(tmp_path) -> None:

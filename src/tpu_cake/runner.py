@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import statistics
+import subprocess
 import time
 from enum import StrEnum
 from pathlib import Path
@@ -20,10 +21,14 @@ from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.cost_model import estimate_distributed_matmul, tpu7x_tensorcore_rates
 from tpu_cake.identity import array_sha256, semantic_sha256, workload_rng
-from tpu_cake.lowering import lower_distributed_matmul
+from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.metrics import MetricSource
 from tpu_cake.pallas_lowering import lower_physical_matmul_to_pallas
-from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
+from tpu_cake.workloads.distributed_matmul import (
+    distributed_matmul_experiment,
+    distributed_matmul_schedule,
+)
 
 
 class RunMode(StrEnum):
@@ -95,6 +100,19 @@ def _runtime_identity() -> RuntimeIdentity:
     )
 
 
+def _record_event(
+    ledger_path: Path,
+    run_id: str,
+    state: RunState,
+    payload: dict[str, object],
+) -> None:
+    with ExperimentLedger(ledger_path) as ledger:
+        if state is RunState.CREATED:
+            ledger.create(run_id, payload)
+        else:
+            ledger.transition(run_id, state, payload)
+
+
 def _profiler_options(mode: RunMode) -> jax.profiler.ProfileOptions:
     options = jax.profiler.ProfileOptions()
     options.raise_error_on_start_failure = True
@@ -121,6 +139,57 @@ def _profiler_options(mode: RunMode) -> jax.profiler.ProfileOptions:
     return options
 
 
+def _profiler_contract(mode: RunMode) -> dict[str, object]:
+    options = _profiler_options(mode)
+    return {
+        "mode": mode.value,
+        "raise_error_on_start_failure": options.raise_error_on_start_failure,
+        "enable_hlo_proto": options.enable_hlo_proto,
+        "host_tracer_level": options.host_tracer_level,
+        "python_tracer_level": options.python_tracer_level,
+        "advanced_configuration": dict(options.advanced_configuration),
+        "libtpu_init_args": os.environ.get("LIBTPU_INIT_ARGS"),
+    }
+
+
+def _source_state(repo_root: Path, output_dir: Path) -> tuple[ArtifactReference, ...]:
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    diff = subprocess.run(
+        ["git", "diff", "--binary", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    diff_artifact = _write_text(output_dir / "source_diff.patch", diff, ArtifactRole.SOURCE_DIFF)
+    lock_path = repo_root / "uv.lock"
+    state = {
+        "git_commit": commit,
+        "git_dirty": bool(status),
+        "git_status": status,
+        "source_diff_sha256": diff_artifact.sha256,
+        "uv_lock_sha256": _sha256(lock_path),
+        "python_executable": os.path.realpath(os.sys.executable),
+    }
+    return (
+        diff_artifact,
+        _write_json(output_dir / "source_state.json", state, ArtifactRole.SOURCE_STATE),
+    )
+
+
 def _percentile(samples: list[int], fraction: float) -> int:
     ordered = sorted(samples)
     index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * fraction)))
@@ -137,22 +206,107 @@ def run_distributed_matmul(
     n: int,
     warmup_iterations: int,
     measured_iterations: int,
+    tile_m: int | None = None,
+    tile_n: int | None = None,
     interpret: bool = False,
 ) -> MatmulRunResult:
     if mode is not RunMode.TIMING and jax.default_backend() != "tpu":
         raise ValueError("device traces and hardware counters require a TPU backend")
     output_dir.mkdir(parents=True, exist_ok=False)
+    invocation = {
+        "mode": mode.value,
+        "mesh_size": mesh_size,
+        "m": m,
+        "k": k,
+        "n": n,
+        "warmup_iterations": warmup_iterations,
+        "measured_iterations": measured_iterations,
+        "tile_m": tile_m,
+        "tile_n": tile_n,
+        "interpret": interpret,
+    }
+    pre_artifacts = [
+        _write_json(output_dir / "invocation.json", invocation, ArtifactRole.INVOCATION),
+        _write_json(
+            output_dir / "profiler_config.json",
+            _profiler_contract(mode),
+            ArtifactRole.PROFILER_CONFIG,
+        ),
+    ]
+    pre_artifacts.extend(_source_state(Path(__file__).resolve().parents[2], output_dir))
+    run_id = semantic_sha256(
+        "distributed-matmul-run",
+        mode.value,
+        str(mesh_size),
+        str(m),
+        str(k),
+        str(n),
+        str(tile_m),
+        str(tile_n),
+    )
+    ledger_path = output_dir / "ledger.sqlite"
+    _record_event(
+        ledger_path,
+        run_id,
+        RunState.CREATED,
+        {
+            "mode": mode.value,
+            "mesh_size": mesh_size,
+            "m": m,
+            "k": k,
+            "n": n,
+            "tile_m": tile_m,
+            "tile_n": tile_n,
+        },
+    )
     distributed = distributed_matmul_schedule(mesh_size=mesh_size, m=m, k=k, n=n)
-    physical = lower_distributed_matmul(distributed)
+    distributed.verify()
+    distributed_text = canonical_text(distributed)
+    _record_event(
+        ledger_path,
+        run_id,
+        RunState.VERIFIED,
+        {"distributed_ir_sha256": hashlib.sha256(distributed_text.encode()).hexdigest()},
+    )
+    tile = MatmulTile(tile_m, tile_n) if tile_m is not None and tile_n is not None else None
+    if (tile_m is None) != (tile_n is None):
+        raise ValueError("matmul tile needs both tile_m and tile_n")
+    physical = lower_distributed_matmul(distributed, tile=tile)
     plan = lower_physical_matmul_to_pallas(physical)
+    physical_text = canonical_text(physical)
+    _record_event(
+        ledger_path,
+        run_id,
+        RunState.LOWERED,
+        {
+            "physical_ir_sha256": hashlib.sha256(physical_text.encode()).hexdigest(),
+            "schedule_sha256": plan.schedule_sha256,
+            "pallas_source_sha256": plan.source_sha256(),
+        },
+    )
+    experiment = distributed_matmul_experiment(
+        schedule_sha256=plan.schedule_sha256,
+        mesh_size=mesh_size,
+        m=m,
+        k=k,
+        n=n,
+        warmup_iterations=warmup_iterations,
+        measured_iterations=measured_iterations,
+    )
     artifacts = [
+        *pre_artifacts,
+        _write_text(
+            output_dir / "experiment.json",
+            experiment.model_dump_json(indent=2) + "\n",
+            ArtifactRole.EXPERIMENT,
+        ),
         _write_text(
             output_dir / "distributed.xdsl",
-            canonical_text(distributed),
+            distributed_text,
             ArtifactRole.DISTRIBUTED_IR,
         ),
         _write_text(
-            output_dir / "physical.xdsl", canonical_text(physical), ArtifactRole.PHYSICAL_IR
+            output_dir / "physical.xdsl", physical_text, ArtifactRole.PHYSICAL_IR
         ),
         _write_text(
             output_dir / "lowered_pallas.py",
@@ -166,6 +320,9 @@ def run_distributed_matmul(
         "m": m,
         "k": k,
         "n": n,
+        "tile_m": plan.tile_m,
+        "tile_k": plan.tile_k,
+        "tile_n": plan.tile_n,
         "hardware": tpu7x_tensorcore_rates().model_dump(mode="json"),
     }
     model_input_artifact = _write_json(
@@ -190,7 +347,14 @@ def run_distributed_matmul(
         )
     )
     executable, mesh = plan.build(interpret=interpret)
-    generator = workload_rng(plan.schedule_sha256, "device-run", "attempt-0", "inputs")
+    workload_identity = semantic_sha256(
+        "distributed-matmul-workload",
+        str(mesh_size),
+        str(m),
+        str(k),
+        str(n),
+    )
+    generator = workload_rng(workload_identity, "device-run", "attempt-0", "inputs")
     lhs_host = generator.normal(size=plan.global_lhs_shape).astype(np.float32)
     rhs_host = generator.normal(size=plan.global_rhs_shape).astype(np.float32)
     lhs = jax.device_put(
@@ -218,8 +382,56 @@ def run_distributed_matmul(
             _write_text(output_dir / "compiler_hlo.txt", hlo + "\n", ArtifactRole.COMPILER_HLO),
         )
     )
+    _record_event(
+        ledger_path,
+        run_id,
+        RunState.COMPILED,
+        {
+            "stablehlo_sha256": artifacts[-2].sha256,
+            "compiler_hlo_sha256": artifacts[-1].sha256,
+            "compile_duration_ns": compile_duration_ns,
+        },
+    )
     for _ in range(warmup_iterations):
         compiled(lhs, rhs).block_until_ready()
+    actual = compiled(lhs, rhs)
+    actual.block_until_ready()
+    actual_host = np.asarray(actual)
+    lhs_quantized = np.asarray(lhs).astype(np.float32)
+    rhs_quantized = np.asarray(rhs).astype(np.float32)
+    expected_host = lhs_quantized @ rhs_quantized
+    absolute = np.abs(actual_host - expected_host)
+    denominator = np.maximum(np.abs(expected_host), np.finfo(np.float32).tiny)
+    maximum_absolute_error = float(absolute.max())
+    maximum_relative_error = float((absolute / denominator).max())
+    passed = bool(np.allclose(actual_host, expected_host, atol=1e-3, rtol=1e-3))
+    if not passed:
+        _record_event(
+            ledger_path,
+            run_id,
+            RunState.REJECTED,
+            {
+                "reason": "numerical mismatch",
+                "maximum_absolute_error": maximum_absolute_error,
+                "maximum_relative_error": maximum_relative_error,
+            },
+        )
+        raise ValueError(
+            "MATMUL_CORRECTNESS_FAILED "
+            f"maximum_absolute_error={maximum_absolute_error} "
+            f"maximum_relative_error={maximum_relative_error}"
+        )
+    _record_event(
+        ledger_path,
+        run_id,
+        RunState.CORRECT,
+        {
+            "lhs_sha256": array_sha256(lhs_quantized),
+            "rhs_sha256": array_sha256(rhs_quantized),
+            "output_sha256": array_sha256(actual_host),
+            "oracle_sha256": array_sha256(expected_host),
+        },
+    )
     samples: list[int] = []
     if mode is RunMode.TIMING:
         for _ in range(measured_iterations):
@@ -235,17 +447,6 @@ def run_distributed_matmul(
                     compiled(lhs, rhs).block_until_ready()
         finally:
             jax.profiler.stop_trace()
-    actual = compiled(lhs, rhs)
-    actual.block_until_ready()
-    actual_host = np.asarray(actual)
-    lhs_quantized = np.asarray(lhs).astype(np.float32)
-    rhs_quantized = np.asarray(rhs).astype(np.float32)
-    expected_host = lhs_quantized @ rhs_quantized
-    absolute = np.abs(actual_host - expected_host)
-    denominator = np.maximum(np.abs(expected_host), np.finfo(np.float32).tiny)
-    maximum_absolute_error = float(absolute.max())
-    maximum_relative_error = float((absolute / denominator).max())
-    passed = bool(np.allclose(actual_host, expected_host, atol=1e-3, rtol=1e-3))
     np.save(output_dir / "lhs.npy", lhs_quantized)
     np.save(output_dir / "rhs.npy", rhs_quantized)
     np.save(output_dir / "output.npy", actual_host)
@@ -270,15 +471,40 @@ def run_distributed_matmul(
         if len(samples) > 1 and statistics.mean(samples)
         else None
     )
+    terminal_state = {
+        RunMode.TIMING: RunState.TIMED,
+        RunMode.TRACE: RunState.TRACED,
+        RunMode.COUNTERS: RunState.COUNTERED,
+    }[mode]
+    terminal_payload: dict[str, object] = {
+        "measured_iterations": measured_iterations,
+        "warmup_iterations": warmup_iterations,
+    }
+    if mode is RunMode.TIMING:
+        terminal_payload.update(
+            median_ns=median_ns,
+            p90_ns=p90_ns,
+            sample_count=len(samples),
+        )
+    else:
+        xplanes = sorted((output_dir / "profile").rglob("*.xplane.pb"))
+        if len(xplanes) != 1:
+            raise ValueError(f"PROFILE_XPLANE_COUNT_MISMATCH observed={xplanes}")
+        terminal_payload.update(
+            xplane_sha256=_sha256(xplanes[0]),
+            xplane_size_bytes=xplanes[0].stat().st_size,
+        )
+    _record_event(ledger_path, run_id, terminal_state, terminal_payload)
+    artifacts.append(
+        ArtifactReference(
+            path=str(ledger_path),
+            size_bytes=ledger_path.stat().st_size,
+            sha256=_sha256(ledger_path),
+            role=ArtifactRole.EXECUTION_LEDGER,
+        )
+    )
     result = MatmulRunResult(
-        run_id=semantic_sha256(
-            plan.schedule_sha256,
-            mode.value,
-            str(mesh_size),
-            str(m),
-            str(k),
-            str(n),
-        ),
+        run_id=run_id,
         mode=mode,
         backend=jax.default_backend(),
         device_kind=jax.devices()[0].device_kind,

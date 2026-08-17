@@ -25,15 +25,15 @@ class RunState(StrEnum):
     REJECTED = "rejected"
 
 
-_NEXT_STATE = {
-    RunState.CREATED: RunState.VERIFIED,
-    RunState.VERIFIED: RunState.LOWERED,
-    RunState.LOWERED: RunState.COMPILED,
-    RunState.COMPILED: RunState.CORRECT,
-    RunState.CORRECT: RunState.TIMED,
-    RunState.TIMED: RunState.TRACED,
-    RunState.TRACED: RunState.COUNTERED,
-    RunState.COUNTERED: RunState.ACCEPTED,
+_NEXT_STATES = {
+    RunState.CREATED: frozenset({RunState.VERIFIED}),
+    RunState.VERIFIED: frozenset({RunState.LOWERED}),
+    RunState.LOWERED: frozenset({RunState.COMPILED}),
+    RunState.COMPILED: frozenset({RunState.CORRECT}),
+    RunState.CORRECT: frozenset({RunState.TIMED, RunState.TRACED, RunState.COUNTERED}),
+    RunState.TIMED: frozenset({RunState.ACCEPTED}),
+    RunState.TRACED: frozenset({RunState.ACCEPTED}),
+    RunState.COUNTERED: frozenset({RunState.ACCEPTED}),
 }
 
 
@@ -99,7 +99,7 @@ class ExperimentLedger:
             return self._append(run_id, state, payload, previous=previous)
         if previous in {RunState.ACCEPTED, RunState.REJECTED}:
             raise ValueError(f"run {run_id} is already terminal at {previous.value}")
-        if state is not RunState.REJECTED and _NEXT_STATE.get(previous) is not state:
+        if state is not RunState.REJECTED and state not in _NEXT_STATES.get(previous, ()):
             raise ValueError(f"invalid run transition {previous.value} -> {state.value}")
         return self._append(run_id, state, payload, previous=previous)
 

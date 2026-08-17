@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from tpu_cake.lowering import lower_distributed_matmul
+from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.pallas_lowering import lower_physical_matmul_to_pallas
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
 
@@ -19,6 +19,21 @@ def test_physical_matmul_lowers_to_stable_pallas_plan() -> None:
     assert first.global_rhs_shape == (32, 16)
     assert first.global_output_shape == (16, 16)
     assert first.source_sha256() == second.source_sha256()
+    source = first.render_source()
+    compile(source, "lowered_pallas.py", "exec")
+    for required in ("pallas_call", "BlockSpec", "shard_map", "psum_scatter", "check_vma=False"):
+        assert required in source
+
+
+def test_tile_choice_is_part_of_the_canonical_physical_schedule() -> None:
+    distributed = distributed_matmul_schedule(mesh_size=4, m=256, k=512, n=256)
+    whole = lower_physical_matmul_to_pallas(lower_distributed_matmul(distributed))
+    tiled = lower_physical_matmul_to_pallas(
+        lower_distributed_matmul(distributed, tile=MatmulTile(128, 128))
+    )
+    assert (tiled.tile_m, tiled.tile_k, tiled.tile_n) == (128, 128, 128)
+    assert tiled.schedule_sha256 != whole.schedule_sha256
+    assert tiled.source_sha256() != whole.source_sha256()
 
 
 def test_distributed_pallas_interpreter_matches_oracle() -> None:
