@@ -32,7 +32,13 @@ def _contract() -> MatmulSearchContract:
     )
 
 
-def _result(name: str, samples: tuple[int, ...], *, lhs: str = "1" * 64) -> MatmulRunResult:
+def _result(
+    name: str,
+    samples: tuple[int, ...],
+    *,
+    lhs: str = "1" * 64,
+    output: str = "8" * 64,
+) -> MatmulRunResult:
     return MatmulRunResult(
         run_id=("2" if name == "whole" else "3") * 64,
         mode=RunMode.TIMING,
@@ -43,7 +49,7 @@ def _result(name: str, samples: tuple[int, ...], *, lhs: str = "1" * 64) -> Matm
         pallas_source_sha256="6" * 64,
         lhs_sha256=lhs,
         rhs_sha256="7" * 64,
-        output_sha256="8" * 64,
+        output_sha256=output,
         passed=True,
         maximum_absolute_error=0,
         maximum_relative_error=0,
@@ -67,15 +73,18 @@ def _write_source_state(path) -> None:
 
 
 def test_search_alternates_order_and_promotes_only_clear_winner(tmp_path, monkeypatch) -> None:
-    def fake_load(_path, _contract, candidate, *, interpret):
+    def fake_load(_path, _contract, candidate, *, interpret, recompute_schedule):
         assert interpret is False
+        assert recompute_schedule is True
         _write_source_state(_path)
         samples = (
             (100, 101, 99, 100, 100)
             if candidate.name == "whole"
             else (70, 71, 69, 70, 70)
         )
-        return _result(candidate.name, samples)
+        result = _result(candidate.name, samples)
+        (_path / "result.json").write_text(result.model_dump_json(indent=2) + "\n")
+        return result
 
     monkeypatch.setattr("tpu_cake.search._load_or_run", fake_load)
     result = run_matmul_search(tmp_path / "search", _contract())
@@ -98,13 +107,36 @@ def test_search_alternates_order_and_promotes_only_clear_winner(tmp_path, monkey
 
 
 def test_search_rejects_unmatched_inputs(tmp_path, monkeypatch) -> None:
-    def fake_load(_path, _contract, candidate, *, interpret):
+    def fake_load(_path, _contract, candidate, *, interpret, recompute_schedule):
+        assert recompute_schedule is True
         _write_source_state(_path)
         lhs = "1" * 64 if candidate.name == "whole" else "9" * 64
-        return _result(candidate.name, (100, 100, 100), lhs=lhs)
+        result = _result(candidate.name, (100, 100, 100), lhs=lhs)
+        (_path / "result.json").write_text(result.model_dump_json(indent=2) + "\n")
+        return result
 
     monkeypatch.setattr("tpu_cake.search._load_or_run", fake_load)
     with pytest.raises(ValueError, match="INPUTS_ARE_NOT_MATCHED"):
+        run_matmul_search(tmp_path / "search", _contract())
+
+
+def test_search_rejects_nondeterministic_repeats_within_one_candidate(
+    tmp_path, monkeypatch
+) -> None:
+    def fake_load(_path, _contract, candidate, *, interpret, recompute_schedule):
+        _write_source_state(_path)
+        round_index = int(_path.parent.name.removeprefix("round-"))
+        output = (
+            ("8" if round_index == 0 else "9") * 64
+            if candidate.name == "whole"
+            else "8" * 64
+        )
+        result = _result(candidate.name, (100, 100, 100), output=output)
+        (_path / "result.json").write_text(result.model_dump_json(indent=2) + "\n")
+        return result
+
+    monkeypatch.setattr("tpu_cake.search._load_or_run", fake_load)
+    with pytest.raises(ValueError, match="OUTPUTS_ARE_NOT_DETERMINISTIC"):
         run_matmul_search(tmp_path / "search", _contract())
 
 

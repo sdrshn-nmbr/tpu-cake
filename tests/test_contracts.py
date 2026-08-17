@@ -24,8 +24,7 @@ from tpu_cake.metrics import (
     Quantity,
     Unit,
 )
-from tpu_cake.receipt import validate_receipt
-from tpu_cake.run_bundle import _counter_expectation
+from tpu_cake.receipt import counter_expectation, validate_receipt
 from tpu_cake.workloads import matmul_experiment
 
 
@@ -46,7 +45,7 @@ def test_profile_expectation_rejects_unknown_fields() -> None:
 
 
 def test_counter_capture_has_a_distinct_physical_evidence_contract() -> None:
-    expectation = _counter_expectation(matmul_experiment())
+    expectation = counter_expectation(matmul_experiment())
     assert not expectation.require_tensor_core_activity
     assert expectation.require_hbm_read_counters
     assert expectation.require_hbm_write_counters

@@ -2,17 +2,28 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import statistics
 from pathlib import Path
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from tpu_cake.ledger import RunState, read_ledger_history
+from tpu_cake.contracts import ArtifactReference, ArtifactRole
+from tpu_cake.identity import array_sha256, semantic_sha256
+from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.pallas_lowering import lower_physical_matmul_to_pallas
-from tpu_cake.runner import MatmulRunResult, RunMode, run_distributed_matmul
-from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
+from tpu_cake.runner import (
+    MatmulRunResult,
+    RunMode,
+    run_distributed_matmul,
+    validate_profiler_contract,
+)
+from tpu_cake.workloads.distributed_matmul import (
+    distributed_matmul_experiment,
+    distributed_matmul_schedule,
+)
 
 
 class MatmulSearchCandidate(BaseModel):
@@ -117,6 +128,223 @@ def _validate_artifact(path: Path, size_bytes: int, sha256: str) -> None:
         raise ValueError(f"SEARCH_ARTIFACT_HASH_CHANGED path={path}")
 
 
+def _resolve_artifact(run_path: Path, artifact: ArtifactReference) -> Path:
+    declared = Path(artifact.path)
+    candidates = (
+        declared,
+        run_path / declared,
+        run_path / declared.name,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return run_path / declared.name
+
+
+def _named_artifact(
+    run_path: Path,
+    result: MatmulRunResult,
+    name: str,
+    role: ArtifactRole,
+) -> Path:
+    matches = [
+        artifact
+        for artifact in result.artifacts
+        if Path(artifact.path).name == name and artifact.role is role
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"SEARCH_ARTIFACT_CONTRACT_MISMATCH name={name} role={role.value}"
+        )
+    return _resolve_artifact(run_path, matches[0])
+
+
+def _validate_saved_run_evidence(
+    run_path: Path,
+    contract: MatmulSearchContract,
+    candidate: MatmulSearchCandidate,
+    result: MatmulRunResult,
+) -> None:
+    physical = _named_artifact(
+        run_path, result, "physical.xdsl", ArtifactRole.PHYSICAL_IR
+    )
+    pallas = _named_artifact(
+        run_path, result, "lowered_pallas.py", ArtifactRole.PALLAS_SOURCE
+    )
+    if hashlib.sha256(physical.read_bytes()).hexdigest() != result.schedule_sha256:
+        raise ValueError(f"SEARCH_SCHEDULE_ARTIFACT_MISMATCH candidate={candidate.name}")
+    if hashlib.sha256(pallas.read_bytes()).hexdigest() != result.pallas_source_sha256:
+        raise ValueError(f"SEARCH_PALLAS_ARTIFACT_MISMATCH candidate={candidate.name}")
+
+    lhs = np.load(
+        _named_artifact(run_path, result, "lhs.npy", ArtifactRole.CORRECTNESS_INPUT),
+        allow_pickle=False,
+    )
+    rhs = np.load(
+        _named_artifact(run_path, result, "rhs.npy", ArtifactRole.CORRECTNESS_INPUT),
+        allow_pickle=False,
+    )
+    output = np.load(
+        _named_artifact(run_path, result, "output.npy", ArtifactRole.CORRECTNESS_OUTPUT),
+        allow_pickle=False,
+    )
+    oracle = np.load(
+        _named_artifact(run_path, result, "oracle.npy", ArtifactRole.ORACLE_OUTPUT),
+        allow_pickle=False,
+    )
+    if lhs.shape != (contract.m, contract.k) or rhs.shape != (contract.k, contract.n):
+        raise ValueError(f"SEARCH_INPUT_SHAPE_MISMATCH candidate={candidate.name}")
+    if output.shape != (contract.m, contract.n) or oracle.shape != output.shape:
+        raise ValueError(f"SEARCH_OUTPUT_SHAPE_MISMATCH candidate={candidate.name}")
+    if (
+        array_sha256(lhs) != result.lhs_sha256
+        or array_sha256(rhs) != result.rhs_sha256
+        or array_sha256(output) != result.output_sha256
+    ):
+        raise ValueError(f"SEARCH_ARRAY_IDENTITY_MISMATCH candidate={candidate.name}")
+    absolute = np.abs(output - oracle)
+    denominator = np.maximum(np.abs(oracle), np.finfo(np.float32).tiny)
+    maximum_absolute_error = float(absolute.max())
+    maximum_relative_error = float((absolute / denominator).max())
+    if not math.isclose(
+        maximum_absolute_error, result.maximum_absolute_error, rel_tol=0, abs_tol=1e-12
+    ) or not math.isclose(
+        maximum_relative_error, result.maximum_relative_error, rel_tol=0, abs_tol=1e-12
+    ):
+        raise ValueError(f"SEARCH_REPORTED_ERROR_MISMATCH candidate={candidate.name}")
+    passed = bool(np.allclose(output, oracle, atol=1e-3, rtol=1e-3))
+    if result.passed is not passed:
+        raise ValueError(f"SEARCH_CORRECTNESS_VERDICT_MISMATCH candidate={candidate.name}")
+
+    samples = list(result.samples_ns)
+    expected_median = int(statistics.median(samples))
+    expected_p90 = _percentile(samples, 0.9)
+    expected_coefficient = (
+        statistics.pstdev(samples) / statistics.mean(samples)
+        if len(samples) > 1 and statistics.mean(samples)
+        else None
+    )
+    if result.median_ns != expected_median or result.p90_ns != expected_p90:
+        raise ValueError(f"SEARCH_TIMING_STATISTIC_MISMATCH candidate={candidate.name}")
+    if expected_coefficient is None:
+        if result.coefficient_of_variation is not None:
+            raise ValueError(f"SEARCH_TIMING_STATISTIC_MISMATCH candidate={candidate.name}")
+    elif result.coefficient_of_variation is None or not math.isclose(
+        result.coefficient_of_variation,
+        expected_coefficient,
+        rel_tol=1e-12,
+        abs_tol=1e-15,
+    ):
+        raise ValueError(f"SEARCH_TIMING_STATISTIC_MISMATCH candidate={candidate.name}")
+
+    experiment_path = _named_artifact(
+        run_path, result, "experiment.json", ArtifactRole.EXPERIMENT
+    )
+    expected_experiment = distributed_matmul_experiment(
+        schedule_sha256=result.schedule_sha256,
+        mesh_size=contract.mesh_size,
+        m=contract.m,
+        k=contract.k,
+        n=contract.n,
+        warmup_iterations=contract.warmup_iterations,
+        measured_iterations=contract.measured_iterations,
+    )
+    if experiment_path.read_text() != (
+        expected_experiment.model_dump_json(indent=2, exclude_computed_fields=True) + "\n"
+    ):
+        raise ValueError(f"SEARCH_EXPERIMENT_MISMATCH candidate={candidate.name}")
+
+    profiler_path = _named_artifact(
+        run_path, result, "profiler_config.json", ArtifactRole.PROFILER_CONFIG
+    )
+    validate_profiler_contract(RunMode.TIMING, json.loads(profiler_path.read_text()))
+    source_state_path = _named_artifact(
+        run_path, result, "source_state.json", ArtifactRole.SOURCE_STATE
+    )
+    source_diff_path = _named_artifact(
+        run_path, result, "source_diff.patch", ArtifactRole.SOURCE_DIFF
+    )
+    source_state = json.loads(source_state_path.read_text())
+    if source_state.get("git_dirty") is not False:
+        raise ValueError(f"SEARCH_SOURCE_IS_DIRTY candidate={candidate.name}")
+    if source_state.get("source_diff_sha256") != hashlib.sha256(
+        source_diff_path.read_bytes()
+    ).hexdigest():
+        raise ValueError(f"SEARCH_SOURCE_DIFF_MISMATCH candidate={candidate.name}")
+
+    expected_run_id = semantic_sha256(
+        "distributed-matmul-run",
+        RunMode.TIMING.value,
+        str(contract.mesh_size),
+        str(contract.m),
+        str(contract.k),
+        str(contract.n),
+        str(candidate.tile_m),
+        str(candidate.tile_n),
+    )
+    if result.run_id != expected_run_id:
+        raise ValueError(f"SEARCH_RUN_ID_MISMATCH candidate={candidate.name}")
+
+    distributed = _named_artifact(
+        run_path, result, "distributed.xdsl", ArtifactRole.DISTRIBUTED_IR
+    )
+    stablehlo = _named_artifact(run_path, result, "stablehlo.txt", ArtifactRole.STABLEHLO)
+    compiler_hlo = _named_artifact(
+        run_path, result, "compiler_hlo.txt", ArtifactRole.COMPILER_HLO
+    )
+    ledger = _named_artifact(
+        run_path, result, "ledger.sqlite", ArtifactRole.EXECUTION_LEDGER
+    )
+    expected_payloads = (
+        {
+            "mode": RunMode.TIMING.value,
+            "mesh_size": contract.mesh_size,
+            "m": contract.m,
+            "k": contract.k,
+            "n": contract.n,
+            "tile_m": candidate.tile_m,
+            "tile_n": candidate.tile_n,
+        },
+        {"distributed_ir_sha256": hashlib.sha256(distributed.read_bytes()).hexdigest()},
+        {
+            "physical_ir_sha256": result.schedule_sha256,
+            "schedule_sha256": result.schedule_sha256,
+            "pallas_source_sha256": result.pallas_source_sha256,
+        },
+        {
+            "stablehlo_sha256": hashlib.sha256(stablehlo.read_bytes()).hexdigest(),
+            "compiler_hlo_sha256": hashlib.sha256(compiler_hlo.read_bytes()).hexdigest(),
+            "compile_duration_ns": result.compile_duration_ns,
+        },
+        {
+            "lhs_sha256": result.lhs_sha256,
+            "rhs_sha256": result.rhs_sha256,
+            "output_sha256": result.output_sha256,
+            "oracle_sha256": array_sha256(oracle),
+        },
+        {
+            "measured_iterations": result.measured_iterations,
+            "warmup_iterations": result.warmup_iterations,
+            "median_ns": result.median_ns,
+            "p90_ns": result.p90_ns,
+            "sample_count": len(samples),
+        },
+    )
+    history = read_ledger_history(ledger, result.run_id)
+    expected_states = (
+        RunState.CREATED,
+        RunState.VERIFIED,
+        RunState.LOWERED,
+        RunState.COMPILED,
+        RunState.CORRECT,
+        RunState.TIMED,
+    )
+    if tuple(event.state for event in history) != expected_states or tuple(
+        event.payload_sha256 for event in history
+    ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
+        raise ValueError(f"SEARCH_LEDGER_EVIDENCE_MISMATCH candidate={candidate.name}")
+
+
 def _validate_resumed_result(
     path: Path,
     contract: MatmulSearchContract,
@@ -124,6 +352,7 @@ def _validate_resumed_result(
     result: MatmulRunResult,
     *,
     interpret: bool,
+    recompute_schedule: bool,
 ) -> None:
     invocation = json.loads((path / "invocation.json").read_text())
     expected_invocation = {
@@ -140,22 +369,9 @@ def _validate_resumed_result(
     }
     if invocation != expected_invocation:
         raise ValueError(f"STALE_SEARCH_INVOCATION candidate={candidate.name}")
-    plan = lower_physical_matmul_to_pallas(
-        lower_distributed_matmul(
-            distributed_matmul_schedule(
-                mesh_size=contract.mesh_size,
-                m=contract.m,
-                k=contract.k,
-                n=contract.n,
-            ),
-            tile=MatmulTile(candidate.tile_m, candidate.tile_n),
-        )
-    )
     expected_backend = "cpu" if interpret else "tpu"
     if (
         result.mode is not RunMode.TIMING
-        or result.schedule_sha256 != plan.schedule_sha256
-        or result.pallas_source_sha256 != plan.source_sha256()
         or result.backend != expected_backend
         or result.device_count != contract.mesh_size
         or result.warmup_iterations != contract.warmup_iterations
@@ -163,9 +379,27 @@ def _validate_resumed_result(
         or len(result.samples_ns) != contract.measured_iterations
     ):
         raise ValueError(f"STALE_SEARCH_RESULT candidate={candidate.name}")
+    if recompute_schedule:
+        plan = lower_physical_matmul_to_pallas(
+            lower_distributed_matmul(
+                distributed_matmul_schedule(
+                    mesh_size=contract.mesh_size,
+                    m=contract.m,
+                    k=contract.k,
+                    n=contract.n,
+                ),
+                tile=MatmulTile(candidate.tile_m, candidate.tile_n),
+            )
+        )
+        if (
+            result.schedule_sha256 != plan.schedule_sha256
+            or result.pallas_source_sha256 != plan.source_sha256()
+        ):
+            raise ValueError(f"STALE_SEARCH_RESULT candidate={candidate.name}")
     for artifact in result.artifacts:
-        artifact_path = Path(artifact.path)
+        artifact_path = _resolve_artifact(path, artifact)
         _validate_artifact(artifact_path, artifact.size_bytes, artifact.sha256)
+    _validate_saved_run_evidence(path, contract, candidate, result)
     ledger_path = path / "ledger.sqlite"
     if not ledger_path.is_file():
         raise ValueError(f"SEARCH_LEDGER_MISSING candidate={candidate.name}")
@@ -187,11 +421,19 @@ def _load_or_run(
     candidate: MatmulSearchCandidate,
     *,
     interpret: bool,
+    recompute_schedule: bool = True,
 ) -> MatmulRunResult:
     result_path = path / "result.json"
     if result_path.is_file():
         result = MatmulRunResult.model_validate_json(result_path.read_text())
-        _validate_resumed_result(path, contract, candidate, result, interpret=interpret)
+        _validate_resumed_result(
+            path,
+            contract,
+            candidate,
+            result,
+            interpret=interpret,
+            recompute_schedule=recompute_schedule,
+        )
         return result
     if path.exists():
         raise ValueError(f"INCOMPLETE_SEARCH_RUN path={path}")
@@ -216,6 +458,7 @@ def run_matmul_search(
     *,
     interpret: bool = False,
     write_result: bool = True,
+    recompute_schedules: bool = True,
 ) -> MatmulSearchResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     contract_path = output_dir / "contract.json"
@@ -237,7 +480,13 @@ def run_matmul_search(
                 (
                     round_index,
                     candidate.name,
-                    _load_or_run(path, contract, candidate, interpret=interpret),
+                    _load_or_run(
+                        path,
+                        contract,
+                        candidate,
+                        interpret=interpret,
+                        recompute_schedule=recompute_schedules,
+                    ),
                     path,
                 )
             )
@@ -250,6 +499,13 @@ def run_matmul_search(
     }
     if len(input_hashes) != 1:
         raise ValueError("SEARCH_INPUTS_ARE_NOT_MATCHED")
+    output_hashes_by_candidate: dict[str, set[str]] = {
+        candidate.name: set() for candidate in contract.candidates
+    }
+    for _, name, result, _ in run_results:
+        output_hashes_by_candidate[name].add(result.output_sha256)
+    if any(len(hashes) != 1 for hashes in output_hashes_by_candidate.values()):
+        raise ValueError("SEARCH_OUTPUTS_ARE_NOT_DETERMINISTIC")
 
     samples_by_candidate: dict[str, list[int]] = {
         candidate.name: [] for candidate in contract.candidates
@@ -268,6 +524,15 @@ def run_matmul_search(
     }
     if len(source_identities) != 1:
         raise ValueError("SEARCH_SOURCE_IDENTITIES_ARE_NOT_MATCHED")
+    candidate_code_identities: dict[str, set[tuple[str, str]]] = {
+        candidate.name: set() for candidate in contract.candidates
+    }
+    for _, name, run_result, _ in run_results:
+        candidate_code_identities[name].add(
+            (run_result.schedule_sha256, run_result.pallas_source_sha256)
+        )
+    if any(len(identities) != 1 for identities in candidate_code_identities.values()):
+        raise ValueError("SEARCH_CANDIDATE_CODE_IDENTITIES_ARE_NOT_STABLE")
     round_medians: dict[str, dict[int, float]] = {
         candidate.name: {} for candidate in contract.candidates
     }
@@ -343,12 +608,23 @@ def validate_matmul_search_result(
     expected: MatmulSearchResult,
     *,
     interpret: bool = False,
+    recompute_schedules: bool = True,
 ) -> None:
+    required_paths = {
+        f"round-{round_index:02d}/{candidate.name}"
+        for round_index in range(contract.rounds)
+        for candidate in contract.candidates
+    }
+    if set(expected.run_results) != required_paths or any(
+        not (output_dir / path / "result.json").is_file() for path in required_paths
+    ):
+        raise ValueError("SEARCH_RESULT_RUN_SET_IS_INCOMPLETE")
     observed = run_matmul_search(
         output_dir,
         contract,
         interpret=interpret,
         write_result=False,
+        recompute_schedules=recompute_schedules,
     )
     if observed != expected:
         raise ValueError("SEARCH_RESULT_DOES_NOT_MATCH_VERIFIED_RUNS")

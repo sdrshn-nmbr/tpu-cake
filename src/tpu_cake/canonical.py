@@ -11,8 +11,9 @@ from xdsl.printer import Printer
 from tpu_cake.dialects.distributed_tensor import (
     DistributedTensor,
     ElementwiseOp,
+    ProgramOp,
 )
-from tpu_cake.dialects.tpu_schedule import TPUSchedule, ViewOp
+from tpu_cake.dialects.tpu_schedule import AllocOp, KernelOp, TPUSchedule, ViewOp
 
 
 def _normalize_semantics(module: ModuleOp) -> None:
@@ -29,6 +30,7 @@ def _normalize_semantics(module: ModuleOp) -> None:
             next_value += 1
 
     alias_names: dict[str, str] = {}
+    allocation_index = 0
     for operation in module.walk():
         if isinstance(operation, ElementwiseOp) and operation.function.data in {
             "add",
@@ -41,6 +43,13 @@ def _normalize_semantics(module: ModuleOp) -> None:
             declared = operation.alias_group.data
             normalized = alias_names.setdefault(declared, f"alias{len(alias_names)}")
             operation.properties["alias_group"] = type(operation.alias_group)(normalized)
+        if isinstance(operation, AllocOp):
+            operation.properties["role"] = type(operation.role)(f"alloc{allocation_index}")
+            allocation_index += 1
+        if isinstance(operation, KernelOp):
+            operation.properties["sym_name"] = type(operation.sym_name)("kernel")
+        if isinstance(operation, ProgramOp):
+            operation.properties["sym_name"] = type(operation.sym_name)("program")
 
 
 def canonical_text(module: ModuleOp) -> str:

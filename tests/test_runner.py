@@ -5,11 +5,25 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+from tpu_cake.contracts import (
+    ArtifactReference,
+    CorrectnessResult,
+    KernelExperiment,
+    RunReceipt,
+    RuntimeIdentity,
+)
 from tpu_cake.ledger import ExperimentLedger, RunState
-from tpu_cake.runner import RunMode, _profiler_contract, validate_profiler_contract
+from tpu_cake.receipt import _validate_saved_matmul_phase
+from tpu_cake.runner import (
+    MatmulRunResult,
+    RunMode,
+    _profiler_contract,
+    validate_profiler_contract,
+)
 
 
 def test_counter_profiler_contract_retains_counter_only_options() -> None:
@@ -91,6 +105,8 @@ def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
     assert (output / "invocation.json").exists()
     assert (output / "profiler_config.json").exists()
     assert (output / "source_state.json").exists()
+    assert all(not Path(artifact["path"]).is_absolute() for artifact in result["artifacts"])
+    assert all((output / artifact["path"]).is_file() for artifact in result["artifacts"])
     with ExperimentLedger(output / "ledger.sqlite") as ledger:
         history = tuple(event.state for event in ledger.history(result["run_id"]))
     assert history == (
@@ -101,6 +117,76 @@ def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
         RunState.CORRECT,
         RunState.TIMED,
     )
+
+
+def test_saved_run_replay_recomputes_correctness_and_binds_every_artifact(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
+    root = tmp_path / "bundle"
+    output = root / "timing"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tpu_cake.cli",
+            "run-matmul",
+            "--output-dir",
+            str(output),
+            "--mode",
+            "timing",
+            "--mesh-size",
+            "4",
+            "--m",
+            "16",
+            "--k",
+            "32",
+            "--n",
+            "16",
+            "--warmup-iterations",
+            "1",
+            "--measured-iterations",
+            "3",
+            "--tile-m",
+            "8",
+            "--tile-n",
+            "8",
+            "--interpret",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    result = MatmulRunResult.model_validate_json((output / "result.json").read_text())
+    experiment = KernelExperiment.model_validate_json((output / "experiment.json").read_text())
+    artifacts = tuple(
+        ArtifactReference(
+            path=str(Path("timing") / artifact.path),
+            size_bytes=artifact.size_bytes,
+            sha256=artifact.sha256,
+            role=artifact.role,
+        )
+        for artifact in result.artifacts
+    )
+    receipt = RunReceipt(
+        experiment_id=experiment.experiment_id,
+        schedule_sha256=experiment.schedule_sha256,
+        status="rejected",
+        runtime=RuntimeIdentity(python="3.13"),
+        correctness=CorrectnessResult(passed=True, oracle="test"),
+        required_semantic_properties=(),
+        metrics=(),
+        artifacts=artifacts,
+        phases=(),
+    )
+
+    _validate_saved_matmul_phase(root, receipt, experiment, "timing", result)
+    forged = result.model_copy(update={"maximum_absolute_error": 0.5})
+    with pytest.raises(ValueError, match="REPORTED_ERROR_MISMATCH"):
+        _validate_saved_matmul_phase(root, receipt, experiment, "timing", forged)
+    incomplete = receipt.model_copy(update={"artifacts": receipt.artifacts[1:]})
+    with pytest.raises(ValueError, match="NOT_BOUND_BY_RECEIPT"):
+        _validate_saved_matmul_phase(root, incomplete, experiment, "timing", result)
 
 
 def test_candidates_use_identical_workload_inputs(tmp_path) -> None:

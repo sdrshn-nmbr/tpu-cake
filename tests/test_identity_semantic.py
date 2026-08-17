@@ -112,6 +112,43 @@ def test_alias_names_are_alpha_normalized_for_identity() -> None:
     assert schedule_sha256(first.module()) == schedule_sha256(second.module())
 
 
+def test_human_labels_are_alpha_normalized_for_schedule_identity() -> None:
+    spec = buffer(
+        (16,),
+        ("M",),
+        bf16,
+        memory=MemorySpace.VMEM,
+    )
+    first = KernelBuilder(
+        "first-human-name",
+        "tpu",
+        (),
+        vmem_capacity_bytes=1 << 20,
+        smem_capacity_bytes=1 << 20,
+    )
+    second = KernelBuilder(
+        "second-human-name",
+        "tpu",
+        (),
+        vmem_capacity_bytes=1 << 20,
+        smem_capacity_bytes=1 << 20,
+    )
+    first.alloc(spec, "lhs-tile")
+    second.alloc(spec, "a-label-with-no-execution-meaning")
+
+    assert schedule_sha256(first.module()) == schedule_sha256(second.module())
+
+
+def test_distributed_program_symbol_is_not_schedule_identity() -> None:
+    value = tensor(f32, (("M", 16),))
+    first = DistributedProgramBuilder("first-human-name", {"t": 1}, (value,))
+    second = DistributedProgramBuilder("second-human-name", {"t": 1}, (value,))
+
+    assert schedule_sha256(first.module(first.inputs[0])) == schedule_sha256(
+        second.module(second.inputs[0])
+    )
+
+
 def test_verifier_failure_points_to_source_expression() -> None:
     lhs = tensor(bf16, (("M", 16), ("K", 32)), sharding={"K": ("t",)})
     rhs = tensor(bf16, (("K", 32), ("N", 16)), sharding={"K": ("t",)})

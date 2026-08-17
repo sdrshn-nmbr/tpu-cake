@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tpu_cake.metrics import (
     FormulaIdentity,
@@ -38,6 +38,30 @@ class MatmulPhysicalCounts(BaseModel):
     hbm_write_bytes_per_device: int = Field(gt=0)
     ici_bidirectional_bytes_per_device: int = Field(gt=0)
     peak_live_vmem_bytes_per_device: int = Field(gt=0)
+
+
+class MatmulCostModelInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mesh_size: int = Field(gt=0)
+    m: int = Field(gt=0)
+    k: int = Field(gt=0)
+    n: int = Field(gt=0)
+    tile_m: int = Field(gt=0)
+    tile_k: int = Field(gt=0)
+    tile_n: int = Field(gt=0)
+    hardware: HardwareRateModel
+
+    @model_validator(mode="after")
+    def dimensions_are_compatible(self) -> MatmulCostModelInput:
+        if self.k % self.mesh_size or self.n % self.mesh_size:
+            raise ValueError("distributed matmul K and N must divide the mesh size")
+        if self.m % self.tile_m or self.n % self.tile_n:
+            raise ValueError("matmul tiles must divide M and N")
+        if self.tile_k != self.k // self.mesh_size:
+            raise ValueError("matmul tile K must equal the local K extent")
+        return self
 
 
 class CostModelReport(BaseModel):
@@ -204,3 +228,29 @@ def estimate_distributed_matmul(
         ),
         metrics=metrics,
     )
+
+
+def estimate_distributed_matmul_input(
+    model_input: MatmulCostModelInput,
+    *,
+    source: MetricSource,
+) -> CostModelReport:
+    local_k = model_input.k // model_input.mesh_size
+    plan = PallasMatmulPlan(
+        name="distributed_matmul_physical",
+        schedule_sha256=model_input.schedule_sha256,
+        mesh_axis="t",
+        mesh_size=model_input.mesh_size,
+        lhs_local_shape=(model_input.m, local_k),
+        rhs_local_shape=(local_k, model_input.n),
+        partial_local_shape=(model_input.m, model_input.n),
+        output_local_shape=(model_input.m, model_input.n // model_input.mesh_size),
+        lhs_sharding=("", "t"),
+        rhs_sharding=("t", ""),
+        output_sharding=("", "t"),
+        scatter_dimension=1,
+        tile_m=model_input.tile_m,
+        tile_k=model_input.tile_k,
+        tile_n=model_input.tile_n,
+    )
+    return estimate_distributed_matmul(plan, hardware=model_input.hardware, source=source)

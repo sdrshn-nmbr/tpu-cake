@@ -1,6 +1,11 @@
 from decimal import Decimal
 
-from tpu_cake.cost_model import estimate_distributed_matmul, tpu7x_tensorcore_rates
+from tpu_cake.cost_model import (
+    MatmulCostModelInput,
+    estimate_distributed_matmul,
+    estimate_distributed_matmul_input,
+    tpu7x_tensorcore_rates,
+)
 from tpu_cake.lowering import lower_distributed_matmul
 from tpu_cake.metrics import MetricSource
 from tpu_cake.pallas_lowering import lower_physical_matmul_to_pallas
@@ -29,3 +34,19 @@ def test_distributed_matmul_cost_model_has_units_formulas_and_provenance() -> No
     assert all(metric.formula is not None for metric in report.metrics)
     intensity = next(metric for metric in report.metrics if metric.name == "arithmetic_intensity")
     assert intensity.quantity.value > Decimal(20)
+
+    replayed = estimate_distributed_matmul_input(
+        MatmulCostModelInput(
+            schedule_sha256=plan.schedule_sha256,
+            mesh_size=plan.mesh_size,
+            m=plan.global_lhs_shape[0],
+            k=plan.global_lhs_shape[1],
+            n=plan.global_rhs_shape[1],
+            tile_m=plan.tile_m,
+            tile_k=plan.tile_k,
+            tile_n=plan.tile_n,
+            hardware=tpu7x_tensorcore_rates(),
+        ),
+        source=report.metrics[0].sources[0],
+    )
+    assert replayed == report

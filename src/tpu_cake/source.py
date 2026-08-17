@@ -40,17 +40,34 @@ def _source_location(operation: Operation) -> str | None:
     return None
 
 
+def _source_context(operation: Operation) -> tuple[str, ...]:
+    entries: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for nested in operation.walk():
+        location = _source_location(nested)
+        if location is None:
+            continue
+        entry = (nested.name, location)
+        if entry not in seen:
+            seen.add(entry)
+            entries.append(f"{nested.name} at {location}")
+    return tuple(entries)
+
+
+def _raise_with_sources(operation: Operation, error: VerifyException) -> None:
+    context = _source_context(operation)
+    if not context:
+        raise error
+    raise VerifyException(f"{error}: source context: {'; '.join(context)}") from error
+
+
 def verify_with_sources(module: ModuleOp) -> None:
     for operation in module.walk():
-        if operation.regions:
-            continue
         try:
             operation.verify(verify_nested_ops=False)
         except VerifyException as error:
-            location = _source_location(operation)
-            if location is None:
-                raise
-            raise VerifyException(
-                f"{error}: {operation.name} at {location}"
-            ) from error
-    module.verify()
+            _raise_with_sources(operation, error)
+    try:
+        module.verify()
+    except VerifyException as error:
+        _raise_with_sources(module, error)

@@ -127,3 +127,44 @@ def test_counter_contract_rejects_missing_device_planes() -> None:
     assert "INSUFFICIENT_COUNTER_DEVICE_PLANES" in {
         finding.code for finding in assessment.findings
     }
+
+
+def test_profile_contract_rejects_empty_physical_device_planes() -> None:
+    capture = _capture(rpa_markers=1, forbidden_hits=0)
+    empty = capture.model_copy(
+        update={
+            "planes": (
+                capture.planes[0].model_copy(
+                    update={"event_count": 0, "tensor_core_event_count": 0}
+                ),
+            )
+        }
+    )
+    assessment = assess_evidence(empty, _expectation())
+    assert not assessment.accepted
+    assert "INSUFFICIENT_TPU_DEVICE_EVENTS" in {
+        finding.code for finding in assessment.findings
+    }
+
+
+def test_counter_rates_are_fail_closed_when_the_contract_requires_them() -> None:
+    capture = _capture(rpa_markers=1, forbidden_hits=0)
+    one_snapshot = capture.model_copy(
+        update={
+            "counters": capture.counters.model_copy(
+                update={"snapshots_per_tpu_core": {"0": 1}}
+            )
+        }
+    )
+    expectation = _expectation().model_copy(
+        update={
+            "require_hbm_read_counters": True,
+            "require_hbm_write_counters": True,
+            "require_cycle_counters": True,
+        }
+    )
+    assessment = assess_evidence(one_snapshot, expectation)
+    assert not assessment.accepted
+    assert "COUNTER_RATES_NOT_DERIVABLE" in {
+        finding.code for finding in assessment.findings
+    }

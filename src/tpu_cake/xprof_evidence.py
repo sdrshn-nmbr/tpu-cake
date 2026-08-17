@@ -200,6 +200,7 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
     findings: list[Finding] = []
     tpu_planes = [plane for plane in capture.planes if _TPU_CORE.fullmatch(plane.name)]
     tensor_core_events = sum(plane.tensor_core_event_count for plane in tpu_planes)
+    tpu_device_events = sum(plane.event_count for plane in tpu_planes)
 
     if len(tpu_planes) < expectation.minimum_tpu_device_planes:
         findings.append(
@@ -219,6 +220,18 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
                 code="NO_TENSOR_CORE_ACTIVITY",
                 severity=FindingSeverity.ERROR,
                 message="capture has no Tensor Core events",
+            )
+        )
+    if tpu_device_events < 1:
+        findings.append(
+            Finding(
+                code="INSUFFICIENT_TPU_DEVICE_EVENTS",
+                severity=FindingSeverity.ERROR,
+                message="capture does not contain enough physical TPU device activity",
+                evidence=(
+                    f"observed={tpu_device_events}",
+                    "required=1",
+                ),
             )
         )
 
@@ -312,21 +325,19 @@ def assess_evidence(capture: CaptureEvidence, expectation: ProfileExpectation) -
                     )
                 )
 
-    if (
-        any(
-            requirement
-            for requirement in (
-                expectation.require_hbm_read_counters,
-                expectation.require_hbm_write_counters,
-                expectation.require_cycle_counters,
-            )
+    counters_requested = any(
+        requirement
+        for requirement in (
+            expectation.require_hbm_read_counters,
+            expectation.require_hbm_write_counters,
+            expectation.require_cycle_counters,
         )
-        and not capture.counters.rates_derivable
-    ):
+    )
+    if counters_requested and not capture.counters.rates_derivable:
         findings.append(
             Finding(
                 code="COUNTER_RATES_NOT_DERIVABLE",
-                severity=FindingSeverity.WARNING,
+                severity=FindingSeverity.ERROR,
                 message="hardware counters exist but have fewer than two snapshots per TPU core",
             )
         )

@@ -19,7 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
-from tpu_cake.cost_model import estimate_distributed_matmul, tpu7x_tensorcore_rates
+from tpu_cake.cost_model import (
+    MatmulCostModelInput,
+    estimate_distributed_matmul_input,
+    tpu7x_tensorcore_rates,
+)
 from tpu_cake.identity import array_sha256, semantic_sha256, workload_rng
 from tpu_cake.ledger import ExperimentLedger, RunState
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
@@ -351,27 +355,28 @@ def run_distributed_matmul(
             ArtifactRole.PALLAS_SOURCE,
         ),
     ]
-    model_input = {
-        "schedule_sha256": plan.schedule_sha256,
-        "mesh_size": mesh_size,
-        "m": m,
-        "k": k,
-        "n": n,
-        "tile_m": plan.tile_m,
-        "tile_k": plan.tile_k,
-        "tile_n": plan.tile_n,
-        "hardware": tpu7x_tensorcore_rates().model_dump(mode="json"),
-    }
+    model_input = MatmulCostModelInput(
+        schedule_sha256=plan.schedule_sha256,
+        mesh_size=mesh_size,
+        m=m,
+        k=k,
+        n=n,
+        tile_m=plan.tile_m,
+        tile_k=plan.tile_k,
+        tile_n=plan.tile_n,
+        hardware=tpu7x_tensorcore_rates(),
+    )
     model_input_artifact = _write_json(
-        output_dir / "cost_model_input.json", model_input, ArtifactRole.COST_MODEL_INPUT
+        output_dir / "cost_model_input.json",
+        model_input.model_dump(mode="json"),
+        ArtifactRole.COST_MODEL_INPUT,
     )
     artifacts.append(model_input_artifact)
-    cost_report = estimate_distributed_matmul(
-        plan,
-        hardware=tpu7x_tensorcore_rates(),
+    cost_report = estimate_distributed_matmul_input(
+        model_input,
         source=MetricSource(
             artifact_sha256=model_input_artifact.sha256,
-            artifact_path=model_input_artifact.path,
+            artifact_path=Path(model_input_artifact.path).name,
             tool="tpu-cake",
             field="distributed-matmul-v1",
         ),
@@ -562,7 +567,16 @@ def run_distributed_matmul(
         p90_ns=p90_ns,
         coefficient_of_variation=coefficient,
         runtime=_runtime_identity(),
-        artifacts=tuple(artifacts),
+        artifacts=tuple(
+            artifact.model_copy(
+                update={
+                    "path": str(
+                        Path(artifact.path).resolve().relative_to(output_dir.resolve())
+                    )
+                }
+            )
+            for artifact in artifacts
+        ),
     )
     _write_text(
         output_dir / "result.json",
