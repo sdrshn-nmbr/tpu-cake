@@ -65,6 +65,8 @@ class ArtifactRole(StrEnum):
     PROFILER_CONFIG = "profiler_config"
     SOURCE_STATE = "source_state"
     SOURCE_DIFF = "source_diff"
+    BACKEND_MANIFEST = "backend_manifest"
+    PREFLIGHT_RESULT = "preflight_result"
     SEARCH_CONTRACT = "search_contract"
     SEARCH_RESULT = "search_result"
     SEARCH_EVIDENCE = "search_evidence"
