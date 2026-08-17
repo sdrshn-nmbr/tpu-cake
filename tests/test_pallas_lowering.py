@@ -94,6 +94,16 @@ def test_pallas_lowering_rejects_a_non_sum_reduce_scatter() -> None:
         lower_physical_matmul_to_pallas(physical)
 
 
+def test_pallas_lowering_rejects_a_non_tpu_target() -> None:
+    physical = lower_distributed_matmul(distributed_matmul_schedule())
+    kernel = next(operation for operation in physical.walk() if isinstance(operation, KernelOp))
+    kernel.properties["target"] = StringAttr("gpu")
+    physical.verify()
+
+    with pytest.raises(UnsupportedLoweringError, match="does not support target 'gpu'"):
+        lower_physical_matmul_to_pallas(physical)
+
+
 def test_saved_physical_tile_and_pallas_rendering_are_bound(tmp_path) -> None:
     physical = lower_distributed_matmul(
         distributed_matmul_schedule(mesh_size=4, m=256, k=512, n=256),

@@ -292,6 +292,10 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
     if len(kernels) != 1 or len(list(module.body.block.ops)) != 1:
         raise UnsupportedLoweringError("Pallas lowering expects exactly one physical kernel")
     kernel = kernels[0]
+    if kernel.target.data != "tpu7x":
+        raise UnsupportedLoweringError(
+            f"Pallas matmul lowering does not support target {kernel.target.data!r}"
+        )
     operations = list(kernel.body.block.ops)
     expected_types = (
         AllocOp,
