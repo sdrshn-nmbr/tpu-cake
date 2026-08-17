@@ -68,7 +68,7 @@ def test_seqax_reference_uses_the_canonical_cpu_backend(monkeypatch) -> None:
 
     def reference_on_current_device(*_args, **_kwargs) -> np.ndarray:
         observed_platforms.append(jax.device_put(np.ones(1)).device.platform)
-        return np.zeros((1,), dtype=np.float32)
+        return np.asarray([0.12345649], dtype=np.float32)
 
     monkeypatch.setattr(
         seqax_oracle,
@@ -76,6 +76,9 @@ def test_seqax_reference_uses_the_canonical_cpu_backend(monkeypatch) -> None:
         reference_on_current_device,
     )
 
-    seqax_oracle.seqax_forward_reference((), rope_max_timescale=256)
+    result = seqax_oracle.seqax_forward_canonical_reference(
+        (), rope_max_timescale=256
+    )
 
     assert observed_platforms == ["cpu"]
+    np.testing.assert_array_equal(result, np.asarray([0.123456], dtype=np.float32))

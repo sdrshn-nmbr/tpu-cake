@@ -59,8 +59,8 @@ from tpu_cake.workloads.seqax_forward import (
     seqax_forward_schedule,
 )
 from tpu_cake.workloads.seqax_oracle import (
+    seqax_forward_canonical_reference,
     seqax_forward_inputs,
-    seqax_forward_reference,
 )
 from tpu_cake.xprof_evidence import assess_capture, capture_metrics, count_profile_events
 from tpu_cake.xprof_export import export_xprof_capture
@@ -392,7 +392,7 @@ def _validate_phase(
     ):
         raise ValueError(f"SEQAX_DETERMINISTIC_INPUT_REPLAY_MISMATCH phase={phase}")
     expected_oracle = np.asarray(
-        seqax_forward_reference(inputs, **SEQAX_EVIDENCE_PARAMETERS)
+        seqax_forward_canonical_reference(inputs, **SEQAX_EVIDENCE_PARAMETERS)
     )
     if not np.array_equal(saved_oracles[0], expected_oracle):
         raise ValueError(f"SEQAX_ORACLE_REPLAY_MISMATCH phase={phase}")

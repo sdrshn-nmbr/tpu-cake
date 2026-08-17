@@ -43,8 +43,8 @@ from tpu_cake.workloads.seqax_forward import (
     seqax_forward_schedule,
 )
 from tpu_cake.workloads.seqax_oracle import (
+    seqax_forward_canonical_reference,
     seqax_forward_inputs,
-    seqax_forward_reference,
 )
 
 SEQAX_EVIDENCE_SEED = 9173
@@ -324,7 +324,7 @@ def run_seqax_forward(
         )
     )
     oracle = np.asarray(
-        seqax_forward_reference(host_inputs, **SEQAX_EVIDENCE_PARAMETERS)
+        seqax_forward_canonical_reference(host_inputs, **SEQAX_EVIDENCE_PARAMETERS)
     )
     executable, mesh = plan.build(devices=devices)
     compile_inputs = tuple(jnp.asarray(value) for value in host_inputs)
