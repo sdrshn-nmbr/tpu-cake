@@ -71,11 +71,79 @@ class AttentionWorkloadSurface(BaseModel):
         return hashlib.sha256(encoded).hexdigest()
 
 
+class SeqaxForwardScenario(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, pattern=r"^[a-z0-9-]+$")
+    batch: int = Field(gt=0)
+    sequence: int = Field(gt=0)
+    model: int = Field(gt=0)
+    vocabulary: int = Field(gt=0)
+    feed_forward: int = Field(gt=0)
+    query_groups: int = Field(gt=0)
+    key_value_heads: int = Field(gt=0)
+    head: int = Field(gt=0)
+    layers: int = Field(gt=0)
+    data_mesh: int = Field(gt=0)
+    tensor_mesh: int = Field(gt=0)
+    rope_max_timescale: int = Field(gt=1)
+    weight: Decimal = Field(gt=0)
+
+    @model_validator(mode="after")
+    def dimensions_fit_the_mesh(self) -> SeqaxForwardScenario:
+        if self.batch % self.data_mesh:
+            raise ValueError("batch must divide evenly over the data mesh")
+        if self.model % self.data_mesh or self.model % self.tensor_mesh:
+            raise ValueError("model width must divide evenly over both mesh axes")
+        if self.vocabulary % self.tensor_mesh or self.feed_forward % self.tensor_mesh:
+            raise ValueError("vocabulary and feed-forward widths must divide over tensor mesh")
+        if self.key_value_heads % self.tensor_mesh:
+            raise ValueError("key/value heads must divide evenly over tensor mesh")
+        if self.head % 2:
+            raise ValueError("head width must be even for rotary embedding")
+        return self
+
+    def parameters(self) -> dict[str, int]:
+        return {
+            key: value
+            for key, value in self.model_dump(mode="python").items()
+            if key not in {"name", "weight"}
+        }
+
+
+class SeqaxForwardWorkloadSurface(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    scenarios: tuple[SeqaxForwardScenario, ...] = Field(min_length=2)
+    minimum_practical_improvement: Decimal = Field(gt=0, lt=1)
+    maximum_scenario_regression: Decimal = Field(default=Decimal("0.01"), ge=0, lt=1)
+    bootstrap_samples: int = Field(default=10_000, ge=1_000)
+
+    @model_validator(mode="after")
+    def scenario_names_are_unique(self) -> SeqaxForwardWorkloadSurface:
+        names = tuple(scenario.name for scenario in self.scenarios)
+        if len(names) != len(set(names)):
+            raise ValueError("workload surface scenario names must be unique")
+        return self
+
+    @computed_field
+    @property
+    def surface_id(self) -> str:
+        payload = self.model_dump(mode="json", exclude={"surface_id"})
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+
+WorkloadSurface = AttentionWorkloadSurface | SeqaxForwardWorkloadSurface
+
+
 class ScenarioObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     scenario: str
     round_medians_ns: tuple[Annotated[int, Field(gt=0)], ...] = Field(min_length=5)
+    round_samples_ns: tuple[tuple[Annotated[int, Field(gt=0)], ...], ...] = ()
     ran_first: tuple[bool, ...] = Field(min_length=5)
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -87,6 +155,16 @@ class ScenarioObservation(BaseModel):
     def timing_rounds_have_positions(self) -> ScenarioObservation:
         if len(self.ran_first) != len(self.round_medians_ns):
             raise ValueError("every timing round needs an execution position")
+        if self.round_samples_ns:
+            if len(self.round_samples_ns) != len(self.round_medians_ns):
+                raise ValueError("every timing round needs its raw samples")
+            if any(
+                Decimal(median) != Decimal(str(float(np.median(samples))))
+                for median, samples in zip(
+                    self.round_medians_ns, self.round_samples_ns, strict=True
+                )
+            ):
+                raise ValueError("round medians must match the preserved raw samples")
         return self
 
 
@@ -117,7 +195,7 @@ class SurfaceComparison(BaseModel):
 
 
 def compare_surface_candidates(
-    surface: AttentionWorkloadSurface,
+    surface: WorkloadSurface,
     baseline: SurfaceCandidateObservation,
     candidate: SurfaceCandidateObservation,
 ) -> SurfaceComparison:
@@ -182,32 +260,44 @@ def compare_surface_candidates(
             for base_value, candidate_value in zip(base, contender, strict=True)
         )
     rounds = next(iter(round_counts))
-    weighted_rounds = np.asarray(
-        [
-            float(
-                sum(
-                    normalized_weights[name] * scenario_round_improvements[name][index]
-                    for name in expected_names
-                )
-            )
-            for index in range(rounds)
-        ],
-        dtype=np.float64,
-    )
     generator = np.random.default_rng(
         int(hashlib.sha256(f"{surface.surface_id}:{candidate.candidate}".encode()).hexdigest()[:16], 16)
     )
     estimates = np.empty(surface.bootstrap_samples, dtype=np.float64)
     for index in range(surface.bootstrap_samples):
-        estimates[index] = np.median(
-            generator.choice(weighted_rounds, rounds, replace=True)
+        estimates[index] = float(
+            sum(
+                normalized_weights[name]
+                * Decimal(
+                    str(
+                        float(
+                            np.median(
+                                generator.choice(
+                                    np.asarray(
+                                        [
+                                            float(value)
+                                            for value in scenario_round_improvements[name]
+                                        ],
+                                        dtype=np.float64,
+                                    ),
+                                    rounds,
+                                    replace=True,
+                                )
+                            )
+                        )
+                    )
+                )
+                for name in expected_names
+            )
         )
     low, high = np.quantile(estimates, (0.025, 0.975))
     scenario_improvements = {
         name: Decimal(str(float(np.median([float(value) for value in values]))))
         for name, values in scenario_round_improvements.items()
     }
-    weighted_median = Decimal(str(float(np.median(weighted_rounds))))
+    weighted_median = sum(
+        normalized_weights[name] * scenario_improvements[name] for name in expected_names
+    )
     confidence = (Decimal(str(float(low))), Decimal(str(float(high))))
     promotable = (
         confidence[0] > surface.minimum_practical_improvement

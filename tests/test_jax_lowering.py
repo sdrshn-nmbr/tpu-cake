@@ -99,6 +99,8 @@ def test_seqax_forward_mesh_plan_binds_exact_partition_specs_and_source() -> Non
 
     with pytest.raises(ValueError, match="needs exactly 8 devices"):
         plan.build(devices=jax.devices("cpu"))
+    with pytest.raises(ValueError, match="needs exactly 8 devices"):
+        plan.build_mapped(devices=jax.devices("cpu"))
 
 
 def test_complete_seqax_forward_executes_with_real_collectives_on_eight_devices() -> None:

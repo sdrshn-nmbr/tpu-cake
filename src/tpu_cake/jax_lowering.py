@@ -414,7 +414,7 @@ class JaxDistributedMeshPlan:
             "output_contracts": [value.manifest(mesh=mesh) for value in self.output_contracts],
         }
 
-    def build(self, *, devices=None):
+    def build_mapped(self, *, devices=None):
         selected_devices = tuple(devices or jax.devices())
         if len(selected_devices) != self.device_count:
             raise ValueError(
@@ -441,6 +441,10 @@ class JaxDistributedMeshPlan:
             out_specs=self.output_partition_specs,
             check_vma=False,
         )
+        return mapped, mesh
+
+    def build(self, *, devices=None):
+        mapped, mesh = self.build_mapped(devices=devices)
         return jax.jit(mapped), mesh
 
     def render_executable_source(self) -> str:

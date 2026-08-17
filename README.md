@@ -72,6 +72,9 @@ uv run tpu-cake finalize-rpa-run RPA_RUN_ROOT \
   --search-contract contracts/inkling-fused-rpa-block-search.json
 uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
   --search-contract contracts/inkling-fused-rpa-block-search.json
+
+uv run tpu-cake run-seqax-surface --output-dir SURFACE_RUN_ROOT
+uv run tpu-cake verify-seqax-surface SURFACE_RUN_ROOT
 ```
 
 ## Layout
@@ -87,6 +90,8 @@ uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
 ## Current boundary
 
 The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed-tensor dialect represents the pinned Seqax forward algebra, has an independent numerical interpreter, and lowers the complete forward program to a replayable multi-device `jax.shard_map` plan. That plan executes local shards with real JAX/XLA collectives and binds exact input/output `PartitionSpec` values. It is a distributed JAX/XLA lowering, not a hand-scheduled Pallas kernel. Physical Pallas lowering remains deliberately narrow and currently accepts only the distributed matmul slice.
+
+The Seqax workload-surface experiment compares the unwrapped `shard_map` control with the canonical whole-program JIT across three forward shapes. Inputs are placed on their declared TPU shards before timing. Each scenario is resampled independently, and promotion requires a confidence interval above the declared practical threshold without a material regression in any scenario. Saved HLO is runner-captured integrity evidence with exact hashes and structural replay checks; it is not independently signed compiler attestation.
 
 Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution, bounded block-size search, separate timing/trace/counter captures, and a search-bound receipt. It delegates execution to the pinned upstream RPA Pallas wrapper and covers one fixed decode-only local-shard fixture. It does not yet represent the wrapper's internal Pallas schedule, own the outer multi-device `shard_map`, prove full Inkling serving, or establish a global block-size optimum.
 

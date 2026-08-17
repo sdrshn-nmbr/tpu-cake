@@ -34,6 +34,11 @@ from tpu_cake.seqax_bundle import (
     validate_seqax_forward_receipt,
 )
 from tpu_cake.seqax_runner import run_seqax_forward
+from tpu_cake.seqax_surface import (
+    SeqaxSurfaceReceipt,
+    run_seqax_surface,
+    validate_seqax_surface_receipt,
+)
 from tpu_cake.workloads import (
     inkling_fused_rpa_experiment,
     inkling_rpa_experiment,
@@ -110,6 +115,12 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_seqax = commands.add_parser("verify-seqax-forward")
     verify_seqax.add_argument("run_root", type=Path)
+
+    run_seqax_surface = commands.add_parser("run-seqax-surface")
+    run_seqax_surface.add_argument("--output-dir", required=True, type=Path)
+
+    verify_seqax_surface = commands.add_parser("verify-seqax-surface")
+    verify_seqax_surface.add_argument("run_root", type=Path)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -290,6 +301,23 @@ def main() -> None:
             f"artifacts={len(receipt.artifacts)} metrics={len(receipt.metrics)}"
         )
         code = 0 if receipt.status.value == "passed" else 1
+    elif args.command == "run-seqax-surface":
+        receipt = run_seqax_surface(args.output_dir)
+        print(receipt.model_dump_json(indent=2))
+        code = 0
+    elif args.command == "verify-seqax-surface":
+        root = args.run_root.resolve()
+        receipt = SeqaxSurfaceReceipt.model_validate_json(
+            (root / "receipt.json").read_text()
+        )
+        validate_seqax_surface_receipt(receipt, root=root)
+        verdict = "PROMOTED" if receipt.candidate_promoted else "RETAINED_BASELINE"
+        print(
+            f"SEQAX_SURFACE_ACCEPTED decision={verdict} "
+            f"scenarios={len(receipt.comparison.scenario_improvements)} "
+            f"artifacts={len(receipt.artifacts)}"
+        )
+        code = 0
     elif args.command == "search-matmul":
         contract = MatmulSearchContract.model_validate_json(args.contract.read_text())
         result = run_matmul_search(args.output_dir, contract, interpret=args.interpret)

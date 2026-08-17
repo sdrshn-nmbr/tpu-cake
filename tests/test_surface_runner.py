@@ -66,7 +66,7 @@ def test_surface_runner_measures_real_matched_executions() -> None:
         runtime_sha256="a" * 64,
         rounds=6,
         warmup_iterations=1,
-        measured_iterations=2,
+        measured_iterations=3,
         absolute_tolerance=1e-6,
         relative_tolerance=1e-6,
     )
@@ -74,6 +74,11 @@ def test_surface_runner_measures_real_matched_executions() -> None:
     assert comparison.surface_id == _surface().surface_id
     assert len(baseline.scenarios) == len(candidate.scenarios) == 2
     assert all(len(value.round_medians_ns) == 6 for value in baseline.scenarios)
+    assert all(
+        len(samples) == 3
+        for observation in baseline.scenarios
+        for samples in observation.round_samples_ns
+    )
     assert baseline.scenarios[0].ran_first == (True, False, True, False, True, False)
     assert candidate.scenarios[0].ran_first == (False, True, False, True, False, True)
     assert baseline.scenarios[0].input_sha256 == candidate.scenarios[0].input_sha256
