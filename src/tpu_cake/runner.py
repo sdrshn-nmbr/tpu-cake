@@ -377,6 +377,7 @@ def run_distributed_matmul(
         tile_m=plan.tile_m,
         tile_k=plan.tile_k,
         tile_n=plan.tile_n,
+        collective_link_bandwidths=plan.collective_link_bandwidths,
         hardware=tpu7x_tensorcore_rates(),
     )
     model_input_artifact = _write_json(

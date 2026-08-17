@@ -67,6 +67,7 @@ class PallasMatmulPlan:
     tile_m: int
     tile_k: int
     tile_n: int
+    collective_link_bandwidths: tuple[tuple[str, int], ...] = ()
 
     @property
     def global_lhs_shape(self) -> tuple[int, int]:
@@ -213,6 +214,16 @@ def build(*, interpret=False, devices=None):
 '''
 
     def render_executable_source(self) -> str:
+        topology_constants = ""
+        topology_arguments = ""
+        if self.collective_link_bandwidths:
+            topology_constants = (
+                "\nCOLLECTIVE_LINK_BANDWIDTHS = "
+                f"{self.collective_link_bandwidths!r}"
+            )
+            topology_arguments = (
+                "    collective_link_bandwidths=COLLECTIVE_LINK_BANDWIDTHS,\n"
+            )
         return f'''from __future__ import annotations
 
 from tpu_cake.pallas_lowering import PallasMatmulPlan
@@ -232,7 +243,7 @@ RHS_SHARDING = {self.rhs_sharding!r}
 SCATTER_DIMENSION = {self.scatter_dimension}
 TILE_M = {self.tile_m}
 TILE_K = {self.tile_k}
-TILE_N = {self.tile_n}
+TILE_N = {self.tile_n}{topology_constants}
 
 PLAN = PallasMatmulPlan(
     name=NAME,
@@ -250,7 +261,7 @@ PLAN = PallasMatmulPlan(
     tile_m=TILE_M,
     tile_k=TILE_K,
     tile_n=TILE_N,
-)
+{topology_arguments})
 
 
 def build(*, interpret=False, devices=None):
@@ -388,6 +399,25 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
     mesh_sizes = tuple(value.data for value in kernel.mesh_axis_sizes)
     if len(mesh_names) != 1 or collective.mesh_axis.data != mesh_names[0]:
         raise UnsupportedLoweringError("Pallas matmul lowering supports one mesh axis")
+    collective_link_bandwidths: tuple[tuple[str, int], ...] = ()
+    if kernel.topology is not None:
+        if collective.collective_plan is None:
+            raise UnsupportedLoweringError(
+                "structured Pallas matmul needs a collective plan"
+            )
+        topology_plan = kernel.topology.plans_by_id()[collective.collective_plan.data]
+        links = kernel.topology.links_by_id()
+        used_link_ids = sorted(
+            {
+                link_id.data
+                for group in topology_plan.groups
+                for link_id in group.route_link_ids
+            }
+        )
+        collective_link_bandwidths = tuple(
+            (link_id, links[link_id].bandwidth_bytes_per_second.data)
+            for link_id in used_link_ids
+        )
     return PallasMatmulPlan(
         name=kernel.sym_name.data,
         schedule_sha256=schedule_sha256(module),
@@ -408,6 +438,7 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
         tile_m=matmul.tile_m.data,
         tile_k=matmul.tile_k.data,
         tile_n=matmul.tile_n.data,
+        collective_link_bandwidths=collective_link_bandwidths,
     )
 
 
@@ -465,6 +496,8 @@ def validate_saved_pallas_plan(
         "TILE_K": plan.tile_k,
         "TILE_N": plan.tile_n,
     }
+    if plan.collective_link_bandwidths:
+        expected["COLLECTIVE_LINK_BANDWIDTHS"] = plan.collective_link_bandwidths
     if any(constants.get(name) != value for name, value in expected.items()):
         raise ValueError("SAVED_PALLAS_SOURCE_PLAN_MISMATCH")
     name = constants.get("NAME")

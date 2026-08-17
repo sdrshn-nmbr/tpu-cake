@@ -51,6 +51,7 @@ class MatmulCostModelInput(BaseModel):
     tile_m: int = Field(gt=0)
     tile_k: int = Field(gt=0)
     tile_n: int = Field(gt=0)
+    collective_link_bandwidths: tuple[tuple[str, int], ...] = ()
     hardware: HardwareRateModel
 
     @model_validator(mode="after")
@@ -61,6 +62,13 @@ class MatmulCostModelInput(BaseModel):
             raise ValueError("matmul tiles must divide M and N")
         if self.tile_k != self.k // self.mesh_size:
             raise ValueError("matmul tile K must equal the local K extent")
+        link_ids = tuple(link_id for link_id, _ in self.collective_link_bandwidths)
+        if link_ids != tuple(sorted(set(link_ids))) or any(
+            bandwidth <= 0 for _, bandwidth in self.collective_link_bandwidths
+        ):
+            raise ValueError(
+                "collective links must be unique, ordered, and have positive bandwidth"
+            )
         return self
 
 
@@ -137,8 +145,16 @@ def estimate_distributed_matmul(
         Decimal(operations) * Decimal(1_000_000_000) / Decimal(hardware.compute_flops_per_second)
     )
     memory_ns = Decimal(hbm_bytes) * Decimal(1_000_000_000) / Decimal(hardware.hbm_bytes_per_second)
+    effective_ici_bandwidth = hardware.ici_bytes_per_second
+    if plan.collective_link_bandwidths:
+        effective_ici_bandwidth = min(
+            effective_ici_bandwidth,
+            min(bandwidth for _, bandwidth in plan.collective_link_bandwidths),
+        )
     communication_ns = (
-        Decimal(ici_bidirectional) * Decimal(1_000_000_000) / Decimal(hardware.ici_bytes_per_second)
+        Decimal(ici_bidirectional)
+        * Decimal(1_000_000_000)
+        / Decimal(effective_ici_bandwidth)
     )
     lower_bound_ns = max(compute_ns, memory_ns, communication_ns)
     serial_ns = compute_ns + memory_ns + communication_ns
@@ -146,6 +162,20 @@ def estimate_distributed_matmul(
         (("compute", compute_ns), ("hbm", memory_ns), ("ici", communication_ns)),
         key=lambda value: value[1],
     )[0]
+    topology_metrics = (
+        (
+            _metric(
+                "declared_collective_bottleneck_bandwidth",
+                min(bandwidth for _, bandwidth in plan.collective_link_bandwidths),
+                Unit.BYTE_PER_SECOND,
+                source,
+                "declared_collective_bottleneck_bandwidth",
+                "min(declared_collective_link_bandwidths)",
+            ),
+        )
+        if plan.collective_link_bandwidths
+        else ()
+    )
     metrics = (
         _metric("operations_per_device", operations, Unit.FLOP, source, "matmul_flops", "2*M*K*N"),
         _metric(
@@ -212,6 +242,21 @@ def estimate_distributed_matmul(
             "serial_resource_time",
             "compute_time+hbm_time+ici_time",
         ),
+        *topology_metrics,
+    )
+    topology_assumptions = (
+        (
+            (
+                "Declared topology is a static cost-model constraint; XLA selects the "
+                "executed collective route."
+            ),
+            (
+                "ICI time uses the smaller of the hardware rate and the slowest declared "
+                "collective link bandwidth."
+            ),
+        )
+        if plan.collective_link_bandwidths
+        else ()
     )
     return CostModelReport(
         schedule_sha256=plan.schedule_sha256,
@@ -225,6 +270,7 @@ def estimate_distributed_matmul(
             "HBM bytes exclude additional compiler reloads, padding, and layout conversions.",
             "Reduce-scatter uses a ring-equivalent bidirectional byte lower bound.",
             "Launch, synchronization, collective startup, and compiler overhead are omitted.",
+            *topology_assumptions,
         ),
         metrics=metrics,
     )
@@ -252,5 +298,6 @@ def estimate_distributed_matmul_input(
         tile_m=model_input.tile_m,
         tile_k=model_input.tile_k,
         tile_n=model_input.tile_n,
+        collective_link_bandwidths=model_input.collective_link_bandwidths,
     )
     return estimate_distributed_matmul(plan, hardware=model_input.hardware, source=source)

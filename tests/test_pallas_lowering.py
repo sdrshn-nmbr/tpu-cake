@@ -35,6 +35,11 @@ def test_physical_matmul_lowers_to_stable_pallas_plan() -> None:
     assert first.global_lhs_shape == (16, 32)
     assert first.global_rhs_shape == (32, 16)
     assert first.global_output_shape == (16, 16)
+    assert first.collective_link_bandwidths == (
+        ("link:0-1", 600_000_000_000),
+        ("link:1-2", 600_000_000_000),
+        ("link:2-3", 600_000_000_000),
+    )
     assert first.source_sha256() == second.source_sha256()
     source = first.render_executable_source()
     compile(source, "lowered_pallas.py", "exec")
