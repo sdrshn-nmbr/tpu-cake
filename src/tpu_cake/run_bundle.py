@@ -27,7 +27,7 @@ from tpu_cake.metrics import (
     Unit,
 )
 from tpu_cake.receipt import validate_receipt
-from tpu_cake.runner import MatmulRunResult, RunMode
+from tpu_cake.runner import MatmulRunResult, RunMode, _source_state
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_experiment
 from tpu_cake.xprof_evidence import assess_capture, capture_metrics
 from tpu_cake.xprof_export import export_xprof_capture
@@ -222,6 +222,11 @@ def _relative_json(value: object, root: Path) -> object:
 
 def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
     root = root.resolve()
+    finalizer_root = root / "finalizer"
+    _source_state(Path(__file__).resolve().parents[2], finalizer_root)
+    finalizer_state = json.loads((finalizer_root / "source_state.json").read_text())
+    if finalizer_state["git_dirty"]:
+        raise ValueError("RECEIPT_FINALIZER_REQUIRES_CLEAN_COMMITTED_SOURCE")
     timing = _load_result(root / "timing" / "result.json", RunMode.TIMING)
     trace = _load_result(root / "trace" / "result.json", RunMode.TRACE)
     counters = _load_result(root / "counters" / "result.json", RunMode.COUNTERS)
@@ -339,6 +344,8 @@ def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
         (root / "timing" / "source_diff.patch", ArtifactRole.SOURCE_DIFF),
         (root / "trace" / "source_diff.patch", ArtifactRole.SOURCE_DIFF),
         (root / "counters" / "source_diff.patch", ArtifactRole.SOURCE_DIFF),
+        (finalizer_root / "source_state.json", ArtifactRole.SOURCE_STATE),
+        (finalizer_root / "source_diff.patch", ArtifactRole.SOURCE_DIFF),
     )
     artifacts = tuple(_reference(root, path, role) for path, role in artifact_specs)
     cost_report = CostModelReport.model_validate_json(
