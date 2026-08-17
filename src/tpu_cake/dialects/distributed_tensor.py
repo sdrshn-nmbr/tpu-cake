@@ -285,6 +285,8 @@ class RmsNormOp(IRDLOperation):
         value_shape = dict(value.logical_shape())
         if scale.logical_shape() != ((dimension, value_shape.get(dimension, -1)),):
             raise VerifyException("RMSNorm scale must match exactly one normalized dimension")
+        if dimension in value_shape and value.sharding_axes()[_dimension_index(value)[dimension]]:
+            raise VerifyException("RMSNorm normalized dimension cannot be sharded")
         if scale.sharding_axes() != ((),):
             raise VerifyException("RMSNorm scale must be locally replicated")
         try:
@@ -338,6 +340,10 @@ class RotaryEmbeddingOp(IRDLOperation):
             raise VerifyException(
                 "rotary embedding needs a sequence dimension and even head dimension"
             )
+        sharding = before.sharding_axes()
+        indexes = _dimension_index(before)
+        if sharding[indexes[sequence]] or sharding[indexes[head]]:
+            raise VerifyException("rotary embedding semantic dimensions cannot be sharded")
         if self.maximum_timescale.data <= 0:
             raise VerifyException("rotary embedding maximum timescale must be positive")
 
@@ -489,12 +495,14 @@ class PackedCausalMaskOp(IRDLOperation):
         before_shape = dict(before.logical_shape())
         if sequence not in before_shape or query == key:
             raise VerifyException("packed causal mask dimensions are invalid")
+        sequence_index = _dimension_index(before)[sequence]
+        if before.sharding_axes()[sequence_index]:
+            raise VerifyException("packed causal mask sequence dimension cannot be sharded")
         expected_shape = tuple(
             (name, size)
             for name, size in before.logical_shape()
             if name != sequence
         ) + ((query, before_shape[sequence]), (key, before_shape[sequence]))
-        sequence_index = _dimension_index(before)[sequence]
         expected_sharding = tuple(
             axes
             for index, axes in enumerate(before.sharding_axes())
@@ -545,6 +553,8 @@ class MaskedSoftmaxOp(IRDLOperation):
         value_sharding = dict(zip(value_shape, value.sharding_axes(), strict=True))
         if self.dimension.data not in value_shape:
             raise VerifyException("masked softmax references an unknown dimension")
+        if value_sharding[self.dimension.data]:
+            raise VerifyException("masked softmax dimension cannot be sharded")
         for (name, size), axes in zip(
             mask.logical_shape(), mask.sharding_axes(), strict=True
         ):

@@ -50,6 +50,8 @@ def _normalize_semantics(module: ModuleOp) -> None:
             operation.properties["sym_name"] = type(operation.sym_name)("kernel")
         if isinstance(operation, ProgramOp):
             operation.properties["sym_name"] = type(operation.sym_name)("program")
+        operation.properties = dict(sorted(operation.properties.items()))
+        operation.attributes = dict(sorted(operation.attributes.items()))
 
 
 def canonical_text(module: ModuleOp) -> str:

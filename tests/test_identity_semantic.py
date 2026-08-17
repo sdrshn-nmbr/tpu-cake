@@ -22,6 +22,7 @@ from tpu_cake.semantic import (
     stepwise_equivalence,
 )
 from tpu_cake.source import SourceLocation, attach_source
+from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
 
 
 def test_semantic_identity_is_order_independent_of_other_candidates() -> None:
@@ -109,6 +110,16 @@ def test_commutative_elementwise_operand_order_has_one_identity() -> None:
     assert schedule_sha256(first.module(first_result)) == schedule_sha256(
         second.module(second_result)
     )
+
+
+def test_operation_property_insertion_order_does_not_change_identity() -> None:
+    first = seqax_forward_schedule()
+    second = seqax_forward_schedule()
+    for operation in second.walk():
+        operation.properties = dict(reversed(tuple(operation.properties.items())))
+
+    second.verify()
+    assert schedule_sha256(first) == schedule_sha256(second)
 
 
 def test_alias_names_are_alpha_normalized_for_identity() -> None:

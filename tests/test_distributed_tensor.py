@@ -548,6 +548,16 @@ def test_rms_norm_rejects_a_sharded_scale() -> None:
         builder.module(result)
 
 
+def test_rms_norm_rejects_a_sharded_normalized_dimension() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"M": ("t",)})
+    scale = tensor(bf16, (("M", 32),))
+    builder = DistributedProgramBuilder("bad_norm_axis", {"t": 4}, (value, scale))
+    result = builder.rms_norm(builder.inputs[0], builder.inputs[1], value, dimension="M")
+
+    with pytest.raises(VerifyException, match="normalized dimension cannot be sharded"):
+        builder.module(result)
+
+
 def test_rotary_embedding_rejects_an_odd_head_dimension() -> None:
     value = tensor(bf16, (("B", 8), ("L", 16), ("D", 7)))
     builder = DistributedProgramBuilder("bad_rope", {}, (value,))
@@ -560,6 +570,25 @@ def test_rotary_embedding_rejects_an_odd_head_dimension() -> None:
     )
 
     with pytest.raises(VerifyException, match="even head dimension"):
+        builder.module(result)
+
+
+def test_rotary_embedding_rejects_sharded_semantic_dimensions() -> None:
+    value = tensor(
+        bf16,
+        (("B", 8), ("L", 16), ("D", 8)),
+        sharding={"D": ("t",)},
+    )
+    builder = DistributedProgramBuilder("bad_rope_axis", {"t": 4}, (value,))
+    result = builder.rotary_embedding(
+        builder.inputs[0],
+        value,
+        sequence_dimension="L",
+        head_dimension="D",
+        maximum_timescale=10_000,
+    )
+
+    with pytest.raises(VerifyException, match="semantic dimensions cannot be sharded"):
         builder.module(result)
 
 
@@ -579,6 +608,21 @@ def test_packed_causal_mask_rejects_invented_query_sharding() -> None:
     )
 
     with pytest.raises(VerifyException, match="wrong shape or sharding"):
+        builder.module(result)
+
+
+def test_packed_causal_mask_rejects_a_sharded_source_sequence() -> None:
+    starts = tensor(i1, (("B", 8), ("L", 16)), sharding={"L": ("t",)})
+    builder = DistributedProgramBuilder("bad_mask_source", {"t": 4}, (starts,))
+    result = builder.packed_causal_mask(
+        builder.inputs[0],
+        tensor(i1, (("B", 8), ("Qlen", 16), ("Klen", 16))),
+        sequence_dimension="L",
+        query_dimension="Qlen",
+        key_dimension="Klen",
+    )
+
+    with pytest.raises(VerifyException, match="sequence dimension cannot be sharded"):
         builder.module(result)
 
 
@@ -602,6 +646,25 @@ def test_masked_softmax_rejects_mask_sharding_that_differs_from_logits() -> None
     )
 
     with pytest.raises(VerifyException, match="named subset"):
+        builder.module(result)
+
+
+def test_masked_softmax_rejects_a_sharded_reduction_dimension() -> None:
+    logits = tensor(
+        f32,
+        (("B", 8), ("Klen", 16)),
+        sharding={"Klen": ("t",)},
+    )
+    mask = tensor(i1, (("B", 8), ("Klen", 16)), sharding={"Klen": ("t",)})
+    builder = DistributedProgramBuilder("bad_softmax_axis", {"t": 4}, (logits, mask))
+    result = builder.masked_softmax(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(bf16, logits.dimensions, sharding={"Klen": ("t",)}),
+        dimension="Klen",
+    )
+
+    with pytest.raises(VerifyException, match="softmax dimension cannot be sharded"):
         builder.module(result)
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from xdsl.dialects.builtin import ModuleOp, bf16, f32, i1, i32
+from xdsl.dialects.builtin import IntegerType, ModuleOp, Signedness, bf16, f32, i1
 from xdsl.ir import SSAValue
 
 from tpu_cake.distributed_frontend import (
@@ -12,6 +12,7 @@ from tpu_cake.source import SourceLocation
 
 SEQAX_REVISION = "b418a2d9059a1bfcff801d22b7088cc444257703"
 SEQAX_FORWARD_SOURCE = "seqax/train.py"
+U32 = IntegerType(32, Signedness.UNSIGNED)
 
 
 def _source(line: int) -> SourceLocation:
@@ -31,15 +32,16 @@ def seqax_forward_schedule(
     layers: int = 2,
     data_mesh: int = 2,
     tensor_mesh: int = 4,
+    rope_max_timescale: int = 10_000,
 ) -> ModuleOp:
-    tokens = tensor(i32, (("B", batch), ("L", sequence)), sharding={"B": ("d",)})
+    tokens = tensor(U32, (("B", batch), ("L", sequence)), sharding={"B": ("d",)})
     sequence_starts = tensor(
         i1,
         (("B", batch), ("L", sequence)),
         sharding={"B": ("d",)},
     )
     embedding = tensor(
-        bf16,
+        f32,
         (("V", vocabulary), ("M", model)),
         sharding={"V": ("t",), "M": ("d",)},
     )
@@ -49,7 +51,7 @@ def seqax_forward_schedule(
         sharding={"M": ("t", "d")},
     )
     query_weights = tensor(
-        bf16,
+        f32,
         (
             ("Z", layers),
             ("M", model),
@@ -60,7 +62,7 @@ def seqax_forward_schedule(
         sharding={"M": ("d",), "K": ("t",)},
     )
     key_value_weights = tensor(
-        bf16,
+        f32,
         (
             ("Z", layers),
             ("KV", 2),
@@ -72,7 +74,7 @@ def seqax_forward_schedule(
     )
     output_weights = query_weights
     feed_forward_weights = tensor(
-        bf16,
+        f32,
         (("Z", layers), ("M", model), ("F", feed_forward)),
         sharding={"M": ("d",), "F": ("t",)},
     )
@@ -118,8 +120,17 @@ def seqax_forward_schedule(
         unembed,
     ) = builder.inputs
 
-    gathered_embedding = builder.all_gather(
+    embedding_bf16 = builder.cast(
         embedding_value,
+        tensor(
+            bf16,
+            (("V", vocabulary), ("M", model)),
+            sharding={"V": ("t",), "M": ("d",)},
+        ),
+        source=_source(137),
+    )
+    gathered_embedding = builder.all_gather(
+        embedding_bf16,
         tensor(
             bf16,
             (("V", vocabulary), ("M", model)),
@@ -201,6 +212,15 @@ def seqax_forward_schedule(
             source=_source(161),
         )
 
+        layer_wq = body.cast(
+            layer_wq,
+            tensor(
+                bf16,
+                (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
+                sharding={"M": ("d",), "K": ("t",)},
+            ),
+            source=_source(164),
+        )
         gathered_wq = body.all_gather(
             layer_wq,
             tensor(
@@ -240,6 +260,7 @@ def seqax_forward_schedule(
                 ),
                 sharding={"B": ("d",), "K": ("t",)},
             ),
+            source=_source(165),
         )
         query = body.rename_dimension(
             query,
@@ -256,6 +277,7 @@ def seqax_forward_schedule(
             ),
             source_dimension="L",
             destination_dimension="Qlen",
+            source=_source(165),
         )
         query = body.rotary_embedding(
             query,
@@ -266,10 +288,19 @@ def seqax_forward_schedule(
             ),
             sequence_dimension="Qlen",
             head_dimension="D",
-            maximum_timescale=10_000,
+            maximum_timescale=rope_max_timescale,
             source=_source(166),
         )
 
+        layer_wkv = body.cast(
+            layer_wkv,
+            tensor(
+                bf16,
+                (("KV", 2), ("M", model), ("K", key_value_heads), ("D", head)),
+                sharding={"M": ("d",), "K": ("t",)},
+            ),
+            source=_source(167),
+        )
         gathered_wkv = body.all_gather(
             layer_wkv,
             tensor(
@@ -314,14 +345,19 @@ def seqax_forward_schedule(
                 ),
                 sharding={"B": ("d",), "K": ("t",)},
             ),
+            source=_source(168),
         )
         key_value = tensor(
             bf16,
             (("B", batch), ("L", sequence), ("K", key_value_heads), ("D", head)),
             sharding={"B": ("d",), "K": ("t",)},
         )
-        key = body.slice(key_values, key_value, dimension="KV", index=0)
-        value = body.slice(key_values, key_value, dimension="KV", index=1)
+        key = body.slice(
+            key_values, key_value, dimension="KV", index=0, source=_source(168)
+        )
+        value = body.slice(
+            key_values, key_value, dimension="KV", index=1, source=_source(168)
+        )
         renamed_key_value = tensor(
             bf16,
             (("B", batch), ("Klen", sequence), ("K", key_value_heads), ("D", head)),
@@ -332,19 +368,21 @@ def seqax_forward_schedule(
             renamed_key_value,
             source_dimension="L",
             destination_dimension="Klen",
+            source=_source(168),
         )
         value = body.rename_dimension(
             value,
             renamed_key_value,
             source_dimension="L",
             destination_dimension="Klen",
+            source=_source(168),
         )
         key = body.rotary_embedding(
             key,
             renamed_key_value,
             sequence_dimension="Klen",
             head_dimension="D",
-            maximum_timescale=10_000,
+            maximum_timescale=rope_max_timescale,
             source=_source(171),
         )
         logits = body.einsum(
@@ -399,6 +437,16 @@ def seqax_forward_schedule(
                 attention_f32.type.logical_shape(),
                 sharding={"B": ("d",), "K": ("t",)},
             ),
+            source=_source(177),
+        )
+        layer_wo = body.cast(
+            layer_wo,
+            tensor(
+                bf16,
+                (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
+                sharding={"M": ("d",), "K": ("t",)},
+            ),
+            source=_source(178),
         )
         gathered_wo = body.all_gather(
             layer_wo,
@@ -441,8 +489,11 @@ def seqax_forward_schedule(
             ),
             source_dimension="Qlen",
             destination_dimension="L",
+            source=_source(180),
         )
-        attention_output = body.cast(attention_output, activation)
+        attention_output = body.cast(
+            attention_output, activation, source=_source(180)
+        )
         carry = body.elementwise(
             carry,
             attention_output,
@@ -472,6 +523,15 @@ def seqax_forward_schedule(
         )
 
         def project(weight: SSAValue, line: int) -> SSAValue:
+            weight = body.cast(
+                weight,
+                tensor(
+                    bf16,
+                    (("M", model), ("F", feed_forward)),
+                    sharding={"M": ("d",), "F": ("t",)},
+                ),
+                source=_source(line),
+            )
             gathered = body.all_gather(
                 weight,
                 tensor(
@@ -488,17 +548,31 @@ def seqax_forward_schedule(
                 contracting_dimensions=("M",),
                 source=_source(line + 1),
             )
-            return body.cast(result, projected_bf16)
+            return body.cast(result, projected_bf16, source=_source(line + 1))
 
         gate = project(layer_wgate, 189)
         up = project(layer_wup, 191)
-        gate = body.elementwise(gate, result=projected_bf16, function="silu")
+        gate = body.elementwise(
+            gate,
+            result=projected_bf16,
+            function="silu",
+            source=_source(193),
+        )
         feed_forward_value = body.elementwise(
             gate,
             up,
             result=projected_bf16,
             function="multiply",
             source=_source(193),
+        )
+        layer_wdown = body.cast(
+            layer_wdown,
+            tensor(
+                bf16,
+                (("M", model), ("F", feed_forward)),
+                sharding={"M": ("d",), "F": ("t",)},
+            ),
+            source=_source(194),
         )
         gathered_down = body.all_gather(
             layer_wdown,
@@ -532,7 +606,9 @@ def seqax_forward_schedule(
             scatter_dimensions=("M",),
             source=_source(196),
         )
-        feed_forward_output = body.cast(feed_forward_output, activation)
+        feed_forward_output = body.cast(
+            feed_forward_output, activation, source=_source(196)
+        )
         return (
             body.elementwise(
                 carry,
@@ -576,6 +652,15 @@ def seqax_forward_schedule(
         ),
         dimension="M",
         source=_source(205),
+    )
+    unembed = builder.cast(
+        unembed,
+        tensor(
+            bf16,
+            (("V", vocabulary), ("M", model)),
+            sharding={"V": ("t",), "M": ("d",)},
+        ),
+        source=_source(206),
     )
     gathered_unembed = builder.all_gather(
         unembed,
