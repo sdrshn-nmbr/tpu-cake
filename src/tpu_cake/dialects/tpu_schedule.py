@@ -230,10 +230,49 @@ def _lifetimes_overlap(lhs: BufferType, rhs: BufferType) -> bool:
 
 
 def _regions_overlap(lhs: TileRegionAttr, rhs: TileRegionAttr) -> bool:
+    def progression_intersects(
+        lhs_offset: int,
+        lhs_size: int,
+        lhs_stride: int,
+        rhs_offset: int,
+        rhs_size: int,
+        rhs_stride: int,
+    ) -> bool:
+        low = max(lhs_offset, rhs_offset)
+        high = min(
+            lhs_offset + (lhs_size - 1) * lhs_stride,
+            rhs_offset + (rhs_size - 1) * rhs_stride,
+        )
+        if low > high:
+            return False
+        divisor = math.gcd(lhs_stride, rhs_stride)
+        delta = rhs_offset - lhs_offset
+        if delta % divisor:
+            return False
+        reduced_modulus = rhs_stride // divisor
+        if reduced_modulus == 1:
+            first = lhs_offset
+        else:
+            index = (
+                (delta // divisor)
+                * pow(lhs_stride // divisor, -1, reduced_modulus)
+            ) % reduced_modulus
+            first = lhs_offset + index * lhs_stride
+        period = math.lcm(lhs_stride, rhs_stride)
+        if first < low:
+            first += math.ceil((low - first) / period) * period
+        return first <= high
+
     return all(
-        not (lhs_high < rhs_low or rhs_high < lhs_low)
-        for (lhs_low, lhs_high), (rhs_low, rhs_high) in zip(
-            lhs.bounds(), rhs.bounds(), strict=True
+        progression_intersects(*values)
+        for values in zip(
+            (value.data for value in lhs.offsets),
+            (value.data for value in lhs.sizes),
+            (value.data for value in lhs.strides),
+            (value.data for value in rhs.offsets),
+            (value.data for value in rhs.sizes),
+            (value.data for value in rhs.strides),
+            strict=True,
         )
     )
 
@@ -712,14 +751,46 @@ class KernelOp(IRDLOperation):
         symbols: dict[str, int] = {}
         buffers: list[BufferType] = []
         storage_buffers: list[BufferType] = []
-        views_by_base: dict[SSAValue, list[ViewOp]] = {}
+        views_by_root: dict[SSAValue, list[tuple[ViewOp, TileRegionAttr]]] = {}
         initialized: set[SSAValue] = set(block.args)
-        pending_dma_destinations: dict[Operation, SSAValue] = {}
+        pending_dma_destinations: dict[Operation, tuple[SSAValue, TileRegionAttr]] = {}
+
+        def root_region(value: SSAValue) -> tuple[SSAValue, TileRegionAttr]:
+            chain: list[ViewOp] = []
+            while isinstance(value.owner, ViewOp):
+                chain.append(value.owner)
+                value = value.owner.base
+            shape = value.type.storage.get_shape()
+            offsets = [0] * len(shape)
+            sizes = list(shape)
+            strides = [1] * len(shape)
+            for view in reversed(chain):
+                offsets = [
+                    parent_offset + child_offset * parent_stride
+                    for parent_offset, child_offset, parent_stride in zip(
+                        offsets,
+                        (item.data for item in view.region.offsets),
+                        strides,
+                        strict=True,
+                    )
+                ]
+                strides = [
+                    parent_stride * child_stride
+                    for parent_stride, child_stride in zip(
+                        strides,
+                        (item.data for item in view.region.strides),
+                        strict=True,
+                    )
+                ]
+                sizes = [item.data for item in view.region.sizes]
+            return value, TileRegionAttr(
+                ArrayAttr(IntAttr(item) for item in offsets),
+                ArrayAttr(IntAttr(item) for item in sizes),
+                ArrayAttr(IntAttr(item) for item in strides),
+            )
 
         def root(value: SSAValue) -> SSAValue:
-            while isinstance(value.owner, ViewOp):
-                value = value.owner.base
-            return value
+            return root_region(value)[0]
 
         def require_initialized(value: SSAValue, operation: Operation) -> None:
             base = root(value)
@@ -727,7 +798,7 @@ class KernelOp(IRDLOperation):
                 raise VerifyException(
                     f"{operation.name} reads a buffer before its producing operation completes"
                 )
-            if base in pending_dma_destinations.values():
+            if any(base == pending[0] for pending in pending_dma_destinations.values()):
                 raise VerifyException(f"{operation.name} reads a buffer while DMA is in flight")
 
         for argument in block.args:
@@ -752,19 +823,27 @@ class KernelOp(IRDLOperation):
             if isinstance(operation, ViewOp):
                 operation.verify_()
                 buffers.append(operation.view.type)
-                base = operation.base
-                for other in views_by_base.setdefault(base, []):
+                base, normalized_region = root_region(operation.view)
+                for other, other_region in views_by_root.setdefault(base, []):
                     if (
                         _lifetimes_overlap(operation.view.type, other.view.type)
-                        and _regions_overlap(operation.region, other.region)
+                        and _regions_overlap(normalized_region, other_region)
                         and operation.alias_group.data != other.alias_group.data
                     ):
                         raise VerifyException(
                             "overlapping live tile views must declare the same alias group"
                         )
-                views_by_base[base].append(operation)
+                views_by_root[base].append((operation, normalized_region))
             if isinstance(operation, DmaStartOp):
                 require_initialized(operation.source, operation)
+                destination_root, destination_region = root_region(operation.destination)
+                for other_root, other_region in pending_dma_destinations.values():
+                    if destination_root == other_root and _regions_overlap(
+                        destination_region, other_region
+                    ):
+                        raise VerifyException(
+                            "concurrent DMA writes target overlapping buffer regions"
+                        )
                 semaphore_owner = operation.semaphore.owner
                 if semaphore_owner in in_flight:
                     raise VerifyException("semaphore reused before its DMA was waited on")
@@ -774,12 +853,15 @@ class KernelOp(IRDLOperation):
                     raise VerifyException("every DMA token must have exactly one DMA wait")
                 if positions[uses[0].operation] <= positions[operation]:
                     raise VerifyException("DMA wait must occur after DMA start")
-                pending_dma_destinations[semaphore_owner] = root(operation.destination)
+                pending_dma_destinations[semaphore_owner] = (
+                    destination_root,
+                    destination_region,
+                )
             if isinstance(operation, DmaWaitOp):
                 start = operation.token.owner
                 assert isinstance(start, DmaStartOp)
                 in_flight.pop(start.semaphore.owner, None)
-                destination = pending_dma_destinations.pop(start.semaphore.owner)
+                destination, _ = pending_dma_destinations.pop(start.semaphore.owner)
                 initialized.add(destination)
             if isinstance(operation, MxuMatmulOp):
                 require_initialized(operation.lhs, operation)
@@ -839,7 +921,12 @@ class KernelOp(IRDLOperation):
             for buffer in storage_buffers
             if buffer.ownership.data is not Ownership.EXTERNAL
         ]
-        max_stage = max((_stage(operation) or 0 for operation in operations), default=0)
+        max_operation_stage = max((_stage(operation) or 0 for operation in operations), default=0)
+        max_lifetime_stage = max(
+            (buffer.lifetime.end.data for buffer in local_buffers),
+            default=0,
+        )
+        max_stage = max(max_operation_stage, max_lifetime_stage)
         for stage in range(max_stage + 1):
             active_dma = sum(
                 start.stage.data <= stage <= wait.operation.stage.data

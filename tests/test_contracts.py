@@ -6,9 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from tpu_cake.contracts import (
+    PHASE_REQUIRED_ROLES,
     ArtifactReference,
-    ArtifactRole,
     CorrectnessResult,
+    EvidencePhase,
     KernelExperiment,
     ProfileExpectation,
     RunReceipt,
@@ -88,6 +89,7 @@ def test_run_receipt_is_immutable() -> None:
         required_semantic_properties=(),
         metrics=(),
         artifacts=(),
+        phases=(),
     )
     with pytest.raises(ValidationError):
         receipt.status = "failed"
@@ -105,6 +107,7 @@ def test_passed_receipt_requires_all_semantic_properties() -> None:
             required_semantic_properties=("batch_permutation_invariance",),
             metrics=(),
             artifacts=(),
+            phases=(),
         )
 
 
@@ -127,18 +130,24 @@ def test_passed_correctness_rejects_failed_semantic_property() -> None:
 def _complete_receipt(root: Path) -> tuple[RunReceipt, KernelExperiment]:
     experiment = matmul_experiment()
     artifacts = []
-    for role in ArtifactRole:
-        path = root / f"{role.value}.artifact"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(role.value)
-        artifacts.append(
-            ArtifactReference(
-                path=path.name,
-                size_bytes=path.stat().st_size,
-                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                role=role,
+    phases = []
+    for phase, roles in PHASE_REQUIRED_ROLES.items():
+        phase_paths = []
+        for role in roles:
+            path = root / phase.value / f"{role.value}.artifact"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{phase.value}:{role.value}")
+            relative = str(path.relative_to(root))
+            phase_paths.append(relative)
+            artifacts.append(
+                ArtifactReference(
+                    path=relative,
+                    size_bytes=path.stat().st_size,
+                    sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                    role=role,
+                )
             )
-        )
+        phases.append(EvidencePhase(name=phase, artifact_paths=tuple(phase_paths)))
     receipt = RunReceipt(
         experiment_id=experiment.experiment_id,
         schedule_sha256=experiment.schedule_sha256,
@@ -148,6 +157,7 @@ def _complete_receipt(root: Path) -> tuple[RunReceipt, KernelExperiment]:
         required_semantic_properties=(),
         metrics=(),
         artifacts=tuple(artifacts),
+        phases=tuple(phases),
     )
     return receipt, experiment
 
@@ -177,3 +187,21 @@ def test_receipt_rejects_a_deleted_required_artifact(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="artifact is missing"):
         validate_receipt(receipt, experiment, root=root)
+
+
+def test_receipt_rejects_a_phase_with_only_generic_role_coverage(tmp_path) -> None:
+    receipt, _ = _complete_receipt(tmp_path / "bundle")
+    payload = receipt.model_dump(mode="json")
+    trace = next(phase for phase in payload["phases"] if phase["name"] == "trace")
+    removed = next(
+        artifact
+        for artifact in payload["artifacts"]
+        if artifact["path"] in trace["artifact_paths"]
+        and artifact["role"] == "trace_result"
+    )
+    trace["artifact_paths"].remove(removed["path"])
+    aggregate = next(phase for phase in payload["phases"] if phase["name"] == "aggregate")
+    aggregate["artifact_paths"].append(removed["path"])
+
+    with pytest.raises(ValidationError, match="phase trace is missing roles"):
+        RunReceipt.model_validate(payload)

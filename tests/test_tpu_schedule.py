@@ -258,3 +258,93 @@ def test_consumer_cannot_read_a_tile_before_dma_wait() -> None:
 
     with pytest.raises(VerifyException, match="before its producing operation completes"):
         builder.module()
+
+
+def test_alias_group_cannot_hide_concurrent_overlapping_dma_writes() -> None:
+    external = buffer(
+        (8, 8),
+        "X Y",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 1),
+    )
+    builder = KernelBuilder(
+        "write_hazard",
+        "tpu7x",
+        (external, external),
+        vmem_capacity_bytes=1024,
+        smem_capacity_bytes=1024,
+    )
+    base = builder.alloc(
+        buffer((16, 16), "M N", bf16, memory=MemorySpace.VMEM, lifetime=(0, 1)),
+        "base",
+    )
+    first = builder.view(base, _tile(), offsets=(0, 0), alias_group="declared_alias")
+    second = builder.view(base, _tile(), offsets=(4, 4), alias_group="declared_alias")
+    first_dma = builder.dma_start(builder.inputs[0], first, builder.semaphore(), stage=0)
+    second_dma = builder.dma_start(builder.inputs[1], second, builder.semaphore(), stage=0)
+    builder.dma_wait(first_dma, stage=1)
+    builder.dma_wait(second_dma, stage=1)
+
+    with pytest.raises(VerifyException, match="concurrent DMA writes"):
+        builder.module()
+
+
+def test_nested_views_are_normalized_to_the_root_allocation() -> None:
+    builder, base = _view_builder()
+    parent = builder.view(base, _tile(), offsets=(0, 0), alias_group="outer")
+    child = buffer(
+        (4, 4),
+        "child_m child_n",
+        bf16,
+        memory=MemorySpace.VMEM,
+        lifetime=(0, 1),
+    )
+    builder.view(parent, child, offsets=(0, 0), alias_group="inner")
+
+    with pytest.raises(VerifyException, match="same alias group"):
+        builder.module()
+
+
+def test_disjoint_strided_views_do_not_false_positive_as_overlapping() -> None:
+    builder = KernelBuilder(
+        "strided_views",
+        "tpu7x",
+        (),
+        vmem_capacity_bytes=32,
+        smem_capacity_bytes=32,
+    )
+    base = builder.alloc(
+        buffer((16,), "M", bf16, memory=MemorySpace.VMEM, lifetime=(0, 0)),
+        "base",
+    )
+    tile = buffer((8,), "tile", bf16, memory=MemorySpace.VMEM, lifetime=(0, 0))
+    builder.view(base, tile, offsets=(0,), strides=(2,), alias_group="even")
+    builder.view(base, tile, offsets=(1,), strides=(2,), alias_group="odd")
+
+    builder.module().verify()
+
+
+def test_capacity_sweep_includes_declared_lifetime_endpoints() -> None:
+    builder = KernelBuilder(
+        "late_lifetime",
+        "tpu7x",
+        (),
+        vmem_capacity_bytes=512,
+        smem_capacity_bytes=32,
+    )
+    for role in ("first", "second"):
+        builder.alloc(
+            buffer(
+                (16, 16),
+                f"{role}_m {role}_n",
+                bf16,
+                memory=MemorySpace.VMEM,
+                lifetime=(5, 5),
+            ),
+            role,
+        )
+
+    with pytest.raises(VerifyException, match="VMEM capacity exceeded at stage 5"):
+        builder.module()

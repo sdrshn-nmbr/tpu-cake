@@ -22,6 +22,14 @@ class RunStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class EvidencePhaseName(StrEnum):
+    TIMING = "timing"
+    TRACE = "trace"
+    COUNTERS = "counters"
+    FINALIZER = "finalizer"
+    AGGREGATE = "aggregate"
+
+
 class ArtifactRole(StrEnum):
     EXPERIMENT = "experiment"
     DISTRIBUTED_IR = "distributed_ir"
@@ -171,6 +179,78 @@ class ArtifactReference(BaseModel):
     role: ArtifactRole
 
 
+PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
+    EvidencePhaseName.TIMING: frozenset(
+        {
+            ArtifactRole.EXPERIMENT,
+            ArtifactRole.DISTRIBUTED_IR,
+            ArtifactRole.PHYSICAL_IR,
+            ArtifactRole.PALLAS_SOURCE,
+            ArtifactRole.STABLEHLO,
+            ArtifactRole.COMPILER_HLO,
+            ArtifactRole.CORRECTNESS_INPUT,
+            ArtifactRole.CORRECTNESS_OUTPUT,
+            ArtifactRole.ORACLE_OUTPUT,
+            ArtifactRole.TIMING_SAMPLES,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.COST_MODEL_INPUT,
+            ArtifactRole.COST_MODEL,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.TRACE: frozenset(
+        {
+            ArtifactRole.TRACE_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.TIMING_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.COUNTERS: frozenset(
+        {
+            ArtifactRole.COUNTER_RESULT,
+            ArtifactRole.EXECUTION_LEDGER,
+            ArtifactRole.COUNTER_TRACE,
+            ArtifactRole.HLO_STATS,
+            ArtifactRole.INVOCATION,
+            ArtifactRole.PROFILER_CONFIG,
+            ArtifactRole.SOURCE_STATE,
+            ArtifactRole.SOURCE_DIFF,
+        }
+    ),
+    EvidencePhaseName.FINALIZER: frozenset(
+        {ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}
+    ),
+    EvidencePhaseName.AGGREGATE: frozenset(
+        {
+            ArtifactRole.PROFILE_ASSESSMENT,
+            ArtifactRole.ROOFLINE_INPUT,
+            ArtifactRole.ROOFLINE_REPORT,
+            ArtifactRole.ROOFLINE_METRICS,
+        }
+    ),
+}
+
+
+class EvidencePhase(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: EvidencePhaseName
+    artifact_paths: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def paths_are_unique(self) -> EvidencePhase:
+        if not self.artifact_paths or len(self.artifact_paths) != len(set(self.artifact_paths)):
+            raise ValueError("evidence phase artifact paths must be non-empty and unique")
+        return self
+
+
 class CorrectnessResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     passed: bool
@@ -208,6 +288,7 @@ class RunReceipt(BaseModel):
     required_semantic_properties: tuple[SemanticPropertyKind, ...]
     metrics: tuple[Metric, ...]
     artifacts: tuple[ArtifactReference, ...]
+    phases: tuple[EvidencePhase, ...]
 
     @model_validator(mode="after")
     def pass_requires_correctness(self) -> RunReceipt:
@@ -255,4 +336,23 @@ class RunReceipt(BaseModel):
             missing = sorted(role.value for role in required_roles - roles)
             if missing:
                 raise ValueError(f"passed receipt is missing artifact roles: {missing}")
+            phase_names = tuple(phase.name for phase in self.phases)
+            if set(phase_names) != set(EvidencePhaseName) or len(phase_names) != len(
+                EvidencePhaseName
+            ):
+                raise ValueError("passed receipt needs every evidence phase exactly once")
+            phase_paths = [path for phase in self.phases for path in phase.artifact_paths]
+            if len(phase_paths) != len(set(phase_paths)) or set(phase_paths) != set(paths):
+                raise ValueError(
+                    "passed receipt phases must partition every artifact exactly once"
+                )
+            artifacts_by_path = {artifact.path: artifact for artifact in self.artifacts}
+            for phase in self.phases:
+                phase_roles = {artifacts_by_path[path].role for path in phase.artifact_paths}
+                missing_phase_roles = PHASE_REQUIRED_ROLES[phase.name] - phase_roles
+                if missing_phase_roles:
+                    missing_names = sorted(role.value for role in missing_phase_roles)
+                    raise ValueError(
+                        f"evidence phase {phase.name.value} is missing roles: {missing_names}"
+                    )
         return self

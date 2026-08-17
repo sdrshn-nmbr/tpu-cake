@@ -119,11 +119,11 @@ def _profiler_options(mode: RunMode) -> jax.profiler.ProfileOptions:
     options.enable_hlo_proto = True
     options.host_tracer_level = 1
     options.python_tracer_level = 0
-    options.advanced_configuration = {
+    advanced_configuration = {
         "tpu_num_chips_to_profile_per_task": 4,
     }
     if mode is RunMode.COUNTERS:
-        options.advanced_configuration.update(
+        advanced_configuration.update(
             {
                 "tpu_enable_periodic_counter_sampling": True,
                 "tpu_tc_perf_counter_sampling_options": (
@@ -136,6 +136,7 @@ def _profiler_options(mode: RunMode) -> jax.profiler.ProfileOptions:
                 "num_tensor_cores_to_trace_per_device": 1,
             }
         )
+    options.advanced_configuration = advanced_configuration
     return options
 
 

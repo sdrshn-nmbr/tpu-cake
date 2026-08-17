@@ -98,7 +98,7 @@ class PendingReductionsAttr(ParametrizedAttribute):
 @irdl_attr_definition
 class DTensorType(ParametrizedAttribute, TypeAttribute):
     name = "dtensor.tensor"
-    element_type: Attribute
+    element_type: TypeAttribute
     dimensions: ArrayAttr[DimensionAttr]
     sharding: ShardingAttr
     pending: PendingReductionsAttr
@@ -112,6 +112,14 @@ class DTensorType(ParametrizedAttribute, TypeAttribute):
         for dimension in self.dimensions:
             dimension.verify()
         self.pending.verify()
+        sharding_axes = {
+            axis for dimension in self.sharding_axes() for axis in dimension
+        }
+        overlap = sharding_axes & set(self.pending_reductions())
+        if overlap:
+            raise VerifyException(
+                "pending reduction axes cannot also shard retained tensor dimensions"
+            )
 
     def logical_shape(self) -> tuple[tuple[str, int], ...]:
         return tuple((value.symbol.data, value.size.data) for value in self.dimensions)
@@ -171,6 +179,12 @@ class ElementwiseOp(IRDLOperation):
         assert isinstance(result, DTensorType)
         if self.function.data not in {"add", "multiply", "silu", "gelu", "relu", "exp"}:
             raise VerifyException("unsupported elementwise function")
+        unary = {"silu", "gelu", "relu", "exp"}
+        expected_arity = 1 if self.function.data in unary else 2
+        if len(self.values) != expected_arity:
+            raise VerifyException(
+                f"elementwise {self.function.data} requires {expected_arity} inputs"
+            )
         for value in self.values:
             tensor = value.type
             assert isinstance(tensor, DTensorType)
@@ -178,6 +192,12 @@ class ElementwiseOp(IRDLOperation):
                 raise VerifyException(
                     "elementwise inputs and result must have identical distributed tensor types"
                 )
+        if self.function.data != "add":
+            _require_fully_reduced(result)
+        if self.function.data in unary and not isinstance(
+            result.element_type, (BFloat16Type, Float16Type, Float32Type)
+        ):
+            raise VerifyException("nonlinear elementwise functions require floating-point values")
 
 
 @irdl_op_definition
@@ -309,6 +329,9 @@ class BroadcastOp(IRDLOperation):
         new_dimensions = set(after_shape) - set(before_shape)
         if any(after_sharding[name] for name in new_dimensions):
             raise VerifyException("new broadcast dimensions must be replicated")
+        retained_order = tuple(name for name, _ in after.logical_shape() if name in before_shape)
+        if retained_order != tuple(name for name, _ in before.logical_shape()):
+            raise VerifyException("broadcast must preserve input dimension order")
         if before.element_type != after.element_type:
             raise VerifyException("broadcast cannot change element type")
         if before.pending_reductions() != after.pending_reductions():

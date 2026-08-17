@@ -6,6 +6,17 @@ import subprocess
 import sys
 
 from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.runner import RunMode, _profiler_contract
+
+
+def test_counter_profiler_contract_retains_counter_only_options() -> None:
+    timing = _profiler_contract(RunMode.TRACE)["advanced_configuration"]
+    counters = _profiler_contract(RunMode.COUNTERS)["advanced_configuration"]
+
+    assert "tpu_enable_periodic_counter_sampling" not in timing
+    assert counters["tpu_enable_periodic_counter_sampling"] is True
+    assert counters["num_tensor_cores_to_trace_per_device"] == 1
+    assert "tpu_tc_perf_counter_sampling_options" in counters
 
 
 def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:

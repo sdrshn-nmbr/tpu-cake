@@ -10,6 +10,8 @@ from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
     CorrectnessResult,
+    EvidencePhase,
+    EvidencePhaseName,
     KernelExperiment,
     ProfileExpectation,
     RunReceipt,
@@ -348,6 +350,21 @@ def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
         (finalizer_root / "source_diff.patch", ArtifactRole.SOURCE_DIFF),
     )
     artifacts = tuple(_reference(root, path, role) for path, role in artifact_specs)
+    phase_paths: dict[EvidencePhaseName, list[str]] = {
+        phase: [] for phase in EvidencePhaseName
+    }
+    for artifact in artifacts:
+        first_component = Path(artifact.path).parts[0]
+        phase = (
+            EvidencePhaseName(first_component)
+            if first_component in {"timing", "trace", "counters", "finalizer"}
+            else EvidencePhaseName.AGGREGATE
+        )
+        phase_paths[phase].append(artifact.path)
+    phases = tuple(
+        EvidencePhase(name=phase, artifact_paths=tuple(paths))
+        for phase, paths in phase_paths.items()
+    )
     cost_report = CostModelReport.model_validate_json(
         (root / "timing" / "cost_model.json").read_text()
     )
@@ -381,6 +398,7 @@ def build_distributed_matmul_receipt(root: Path) -> RunReceipt:
         required_semantic_properties=(),
         metrics=tuple(metrics),
         artifacts=artifacts,
+        phases=phases,
     )
     if receipt.status is RunStatus.PASSED:
         validate_receipt(receipt, experiment, root=root)

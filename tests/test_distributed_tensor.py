@@ -301,3 +301,60 @@ def test_elementwise_requires_identical_distributed_types() -> None:
 
     with pytest.raises(VerifyException, match="identical distributed tensor types"):
         builder.module(result)
+
+
+def test_nonlinear_elementwise_rejects_pending_cross_device_reduction() -> None:
+    value = tensor(
+        bf16,
+        (("B", 8), ("D", 32)),
+        pending_reductions={"t": "sum"},
+    )
+    builder = DistributedProgramBuilder("bad_nonlinear_partial", {"t": 4}, (value,))
+    result = builder.elementwise(
+        builder.inputs[0],
+        result=value,
+        function="silu",
+    )
+
+    with pytest.raises(VerifyException, match="partially reduced"):
+        builder.module(result)
+
+
+def test_pending_axis_cannot_also_shard_a_retained_dimension() -> None:
+    value = tensor(
+        bf16,
+        (("B", 8),),
+        sharding={"B": ("t",)},
+        pending_reductions={"t": "sum"},
+    )
+    with pytest.raises(VerifyException, match="cannot also shard"):
+        DistributedProgramBuilder("bad_axis_role", {"t": 4}, (value,))
+
+
+@pytest.mark.parametrize(
+    ("function", "arity"),
+    (("add", 1), ("exp", 2), ("multiply", 3)),
+)
+def test_elementwise_signatures_are_strict(function: str, arity: int) -> None:
+    value = tensor(bf16, (("B", 8),))
+    builder = DistributedProgramBuilder("bad_arity", {}, (value,) * arity)
+    result = builder.elementwise(
+        *builder.inputs,
+        result=value,
+        function=function,
+    )
+
+    with pytest.raises(VerifyException, match="requires"):
+        builder.module(result)
+
+
+def test_broadcast_cannot_silently_transpose_existing_dimensions() -> None:
+    value = tensor(bf16, (("B", 8), ("S", 4)))
+    builder = DistributedProgramBuilder("bad_broadcast_order", {}, (value,))
+    result = builder.broadcast(
+        builder.inputs[0],
+        tensor(bf16, (("S", 4), ("B", 8), ("D", 32))),
+    )
+
+    with pytest.raises(VerifyException, match="preserve input dimension order"):
+        builder.module(result)
