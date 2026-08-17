@@ -9,6 +9,27 @@ The first checked-in component is the source-backed research corpus below. The
 schedule representation, verifier, cost model, and search loop will be added as
 independent packages rather than embedded in a model-specific runtime.
 
+## Current prototype
+
+The canonical schedule representation is the `tpu_schedule` xDSL dialect in
+`src/tpu_cake/dialects/tpu_schedule.py`. It currently models HBM, VMEM, and
+SMEM buffers; local allocation; DMA start and wait tokens; semaphores; ordered
+pipeline stages; and MXU matrix multiplication. Its verifier checks buffer
+types, DMA pairing, semaphore reuse, stage order, matrix shapes, accumulation
+type, and conservative VMEM and SMEM capacity.
+
+Pydantic is restricted to external profile contracts and normalized evidence.
+Schedules use textual xDSL IR. The initial Inkling contract and evidence prove
+that the reader can reject an overlap-raced prompt capture and accept a warm
+steady-decode capture while refusing to derive rates from single-snapshot TPU
+counters.
+
+```bash
+uv run tpu-cake verify-schedule examples/matmul.mlir
+uv run tpu-cake inspect-profile CAPTURE_ROOT \
+  --contract contracts/inkling-steady-decode.toml
+```
+
 This corpus supports the design of an agent-facing TPU kernel system inspired by CAKE. It separates retrieved source material from conclusions drawn from it.
 
 ## Corpus layout

@@ -1,0 +1,9 @@
+name = "inkling-small-v7x-steady-decode"
+stage = "steady_decode"
+minimum_tpu_device_planes = 8
+require_tensor_core_activity = true
+require_hbm_read_counters = true
+require_hbm_write_counters = true
+require_cycle_counters = true
+required_timed_hlo_markers = ["ragged_paged_attention"]
+forbidden_timed_hlo_fragments = ["12582912,16", "native_backend.py:500"]
