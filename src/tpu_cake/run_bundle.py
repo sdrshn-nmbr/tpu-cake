@@ -227,6 +227,23 @@ def _relative_json(value: object, root: Path) -> object:
     return value
 
 
+def _counter_expectation(experiment: KernelExperiment) -> ProfileExpectation:
+    contract = experiment.profile.model_dump()
+    contract.update(
+        require_tensor_core_activity=False,
+        require_hbm_read_counters=True,
+        require_hbm_write_counters=True,
+        require_cycle_counters=True,
+        minimum_counter_device_planes=experiment.target.chip_count,
+        required_timed_hlo_markers=tuple(
+            marker
+            for marker in experiment.profile.required_timed_hlo_markers
+            if marker != "pallas_call"
+        ),
+    )
+    return ProfileExpectation.model_validate(contract)
+
+
 def build_distributed_matmul_receipt(
     root: Path, *, search_root: Path | None = None
 ) -> RunReceipt:
@@ -359,20 +376,7 @@ def build_distributed_matmul_receipt(
     _ensure_exports(root / "trace")
     _ensure_exports(root / "counters")
     trace_assessment = assess_capture(root / "trace", experiment.profile)
-    counter_contract = experiment.profile.model_dump()
-    counter_contract.update(
-        require_tensor_core_activity=True,
-        require_hbm_read_counters=True,
-        require_hbm_write_counters=True,
-        require_cycle_counters=True,
-        minimum_counter_device_planes=experiment.target.chip_count,
-        required_timed_hlo_markers=tuple(
-            marker
-            for marker in experiment.profile.required_timed_hlo_markers
-            if marker != "pallas_call"
-        ),
-    )
-    counter_expectation = ProfileExpectation.model_validate(counter_contract)
+    counter_expectation = _counter_expectation(experiment)
     counter_assessment = assess_capture(root / "counters", counter_expectation)
     assessment_path = root / "profile_assessment.json"
     assessment_payload = _relative_json(
