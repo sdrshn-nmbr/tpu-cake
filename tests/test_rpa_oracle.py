@@ -17,7 +17,7 @@ def test_fused_rpa_oracle_is_seed_replayable_and_updates_packed_cache() -> None:
 
     assert output.shape == (4, 4, 32)
     assert str(output.dtype) == "bfloat16"
-    assert updated_cache.shape == (32, 16, 2, 2, 32)
+    assert updated_cache.shape == (32, 16, 2, 2, 128)
     assert str(updated_cache.dtype) == "bfloat16"
     assert not np.array_equal(updated_cache, first_inputs[3])
 

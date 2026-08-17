@@ -149,7 +149,7 @@ def inkling_fused_rpa_schedule() -> ModuleOp:
         buffer((4, 4, 32), "T Hq D", bf16, **external),
         buffer((4, 2, 32), "T Hkv D", bf16, **external),
         buffer((4, 2, 32), "T Hkv D", bf16, **external),
-        buffer((32, 16, 2, 2, 32), "P S Hkv2p Pack D", bf16, **external),
+        buffer((32, 16, 2, 2, 128), "P S Hkv2p Pack Dpad", bf16, **external),
         buffer((4,), "N", i32, **external),
         buffer((32,), "PI", i32, **external),
         buffer((5,), "N1", i32, **external),
@@ -208,7 +208,7 @@ def inkling_fused_rpa_inputs(seed: int = 0) -> tuple[jax.Array, ...]:
         bf16((4, 4, 32)),
         bf16((4, 2, 32)),
         bf16((4, 2, 32)),
-        bf16((32, 16, 2, 2, 32), scale=0.25),
+        bf16((32, 16, 2, 2, 128), scale=0.25),
         jnp.asarray((1, 17, 33, 49), dtype=jnp.int32),
         jnp.arange(32, dtype=jnp.int32),
         jnp.arange(5, dtype=jnp.int32),
@@ -273,9 +273,14 @@ def inkling_fused_rpa_reference(
             for head in range(keys.shape[1]):
                 for slot, source in ((key_slot, keys), (value_slot, values)):
                     interleaved = 2 * head + slot
-                    cache[page, offset, interleaved // packing, interleaved % packing] = source[
-                        sequence, head
+                    destination = cache[
+                        page,
+                        offset,
+                        interleaved // packing,
+                        interleaved % packing,
                     ]
+                    destination.fill(0)
+                    destination[: source.shape[-1]] = source[sequence, head]
 
     unpacked = cache.reshape(*cache.shape[:2], cache.shape[2] * packing, cache.shape[-1])
     outputs = np.empty_like(queries, dtype=np.float32)
@@ -292,8 +297,10 @@ def inkling_fused_rpa_reference(
         sequence_cache = unpacked[pages].reshape(-1, unpacked.shape[2], unpacked.shape[3])[
             :length
         ]
-        key_cache = sequence_cache[:, key_slot::2][:, : keys.shape[1]]
-        value_cache = sequence_cache[:, value_slot::2][:, : values.shape[1]]
+        key_cache = sequence_cache[:, key_slot::2, : queries.shape[-1]][:, : keys.shape[1]]
+        value_cache = sequence_cache[:, value_slot::2, : queries.shape[-1]][
+            :, : values.shape[1]
+        ]
         query_heads_per_kv_head = queries.shape[1] // keys.shape[1]
         head_index = np.arange(queries.shape[1]) // query_heads_per_kv_head
         scores = np.einsum(
@@ -383,7 +390,7 @@ def inkling_fused_rpa_contract(plan: FusedRpaPlan | None = None) -> WorkloadCont
         ("queries", ("T", "Hq", "D")),
         ("keys", ("T", "Hkv", "D")),
         ("values", ("T", "Hkv", "D")),
-        ("fused_cache", ("P", "S", "Hkv2p", "Pack", "D")),
+        ("fused_cache", ("P", "S", "Hkv2p", "Pack", "Dpad")),
         ("kv_lengths", ("N",)),
         ("page_indices", ("PI",)),
         ("cumulative_query_lengths", ("N1",)),
@@ -406,7 +413,7 @@ def inkling_fused_rpa_contract(plan: FusedRpaPlan | None = None) -> WorkloadCont
         tensor(
             "updated_fused_cache",
             plan.fused_cache_shape,
-            ("P", "S", "Hkv2p", "Pack", "D"),
+            ("P", "S", "Hkv2p", "Pack", "Dpad"),
             plan.output_dtypes[1],
         ),
     )

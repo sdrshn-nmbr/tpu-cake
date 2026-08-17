@@ -1454,12 +1454,13 @@ class FusedRaggedPagedAttentionOp(IRDLOperation):
             raise VerifyException("fused RPA Q/K/V token counts must match")
         if key_heads != value_heads or query_heads % key_heads:
             raise VerifyException("fused RPA requires equal K/V heads dividing query heads")
-        if (key_dimension, value_dimension, cache_dimension) != (
-            dimension,
-            dimension,
-            dimension,
-        ):
-            raise VerifyException("fused RPA Q/K/V/cache head dimensions must match")
+        if (key_dimension, value_dimension) != (dimension, dimension):
+            raise VerifyException("fused RPA Q/K/V head dimensions must match")
+        padded_dimension = ((dimension + 127) // 128) * 128
+        if cache_dimension != padded_dimension:
+            raise VerifyException(
+                "fused RPA cache head dimension must be padded to a multiple of 128"
+            )
         if packing != 2 or packed_interleaved_heads * packing != 2 * key_heads:
             raise VerifyException("fused RPA cache must interleave one K and V per KV head")
         if output.storage.get_shape() != query_shape:

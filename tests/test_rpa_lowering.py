@@ -39,7 +39,7 @@ def test_fused_rpa_lowers_to_a_stable_upstream_plan() -> None:
 
     assert first == second
     assert first.query_shape == (4, 4, 32)
-    assert first.fused_cache_shape == (32, 16, 2, 2, 32)
+    assert first.fused_cache_shape == (32, 16, 2, 2, 128)
     assert first.decode_block_sizes == (8, 128, 8, 128)
     assert first.softmax_scale == 0.03125
     assert first.softmax_dtype == "float32"
