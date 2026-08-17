@@ -5,24 +5,130 @@ from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
+    CollectivePlanAttr,
+    CollectiveReduceScatterOp,
     DmaStartOp,
     DmaWaitOp,
     KernelOp,
+    LinkAttr,
     MemorySpace,
     MxuMatmulOp,
     Ownership,
     PipelineLoopOp,
     PipelineYieldOp,
     SemaphoreAllocOp,
+    TopologyAttr,
     YieldOp,
+    rectilinear_topology,
 )
 from tpu_cake.frontend import KernelBuilder, buffer
+from tpu_cake.lowering import lower_distributed_matmul
 from tpu_cake.workloads import inkling_rpa_schedule, matmul_schedule
+from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
 
 
 def test_vertical_workload_schedules_verify() -> None:
     matmul_schedule().verify()
     inkling_rpa_schedule().verify()
+
+
+def test_rectilinear_topology_materializes_devices_links_and_collective_groups() -> None:
+    topology = rectilinear_topology(
+        ("d", "t"),
+        (2, 2),
+        {"d": 400_000_000_000, "t": 600_000_000_000},
+    )
+
+    assert len(topology.devices) == 4
+    assert len(topology.links) == 4
+    assert tuple(plan.plan_id.data for plan in topology.collective_plans) == (
+        "axis:d",
+        "axis:t",
+    )
+    assert all(len(plan.groups) == 2 for plan in topology.collective_plans)
+
+
+def test_topology_rejects_links_to_unknown_devices() -> None:
+    topology = rectilinear_topology(("t",), (2,), {"t": 600_000_000_000})
+    invalid = LinkAttr(
+        StringAttr("link:0-9"),
+        IntAttr(0),
+        IntAttr(9),
+        IntAttr(600_000_000_000),
+        IntAttr(1),
+    )
+    with pytest.raises(VerifyException, match="unknown device"):
+        TopologyAttr(
+            topology.devices,
+            ArrayAttr((*topology.links, invalid)),
+            topology.collective_plans,
+        )
+
+
+def test_collective_groups_must_follow_their_mesh_axis() -> None:
+    topology = rectilinear_topology(
+        ("d", "t"),
+        (2, 2),
+        {"d": 400_000_000_000, "t": 600_000_000_000},
+    )
+    d_plan, t_plan = topology.collective_plans
+    swapped = TopologyAttr(
+        topology.devices,
+        topology.links,
+        ArrayAttr(
+            (
+                CollectivePlanAttr(d_plan.plan_id, d_plan.mesh_axis, t_plan.groups),
+                CollectivePlanAttr(t_plan.plan_id, t_plan.mesh_axis, d_plan.groups),
+            )
+        ),
+    )
+    builder = KernelBuilder(
+        "bad_topology",
+        "tpu7x",
+        (),
+        vmem_capacity_bytes=1024,
+        smem_capacity_bytes=1024,
+        mesh={"d": 2, "t": 2},
+        topology=swapped,
+    )
+
+    with pytest.raises(VerifyException, match="follow their declared mesh axis"):
+        builder.module()
+
+
+def test_new_schedules_use_only_the_structured_topology_schema() -> None:
+    module = matmul_schedule()
+    kernel = next(operation for operation in module.walk() if isinstance(operation, KernelOp))
+
+    assert kernel.physical_schema is not None
+    assert kernel.physical_schema.data == "structured-topology-v2"
+    assert kernel.topology is not None
+    assert kernel.interconnect is None
+
+
+def test_collectives_cannot_overbook_one_physical_link() -> None:
+    module = lower_distributed_matmul(distributed_matmul_schedule())
+    kernel = next(operation for operation in module.walk() if isinstance(operation, KernelOp))
+    collective = next(
+        operation
+        for operation in module.walk()
+        if isinstance(operation, CollectiveReduceScatterOp)
+    )
+    duplicate = CollectiveReduceScatterOp(
+        collective.source,
+        collective.destination,
+        stage=collective.stage.data,
+        mesh_axis=collective.mesh_axis.data,
+        group_size=collective.group_size.data,
+        scatter_dimension=collective.scatter_dimension.data,
+        reducer=collective.reducer.data,
+    )
+    assert collective.parent is not None
+    collective.parent.insert_op_after(duplicate, collective)
+    kernel.properties["ici_link_count"] = IntAttr(2)
+
+    with pytest.raises(VerifyException, match="topology link .* capacity exceeded"):
+        module.verify()
 
 
 def test_buffer_rejects_mismatched_logical_rank() -> None:

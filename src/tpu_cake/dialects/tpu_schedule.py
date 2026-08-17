@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from enum import StrEnum
+from itertools import pairwise, product
 
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -154,6 +155,266 @@ class InterconnectAttr(ParametrizedAttribute):
                 strict=True,
             )
         }
+
+
+@irdl_attr_definition
+class DeviceAttr(ParametrizedAttribute):
+    name = "tpu_schedule.device"
+    device_id: IntAttr
+    coordinates: ArrayAttr[IntAttr]
+    core_count: IntAttr
+
+    def verify(self) -> None:
+        if self.device_id.data < 0:
+            raise VerifyException("topology device IDs must be nonnegative")
+        if self.core_count.data <= 0:
+            raise VerifyException("topology device core counts must be positive")
+        if any(value.data < 0 for value in self.coordinates):
+            raise VerifyException("topology device coordinates must be nonnegative")
+
+
+@irdl_attr_definition
+class LinkAttr(ParametrizedAttribute):
+    name = "tpu_schedule.link"
+    link_id: StringAttr
+    source_device: IntAttr
+    destination_device: IntAttr
+    bandwidth_bytes_per_second: IntAttr
+    channel_count: IntAttr
+
+    def verify(self) -> None:
+        if not self.link_id.data:
+            raise VerifyException("topology links need stable IDs")
+        if self.source_device.data < 0 or self.destination_device.data < 0:
+            raise VerifyException("topology link endpoints must be nonnegative")
+        if self.source_device.data >= self.destination_device.data:
+            raise VerifyException("topology link endpoints must use canonical ascending order")
+        if self.bandwidth_bytes_per_second.data <= 0:
+            raise VerifyException("topology link bandwidth must be positive")
+        if self.channel_count.data <= 0:
+            raise VerifyException("topology link channel count must be positive")
+
+
+@irdl_attr_definition
+class CollectiveGroupAttr(ParametrizedAttribute):
+    name = "tpu_schedule.collective_group"
+    group_id: StringAttr
+    device_ids: ArrayAttr[IntAttr]
+    route_link_ids: ArrayAttr[StringAttr]
+
+    def verify(self) -> None:
+        devices = tuple(value.data for value in self.device_ids)
+        routes = tuple(value.data for value in self.route_link_ids)
+        if not self.group_id.data:
+            raise VerifyException("collective groups need stable IDs")
+        if len(devices) < 2 or devices != tuple(sorted(set(devices))):
+            raise VerifyException(
+                "collective group devices must be unique, ordered, and contain at least two devices"
+            )
+        if not routes or routes != tuple(sorted(set(routes))):
+            raise VerifyException("collective route links must be unique and ordered")
+
+
+@irdl_attr_definition
+class CollectivePlanAttr(ParametrizedAttribute):
+    name = "tpu_schedule.collective_plan"
+    plan_id: StringAttr
+    mesh_axis: StringAttr
+    groups: ArrayAttr[CollectiveGroupAttr]
+
+    def verify(self) -> None:
+        groups = tuple(self.groups)
+        if not self.plan_id.data or not self.mesh_axis.data:
+            raise VerifyException("collective plans need stable IDs and mesh axes")
+        for group in groups:
+            group.verify()
+        group_ids = tuple(group.group_id.data for group in groups)
+        if not groups or group_ids != tuple(sorted(set(group_ids))):
+            raise VerifyException("collective plan groups must be unique and ordered")
+
+
+@irdl_attr_definition
+class TopologyAttr(ParametrizedAttribute):
+    name = "tpu_schedule.topology"
+    devices: ArrayAttr[DeviceAttr]
+    links: ArrayAttr[LinkAttr]
+    collective_plans: ArrayAttr[CollectivePlanAttr]
+
+    def verify(self) -> None:
+        devices = tuple(self.devices)
+        links = tuple(self.links)
+        plans = tuple(self.collective_plans)
+        for device in devices:
+            device.verify()
+        for link in links:
+            link.verify()
+        for plan in plans:
+            plan.verify()
+
+        device_ids = tuple(device.device_id.data for device in devices)
+        if device_ids != tuple(range(len(devices))):
+            raise VerifyException("topology device IDs must be dense and canonically ordered")
+        coordinate_rank = len(devices[0].coordinates) if devices else 0
+        coordinates = tuple(
+            tuple(value.data for value in device.coordinates) for device in devices
+        )
+        if any(len(device.coordinates) != coordinate_rank for device in devices):
+            raise VerifyException("topology device coordinates must have equal rank")
+        if len(coordinates) != len(set(coordinates)):
+            raise VerifyException("topology device coordinates must be unique")
+
+        link_ids = tuple(link.link_id.data for link in links)
+        if link_ids != tuple(sorted(set(link_ids))):
+            raise VerifyException("topology links must be unique and canonically ordered")
+        known_devices = set(device_ids)
+        endpoints: set[tuple[int, int]] = set()
+        links_by_id: dict[str, LinkAttr] = {}
+        for link in links:
+            endpoint = (link.source_device.data, link.destination_device.data)
+            if not set(endpoint) <= known_devices:
+                raise VerifyException("topology link references an unknown device")
+            if endpoint in endpoints:
+                raise VerifyException("topology cannot declare duplicate physical links")
+            endpoints.add(endpoint)
+            links_by_id[link.link_id.data] = link
+
+        plan_ids = tuple(plan.plan_id.data for plan in plans)
+        if plan_ids != tuple(sorted(set(plan_ids))):
+            raise VerifyException(
+                "topology collective plans must be unique and canonically ordered"
+            )
+        for plan in plans:
+            covered: set[int] = set()
+            group_size: int | None = None
+            for group in plan.groups:
+                group_devices = {value.data for value in group.device_ids}
+                if not group_devices <= known_devices or covered & group_devices:
+                    raise VerifyException(
+                        "collective plan groups must be disjoint and reference known devices"
+                    )
+                covered |= group_devices
+                if group_size is None:
+                    group_size = len(group_devices)
+                elif len(group_devices) != group_size:
+                    raise VerifyException("collective plan groups must have equal size")
+                adjacency = {device: set() for device in group_devices}
+                for route in group.route_link_ids:
+                    link = links_by_id.get(route.data)
+                    if link is None:
+                        raise VerifyException("collective route references an unknown link")
+                    source = link.source_device.data
+                    destination = link.destination_device.data
+                    if source not in group_devices or destination not in group_devices:
+                        raise VerifyException(
+                            "collective route link endpoints must stay inside their group"
+                        )
+                    adjacency[source].add(destination)
+                    adjacency[destination].add(source)
+                reached = {next(iter(group_devices))}
+                frontier = list(reached)
+                while frontier:
+                    current = frontier.pop()
+                    for neighbor in adjacency[current] - reached:
+                        reached.add(neighbor)
+                        frontier.append(neighbor)
+                if reached != group_devices:
+                    raise VerifyException("collective route must connect every group device")
+            if covered != known_devices:
+                raise VerifyException("collective plan groups must partition all devices")
+
+    def plans_by_id(self) -> dict[str, CollectivePlanAttr]:
+        self.verify()
+        return {plan.plan_id.data: plan for plan in self.collective_plans}
+
+    def links_by_id(self) -> dict[str, LinkAttr]:
+        self.verify()
+        return {link.link_id.data: link for link in self.links}
+
+
+def rectilinear_topology(
+    mesh_axis_names: tuple[str, ...],
+    mesh_axis_sizes: tuple[int, ...],
+    bandwidth_bytes_per_second: dict[str, int],
+    *,
+    cores_per_device: int = 2,
+    channels_per_link: int = 1,
+) -> TopologyAttr:
+    coordinates = tuple(product(*(range(size) for size in mesh_axis_sizes)))
+    coordinate_to_device = {
+        coordinate: device_id for device_id, coordinate in enumerate(coordinates)
+    }
+    devices = tuple(
+        DeviceAttr(
+            IntAttr(device_id),
+            ArrayAttr(IntAttr(value) for value in coordinate),
+            IntAttr(cores_per_device),
+        )
+        for device_id, coordinate in enumerate(coordinates)
+    )
+    links: dict[tuple[int, int], LinkAttr] = {}
+    plans: list[CollectivePlanAttr] = []
+    for axis_index, axis in enumerate(mesh_axis_names):
+        if mesh_axis_sizes[axis_index] == 1:
+            continue
+        groups: list[CollectiveGroupAttr] = []
+        other_indices = tuple(
+            index for index in range(len(mesh_axis_names)) if index != axis_index
+        )
+        fixed_coordinates = product(
+            *(range(mesh_axis_sizes[index]) for index in other_indices)
+        )
+        for group_index, fixed in enumerate(fixed_coordinates):
+            base = dict(zip(other_indices, fixed, strict=True))
+            group_coordinates = tuple(
+                tuple(
+                    coordinate if index == axis_index else base[index]
+                    for index in range(len(mesh_axis_names))
+                )
+                for coordinate in range(mesh_axis_sizes[axis_index])
+            )
+            device_ids = tuple(
+                coordinate_to_device[coordinate] for coordinate in group_coordinates
+            )
+            route_ids: list[str] = []
+            for source, destination in pairwise(device_ids):
+                endpoint = (min(source, destination), max(source, destination))
+                link_id = f"link:{endpoint[0]}-{endpoint[1]}"
+                existing = links.get(endpoint)
+                bandwidth = bandwidth_bytes_per_second[axis]
+                if existing is not None and (
+                    existing.bandwidth_bytes_per_second.data != bandwidth
+                    or existing.channel_count.data != channels_per_link
+                ):
+                    raise ValueError("one physical link cannot have conflicting capacities")
+                links[endpoint] = existing or LinkAttr(
+                    StringAttr(link_id),
+                    IntAttr(endpoint[0]),
+                    IntAttr(endpoint[1]),
+                    IntAttr(bandwidth),
+                    IntAttr(channels_per_link),
+                )
+                route_ids.append(link_id)
+            groups.append(
+                CollectiveGroupAttr(
+                    StringAttr(f"group:{axis}:{group_index}"),
+                    ArrayAttr(IntAttr(device_id) for device_id in sorted(device_ids)),
+                    ArrayAttr(StringAttr(link_id) for link_id in sorted(route_ids)),
+                )
+            )
+        plans.append(
+            CollectivePlanAttr(
+                StringAttr(f"axis:{axis}"),
+                StringAttr(axis),
+                ArrayAttr(sorted(groups, key=lambda group: group.group_id.data)),
+            )
+        )
+    topology = TopologyAttr(
+        ArrayAttr(devices),
+        ArrayAttr(sorted(links.values(), key=lambda link: link.link_id.data)),
+        ArrayAttr(sorted(plans, key=lambda plan: plan.plan_id.data)),
+    )
+    topology.verify()
+    return topology
 
 
 @irdl_attr_definition
@@ -523,6 +784,7 @@ class CollectiveReduceScatterOp(IRDLOperation):
     group_size = prop_def(IntAttr)
     scatter_dimension = prop_def(IntAttr)
     reducer = prop_def(StringAttr)
+    collective_plan = opt_prop_def(StringAttr)
 
     def __init__(
         self,
@@ -534,6 +796,7 @@ class CollectiveReduceScatterOp(IRDLOperation):
         group_size: int,
         scatter_dimension: int,
         reducer: str = "sum",
+        collective_plan: str | None = None,
     ) -> None:
         super().__init__(
             operands=[source, destination],
@@ -543,6 +806,9 @@ class CollectiveReduceScatterOp(IRDLOperation):
                 "group_size": IntAttr(group_size),
                 "scatter_dimension": IntAttr(scatter_dimension),
                 "reducer": StringAttr(reducer),
+                "collective_plan": StringAttr(
+                    collective_plan or f"axis:{mesh_axis}"
+                ),
             },
         )
 
@@ -834,6 +1100,36 @@ class PipelineLoopOp(IRDLOperation):
         kernel = self.parent_op()
         if not isinstance(kernel, KernelOp):
             raise VerifyException("pipeline loop must be directly contained by a TPU kernel")
+        topology_plans: dict[str, CollectivePlanAttr] = {}
+        topology_links: dict[str, LinkAttr] = {}
+        if kernel.physical_schema is not None:
+            if kernel.topology is None:
+                raise VerifyException("structured pipeline kernel needs a topology")
+            topology_plans = kernel.topology.plans_by_id()
+            topology_links = kernel.topology.links_by_id()
+            mesh = dict(
+                zip(
+                    (value.data for value in kernel.mesh_axis_names),
+                    (value.data for value in kernel.mesh_axis_sizes),
+                    strict=True,
+                )
+            )
+            for operation in scheduled:
+                if not isinstance(operation, CollectiveReduceScatterOp):
+                    continue
+                if operation.collective_plan is None:
+                    raise VerifyException(
+                        "structured pipeline collective needs a collective plan"
+                    )
+                plan = topology_plans.get(operation.collective_plan.data)
+                if (
+                    plan is None
+                    or plan.mesh_axis.data != operation.mesh_axis.data
+                    or operation.group_size.data != mesh.get(operation.mesh_axis.data)
+                ):
+                    raise VerifyException(
+                        "pipeline collective references an incompatible collective plan"
+                    )
         horizon = (
             (self.trip_count.data - 1) * self.initiation_interval.data
             + self.pipeline_stages.data
@@ -842,6 +1138,7 @@ class PipelineLoopOp(IRDLOperation):
             active_dma = 0
             mxu_uses = 0
             ici_uses = 0
+            link_uses: dict[str, int] = {}
             semaphore_uses: dict[Operation, int] = {}
             for iteration in range(self.trip_count.data):
                 logical_stage = absolute_stage - iteration * self.initiation_interval.data
@@ -861,7 +1158,18 @@ class PipelineLoopOp(IRDLOperation):
                     elif isinstance(operation, (MxuMatmulOp, RaggedPagedAttentionOp)):
                         mxu_uses += operation.stage.data == logical_stage
                     elif isinstance(operation, CollectiveReduceScatterOp):
-                        ici_uses += operation.stage.data == logical_stage
+                        if operation.stage.data == logical_stage:
+                            ici_uses += 1
+                            if operation.collective_plan is not None:
+                                plan = topology_plans.get(
+                                    operation.collective_plan.data
+                                )
+                                if plan is not None:
+                                    for group in plan.groups:
+                                        for link_id in group.route_link_ids:
+                                            link_uses[link_id.data] = (
+                                                link_uses.get(link_id.data, 0) + 1
+                                            )
             if active_dma > kernel.dma_engine_count.data:
                 raise VerifyException(
                     f"pipeline exceeds DMA capacity at absolute stage {absolute_stage}"
@@ -874,6 +1182,13 @@ class PipelineLoopOp(IRDLOperation):
                 raise VerifyException(
                     f"pipeline exceeds ICI capacity at absolute stage {absolute_stage}"
                 )
+            for link_id, uses in link_uses.items():
+                capacity = topology_links[link_id].channel_count.data
+                if uses > capacity:
+                    raise VerifyException(
+                        f"pipeline exceeds topology link {link_id} capacity "
+                        f"at absolute stage {absolute_stage}"
+                    )
             for owner, uses in semaphore_uses.items():
                 if not isinstance(owner, SemaphoreAllocOp) or uses > owner.slot_count:
                     raise VerifyException(
@@ -904,7 +1219,9 @@ class KernelOp(IRDLOperation):
     smem_capacity_bytes = prop_def(IntAttr)
     mesh_axis_names = prop_def(ArrayAttr[StringAttr])
     mesh_axis_sizes = prop_def(ArrayAttr[IntAttr])
-    interconnect = prop_def(InterconnectAttr)
+    interconnect = opt_prop_def(InterconnectAttr)
+    topology = opt_prop_def(TopologyAttr)
+    physical_schema = opt_prop_def(StringAttr)
     dma_engine_count = prop_def(IntAttr)
     mxu_count = prop_def(IntAttr)
     vector_unit_count = prop_def(IntAttr)
@@ -922,6 +1239,7 @@ class KernelOp(IRDLOperation):
         body: Region,
         *,
         interconnect_bandwidth_bytes_per_second: dict[str, int] | None = None,
+        topology: TopologyAttr | None = None,
         dma_engine_count: int = 2,
         mxu_count: int = 1,
         vector_unit_count: int = 1,
@@ -929,6 +1247,13 @@ class KernelOp(IRDLOperation):
     ):
         interconnect_bandwidth_bytes_per_second = dict(
             sorted((interconnect_bandwidth_bytes_per_second or {}).items())
+        )
+        mesh_names = tuple(value.data for value in mesh_axis_names)
+        mesh_sizes = tuple(value.data for value in mesh_axis_sizes)
+        topology = topology or rectilinear_topology(
+            mesh_names,
+            mesh_sizes,
+            interconnect_bandwidth_bytes_per_second,
         )
         super().__init__(
             properties={
@@ -942,16 +1267,8 @@ class KernelOp(IRDLOperation):
                 else smem_capacity_bytes,
                 "mesh_axis_names": mesh_axis_names,
                 "mesh_axis_sizes": mesh_axis_sizes,
-                "interconnect": InterconnectAttr(
-                    ArrayAttr(
-                        StringAttr(axis)
-                        for axis in interconnect_bandwidth_bytes_per_second
-                    ),
-                    ArrayAttr(
-                        IntAttr(bandwidth)
-                        for bandwidth in interconnect_bandwidth_bytes_per_second.values()
-                    ),
-                ),
+                "topology": topology,
+                "physical_schema": StringAttr("structured-topology-v2"),
                 "dma_engine_count": IntAttr(dma_engine_count),
                 "mxu_count": IntAttr(mxu_count),
                 "vector_unit_count": IntAttr(vector_unit_count),
@@ -979,11 +1296,80 @@ class KernelOp(IRDLOperation):
         if any(capacity <= 0 for capacity in resource_capacities.values()):
             raise VerifyException("kernel hardware resource capacities must be positive")
         mesh = dict(zip(mesh_names, mesh_sizes, strict=True))
-        links = self.interconnect.bandwidths()
-        if set(links) != set(mesh):
-            raise VerifyException(
-                "kernel interconnect must declare one bandwidth for every mesh axis"
+        if self.physical_schema is None:
+            if self.topology is not None or self.interconnect is None:
+                raise VerifyException(
+                    "legacy kernels require only their axis-bandwidth interconnect"
+                )
+            links = self.interconnect.bandwidths()
+            if set(links) != set(mesh):
+                raise VerifyException(
+                    "kernel interconnect must declare one bandwidth for every mesh axis"
+                )
+            topology_plans: dict[str, CollectivePlanAttr] = {}
+            topology_links: dict[str, LinkAttr] = {}
+        else:
+            if self.physical_schema.data != "structured-topology-v2":
+                raise VerifyException("unsupported physical schedule schema")
+            if self.topology is None or self.interconnect is not None:
+                raise VerifyException(
+                    "structured kernels require topology and must not duplicate legacy interconnect"
+                )
+            self.topology.verify()
+            topology_plans = self.topology.plans_by_id()
+            topology_links = self.topology.links_by_id()
+            if len(self.topology.devices) != math.prod(mesh_sizes):
+                raise VerifyException("topology device count must match the kernel mesh")
+            coordinates = {
+                tuple(value.data for value in device.coordinates)
+                for device in self.topology.devices
+            }
+            expected_coordinates = set(
+                product(*(range(size) for size in mesh_sizes))
             )
+            if coordinates != expected_coordinates:
+                raise VerifyException("topology coordinates must exactly cover the kernel mesh")
+            plans_by_axis = {
+                plan.mesh_axis.data: plan for plan in self.topology.collective_plans
+            }
+            expected_plan_axes = {
+                axis for axis, size in mesh.items() if size > 1
+            }
+            if set(plans_by_axis) != expected_plan_axes:
+                raise VerifyException(
+                    "topology must declare one collective plan for every nontrivial mesh axis"
+                )
+            for axis, plan in plans_by_axis.items():
+                if any(len(group.device_ids) != mesh[axis] for group in plan.groups):
+                    raise VerifyException(
+                        "collective plan group size must match its mesh axis"
+                    )
+                axis_index = mesh_names.index(axis)
+                coordinates_by_id = {
+                    device.device_id.data: tuple(
+                        value.data for value in device.coordinates
+                    )
+                    for device in self.topology.devices
+                }
+                for group in plan.groups:
+                    group_coordinates = [
+                        coordinates_by_id[value.data] for value in group.device_ids
+                    ]
+                    fixed = {
+                        tuple(
+                            coordinate[index]
+                            for index in range(len(mesh_names))
+                            if index != axis_index
+                        )
+                        for coordinate in group_coordinates
+                    }
+                    varying = {
+                        coordinate[axis_index] for coordinate in group_coordinates
+                    }
+                    if len(fixed) != 1 or varying != set(range(mesh[axis])):
+                        raise VerifyException(
+                            "collective plan groups must follow their declared mesh axis"
+                        )
         if not isinstance(block.last_op, YieldOp):
             raise VerifyException("kernel must end with tpu_schedule.yield")
         operations = list(block.ops)
@@ -1124,8 +1510,21 @@ class KernelOp(IRDLOperation):
                     raise VerifyException(
                         "reduce-scatter group size must match its kernel mesh axis"
                     )
-                if links[axis] <= 0:
-                    raise VerifyException("reduce-scatter requires a usable interconnect link")
+                if self.physical_schema is None:
+                    if links[axis] <= 0:
+                        raise VerifyException(
+                            "reduce-scatter requires a usable interconnect link"
+                        )
+                else:
+                    if operation.collective_plan is None:
+                        raise VerifyException(
+                            "structured reduce-scatter needs a collective plan"
+                        )
+                    plan = topology_plans.get(operation.collective_plan.data)
+                    if plan is None or plan.mesh_axis.data != axis:
+                        raise VerifyException(
+                            "reduce-scatter references an incompatible collective plan"
+                        )
                 initialized.add(root(operation.destination))
             if isinstance(operation, RaggedPagedAttentionOp):
                 for value in (
@@ -1224,6 +1623,24 @@ class KernelOp(IRDLOperation):
                     f"ICI link capacity exceeded at stage {stage}: "
                     f"{ici_uses} > {self.ici_link_count.data}"
                 )
+            if self.physical_schema is not None:
+                link_uses: dict[str, int] = {}
+                for operation in operations:
+                    if not isinstance(operation, CollectiveReduceScatterOp):
+                        continue
+                    if operation.stage.data != stage or operation.collective_plan is None:
+                        continue
+                    plan = topology_plans[operation.collective_plan.data]
+                    for group in plan.groups:
+                        for link_id in group.route_link_ids:
+                            link_uses[link_id.data] = link_uses.get(link_id.data, 0) + 1
+                for link_id, uses in link_uses.items():
+                    capacity = topology_links[link_id].channel_count.data
+                    if uses > capacity:
+                        raise VerifyException(
+                            f"topology link {link_id} capacity exceeded at stage {stage}: "
+                            f"{uses} > {capacity}"
+                        )
             for space, capacity, label in (
                 (MemorySpace.VMEM, self.vmem_capacity_bytes.data, "VMEM"),
                 (MemorySpace.SMEM, self.smem_capacity_bytes.data, "SMEM"),
@@ -1271,6 +1688,11 @@ TPUSchedule = Dialect(
         LifetimeAttr,
         TileRegionAttr,
         InterconnectAttr,
+        DeviceAttr,
+        LinkAttr,
+        CollectiveGroupAttr,
+        CollectivePlanAttr,
+        TopologyAttr,
         BufferType,
         DmaTokenType,
         SemaphoreType,

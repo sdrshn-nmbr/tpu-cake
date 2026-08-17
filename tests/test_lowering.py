@@ -4,9 +4,9 @@ from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
     CollectiveReduceScatterOp,
-    InterconnectAttr,
     KernelOp,
     MxuMatmulOp,
+    TopologyAttr,
 )
 from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
 from tpu_cake.lowering import MatmulTile, UnsupportedLoweringError, lower_distributed_matmul
@@ -126,10 +126,14 @@ def test_tile_must_divide_the_local_matmul_shape() -> None:
         )
 
 
-def test_physical_collective_requires_a_structured_interconnect_link() -> None:
+def test_physical_collective_requires_a_routed_topology_link() -> None:
     schedule = lower_distributed_matmul(distributed_matmul_schedule())
     kernel = next(operation for operation in schedule.walk() if isinstance(operation, KernelOp))
-    kernel.properties["interconnect"] = InterconnectAttr(ArrayAttr(()), ArrayAttr(()))
+    assert kernel.topology is not None
 
-    with pytest.raises(VerifyException, match="one bandwidth for every mesh axis"):
-        schedule.verify()
+    with pytest.raises(VerifyException, match="route references an unknown link"):
+        TopologyAttr(
+            kernel.topology.devices,
+            ArrayAttr(()),
+            kernel.topology.collective_plans,
+        )

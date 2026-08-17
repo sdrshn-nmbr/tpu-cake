@@ -25,6 +25,7 @@ from tpu_cake.dialects.tpu_schedule import (
     SemaphoreAllocOp,
     ShapeAttr,
     ShardingAttr,
+    TopologyAttr,
     ViewOp,
     YieldOp,
 )
@@ -98,6 +99,7 @@ class KernelBuilder:
         smem_capacity_bytes: int,
         mesh: Mapping[str, int] | None = None,
         interconnect_bandwidth_bytes_per_second: Mapping[str, int] | None = None,
+        topology: TopologyAttr | None = None,
         dma_engine_count: int = 2,
         mxu_count: int = 1,
         vector_unit_count: int = 1,
@@ -112,7 +114,11 @@ class KernelBuilder:
         self._interconnect = dict(
             sorted((interconnect_bandwidth_bytes_per_second or {}).items())
         )
-        if set(self._interconnect) != set(self._mesh):
+        if topology is not None and self._interconnect:
+            raise ValueError(
+                "provide either a structured topology or axis bandwidths, not both"
+            )
+        if topology is None and set(self._interconnect) != set(self._mesh):
             raise ValueError(
                 "interconnect must declare one bandwidth for every kernel mesh axis"
             )
@@ -120,6 +126,7 @@ class KernelBuilder:
         self._mxu_count = mxu_count
         self._vector_unit_count = vector_unit_count
         self._ici_link_count = ici_link_count
+        self._topology = topology
         self.block = Block(arg_types=[spec.to_type() for spec in self._input_specs])
 
     @property
@@ -315,6 +322,7 @@ class KernelBuilder:
             ArrayAttr(IntAttr(size) for size in self._mesh.values()),
             Region(self.block),
             interconnect_bandwidth_bytes_per_second=self._interconnect,
+            topology=self._topology,
             dma_engine_count=self._dma_engine_count,
             mxu_count=self._mxu_count,
             vector_unit_count=self._vector_unit_count,
