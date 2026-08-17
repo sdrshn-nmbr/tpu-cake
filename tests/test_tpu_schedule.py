@@ -1,5 +1,5 @@
 import pytest
-from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f32
+from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f32, i32
 from xdsl.ir import Block, Region
 from xdsl.utils.exceptions import VerifyException
 
@@ -34,6 +34,62 @@ from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
 def test_vertical_workload_schedules_verify() -> None:
     matmul_schedule().verify()
     inkling_rpa_schedule().verify()
+
+
+def test_rpa_schedule_supports_independent_key_and_value_layouts() -> None:
+    external = {
+        "memory": MemorySpace.HBM,
+        "ownership": Ownership.EXTERNAL,
+        "lifetime": (0, 4),
+    }
+    inputs = (
+        buffer((1, 4, 8), "B Hq Dq", bf16, **external),
+        buffer((2, 4, 2, 8), "P S Hk Dk", bf16, **external),
+        buffer((2, 4, 1, 6), "P S Hv Dv", bf16, **external),
+        buffer((1, 2), "B MP", i32, **external),
+        buffer((1,), "B", i32, **external),
+        buffer((4, 8), "Hq L", bf16, **external),
+        buffer((1, 4, 6), "B Hq Dv", bf16, **external),
+    )
+    builder = KernelBuilder(
+        "independent_kv_rpa",
+        "tpu7x",
+        inputs,
+        vmem_capacity_bytes=1 << 20,
+        smem_capacity_bytes=1 << 16,
+    )
+    query = builder.alloc(
+        buffer((1, 4, 8), "B Hq Dq", bf16, memory=MemorySpace.VMEM, lifetime=(0, 2)),
+        "query",
+    )
+    bias = builder.alloc(
+        buffer((4, 8), "Hq L", bf16, memory=MemorySpace.VMEM, lifetime=(0, 2)),
+        "bias",
+    )
+    output = builder.alloc(
+        buffer((1, 4, 6), "B Hq Dv", bf16, memory=MemorySpace.VMEM, lifetime=(2, 4)),
+        "output",
+    )
+    query_dma = builder.dma_start(builder.inputs[0], query, builder.semaphore(), stage=0)
+    bias_dma = builder.dma_start(builder.inputs[5], bias, builder.semaphore(), stage=0)
+    builder.dma_wait(query_dma, stage=1)
+    builder.dma_wait(bias_dma, stage=1)
+    builder.ragged_paged_attention(
+        query,
+        builder.inputs[1],
+        builder.inputs[2],
+        builder.inputs[3],
+        builder.inputs[4],
+        bias,
+        output,
+        stage=2,
+        query_block_size=1,
+        kv_block_size=2,
+    )
+    output_dma = builder.dma_start(output, builder.inputs[6], builder.semaphore(), stage=3)
+    builder.dma_wait(output_dma, stage=4)
+
+    builder.module().verify()
 
 
 def test_rectilinear_topology_materializes_devices_links_and_collective_groups() -> None:

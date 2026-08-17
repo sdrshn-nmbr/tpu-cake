@@ -25,6 +25,27 @@ def test_rpa_reference_is_deterministic_and_finite() -> None:
     assert np.isfinite(first).all()
 
 
+def test_rpa_reference_supports_independent_key_and_value_heads() -> None:
+    query = np.ones((1, 4, 8), dtype=np.float32)
+    key_cache = np.ones((2, 4, 2, 8), dtype=np.float32)
+    value_cache = np.arange(2 * 4 * 1 * 6, dtype=np.float32).reshape(2, 4, 1, 6)
+    page_table = np.array([[0, 1]], dtype=np.int32)
+    sequence_lengths = np.array([5], dtype=np.int32)
+    bias = np.zeros((4, 8), dtype=np.float32)
+
+    output = inkling_rpa_reference(
+        query,
+        key_cache,
+        value_cache,
+        page_table,
+        sequence_lengths,
+        bias,
+    )
+
+    assert output.shape == (1, 4, 6)
+    np.testing.assert_allclose(output[0], np.broadcast_to(np.arange(6) + 12, (4, 6)))
+
+
 def test_schedule_text_and_hash_are_stable() -> None:
     for build in (matmul_schedule, inkling_rpa_schedule):
         first = build()

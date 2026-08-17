@@ -27,20 +27,36 @@ def inkling_rpa_reference(
     sequence_lengths: np.ndarray,
     bias: np.ndarray,
 ) -> np.ndarray:
-    batch, heads, dimension = query.shape
+    batch, query_heads, query_dimension = query.shape
+    _, key_page_size, key_heads, key_dimension = key_cache.shape
+    _, value_page_size, value_heads, value_dimension = value_cache.shape
+    if key_page_size != value_page_size:
+        raise ValueError("key and value caches must use the same page size")
+    if query_dimension != key_dimension:
+        raise ValueError("query and key head dimensions must match")
+    if query_heads % key_heads or query_heads % value_heads:
+        raise ValueError("query heads must divide evenly across key and value heads")
+    if bias.shape[0] != query_heads:
+        raise ValueError("relative bias must provide one row per query head")
+    key_head_for_query = np.arange(query_heads) // (query_heads // key_heads)
+    value_head_for_query = np.arange(query_heads) // (query_heads // value_heads)
     page_size = key_cache.shape[1]
-    output = np.empty_like(query, dtype=np.float32)
+    output = np.empty((batch, query_heads, value_dimension), dtype=np.float32)
     for request in range(batch):
         length = int(sequence_lengths[request])
         pages = page_table[request, : math.ceil(length / page_size)]
-        keys = key_cache[pages].reshape(-1, heads, dimension)[:length]
-        values = value_cache[pages].reshape(-1, heads, dimension)[:length]
-        scores = np.einsum("hd,lhd->hl", query[request], keys, dtype=np.float32)
-        scores = scores / math.sqrt(dimension) + bias[:, :length]
+        keys = key_cache[pages].reshape(-1, key_heads, key_dimension)[:length]
+        values = value_cache[pages].reshape(-1, value_heads, value_dimension)[:length]
+        query_keys = keys[:, key_head_for_query, :]
+        query_values = values[:, value_head_for_query, :]
+        scores = np.einsum("hd,lhd->hl", query[request], query_keys, dtype=np.float32)
+        scores = scores / math.sqrt(query_dimension) + bias[:, :length]
         scores -= scores.max(axis=-1, keepdims=True)
         probabilities = np.exp(scores)
         probabilities /= probabilities.sum(axis=-1, keepdims=True)
-        output[request] = np.einsum("hl,lhd->hd", probabilities, values, dtype=np.float32)
+        output[request] = np.einsum(
+            "hl,lhd->hd", probabilities, query_values, dtype=np.float32
+        )
     return output
 
 

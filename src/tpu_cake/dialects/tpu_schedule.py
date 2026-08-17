@@ -1241,22 +1241,48 @@ class RaggedPagedAttentionOp(IRDLOperation):
             for value in (key_cache, value_cache, page_table, lengths)
         ):
             raise VerifyException("RPA cache and page metadata must reside in HBM")
-        if key_cache.storage.get_shape() != value_cache.storage.get_shape():
-            raise VerifyException("RPA key and value cache shapes must match")
-        if query.storage.get_shape() != output.storage.get_shape():
-            raise VerifyException("RPA query and output shapes must match")
-        if len(query.storage.get_shape()) != 3 or len(key_cache.storage.get_shape()) != 4:
+        query_shape = query.storage.get_shape()
+        key_shape = key_cache.storage.get_shape()
+        value_shape = value_cache.storage.get_shape()
+        output_shape = output.storage.get_shape()
+        if (
+            len(query_shape) != 3
+            or len(key_shape) != 4
+            or len(value_shape) != 4
+            or len(output_shape) != 3
+        ):
             raise VerifyException(
-                "RPA expects query [batch, heads, dim] and cache [pages, page, heads, dim]"
+                "RPA expects query/output [batch, heads, dim] and caches "
+                "[pages, page, heads, dim]"
             )
-        batch, heads, dimension = query.storage.get_shape()
-        _, page_size, cache_heads, cache_dimension = key_cache.storage.get_shape()
-        if heads != cache_heads or dimension != cache_dimension:
-            raise VerifyException("RPA query and cache head dimensions must match")
+        batch, query_heads, query_dimension = query_shape
+        key_pages, page_size, key_heads, key_dimension = key_shape
+        value_pages, value_page_size, value_heads, value_dimension = value_shape
+        output_batch, output_heads, output_dimension = output_shape
+        if (key_pages, page_size) != (value_pages, value_page_size):
+            raise VerifyException("RPA key and value caches must share pages and page size")
+        if query_dimension != key_dimension:
+            raise VerifyException("RPA query and key head dimensions must match")
+        if key_heads <= 0 or value_heads <= 0:
+            raise VerifyException("RPA key and value head counts must be positive")
+        if query_heads % key_heads or query_heads % value_heads:
+            raise VerifyException(
+                "RPA query heads must divide evenly across key and value heads"
+            )
+        if (output_batch, output_heads, output_dimension) != (
+            batch,
+            query_heads,
+            value_dimension,
+        ):
+            raise VerifyException("RPA output must use batch/query heads and value dimension")
+        if len(page_table.storage.get_shape()) != 2 or len(bias.storage.get_shape()) != 2:
+            raise VerifyException("RPA page table and bias must be rank 2")
         if page_table.storage.get_shape()[0] != batch or lengths.storage.get_shape() != (batch,):
             raise VerifyException("RPA page metadata batch dimensions must match query")
-        if bias.storage.get_shape()[0] != heads:
+        if bias.storage.get_shape()[0] != query_heads:
             raise VerifyException("RPA bias head dimension must match query")
+        if bias.storage.get_shape()[1] < page_table.storage.get_shape()[1] * page_size:
+            raise VerifyException("RPA bias extent must cover every addressable cache position")
         if self.kv_block_size.data <= 0 or page_size % self.kv_block_size.data:
             raise VerifyException("RPA KV block size must be positive and divide page size")
         if self.query_block_size.data <= 0:
