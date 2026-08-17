@@ -8,8 +8,39 @@ from xdsl.dialects.builtin import Builtin, ModuleOp
 from xdsl.parser import Parser
 from xdsl.printer import Printer
 
-from tpu_cake.dialects.distributed_tensor import DistributedTensor
-from tpu_cake.dialects.tpu_schedule import TPUSchedule
+from tpu_cake.dialects.distributed_tensor import (
+    DistributedTensor,
+    ElementwiseOp,
+)
+from tpu_cake.dialects.tpu_schedule import TPUSchedule, ViewOp
+
+
+def _normalize_semantics(module: ModuleOp) -> None:
+    value_order = {}
+    next_value = 0
+    for operation in module.walk():
+        for region in operation.regions:
+            for block in region.blocks:
+                for argument in block.args:
+                    value_order[argument] = next_value
+                    next_value += 1
+        for result in operation.results:
+            value_order[result] = next_value
+            next_value += 1
+
+    alias_names: dict[str, str] = {}
+    for operation in module.walk():
+        if isinstance(operation, ElementwiseOp) and operation.function.data in {
+            "add",
+            "multiply",
+        }:
+            operation.operands = tuple(
+                sorted(operation.operands, key=value_order.__getitem__)
+            )
+        if isinstance(operation, ViewOp):
+            declared = operation.alias_group.data
+            normalized = alias_names.setdefault(declared, f"alias{len(alias_names)}")
+            operation.properties["alias_group"] = type(operation.alias_group)(normalized)
 
 
 def canonical_text(module: ModuleOp) -> str:
@@ -20,6 +51,8 @@ def canonical_text(module: ModuleOp) -> str:
     context.load_dialect(DistributedTensor)
     context.load_dialect(TPUSchedule)
     reparsed = Parser(context, first.getvalue()).parse_module()
+    reparsed.verify()
+    _normalize_semantics(reparsed)
     reparsed.verify()
     output = StringIO()
     Printer(stream=output, print_generic_format=True).print_op(reparsed)

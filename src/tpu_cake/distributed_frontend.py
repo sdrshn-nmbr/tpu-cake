@@ -25,7 +25,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ShardingAttr,
     TransposeOp,
 )
-from tpu_cake.source import SourceLocation, attach_source
+from tpu_cake.source import SourceLocation, attach_source, verify_with_sources
 
 
 @dataclass(frozen=True)
@@ -253,5 +253,5 @@ class DistributedProgramBuilder:
     def module(self, *results: SSAValue) -> ModuleOp:
         self.block.add_op(ReturnOp(*results))
         module = ModuleOp([ProgramOp(self._name, self._mesh, Region(self.block))])
-        module.verify()
+        verify_with_sources(module)
         return module

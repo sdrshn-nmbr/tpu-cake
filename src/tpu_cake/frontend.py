@@ -28,7 +28,7 @@ from tpu_cake.dialects.tpu_schedule import (
     ViewOp,
     YieldOp,
 )
-from tpu_cake.source import SourceLocation, attach_source
+from tpu_cake.source import SourceLocation, attach_source, verify_with_sources
 
 
 @dataclass(frozen=True)
@@ -319,7 +319,7 @@ class KernelBuilder:
             ici_link_count=self._ici_link_count,
         )
         module = ModuleOp([kernel])
-        module.verify()
+        verify_with_sources(module)
         return module
 
 

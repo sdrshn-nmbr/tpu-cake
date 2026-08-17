@@ -1,6 +1,11 @@
 import numpy as np
+import pytest
+from xdsl.dialects.builtin import bf16, f32
+from xdsl.utils.exceptions import VerifyException
 
-from tpu_cake.dialects.tpu_schedule import SemaphoreAllocOp
+from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership, SemaphoreAllocOp
+from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
+from tpu_cake.frontend import KernelBuilder, buffer, schedule_sha256
 from tpu_cake.identity import array_sha256, candidate_rng, semantic_seed, workload_rng
 from tpu_cake.semantic import batch_permutation_invariance, prefix_invariance
 from tpu_cake.source import SourceLocation, attach_source
@@ -55,3 +60,71 @@ def test_source_location_is_attached_without_entering_schedule_identity() -> Non
     operation = SemaphoreAllocOp()
     attach_source(operation, SourceLocation("model.py", 12, 4))
     assert "model.py" in str(operation.location)
+
+
+def test_commutative_elementwise_operand_order_has_one_identity() -> None:
+    value = tensor(f32, (("M", 16),))
+    first = DistributedProgramBuilder("add", {"t": 1}, (value, value))
+    second = DistributedProgramBuilder("add", {"t": 1}, (value, value))
+    first_result = first.elementwise(
+        first.inputs[0], first.inputs[1], result=value, function="add"
+    )
+    second_result = second.elementwise(
+        second.inputs[1], second.inputs[0], result=value, function="add"
+    )
+    assert schedule_sha256(first.module(first_result)) == schedule_sha256(
+        second.module(second_result)
+    )
+
+
+def test_alias_names_are_alpha_normalized_for_identity() -> None:
+    spec = buffer(
+        (16,),
+        ("M",),
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+    )
+    first = KernelBuilder(
+        "views", "tpu", (spec,), vmem_capacity_bytes=1 << 20, smem_capacity_bytes=1 << 20
+    )
+    second = KernelBuilder(
+        "views", "tpu", (spec,), vmem_capacity_bytes=1 << 20, smem_capacity_bytes=1 << 20
+    )
+    local_first = first.alloc(
+        buffer((16,), ("M",), bf16, memory=MemorySpace.VMEM), "local"
+    )
+    local_second = second.alloc(
+        buffer((16,), ("M",), bf16, memory=MemorySpace.VMEM), "local"
+    )
+    first.view(
+        local_first,
+        buffer((8,), ("8",), bf16, memory=MemorySpace.VMEM),
+        offsets=(0,),
+        alias_group="human-name",
+    )
+    second.view(
+        local_second,
+        buffer((8,), ("8",), bf16, memory=MemorySpace.VMEM),
+        offsets=(0,),
+        alias_group="different-name",
+    )
+    assert schedule_sha256(first.module()) == schedule_sha256(second.module())
+
+
+def test_verifier_failure_points_to_source_expression() -> None:
+    lhs = tensor(bf16, (("M", 16), ("K", 32)), sharding={"K": ("t",)})
+    rhs = tensor(bf16, (("K", 32), ("N", 16)), sharding={"K": ("t",)})
+    builder = DistributedProgramBuilder("bad", {"t": 4}, (lhs, rhs))
+    invalid = builder.einsum_local(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(f32, (("M", 16), ("N", 16))),
+        contracting_dimension="K",
+        source=SourceLocation("factory.py", 123, 7),
+    )
+    with pytest.raises(
+        VerifyException,
+        match=r'dtensor.einsum_local at loc\("factory.py":123:7\)',
+    ):
+        builder.module(invalid)
