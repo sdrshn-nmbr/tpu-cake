@@ -15,6 +15,10 @@ from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
 from tpu_cake.dtensor_interpreter import interpret_distributed_program
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError, lower_distributed_matmul
+from tpu_cake.seqax_pallas_search import (
+    SEQAX_PALLAS_CORRECTNESS_SEEDS,
+    SEQAX_PALLAS_SEARCH_PARAMETERS,
+)
 from tpu_cake.workloads.seqax_forward import (
     REPLICATED_ATTENTION_WEIGHT_DATA,
     REPLICATED_EMBEDDING_WEIGHT_DATA,
@@ -199,6 +203,31 @@ def test_weight_data_replication_is_a_typed_communication_resource_choice() -> N
     for malformed in ("false", 1, None):
         with pytest.raises(TypeError, match="embedding must be a SeqaxDataAxisPlacement"):
             SeqaxWeightDataPlacement(embedding=malformed)
+
+
+def test_weight_data_groups_preserve_five_seed_incumbent_semantics() -> None:
+    placements = (
+        REPLICATED_EMBEDDING_WEIGHT_DATA,
+        REPLICATED_ATTENTION_WEIGHT_DATA,
+        REPLICATED_FEED_FORWARD_WEIGHT_DATA,
+        REPLICATED_WEIGHT_DATA,
+    )
+    baseline = seqax_forward_schedule(**SEQAX_PALLAS_SEARCH_PARAMETERS)
+    candidates = tuple(
+        seqax_forward_schedule(
+            **SEQAX_PALLAS_SEARCH_PARAMETERS,
+            weight_data_placement=placement,
+        )
+        for placement in placements
+    )
+    for seed in SEQAX_PALLAS_CORRECTNESS_SEEDS:
+        inputs = seqax_forward_inputs(seed=seed, **SEQAX_PALLAS_SEARCH_PARAMETERS)
+        (expected,) = interpret_distributed_program(baseline, inputs)
+        for candidate in candidates:
+            (actual,) = interpret_distributed_program(candidate, inputs)
+            assert actual.dtype == expected.dtype
+            assert actual.shape == expected.shape
+            assert (actual == expected).all()
 
 
 def test_seqax_forward_uses_configured_rope_timescale_and_source_locations() -> None:
