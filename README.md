@@ -39,12 +39,14 @@ TPU-cake began by combining CAKE's search loop with this MatX discipline (as see
 - Verified distributed matmul lowering through Pallas and Mosaic.
 - Replayable full Seqax-forward lowering through multi-device JAX/XLA with exact
   input/output sharding and real collectives.
+- Verified full Seqax-forward physical execution with Pallas contractions and
+  JAX/XLA vector and collective operations.
 - A physical compute, HBM, ICI, and live-memory cost model.
 - Separate timing, trace, and hardware-counter runs.
 - A resumable, matched-input tile search with alternating run order and bootstrap confidence intervals.
 - A durable experiment ledger and artifact-complete receipt validation.
 
-xDSL is the canonical program and schedule format. Pydantic is used only for external contracts, normalized evidence, and receipts. The first complete lowering target is a distributed BF16 matmul followed by reduce-scatter.
+xDSL is the canonical program and schedule format. Pydantic is used only for external contracts, normalized evidence, and receipts. The first complete searched Pallas target is a distributed BF16 matmul followed by reduce-scatter.
 
 ## Use
 
@@ -75,11 +77,22 @@ uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
 
 uv run tpu-cake run-seqax-surface --output-dir SURFACE_RUN_ROOT
 uv run tpu-cake verify-seqax-surface SURFACE_RUN_ROOT
+
+uv run tpu-cake run-seqax-physical-pallas \
+  --output-dir SEQAX_PALLAS_RUN_ROOT/timing --mode timing
+uv run tpu-cake run-seqax-physical-pallas \
+  --output-dir SEQAX_PALLAS_RUN_ROOT/trace --mode trace
+uv run tpu-cake run-seqax-physical-pallas \
+  --output-dir SEQAX_PALLAS_RUN_ROOT/counters --mode counters
+uv run tpu-cake finalize-seqax-physical-pallas SEQAX_PALLAS_RUN_ROOT
+uv run tpu-cake verify-seqax-physical-pallas SEQAX_PALLAS_RUN_ROOT
 ```
 
 ## Current boundary
 
-The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed-tensor dialect represents the pinned Seqax forward algebra, has an independent numerical interpreter, and lowers the complete forward program to a replayable multi-device `jax.shard_map` plan. That plan executes local shards with real JAX/XLA collectives and binds exact input/output `PartitionSpec` values. It is a distributed JAX/XLA lowering, not a hand-scheduled Pallas kernel. Physical Pallas lowering remains deliberately narrow and currently accepts only the distributed matmul slice.
+The distributed matmul path is complete through verified TPU execution and bounded tile search. The distributed-tensor dialect represents the pinned Seqax forward algebra, has an independent numerical interpreter, and lowers the complete forward program into physical TPU xDSL. That physical program drives the full dataflow on an eight-device `d=2, t=4` mesh. Its contractions execute through 17 Pallas calls; vector operations and 29 all-gathers plus five reduce-scatters execute through JAX/XLA. A three-phase receipt binds exact inputs, outputs, compiler HLO, raw XPlanes, XProf exports, and periodic hardware-counter evidence.
+
+This full-forward path is not yet a searched physical kernel. Its Pallas contractions operate on complete local shards, and the declared tile values do not yet control Pallas grids or block indexing. Vector operations, collectives, DMA annotations, and resource schedules remain implemented or selected by JAX/XLA rather than owned Mosaic kernels. The timing result is therefore a verified execution baseline, not a claim that the physical schedule is optimal.
 
 The Seqax workload-surface experiment compares the unwrapped `shard_map` control with the canonical whole-program JIT across three forward shapes. Inputs are placed on their declared TPU shards before timing. Each scenario is resampled independently, and promotion requires a confidence interval above the declared practical threshold without a material regression in any scenario. Saved HLO is runner-captured integrity evidence with exact hashes and structural replay checks; it is not independently signed compiler attestation.
 
