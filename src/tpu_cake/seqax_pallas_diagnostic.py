@@ -450,7 +450,13 @@ def _bound_program(assessment: Any) -> tuple[str, str]:
     return matches[0]
 
 
-def _profile_replay(xplane: Path, program_name: str) -> tuple[int, tuple[float, ...]]:
+def _profile_replay(
+    xplane: Path,
+    program_name: str,
+    *,
+    step_event: str = _STEP_EVENT,
+    iterations: int = SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS,
+) -> tuple[int, tuple[float, ...]]:
     profile = profile_data.ProfileData.from_file(xplane)
     try:
         steps = 0
@@ -458,7 +464,7 @@ def _profile_replay(xplane: Path, program_name: str) -> tuple[int, tuple[float, 
         for plane in profile.planes:
             for line in plane.lines:
                 for event in line.events:
-                    steps += event.name == _STEP_EVENT
+                    steps += event.name == step_event
                     if (
                         plane.name == "/device:TPU:0"
                         and line.name == "XLA Modules"
@@ -467,17 +473,14 @@ def _profile_replay(xplane: Path, program_name: str) -> tuple[int, tuple[float, 
                         durations.append(float(event.duration_ns))
     finally:
         profile.close()
-    if steps != SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS:
+    if steps != iterations:
         raise ValueError(
-            "SEQAX_PALLAS_DIAGNOSTIC_STEP_COUNT_MISMATCH "
-            f"expected={SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS} observed={steps}"
+            f"SEQAX_PALLAS_DIAGNOSTIC_STEP_COUNT_MISMATCH expected={iterations} observed={steps}"
         )
-    if len(durations) != SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS or any(
-        value <= 0 for value in durations
-    ):
+    if len(durations) != iterations or any(value <= 0 for value in durations):
         raise ValueError(
             "SEQAX_PALLAS_DIAGNOSTIC_MODULE_COUNT_MISMATCH "
-            f"expected={SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS} observed={len(durations)}"
+            f"expected={iterations} observed={len(durations)}"
         )
     return steps, tuple(durations)
 
@@ -530,6 +533,7 @@ def _attribution(
     durations: tuple[float, ...],
     hlo_stats: Path,
     cost_report: SeqaxCostModelReport,
+    iterations: int = SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS,
 ) -> SeqaxPallasDiagnosticAttribution:
     rows = tuple(row for row in _gviz_rows(hlo_stats) if str(row["program_id"]) == program_id)
     operations = tuple(
@@ -591,7 +595,7 @@ def _attribution(
                 "tile_n": r'"tile_n"\s*:\s*(\d+)',
             }.items()
         }
-        if occurrences != SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS * 8:
+        if occurrences != iterations * 8:
             raise ValueError(
                 "SEQAX_PALLAS_DIAGNOSTIC_REGION_OCCURRENCE_MISMATCH "
                 f"region={index} observed={occurrences}"
@@ -644,8 +648,7 @@ def _attribution(
         row for row in rows if row.get("category") in {"all-gather", "reduce-scatter"}
     )
     if not semantic_collective_rows or any(
-        int(row["occurrences"]) != SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS
-        or float(row["avg_self_time"]) <= 0
+        int(row["occurrences"]) != iterations or float(row["avg_self_time"]) <= 0
         for row in semantic_collective_rows
     ):
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_COLLECTIVE_ROWS_MISMATCH")
@@ -657,8 +660,7 @@ def _attribution(
         and "call-done" in str(row.get("hlo_op_name", ""))
     )
     if len(collective_completion_rows) != len(semantic_collective_rows) or any(
-        int(row["occurrences"]) != SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS * 8
-        or float(row["avg_self_time"]) <= 0
+        int(row["occurrences"]) != iterations * 8 or float(row["avg_self_time"]) <= 0
         for row in collective_completion_rows
     ):
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_COLLECTIVE_COMPLETION_ROWS_MISMATCH")
@@ -878,6 +880,9 @@ def _capture_phase(
     compiled: Any,
     resident: tuple[jax.Array, ...],
     mode: RunMode,
+    *,
+    step_event: str = _STEP_EVENT,
+    iterations: int = SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS,
 ) -> tuple[Path, Any, int, tuple[float, ...]]:
     profiler = _profiler_contract(mode)
     if profiler != expected_seqax_profiler_contract(mode):
@@ -886,8 +891,8 @@ def _capture_phase(
     profile_root = phase_root / "profile"
     jax.profiler.start_trace(profile_root, profiler_options=_profiler_options(mode))
     try:
-        for step in range(SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS):
-            with jax.profiler.StepTraceAnnotation(_STEP_EVENT, step_num=step):
+        for step in range(iterations):
+            with jax.profiler.StepTraceAnnotation(step_event, step_num=step):
                 jax.block_until_ready(compiled.compiled(*resident))
     finally:
         jax.profiler.stop_trace()
@@ -907,7 +912,12 @@ def _capture_phase(
         _canonical_assessment(assessment.model_dump(mode="json")),
     )
     _program_id, program_name = _bound_program(assessment)
-    steps, durations = _profile_replay(xplane, program_name)
+    steps, durations = _profile_replay(
+        xplane,
+        program_name,
+        step_event=step_event,
+        iterations=iterations,
+    )
     return xplane, assessment, steps, durations
 
 

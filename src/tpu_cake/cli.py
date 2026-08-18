@@ -63,6 +63,13 @@ from tpu_cake.seqax_weight_placement import (
     SeqaxWeightPlacementContract,
     SeqaxWeightPlacementName,
 )
+from tpu_cake.seqax_weight_placement_diagnostic import (
+    SeqaxWeightPlacementDiagnosticContract,
+)
+from tpu_cake.seqax_weight_placement_diagnostic_runner import (
+    run_seqax_weight_placement_diagnostic,
+    validate_seqax_weight_placement_diagnostic,
+)
 from tpu_cake.seqax_weight_placement_runner import (
     probe_weight_placement_memory,
     run_seqax_weight_placement,
@@ -168,6 +175,21 @@ def _parser() -> argparse.ArgumentParser:
     verify_seqax_weight_placement = commands.add_parser("verify-seqax-weight-placement")
     verify_seqax_weight_placement.add_argument("run_root", type=Path)
     verify_seqax_weight_placement.add_argument("--contract", required=True, type=Path)
+
+    diagnose_seqax_weight_placement = commands.add_parser("diagnose-seqax-weight-placement")
+    diagnose_seqax_weight_placement.add_argument("--search-root", required=True, type=Path)
+    diagnose_seqax_weight_placement.add_argument("--search-contract", required=True, type=Path)
+    diagnose_seqax_weight_placement.add_argument("--contract", required=True, type=Path)
+    diagnose_seqax_weight_placement.add_argument("--output-dir", required=True, type=Path)
+
+    verify_seqax_weight_placement_diagnostic = commands.add_parser(
+        "verify-seqax-weight-placement-diagnostic"
+    )
+    verify_seqax_weight_placement_diagnostic.add_argument("run_root", type=Path)
+    verify_seqax_weight_placement_diagnostic.add_argument(
+        "--search-contract", required=True, type=Path
+    )
+    verify_seqax_weight_placement_diagnostic.add_argument("--contract", required=True, type=Path)
 
     probe_seqax_weight_memory = commands.add_parser("probe-seqax-weight-placement-memory")
     probe_seqax_weight_memory.add_argument(
@@ -425,6 +447,38 @@ def main() -> None:
             "SEQAX_WEIGHT_PLACEMENT_ACCEPTED "
             f"winner={result.winner or 'none'} candidates={len(result.candidates)} "
             f"scope={result.correctness_scope}"
+        )
+        code = 0
+    elif args.command == "diagnose-seqax-weight-placement":
+        search_contract = SeqaxWeightPlacementContract.model_validate_json(
+            args.search_contract.read_text()
+        )
+        contract = SeqaxWeightPlacementDiagnosticContract.model_validate_json(
+            args.contract.read_text()
+        )
+        result = run_seqax_weight_placement_diagnostic(
+            args.output_dir,
+            args.search_root,
+            search_contract,
+            contract,
+        )
+        print(result.model_dump_json(indent=2))
+        code = 0
+    elif args.command == "verify-seqax-weight-placement-diagnostic":
+        search_contract = SeqaxWeightPlacementContract.model_validate_json(
+            args.search_contract.read_text()
+        )
+        contract = SeqaxWeightPlacementDiagnosticContract.model_validate_json(
+            args.contract.read_text()
+        )
+        result = validate_seqax_weight_placement_diagnostic(
+            args.run_root,
+            search_contract,
+            contract,
+        )
+        print(
+            "SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_ACCEPTED "
+            f"candidates={len(result.candidates)} scope={result.correctness_scope}"
         )
         code = 0
     elif args.command == "probe-seqax-weight-placement-memory":

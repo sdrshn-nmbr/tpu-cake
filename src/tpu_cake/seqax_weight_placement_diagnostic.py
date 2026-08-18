@@ -6,9 +6,10 @@ import math
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from tpu_cake.contracts import RuntimeIdentity
+from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA
 from tpu_cake.runner import RunMode
+from tpu_cake.seqax_pallas_search import SeqaxPallasDevice
 from tpu_cake.seqax_runner import expected_seqax_profiler_contract
 from tpu_cake.seqax_weight_placement import SeqaxWeightPlacementName
 
@@ -189,6 +190,10 @@ class SeqaxWeightPlacementDiagnosticComparison(BaseModel):
     stablehlo_all_gathers_eliminated: int = Field(ge=0)
     ring_equivalent_ici_bytes_eliminated_per_device: int = Field(ge=0)
     parameter_bytes_added_per_device: int = Field(ge=0)
+    trace_semantic_all_gather_rows_eliminated: int
+    counter_semantic_all_gather_rows_eliminated: int
+    trace_async_completion_rows_eliminated: int
+    counter_async_completion_rows_eliminated: int
     interpretation: tuple[str, ...]
 
     @model_validator(mode="after")
@@ -204,6 +209,134 @@ class SeqaxWeightPlacementDiagnosticComparison(BaseModel):
         if not all(math.isfinite(value) for value in values):
             raise ValueError("Seqax weight-placement diagnostic comparison is nonfinite")
         return self
+
+
+class SeqaxWeightPlacementDiagnosticCapture(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate: SeqaxWeightPlacementName
+    mode: RunMode
+    step_event: str = Field(min_length=1)
+    profiler_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    xplane_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    assessment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attribution_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    program_id: str = Field(min_length=1)
+    summary: SeqaxWeightPlacementProfileSummary
+    periodic_counter_names: tuple[str, ...]
+    periodic_counter_samples_per_core: dict[str, int]
+    hbm_read_counter_names: int = Field(ge=0)
+    hbm_write_counter_names: int = Field(ge=0)
+    cycle_counter_names: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def identity_matches(self) -> SeqaxWeightPlacementDiagnosticCapture:
+        if self.summary.candidate is not self.candidate or self.summary.mode is not self.mode:
+            raise ValueError("Seqax weight-placement diagnostic capture summary mismatch")
+        if self.mode is RunMode.TRACE:
+            if (
+                self.periodic_counter_names
+                or self.periodic_counter_samples_per_core
+                or self.hbm_read_counter_names
+                or self.hbm_write_counter_names
+                or self.cycle_counter_names
+            ):
+                raise ValueError("Seqax weight-placement trace carries counter claims")
+        else:
+            if (
+                not self.periodic_counter_names
+                or set(self.periodic_counter_samples_per_core) != {"0", "2", "4", "6"}
+                or any(value < 2 for value in self.periodic_counter_samples_per_core.values())
+                or not any(
+                    name.startswith("COUNT_MXU_BUSY") for name in self.periodic_counter_names
+                )
+                or self.hbm_read_counter_names <= 0
+                or self.hbm_write_counter_names <= 0
+                or self.cycle_counter_names <= 0
+            ):
+                raise ValueError("Seqax weight-placement counter capture is incomplete")
+        return self
+
+
+class SeqaxWeightPlacementDiagnosticCandidateResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    candidate: SeqaxWeightPlacementName
+    distributed_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    physical_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cost_model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    input_sha256: tuple[str, ...] = Field(min_length=1)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    exact_search_output_parity: bool
+    trace: SeqaxWeightPlacementDiagnosticCapture
+    counters: SeqaxWeightPlacementDiagnosticCapture
+
+    @model_validator(mode="after")
+    def captures_match(self) -> SeqaxWeightPlacementDiagnosticCandidateResult:
+        if (
+            self.trace.candidate is not self.candidate
+            or self.counters.candidate is not self.candidate
+            or self.trace.mode is not RunMode.TRACE
+            or self.counters.mode is not RunMode.COUNTERS
+            or self.trace.program_id != self.counters.program_id
+            or not self.exact_search_output_parity
+        ):
+            raise ValueError("Seqax weight-placement diagnostic candidate evidence mismatch")
+        return self
+
+
+class SeqaxWeightPlacementDiagnosticResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    diagnostic_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    search_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    search_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime: RuntimeIdentity
+    devices: tuple[SeqaxPallasDevice, ...] = Field(min_length=8, max_length=8)
+    source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
+    candidates: tuple[SeqaxWeightPlacementDiagnosticCandidateResult, ...] = Field(
+        min_length=2,
+        max_length=2,
+    )
+    comparison: SeqaxWeightPlacementDiagnosticComparison
+    correctness_scope: str = Field(pattern=r"^incumbent-bit-exact-diagnostic$")
+
+    @model_validator(mode="after")
+    def candidate_set_matches(self) -> SeqaxWeightPlacementDiagnosticResult:
+        if tuple(value.candidate for value in self.candidates) != (
+            SeqaxWeightPlacementName.SHARDED,
+            SeqaxWeightPlacementName.EMBEDDING_MLP,
+        ):
+            raise ValueError("Seqax weight-placement diagnostic result candidates mismatch")
+        if (
+            self.comparison.baseline is not SeqaxWeightPlacementName.SHARDED
+            or self.comparison.candidate is not SeqaxWeightPlacementName.EMBEDDING_MLP
+        ):
+            raise ValueError("Seqax weight-placement diagnostic comparison identity mismatch")
+        return self
+
+
+class SeqaxWeightPlacementDiagnosticReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    diagnostic_schema: str = Field(
+        default=SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_SCHEMA,
+        pattern=r"^seqax-weight-data-placement-diagnostic-v1$",
+    )
+    status: str = Field(pattern=r"^passed$")
+    diagnostic_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    search_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ledger_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
 
 
 def _candidate_contracts() -> tuple[SeqaxWeightPlacementDiagnosticCandidateContract, ...]:
@@ -337,9 +470,24 @@ def compare_weight_placement_profiles(
         parameter_bytes_added_per_device=(
             candidate.trace.parameter_bytes_per_device - baseline.trace.parameter_bytes_per_device
         ),
+        trace_semantic_all_gather_rows_eliminated=(
+            baseline.trace.semantic_all_gather_rows - candidate.trace.semantic_all_gather_rows
+        ),
+        counter_semantic_all_gather_rows_eliminated=(
+            baseline.counters.semantic_all_gather_rows - candidate.counters.semantic_all_gather_rows
+        ),
+        trace_async_completion_rows_eliminated=(
+            baseline.trace.async_collective_completion_rows
+            - candidate.trace.async_collective_completion_rows
+        ),
+        counter_async_completion_rows_eliminated=(
+            baseline.counters.async_collective_completion_rows
+            - candidate.counters.async_collective_completion_rows
+        ),
         interpretation=(
             "Trace and counter captures are isolated profiler-instrumented diagnostics, not unprofiled promotion measurements.",
             "Pallas and collective rows are non-additive XProf attribution inventories, not critical-path decomposition.",
+            "Static compiler collective counts and aggregated XProf semantic row counts are separate quantities.",
             "Counter evidence establishes selected hardware series and does not derive MBU or MFU.",
             "The accepted search remains a no-winner result; this comparison cannot promote either placement.",
         ),

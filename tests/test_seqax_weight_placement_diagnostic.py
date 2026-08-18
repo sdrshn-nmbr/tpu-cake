@@ -4,11 +4,15 @@ from pathlib import Path
 
 import pytest
 
+from tpu_cake.cli import _parser
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.runner import RunMode
+from tpu_cake.seqax_pallas_diagnostic import _gviz_rows
 from tpu_cake.seqax_weight_placement import SeqaxWeightPlacementName
 from tpu_cake.seqax_weight_placement_diagnostic import (
     SeqaxWeightPlacementCandidateProfiles,
+    SeqaxWeightPlacementDiagnosticCandidateResult,
+    SeqaxWeightPlacementDiagnosticCapture,
     SeqaxWeightPlacementDiagnosticContract,
     SeqaxWeightPlacementProfileSummary,
     compare_weight_placement_profiles,
@@ -83,6 +87,29 @@ def _profiles() -> tuple[SeqaxWeightPlacementCandidateProfiles, ...]:
     )
 
 
+def _capture(
+    candidate: SeqaxWeightPlacementName,
+    mode: RunMode,
+) -> SeqaxWeightPlacementDiagnosticCapture:
+    counters = mode is RunMode.COUNTERS
+    return SeqaxWeightPlacementDiagnosticCapture(
+        candidate=candidate,
+        mode=mode,
+        step_event=f"event.{candidate}.{mode}",
+        profiler_config_sha256="1" * 64,
+        xplane_sha256="2" * 64,
+        assessment_sha256="3" * 64,
+        attribution_sha256="4" * 64,
+        program_id="42",
+        summary=_summary(candidate, mode),
+        periodic_counter_names=("COUNT_MXU_BUSY_0",) if counters else (),
+        periodic_counter_samples_per_core=({"0": 2, "2": 2, "4": 2, "6": 2} if counters else {}),
+        hbm_read_counter_names=1 if counters else 0,
+        hbm_write_counter_names=1 if counters else 0,
+        cycle_counter_names=1 if counters else 0,
+    )
+
+
 def test_weight_placement_diagnostic_contract_is_stable_and_external() -> None:
     contract = default_seqax_weight_placement_diagnostic_contract(_runtime())
     replayed = SeqaxWeightPlacementDiagnosticContract.model_validate_json(
@@ -102,6 +129,38 @@ def test_weight_placement_diagnostic_contract_is_stable_and_external() -> None:
         SeqaxWeightPlacementName.SHARDED,
         SeqaxWeightPlacementName.EMBEDDING_MLP,
     )
+
+
+def test_weight_placement_diagnostic_cli_requires_both_external_contracts() -> None:
+    parser = _parser()
+    args = parser.parse_args(
+        [
+            "diagnose-seqax-weight-placement",
+            "--search-root",
+            "search",
+            "--search-contract",
+            "search.json",
+            "--contract",
+            "diagnostic.json",
+            "--output-dir",
+            "output",
+        ]
+    )
+    assert args.search_contract == Path("search.json")
+    assert args.contract == Path("diagnostic.json")
+
+    verify = parser.parse_args(
+        [
+            "verify-seqax-weight-placement-diagnostic",
+            "output",
+            "--search-contract",
+            "search.json",
+            "--contract",
+            "diagnostic.json",
+        ]
+    )
+    assert verify.search_contract == Path("search.json")
+    assert verify.contract == Path("diagnostic.json")
 
 
 def test_weight_placement_diagnostic_contract_rejects_authority_and_profiler_drift() -> None:
@@ -137,7 +196,63 @@ def test_weight_placement_diagnostic_comparison_is_explanatory_only() -> None:
     assert comparison.stablehlo_all_gathers_eliminated == 5
     assert comparison.ring_equivalent_ici_bytes_eliminated_per_device == 10_240
     assert comparison.parameter_bytes_added_per_device == 10_240
+    assert comparison.trace_semantic_all_gather_rows_eliminated == 5
+    assert comparison.trace_async_completion_rows_eliminated == 5
     assert any("cannot promote" in value for value in comparison.interpretation)
+
+
+def test_weight_placement_diagnostic_separates_static_counts_from_aggregated_xprof_rows() -> None:
+    accepted = (
+        Path(__file__).resolve().parents[1]
+        / "runs"
+        / "imported"
+        / "seqax-pallas-incumbent-diagnostic-8ce697a"
+        / "trace"
+        / "xprof"
+        / "hlo_stats.json"
+    )
+    observed = (8, 3, 11)
+    if accepted.is_file():
+        rows = _gviz_rows(accepted)
+        program_ids = {
+            str(row["program_id"])
+            for row in rows
+            if str(row.get("hlo_op_name", "")).startswith("seqax_named_einsum")
+        }
+        assert len(program_ids) == 1
+        program_rows = tuple(row for row in rows if str(row["program_id"]) in program_ids)
+        observed = (
+            sum(row.get("category") == "all-gather" for row in program_rows),
+            sum(row.get("category") == "reduce-scatter" for row in program_rows),
+            sum(
+                row.get("category") == "async-done"
+                and "call-done" in str(row.get("hlo_op_name", ""))
+                for row in program_rows
+            ),
+        )
+    assert observed == (8, 3, 11)
+    profiles = list(_profiles())
+    sharded_payload = profiles[0].model_dump(mode="python")
+    for mode in ("trace", "counters"):
+        sharded_payload[mode]["semantic_all_gather_rows"] = observed[0]
+        sharded_payload[mode]["semantic_reduce_scatter_rows"] = observed[1]
+        sharded_payload[mode]["async_collective_completion_rows"] = observed[2]
+    candidate_payload = profiles[1].model_dump(mode="python")
+    for mode in ("trace", "counters"):
+        candidate_payload[mode]["semantic_all_gather_rows"] = 6
+        candidate_payload[mode]["semantic_reduce_scatter_rows"] = 3
+        candidate_payload[mode]["async_collective_completion_rows"] = 9
+    comparison = compare_weight_placement_profiles(
+        default_seqax_weight_placement_diagnostic_contract(_runtime()),
+        (
+            SeqaxWeightPlacementCandidateProfiles.model_validate(sharded_payload),
+            SeqaxWeightPlacementCandidateProfiles.model_validate(candidate_payload),
+        ),
+    )
+
+    assert comparison.stablehlo_all_gathers_eliminated == 5
+    assert comparison.trace_semantic_all_gather_rows_eliminated == 2
+    assert comparison.trace_async_completion_rows_eliminated == 2
 
 
 def test_weight_placement_diagnostic_rejects_swapped_or_mutated_evidence() -> None:
@@ -177,3 +292,29 @@ def test_weight_placement_diagnostic_rejects_incomplete_collectives_and_nonfinit
     payload["module_median_duration_ns"] = float("inf")
     with pytest.raises(ValueError, match="nonfinite"):
         SeqaxWeightPlacementProfileSummary.model_validate(payload)
+
+
+def test_weight_placement_diagnostic_capture_rejects_counter_and_program_forgery() -> None:
+    trace = _capture(SeqaxWeightPlacementName.SHARDED, RunMode.TRACE)
+    counters = _capture(SeqaxWeightPlacementName.SHARDED, RunMode.COUNTERS)
+    payload = trace.model_dump(mode="python")
+    payload["periodic_counter_names"] = ("COUNT_MXU_BUSY_0",)
+    with pytest.raises(ValueError, match="trace carries counter claims"):
+        SeqaxWeightPlacementDiagnosticCapture.model_validate(payload)
+
+    with pytest.raises(ValueError, match="candidate evidence"):
+        SeqaxWeightPlacementDiagnosticCandidateResult(
+            candidate=SeqaxWeightPlacementName.SHARDED,
+            distributed_schedule_sha256="a" * 64,
+            physical_schedule_sha256="b" * 64,
+            pallas_source_sha256="c" * 64,
+            stablehlo_sha256="d" * 64,
+            compiler_hlo_sha256="e" * 64,
+            cost_model_sha256="f" * 64,
+            input_sha256=("1" * 64,),
+            output_sha256="2" * 64,
+            expected_output_sha256="2" * 64,
+            exact_search_output_parity=True,
+            trace=trace,
+            counters=counters.model_copy(update={"program_id": "different"}),
+        )
