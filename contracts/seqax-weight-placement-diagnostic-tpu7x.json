@@ -1,0 +1,69 @@
+{
+  "diagnostic_schema": "seqax-weight-data-placement-diagnostic-v1",
+  "identity_schema": "length-prefixed-v2",
+  "search_id": "81085697c16f46649c708ef858d1d3339db71a4986bd58a550e5e536b55652f5",
+  "search_receipt_sha256": "41c86a2267a435070a087e6de89ae92925f7de318314f410c394c0212f75a347",
+  "baseline": "sharded",
+  "timing_seed": 12655767603698703491,
+  "warmup_iterations": 5,
+  "measured_iterations": 50,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "trace_profiler_config": {
+    "mode": "trace",
+    "raise_error_on_start_failure": true,
+    "enable_hlo_proto": true,
+    "host_tracer_level": 1,
+    "python_tracer_level": 0,
+    "advanced_configuration": {
+      "tpu_num_chips_to_profile_per_task": 4
+    },
+    "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "counter_profiler_config": {
+    "mode": "counters",
+    "raise_error_on_start_failure": true,
+    "enable_hlo_proto": true,
+    "host_tracer_level": 1,
+    "python_tracer_level": 0,
+    "advanced_configuration": {
+      "tpu_num_chips_to_profile_per_task": 4,
+      "tpu_enable_periodic_counter_sampling": true,
+      "tpu_tc_perf_counter_sampling_options": "interval_us:1 scaling:0 counter_size_bits:1 indices:1 indices:3 indices:4 indices:10 indices:11 indices:31 indices:32 indices:33 indices:34 indices:35 indices:37 indices:38 indices:56 indices:57 indices:58 indices:73 indices:74 indices:75 indices:105",
+      "num_tensor_cores_to_trace_per_device": 1
+    },
+    "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "candidates": [
+    {
+      "candidate": "sharded",
+      "expected_high_level_all_gathers": 14,
+      "expected_physical_collectives": 20,
+      "expected_stablehlo_all_gathers": 17,
+      "expected_pallas_regions": 9,
+      "expected_parameter_bytes_per_device": 22912,
+      "expected_ring_equivalent_ici_bytes_per_device": 34048,
+      "trace_step_event": "seqax_weight_placement_diagnostic.sharded.trace",
+      "counter_step_event": "seqax_weight_placement_diagnostic.sharded.counters"
+    },
+    {
+      "candidate": "embedding-mlp",
+      "expected_high_level_all_gathers": 9,
+      "expected_physical_collectives": 15,
+      "expected_stablehlo_all_gathers": 12,
+      "expected_pallas_regions": 9,
+      "expected_parameter_bytes_per_device": 33152,
+      "expected_ring_equivalent_ici_bytes_per_device": 23808,
+      "trace_step_event": "seqax_weight_placement_diagnostic.embedding-mlp.trace",
+      "counter_step_event": "seqax_weight_placement_diagnostic.embedding-mlp.counters"
+    }
+  ]
+}
