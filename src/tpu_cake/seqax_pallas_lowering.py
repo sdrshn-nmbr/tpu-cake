@@ -107,6 +107,7 @@ def _pallas_einsum(
     *,
     interpret: bool,
     schedule_sha256_value: str,
+    region_index: int = -1,
 ) -> jax.Array:
     lhs_type = physical.lhs.type
     rhs_type = physical.rhs.type
@@ -151,9 +152,7 @@ def _pallas_einsum(
     rhs_free_shape = tuple(expected_rhs[index] for index in rhs_free)
     contraction_shape = tuple(expected_lhs[index] for index in lhs_contract)
     if batch_shape != tuple(expected_rhs[index] for index in rhs_batch):
-        raise UnsupportedSeqaxPallasLoweringError(
-            "physical MXU batch dimensions do not match"
-        )
+        raise UnsupportedSeqaxPallasLoweringError("physical MXU batch dimensions do not match")
     if contraction_shape != tuple(expected_rhs[index] for index in rhs_contract):
         raise UnsupportedSeqaxPallasLoweringError(
             "physical MXU contraction dimensions do not match"
@@ -167,11 +166,7 @@ def _pallas_einsum(
     tile_m = physical.tile_m.data
     tile_k = physical.tile_k.data
     tile_n = physical.tile_n.data
-    if (
-        lhs_free_size % tile_m
-        or contraction_size % tile_k
-        or rhs_free_size % tile_n
-    ):
+    if lhs_free_size % tile_m or contraction_size % tile_k or rhs_free_size % tile_n:
         raise UnsupportedSeqaxPallasLoweringError(
             "physical MXU tiles must divide the flattened local contraction"
         )
@@ -249,6 +244,7 @@ def _pallas_einsum(
         name="seqax_named_einsum",
         metadata={
             "schedule_sha256": schedule_sha256_value,
+            "region_index": region_index,
             "tile_m": tile_m,
             "tile_k": tile_k,
             "tile_n": tile_n,
@@ -369,7 +365,8 @@ class SeqaxPallasPlan:
                     raise UnsupportedSeqaxPallasLoweringError(
                         "distributed program executed more einsums than the physical schedule"
                     )
-                expected_operation = physical_einsums[index]
+                region_index = index
+                expected_operation = physical_einsums[region_index]
                 index += 1
                 if physical_operation is not expected_operation:
                     raise UnsupportedSeqaxPallasLoweringError(
@@ -381,6 +378,7 @@ class SeqaxPallasPlan:
                     rhs,
                     interpret=interpret,
                     schedule_sha256_value=self.physical_schedule_sha256,
+                    region_index=region_index,
                 )
 
             outputs = execute_seqax_physical_program_jax(

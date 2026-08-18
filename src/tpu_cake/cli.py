@@ -38,6 +38,11 @@ from tpu_cake.seqax_pallas_bundle import (
     validate_seqax_pallas_receipt,
 )
 from tpu_cake.seqax_pallas_runner import run_seqax_physical_pallas
+from tpu_cake.seqax_pallas_search import SeqaxPallasSearchContract
+from tpu_cake.seqax_pallas_search_runner import (
+    run_seqax_pallas_search,
+    validate_seqax_pallas_search,
+)
 from tpu_cake.seqax_runner import run_seqax_forward
 from tpu_cake.seqax_surface import (
     SeqaxSurfaceReceipt,
@@ -134,6 +139,14 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_seqax_pallas = commands.add_parser("verify-seqax-physical-pallas")
     verify_seqax_pallas.add_argument("run_root", type=Path)
+
+    search_seqax_pallas = commands.add_parser("search-seqax-physical-pallas")
+    search_seqax_pallas.add_argument("--contract", required=True, type=Path)
+    search_seqax_pallas.add_argument("--output-dir", required=True, type=Path)
+
+    verify_seqax_pallas_search = commands.add_parser("verify-seqax-physical-pallas-search")
+    verify_seqax_pallas_search.add_argument("run_root", type=Path)
+    verify_seqax_pallas_search.add_argument("--contract", required=True, type=Path)
 
     finalize_seqax = commands.add_parser("finalize-seqax-forward")
     finalize_seqax.add_argument("run_root", type=Path)
@@ -353,6 +366,20 @@ def main() -> None:
             "SEQAX_PHYSICAL_PALLAS_ACCEPTED "
             f"status={receipt.status.value} artifacts={len(receipt.artifacts)} "
             f"metrics={len(receipt.metrics)}"
+        )
+        code = 0
+    elif args.command == "search-seqax-physical-pallas":
+        contract = SeqaxPallasSearchContract.model_validate_json(args.contract.read_text())
+        result = run_seqax_pallas_search(args.output_dir, contract)
+        print(result.model_dump_json(indent=2))
+        code = 0
+    elif args.command == "verify-seqax-physical-pallas-search":
+        contract = SeqaxPallasSearchContract.model_validate_json(args.contract.read_text())
+        result = validate_seqax_pallas_search(args.run_root, contract)
+        print(
+            "SEQAX_PHYSICAL_PALLAS_SEARCH_ACCEPTED "
+            f"winner={result.winner or 'none'} candidates={len(result.candidates)} "
+            f"primitive_cases={len(result.primitive_observations)}"
         )
         code = 0
     elif args.command == "finalize-seqax-forward":

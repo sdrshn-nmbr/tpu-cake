@@ -1,0 +1,75 @@
+{
+  "search_schema": "seqax-pallas-tile-search-v1",
+  "identity_schema": "length-prefixed-v2",
+  "baseline": "incumbent",
+  "parameters": {
+    "batch": 2,
+    "data_mesh": 2,
+    "feed_forward": 16,
+    "head": 4,
+    "key_value_heads": 4,
+    "layers": 1,
+    "model": 256,
+    "query_groups": 2,
+    "rope_max_timescale": 256,
+    "sequence": 1,
+    "tensor_mesh": 4,
+    "vocabulary": 16
+  },
+  "correctness_seeds": [
+    12655767603698703491,
+    16669898698845158318,
+    9762931224767261018,
+    8742091806033755611,
+    16432226195980612678
+  ],
+  "timing_seed": 12655767603698703491,
+  "primitive_absolute_tolerance": 0.001,
+  "primitive_relative_tolerance": 0.001,
+  "warmup_iterations": 5,
+  "measured_iterations": 5,
+  "rounds": 8,
+  "confirmation_rounds": 6,
+  "bootstrap_samples": 10000,
+  "minimum_practical_improvement": 0.03,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "candidates": [
+    {
+      "name": "incumbent",
+      "policy": "full",
+      "maximum_tile_k": null,
+      "maximum_tile_n": null,
+      "expected_changed_regions": 0
+    },
+    {
+      "name": "split-k",
+      "policy": "split-k",
+      "maximum_tile_k": 128,
+      "maximum_tile_n": null,
+      "expected_changed_regions": 5
+    },
+    {
+      "name": "split-n",
+      "policy": "split-n",
+      "maximum_tile_k": null,
+      "maximum_tile_n": 128,
+      "expected_changed_regions": 2
+    },
+    {
+      "name": "split-kn",
+      "policy": "split-kn",
+      "maximum_tile_k": 128,
+      "maximum_tile_n": 128,
+      "expected_changed_regions": 7
+    }
+  ]
+}
