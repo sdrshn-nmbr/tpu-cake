@@ -17,6 +17,7 @@ from tpu_cake.seqax_pallas_search import (
 from tpu_cake.seqax_pallas_search_runner import (
     _compiler_tile_metadata,
     _load_primitive_input,
+    _numpy_einsum,
     _regenerate_primitive_operands,
     _save_primitive_input,
     _validate_output_abi,
@@ -178,6 +179,24 @@ def test_seqax_pallas_primitive_bf16_storage_round_trips_exactly(tmp_path: Path)
     np.save(path, value.astype(np.float32), allow_pickle=False)
     with pytest.raises(ValueError, match="PRIMITIVE_STORAGE_DTYPE"):
         _load_primitive_input(path, "bf16")
+
+
+def test_seqax_pallas_primitive_reference_is_layout_independent() -> None:
+    contract = default_seqax_pallas_search_contract(_runtime())
+    _distributed, prepared = prepare_seqax_pallas_candidates(contract)
+    operation = next(
+        value for value in prepared[-1].physical.walk() if isinstance(value, MxuEinsumOp)
+    )
+    lhs, rhs = _regenerate_primitive_operands(operation, contract.correctness_seeds[0])
+
+    contiguous = _numpy_einsum(operation, lhs, rhs)
+    relocated = _numpy_einsum(
+        operation,
+        np.asfortranarray(lhs),
+        np.asfortranarray(rhs),
+    )
+
+    assert np.array_equal(contiguous, relocated)
 
 
 def test_seqax_pallas_output_must_match_the_plan_abi() -> None:

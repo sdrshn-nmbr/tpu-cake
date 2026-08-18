@@ -6,7 +6,6 @@ import math
 import re
 import sqlite3
 import statistics
-import string
 import subprocess
 import time
 from dataclasses import dataclass
@@ -290,23 +289,29 @@ def _numpy_einsum(
     output_type = operation.accumulator.type
     if not all(isinstance(value, BufferType) for value in (lhs_type, rhs_type, output_type)):
         raise TypeError("Seqax Pallas primitive requires physical buffer operands")
-    logical_names = tuple(dict.fromkeys((*_names(lhs_type), *_names(rhs_type))))
-    if len(logical_names) > len(string.ascii_letters):
-        raise ValueError("SEQAX_PALLAS_SEARCH_TOO_MANY_LOGICAL_DIMENSIONS")
-    symbols = dict(zip(logical_names, string.ascii_letters[: len(logical_names)], strict=True))
-    equation = (
-        "".join(symbols[name] for name in _names(lhs_type))
-        + ","
-        + "".join(symbols[name] for name in _names(rhs_type))
-        + "->"
-        + "".join(symbols[name] for name in _names(output_type))
-    )
-    return np.einsum(
-        equation,
-        lhs.astype(np.float32),
-        rhs.astype(np.float32),
-        dtype=np.float32,
-    )
+    lhs_names = _names(lhs_type)
+    rhs_names = _names(rhs_type)
+    output_names = _names(output_type)
+    contracting_names = tuple(value.data for value in operation.contracting_dimensions)
+    extents: dict[str, int] = {}
+    for name, extent in zip(lhs_names, lhs.shape, strict=True):
+        extents[name] = extent
+    for name, extent in zip(rhs_names, rhs.shape, strict=True):
+        if name in extents and extents[name] != extent:
+            raise ValueError(f"SEQAX_PALLAS_SEARCH_PRIMITIVE_EXTENT_MISMATCH dimension={name}")
+        extents[name] = extent
+    output = np.empty(tuple(extents[name] for name in output_names), dtype=np.float32)
+    contraction_shape = tuple(extents[name] for name in contracting_names)
+    for output_index in np.ndindex(output.shape):
+        indices = dict(zip(output_names, output_index, strict=True))
+        accumulator = 0.0
+        for contraction_index in np.ndindex(contraction_shape):
+            indices.update(zip(contracting_names, contraction_index, strict=True))
+            accumulator += float(lhs[tuple(indices[name] for name in lhs_names)]) * float(
+                rhs[tuple(indices[name] for name in rhs_names)]
+            )
+        output[output_index] = accumulator
+    return output
 
 
 def _primitive_signature(operation: MxuEinsumOp) -> tuple[object, ...]:
