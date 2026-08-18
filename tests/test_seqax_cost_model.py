@@ -13,6 +13,7 @@ from tpu_cake.seqax_cost_model import (
 )
 from tpu_cake.workloads.seqax_forward import (
     REPLICATED_ATTENTION_WEIGHT_DATA,
+    REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_EMBEDDING_WEIGHT_DATA,
     REPLICATED_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_WEIGHT_DATA,
@@ -289,6 +290,24 @@ def test_weight_data_replication_accounts_for_memory_and_communication_tradeoff(
         REPLICATED_ATTENTION_WEIGHT_DATA: (12_288, 12_288),
         REPLICATED_FEED_FORWARD_WEIGHT_DATA: (6_144, 6_144),
     }
+    combined = estimate_seqax_forward(
+        seqax_forward_schedule(
+            **parameters,
+            weight_data_placement=REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA,
+        ),
+        hardware=tpu7x_tensorcore_rates(),
+        source=_source(),
+    )
+    assert (
+        combined.counts.minimum_hbm_read_bytes_per_device
+        - sharded.counts.minimum_hbm_read_bytes_per_device
+        == 10_240
+    )
+    assert (
+        sharded.counts.ici_bidirectional_bytes_per_device
+        - combined.counts.ici_bidirectional_bytes_per_device
+        == 10_240
+    )
 
 
 def test_elementwise_without_an_explicit_work_convention_fails_closed() -> None:

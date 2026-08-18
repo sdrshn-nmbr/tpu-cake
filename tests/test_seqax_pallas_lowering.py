@@ -22,6 +22,7 @@ from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import (
     REPLICATED_ATTENTION_WEIGHT_DATA,
+    REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_EMBEDDING_WEIGHT_DATA,
     REPLICATED_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_WEIGHT_DATA,
@@ -145,6 +146,13 @@ def test_replicated_weight_data_removes_exact_physical_gather_chains() -> None:
         REPLICATED_ATTENTION_WEIGHT_DATA: 17,
         REPLICATED_FEED_FORWARD_WEIGHT_DATA: 17,
     }
+    combined = lower_seqax_forward_to_physical(
+        seqax_forward_schedule(
+            **parameters,
+            weight_data_placement=REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA,
+        )
+    ).module
+    assert sum(isinstance(operation, CollectiveOp) for operation in combined.walk()) == 15
 
 
 def test_pallas_plan_rejects_a_noncanonical_physical_schedule() -> None:

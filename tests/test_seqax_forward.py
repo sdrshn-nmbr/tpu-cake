@@ -21,6 +21,7 @@ from tpu_cake.seqax_pallas_search import (
 )
 from tpu_cake.workloads.seqax_forward import (
     REPLICATED_ATTENTION_WEIGHT_DATA,
+    REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_EMBEDDING_WEIGHT_DATA,
     REPLICATED_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_WEIGHT_DATA,
@@ -185,6 +186,11 @@ def test_weight_data_replication_is_a_typed_communication_resource_choice() -> N
         REPLICATED_ATTENTION_WEIGHT_DATA: 11,
         REPLICATED_FEED_FORWARD_WEIGHT_DATA: 11,
     }
+    combined = seqax_forward_schedule(
+        **parameters,
+        weight_data_placement=REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA,
+    )
+    assert sum(isinstance(operation, AllGatherOp) for operation in combined.walk()) == 9
     assert sharded_program.body.block.args[2].type.sharding_axes() == (("t",), ("d",))
     assert replicated_program.body.block.args[2].type.sharding_axes() == (("t",), ())
     assert sharded_program.body.block.args[3].type == replicated_program.body.block.args[3].type
@@ -210,6 +216,7 @@ def test_weight_data_groups_preserve_five_seed_incumbent_semantics() -> None:
         REPLICATED_EMBEDDING_WEIGHT_DATA,
         REPLICATED_ATTENTION_WEIGHT_DATA,
         REPLICATED_FEED_FORWARD_WEIGHT_DATA,
+        REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA,
         REPLICATED_WEIGHT_DATA,
     )
     baseline = seqax_forward_schedule(**SEQAX_PALLAS_SEARCH_PARAMETERS)

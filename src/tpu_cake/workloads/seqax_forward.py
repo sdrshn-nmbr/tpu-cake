@@ -80,6 +80,10 @@ REPLICATED_ATTENTION_WEIGHT_DATA = SeqaxWeightDataPlacement(
 REPLICATED_FEED_FORWARD_WEIGHT_DATA = SeqaxWeightDataPlacement(
     feed_forward=SeqaxDataAxisPlacement.REPLICATED
 )
+REPLICATED_EMBEDDING_FEED_FORWARD_WEIGHT_DATA = SeqaxWeightDataPlacement(
+    embedding=SeqaxDataAxisPlacement.REPLICATED,
+    feed_forward=SeqaxDataAxisPlacement.REPLICATED,
+)
 REPLICATED_WEIGHT_DATA = SeqaxWeightDataPlacement(
     embedding=SeqaxDataAxisPlacement.REPLICATED,
     attention=SeqaxDataAxisPlacement.REPLICATED,
