@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,6 +73,15 @@ class SeqaxBf16Runtime(BaseModel):
 
     runtime: RuntimeIdentity
     ml_dtypes: str = Field(min_length=1)
+
+
+class SeqaxBf16RunIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v1$")
+    contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 class SeqaxBf16PlanRecord(BaseModel):
@@ -219,6 +230,28 @@ def _write_json(path: Path, value: object) -> None:
     _write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def _write_json_atomic(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent.parent / (
+        f".{path.parent.name}-{path.name}.tmp-{os.getpid()}-{time.time_ns()}"
+    )
+    payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _save_array(path: Path, value: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, np.asarray(value), allow_pickle=False)
@@ -272,15 +305,43 @@ def _require_clean_repository(repository_root: Path) -> None:
         raise ValueError(f"SEQAX_BF16_SOURCE_DIRTY status={status}")
 
 
-def _require_safe_new_root(root: Path) -> None:
+def _require_safe_root(root: Path) -> None:
     repository_root = Path(__file__).resolve().parents[2]
     protected = (Path("/").resolve(), Path.home().resolve(), repository_root)
     if any(root == value or root in value.parents for value in protected) or (
         repository_root in root.parents
     ):
         raise ValueError(f"SEQAX_BF16_UNSAFE_ROOT path={root}")
-    if root.exists():
-        raise ValueError(f"SEQAX_BF16_ROOT_EXISTS path={root}")
+
+
+def _prepare_output_root(
+    root: Path,
+    identity: SeqaxBf16RunIdentity,
+) -> Path | None:
+    if not root.exists():
+        root.mkdir(parents=True, exist_ok=False)
+        return None
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"SEQAX_BF16_ROOT_INVALID path={root}")
+    if not any(root.iterdir()):
+        return None
+    _preflight_existing_root(root)
+    identity_path = root / "run_identity.json"
+    if not identity_path.is_file():
+        raise ValueError(f"SEQAX_BF16_ROOT_NOT_OWNED path={root}")
+    saved = SeqaxBf16RunIdentity.model_validate_json(identity_path.read_text())
+    if saved != identity:
+        raise ValueError(f"SEQAX_BF16_ROOT_NOT_OWNED path={root}")
+    if (root / "receipt.json").exists():
+        raise ValueError(f"SEQAX_BF16_ACCEPTED_ROOT_NOT_RETRYABLE path={root}")
+    while True:
+        archived = root.with_name(f"{root.name}.incomplete-{time.time_ns()}")
+        if not archived.exists() and not archived.is_symlink():
+            break
+    root.rename(archived)
+    root.mkdir(parents=True, exist_ok=False)
+    print(f"SEQAX_BF16_ARCHIVED_INCOMPLETE source={root} archive={archived}")
+    return archived
 
 
 def _preflight_existing_root(root: Path) -> None:
@@ -300,6 +361,58 @@ def _close_ledger(path: Path) -> None:
     sidecars = (path.with_name(f"{path.name}-shm"), path.with_name(f"{path.name}-wal"))
     if any(value.exists() for value in sidecars):
         raise ValueError("SEQAX_BF16_LEDGER_SIDECAR_PRESENT")
+
+
+def _record_failure(root: Path, run_id: str, error: Exception) -> None:
+    if (root / "receipt.json").exists() or (root / "receipt.json").is_symlink():
+        failure_path = root.with_name(f"{root.name}.failure.json")
+        if not failure_path.exists() and not failure_path.is_symlink():
+            _write_json(
+                failure_path,
+                {
+                    "error_type": type(error).__name__,
+                    "message": str(error),
+                    "run_id": run_id,
+                },
+            )
+        print(f"SEQAX_BF16_POST_RECEIPT_FAILURE path={failure_path}")
+        return
+    ledger_path = root / "ledger.sqlite"
+    state: str | None = None
+    if ledger_path.is_file() and not ledger_path.is_symlink() and ledger_path.stat().st_nlink == 1:
+        try:
+            with ExperimentLedger(ledger_path) as ledger:
+                current = ledger.current_state(run_id)
+                state = current.value if current is not None else None
+                if current not in {None, RunState.ACCEPTED, RunState.REJECTED}:
+                    ledger.transition(
+                        run_id,
+                        RunState.REJECTED,
+                        {
+                            "error_type": type(error).__name__,
+                            "message": str(error),
+                            "previous_state": state,
+                        },
+                    )
+            _close_ledger(ledger_path)
+        except (OSError, sqlite3.Error, ValueError) as ledger_error:
+            print(
+                "SEQAX_BF16_FAILURE_LEDGER_ERROR "
+                f"error={type(ledger_error).__name__}:{ledger_error}"
+            )
+    failure_path = root / "failure.json"
+    if failure_path.exists() or failure_path.is_symlink():
+        print(f"SEQAX_BF16_FAILURE_RECORD_EXISTS path={failure_path}")
+        return
+    _write_json(
+        failure_path,
+        {
+            "error_type": type(error).__name__,
+            "message": str(error),
+            "previous_state": state,
+            "run_id": run_id,
+        },
+    )
 
 
 def _device_inventory(devices: tuple[Any, ...]) -> tuple[SeqaxBf16Device, ...]:
@@ -1164,38 +1277,27 @@ def _build_receipt(
         ledger_sha256=_sha256(root / "ledger.sqlite"),
         artifacts=_artifact_manifest(root),
     )
-    _write_json(path, receipt.model_dump(mode="json"))
+    _write_json_atomic(path, receipt.model_dump(mode="json"))
     return receipt
 
 
-def run_seqax_bf16_validation(
+def _execute_seqax_bf16_validation(
     root: Path,
     contract: SeqaxBf16ValidationContract,
+    runtime: SeqaxBf16Runtime,
+    devices: tuple[Any, ...],
+    run_id: str,
+    source_commit: str,
 ) -> SeqaxBf16ValidationResult:
-    canonical_contract = default_seqax_bf16_validation_contract()
-    if contract != canonical_contract:
-        raise ValueError("SEQAX_BF16_EXTERNAL_CONTRACT_MISMATCH")
-    root = root.resolve()
-    _require_safe_new_root(root)
     repository_root = Path(__file__).resolve().parents[2]
-    _require_clean_repository(repository_root)
-    if _sha256(repository_root / "uv.lock") != contract.runtime.uv_lock_sha256:
-        raise ValueError("SEQAX_BF16_LOCK_MISMATCH")
-    runtime = _runtime(contract)
-    devices = tuple(jax.devices())
-    _validate_devices(devices, contract)
-    root.mkdir(parents=True)
     _write_json(
         root / "contract.json",
         contract.model_dump(mode="json", exclude_computed_fields=True),
     )
     _source_state(repository_root, root)
     source_state = json.loads((root / "source_state.json").read_text())
-    run_id = semantic_sha256(
-        SEQAX_BF16_RUN_SCHEMA,
-        contract.contract_id,
-        source_state["git_commit"],
-    )
+    if source_state["git_commit"] != source_commit:
+        raise ValueError("SEQAX_BF16_SOURCE_CHANGED_DURING_RUN")
     ledger_path = root / "ledger.sqlite"
     with ExperimentLedger(ledger_path) as ledger:
         ledger.create(
@@ -1297,6 +1399,60 @@ def run_seqax_bf16_validation(
     return validate_seqax_bf16_validation(root, contract)
 
 
+def run_seqax_bf16_validation(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16ValidationResult:
+    canonical_contract = default_seqax_bf16_validation_contract()
+    if contract != canonical_contract:
+        raise ValueError("SEQAX_BF16_EXTERNAL_CONTRACT_MISMATCH")
+    if root.is_symlink():
+        raise ValueError(f"SEQAX_BF16_ROOT_INVALID path={root}")
+    root = root.resolve()
+    _require_safe_root(root)
+    repository_root = Path(__file__).resolve().parents[2]
+    _require_clean_repository(repository_root)
+    if _sha256(repository_root / "uv.lock") != contract.runtime.uv_lock_sha256:
+        raise ValueError("SEQAX_BF16_LOCK_MISMATCH")
+    if (root / "receipt.json").exists() or (root / "receipt.json").is_symlink():
+        return validate_seqax_bf16_validation(root, contract)
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    run_id = semantic_sha256(
+        SEQAX_BF16_RUN_SCHEMA,
+        contract.contract_id,
+        source_commit,
+    )
+    identity = SeqaxBf16RunIdentity(
+        schema_version=SEQAX_BF16_RUN_SCHEMA,
+        contract_id=contract.contract_id,
+        run_id=run_id,
+        source_commit=source_commit,
+    )
+    runtime = _runtime(contract)
+    devices = tuple(jax.devices())
+    _validate_devices(devices, contract)
+    _prepare_output_root(root, identity)
+    _write_json_atomic(root / "run_identity.json", identity.model_dump(mode="json"))
+    try:
+        return _execute_seqax_bf16_validation(
+            root,
+            contract,
+            runtime,
+            devices,
+            run_id,
+            source_commit,
+        )
+    except Exception as error:
+        _record_failure(root, run_id, error)
+        raise
+
+
 def _canonical_plans(
     scenario: SeqaxBf16NumericalScenario,
 ) -> tuple[Any, Any, SeqaxPallasPlan, JaxDistributedMeshPlan]:
@@ -1320,6 +1476,7 @@ def _expected_files(
     receipt_present: bool,
 ) -> set[Path]:
     expected = {
+        root / "run_identity.json",
         root / "contract.json",
         root / "source_state.json",
         root / "source_diff.patch",
@@ -1909,6 +2066,14 @@ def _validate(
         trusted_contract.contract_id,
         source_commit,
     )
+    identity = SeqaxBf16RunIdentity.model_validate_json((root / "run_identity.json").read_text())
+    if identity != SeqaxBf16RunIdentity(
+        schema_version=SEQAX_BF16_RUN_SCHEMA,
+        contract_id=trusted_contract.contract_id,
+        run_id=expected_run_id,
+        source_commit=source_commit,
+    ):
+        raise ValueError("SEQAX_BF16_RUN_IDENTITY_MISMATCH")
     expected_runtime = trusted_contract.runtime
     if (
         result.schema_version != SEQAX_BF16_RUN_SCHEMA

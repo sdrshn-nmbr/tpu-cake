@@ -7,7 +7,9 @@ import ml_dtypes
 import numpy as np
 import pytest
 
+import tpu_cake.seqax_numerical_runner as numerical_runner
 from tpu_cake.cli import _parser
+from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.seqax_numerical import (
     SeqaxDiscriminatorClause,
     SeqaxNumericalDiscriminator,
@@ -16,11 +18,15 @@ from tpu_cake.seqax_numerical import (
 )
 from tpu_cake.seqax_numerical_runner import (
     SeqaxBf16DiscriminatorObservation,
+    SeqaxBf16RunIdentity,
     _drop_reduction_collective,
     _mutation_failure,
+    _prepare_output_root,
+    _record_failure,
     _remove_strict_barrier,
     _replace_silu_body,
-    _require_safe_new_root,
+    _require_safe_root,
+    _write_json_atomic,
 )
 from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_canonical_reference,
@@ -301,11 +307,148 @@ def test_discriminator_observation_rejects_a_wrong_clause() -> None:
 def test_runner_rejects_protected_output_roots() -> None:
     repository_root = Path(__file__).resolve().parents[1]
     with pytest.raises(ValueError, match="UNSAFE_ROOT"):
-        _require_safe_new_root(repository_root)
+        _require_safe_root(repository_root)
     with pytest.raises(ValueError, match="UNSAFE_ROOT"):
-        _require_safe_new_root(repository_root / "runs" / "numerical")
+        _require_safe_root(repository_root / "runs" / "numerical")
     with pytest.raises(ValueError, match="UNSAFE_ROOT"):
-        _require_safe_new_root(Path.home())
+        _require_safe_root(Path.home())
+
+
+def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    identity = SeqaxBf16RunIdentity(
+        schema_version="seqax-bf16-forward-validation-run-v1",
+        contract_id=contract.contract_id,
+        run_id="1" * 64,
+        source_commit="2" * 40,
+    )
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    sentinel = unrelated / "valuable.txt"
+    sentinel.write_text("preserve")
+    with pytest.raises(ValueError, match="ROOT_NOT_OWNED"):
+        _prepare_output_root(unrelated, identity)
+    assert sentinel.read_text() == "preserve"
+    assert not tuple(tmp_path.glob("unrelated.incomplete-*"))
+
+    mismatched = tmp_path / "mismatched"
+    mismatched.mkdir()
+    wrong_identity = identity.model_copy(update={"run_id": "4" * 64})
+    (mismatched / "run_identity.json").write_text(wrong_identity.model_dump_json(indent=2) + "\n")
+    with pytest.raises(ValueError, match="ROOT_NOT_OWNED"):
+        _prepare_output_root(mismatched, identity)
+    assert mismatched.is_dir()
+
+    accepted = tmp_path / "accepted"
+    accepted.mkdir()
+    (accepted / "run_identity.json").write_text(identity.model_dump_json(indent=2) + "\n")
+    (accepted / "receipt.json").write_text("preserve")
+    with pytest.raises(ValueError, match="ACCEPTED_ROOT_NOT_RETRYABLE"):
+        _prepare_output_root(accepted, identity)
+    assert (accepted / "receipt.json").read_text() == "preserve"
+
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    (owned / "run_identity.json").write_text(identity.model_dump_json(indent=2) + "\n")
+    (owned / "partial.txt").write_text("negative evidence")
+    archived = _prepare_output_root(owned, identity)
+    assert archived is not None
+    assert archived.parent == tmp_path
+    assert (archived / "partial.txt").read_text() == "negative evidence"
+    assert owned.is_dir() and not any(owned.iterdir())
+
+
+def test_runner_records_a_terminal_failure_before_retry(tmp_path: Path) -> None:
+    run_id = "3" * 64
+    ledger_path = tmp_path / "ledger.sqlite"
+    with ExperimentLedger(ledger_path) as ledger:
+        ledger.create(run_id, {"contract": "test"})
+
+    _record_failure(tmp_path, run_id, RuntimeError("compile failed"))
+
+    history = read_ledger_history(ledger_path, run_id)
+    assert tuple(event.state for event in history) == (
+        RunState.CREATED,
+        RunState.REJECTED,
+    )
+    failure = (tmp_path / "failure.json").read_text()
+    assert '"error_type": "RuntimeError"' in failure
+    assert '"message": "compile failed"' in failure
+    assert '"previous_state": "created"' in failure
+
+
+def test_atomic_run_markers_do_not_publish_truncated_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    identity = SeqaxBf16RunIdentity(
+        schema_version="seqax-bf16-forward-validation-run-v1",
+        contract_id=contract.contract_id,
+        run_id="5" * 64,
+        source_commit="6" * 40,
+    )
+    root = tmp_path / "run"
+    root.mkdir()
+    original_replace = os.replace
+
+    def fail_replace(_source: Path, _target: Path) -> None:
+        raise OSError("simulated crash before atomic publish")
+
+    monkeypatch.setattr("tpu_cake.seqax_numerical_runner.os.replace", fail_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        _write_json_atomic(root / "run_identity.json", identity.model_dump(mode="json"))
+    assert not (root / "run_identity.json").exists()
+    assert not any(root.iterdir())
+    assert _prepare_output_root(root, identity) is None
+
+    monkeypatch.setattr("tpu_cake.seqax_numerical_runner.os.replace", original_replace)
+    _write_json_atomic(root / "run_identity.json", identity.model_dump(mode="json"))
+    (root / "partial.txt").write_text("preserve")
+    monkeypatch.setattr("tpu_cake.seqax_numerical_runner.os.replace", fail_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        _write_json_atomic(root / "receipt.json", {"status": "passed"})
+    assert not (root / "receipt.json").exists()
+    monkeypatch.setattr("tpu_cake.seqax_numerical_runner.os.replace", original_replace)
+    archived = _prepare_output_root(root, identity)
+    assert archived is not None
+    assert (archived / "partial.txt").read_text() == "preserve"
+
+
+def test_runner_retries_after_identity_publication_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    root = tmp_path / "run"
+    original_write = numerical_runner._write_json_atomic
+    attempts = 0
+
+    def fail_first_identity(path: Path, value: object) -> None:
+        nonlocal attempts
+        if path.name == "run_identity.json" and attempts == 0:
+            attempts += 1
+            raise OSError("simulated identity publication failure")
+        original_write(path, value)
+
+    monkeypatch.setattr(numerical_runner, "_require_clean_repository", lambda _root: None)
+    monkeypatch.setattr(numerical_runner, "_runtime", lambda _contract: object())
+    monkeypatch.setattr(numerical_runner.jax, "devices", list)
+    monkeypatch.setattr(numerical_runner, "_validate_devices", lambda _devices, _contract: None)
+    monkeypatch.setattr(numerical_runner, "_write_json_atomic", fail_first_identity)
+
+    with pytest.raises(OSError, match="identity publication failure"):
+        numerical_runner.run_seqax_bf16_validation(root, contract)
+    assert root.is_dir() and not any(root.iterdir())
+
+    sentinel = object()
+    monkeypatch.setattr(
+        numerical_runner,
+        "_execute_seqax_bf16_validation",
+        lambda *_args: sentinel,
+    )
+    assert numerical_runner.run_seqax_bf16_validation(root, contract) is sentinel
+    assert (root / "run_identity.json").is_file()
 
 
 def test_bf16_validation_cli_requires_external_contract() -> None:
@@ -517,6 +660,7 @@ try:
     result = runner.run_seqax_bf16_validation(root, contract)
     assert len(result.observations) == 17
     assert len(result.discriminators) == 14
+    assert runner.run_seqax_bf16_validation(root, contract) == result
     relocated = temporary / "relocated"
     shutil.copytree(root, relocated)
     runner.validate_seqax_bf16_validation(relocated, contract)
@@ -540,6 +684,16 @@ try:
     )
     repair_receipt(result_mutant, "result.json")
     require_rejected(result_mutant, contract)
+
+    identity_mutant = temporary / "identity-mutant"
+    shutil.copytree(root, identity_mutant)
+    payload = json.loads((identity_mutant / "run_identity.json").read_text())
+    payload["run_id"] = "0" * 64
+    (identity_mutant / "run_identity.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    )
+    repair_receipt(identity_mutant, "run_identity.json")
+    require_rejected(identity_mutant, contract)
 
     hlo_mutant = temporary / "hlo-mutant"
     shutil.copytree(root, hlo_mutant)
