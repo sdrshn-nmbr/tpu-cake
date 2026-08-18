@@ -76,6 +76,7 @@ class SeqaxPallasSearchContract(BaseModel):
     timing_seed: int
     primitive_absolute_tolerance: float = Field(gt=0)
     primitive_relative_tolerance: float = Field(gt=0)
+    cpu_oracle_replay_absolute_tolerance: float = Field(gt=0)
     warmup_iterations: int = Field(ge=1)
     measured_iterations: int = Field(ge=3)
     rounds: int = Field(ge=8)
@@ -105,6 +106,8 @@ class SeqaxPallasSearchContract(BaseModel):
             1e-3,
         ):
             raise ValueError("Seqax Pallas primitive tolerance is not canonical")
+        if self.cpu_oracle_replay_absolute_tolerance != 2e-6:
+            raise ValueError("Seqax Pallas CPU oracle replay tolerance is not canonical")
         if (
             self.warmup_iterations,
             self.measured_iterations,
@@ -297,6 +300,7 @@ def default_seqax_pallas_search_contract(
         timing_seed=SEQAX_PALLAS_TIMING_SEED,
         primitive_absolute_tolerance=1e-3,
         primitive_relative_tolerance=1e-3,
+        cpu_oracle_replay_absolute_tolerance=2e-6,
         warmup_iterations=5,
         measured_iterations=5,
         rounds=8,

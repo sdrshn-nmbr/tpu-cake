@@ -1135,6 +1135,39 @@ def _validate_output_abi(
         raise ValueError(f"SEQAX_PALLAS_SEARCH_OUTPUT_ABI_MISMATCH candidate={candidate}")
 
 
+def _validate_cpu_oracle_replay(
+    saved: np.ndarray,
+    fresh: np.ndarray,
+    absolute_tolerance: float,
+) -> None:
+    if (
+        saved.shape != fresh.shape
+        or saved.dtype != fresh.dtype
+        or not np.isfinite(saved).all()
+        or not np.isfinite(fresh).all()
+        or not np.allclose(saved, fresh, atol=absolute_tolerance, rtol=0)
+    ):
+        raise ValueError("SEQAX_PALLAS_SEARCH_ORACLE_REPLAY_MISMATCH")
+
+
+def _portable_cpu_oracle_passed(
+    outputs: list[np.ndarray],
+    saved_oracles: list[np.ndarray],
+    fresh_oracles: list[np.ndarray],
+) -> tuple[bool, ...]:
+    saved = tuple(
+        bool(np.allclose(output, oracle, atol=SEQAX_OUTPUT_ATOL, rtol=SEQAX_OUTPUT_RTOL))
+        for output, oracle in zip(outputs, saved_oracles, strict=True)
+    )
+    fresh = tuple(
+        bool(np.allclose(output, oracle, atol=SEQAX_OUTPUT_ATOL, rtol=SEQAX_OUTPUT_RTOL))
+        for output, oracle in zip(outputs, fresh_oracles, strict=True)
+    )
+    if saved != fresh:
+        raise ValueError("SEQAX_PALLAS_SEARCH_ORACLE_VERDICT_PORTABILITY_MISMATCH")
+    return saved
+
+
 def _validate_correctness_replay(
     root: Path,
     contract: SeqaxPallasSearchContract,
@@ -1147,6 +1180,7 @@ def _validate_correctness_replay(
         raise ValueError("SEQAX_PALLAS_SEARCH_CORRECTNESS_CANDIDATE_MISMATCH")
     inputs_by_seed = []
     oracles = []
+    fresh_oracles = []
     outputs: dict[str, list[np.ndarray]] = {candidate.name: [] for candidate in contract.candidates}
     output_contracts = {value.candidate.name: value.plan.output_contracts[0] for value in prepared}
     for seed in contract.correctness_seeds:
@@ -1168,14 +1202,14 @@ def _validate_correctness_replay(
             seqax_forward_canonical_reference(expected_inputs, **contract.parameters)
         )
         saved_oracle = _load_array(root / str(seed) / "cpu_oracle.npy")
-        if (
-            saved_oracle.shape != expected_oracle.shape
-            or saved_oracle.dtype != expected_oracle.dtype
-            or not np.array_equal(saved_oracle, expected_oracle)
-        ):
-            raise ValueError("SEQAX_PALLAS_SEARCH_ORACLE_REPLAY_MISMATCH")
+        _validate_cpu_oracle_replay(
+            saved_oracle,
+            expected_oracle,
+            contract.cpu_oracle_replay_absolute_tolerance,
+        )
         inputs_by_seed.append(saved_inputs)
         oracles.append(saved_oracle)
+        fresh_oracles.append(expected_oracle)
         for candidate in contract.candidates:
             output = _load_array(root / str(seed) / "outputs" / f"{candidate.name}.npy")
             output_contract = output_contracts[candidate.name]
@@ -1195,6 +1229,11 @@ def _validate_correctness_replay(
             _errors(actual, oracle)
             for actual, oracle in zip(candidate_outputs, oracles, strict=True)
         )
+        portable_cpu_oracle_passed = _portable_cpu_oracle_passed(
+            candidate_outputs,
+            oracles,
+            fresh_oracles,
+        )
         expected_record = SeqaxPallasCandidateCorrectness(
             name=record.name,
             input_sha256=tuple(arrays_sha256(value) for value in inputs_by_seed),
@@ -1204,17 +1243,7 @@ def _validate_correctness_replay(
             cpu_oracle_sha256=tuple(array_sha256(value) for value in oracles),
             cpu_oracle_maximum_absolute_error=tuple(value[0] for value in errors),
             cpu_oracle_maximum_relative_error=tuple(value[1] for value in errors),
-            cpu_oracle_passed=tuple(
-                bool(
-                    np.allclose(
-                        actual,
-                        oracle,
-                        atol=SEQAX_OUTPUT_ATOL,
-                        rtol=SEQAX_OUTPUT_RTOL,
-                    )
-                )
-                for actual, oracle in zip(candidate_outputs, oracles, strict=True)
-            ),
+            cpu_oracle_passed=portable_cpu_oracle_passed,
         )
         if record != expected_record or not exact:
             raise ValueError(

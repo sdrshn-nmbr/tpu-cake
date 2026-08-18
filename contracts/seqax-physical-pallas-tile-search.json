@@ -26,6 +26,7 @@
   "timing_seed": 12655767603698703491,
   "primitive_absolute_tolerance": 0.001,
   "primitive_relative_tolerance": 0.001,
+  "cpu_oracle_replay_absolute_tolerance": 0.000002,
   "warmup_iterations": 5,
   "measured_iterations": 5,
   "rounds": 8,

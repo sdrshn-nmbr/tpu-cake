@@ -18,8 +18,10 @@ from tpu_cake.seqax_pallas_search_runner import (
     _compiler_tile_metadata,
     _load_primitive_input,
     _numpy_einsum,
+    _portable_cpu_oracle_passed,
     _regenerate_primitive_operands,
     _save_primitive_input,
+    _validate_cpu_oracle_replay,
     _validate_output_abi,
     prepare_seqax_pallas_candidates,
 )
@@ -83,6 +85,14 @@ def test_seqax_pallas_search_rejects_a_noncanonical_protocol() -> None:
     with pytest.raises(ValidationError, match="measurement protocol"):
         contract.model_validate(
             {**contract.model_dump(exclude_computed_fields=True), "measured_iterations": 4}
+        )
+
+    with pytest.raises(ValidationError, match="oracle replay tolerance"):
+        contract.model_validate(
+            {
+                **contract.model_dump(exclude_computed_fields=True),
+                "cpu_oracle_replay_absolute_tolerance": 2.1e-6,
+            }
         )
 
 
@@ -197,6 +207,27 @@ def test_seqax_pallas_primitive_reference_is_layout_independent() -> None:
     )
 
     assert np.array_equal(contiguous, relocated)
+
+
+def test_seqax_pallas_cpu_oracle_replay_is_bounded_and_finite() -> None:
+    saved = np.array([1.0, -2.0], dtype=np.float32)
+    within = np.array([1.0000019, -2.0], dtype=np.float32)
+    outside = np.array([1.0000021, -2.0], dtype=np.float32)
+
+    _validate_cpu_oracle_replay(saved, within, 2e-6)
+    with pytest.raises(ValueError, match="ORACLE_REPLAY_MISMATCH"):
+        _validate_cpu_oracle_replay(saved, outside, 2e-6)
+    with pytest.raises(ValueError, match="ORACLE_REPLAY_MISMATCH"):
+        _validate_cpu_oracle_replay(saved, np.array([np.nan, -2.0], dtype=np.float32), 2e-6)
+
+
+def test_seqax_pallas_cpu_oracle_verdict_must_be_portable() -> None:
+    output = [np.array([0.0], dtype=np.float32)]
+    saved = [np.array([0.005], dtype=np.float32)]
+    fresh = [np.array([0.007], dtype=np.float32)]
+
+    with pytest.raises(ValueError, match="ORACLE_VERDICT_PORTABILITY_MISMATCH"):
+        _portable_cpu_oracle_passed(output, saved, fresh)
 
 
 def test_seqax_pallas_output_must_match_the_plan_abi() -> None:
