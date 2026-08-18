@@ -450,6 +450,13 @@ def _isolated_memory_observations(
     return tuple(observations)
 
 
+def _cpu_oracle_verdicts(
+    outputs: list[np.ndarray],
+    oracles: list[np.ndarray],
+) -> tuple[bool, ...]:
+    return _portable_cpu_oracle_passed(outputs, oracles, oracles)
+
+
 def _candidate_correctness(
     root: Path,
     contract: SeqaxWeightPlacementContract,
@@ -506,10 +513,7 @@ def _candidate_correctness(
                 cpu_oracle_sha256=tuple(array_sha256(value) for value in oracles),
                 cpu_oracle_maximum_absolute_error=tuple(value[0] for value in errors),
                 cpu_oracle_maximum_relative_error=tuple(value[1] for value in errors),
-                cpu_oracle_passed=tuple(
-                    bool(np.allclose(actual, oracle, atol=0.016, rtol=0.05))
-                    for actual, oracle in zip(actuals, oracles, strict=True)
-                ),
+                cpu_oracle_passed=_cpu_oracle_verdicts(actuals, oracles),
             )
         )
     if any(

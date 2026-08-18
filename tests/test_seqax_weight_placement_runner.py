@@ -25,6 +25,7 @@ from tpu_cake.seqax_weight_placement import (
 )
 from tpu_cake.seqax_weight_placement_runner import (
     CompiledPlacement,
+    _cpu_oracle_verdicts,
     _isolated_memory_observations,
     _preflight_existing_root,
     _require_safe_new_root,
@@ -61,6 +62,14 @@ def _devices() -> tuple[SeqaxPallasDevice, ...]:
         )
         for index in range(8)
     )
+
+
+def test_weight_placement_uses_the_canonical_seqax_oracle_tolerance() -> None:
+    oracle = np.zeros((1,), dtype=np.float32)
+    output = np.full((1,), 0.01, dtype=np.float32)
+
+    assert np.allclose(output, oracle, atol=0.016, rtol=0.05)
+    assert _cpu_oracle_verdicts([output], [oracle]) == (False,)
 
 
 def _memory_payload(candidate: str, parameter_bytes: int) -> dict[str, object]:
@@ -281,10 +290,7 @@ def _correctness_fixture(
                 cpu_oracle_sha256=tuple(array_sha256(oracle) for oracle in oracles),
                 cpu_oracle_maximum_absolute_error=tuple(error[0] for error in errors),
                 cpu_oracle_maximum_relative_error=tuple(error[1] for error in errors),
-                cpu_oracle_passed=tuple(
-                    bool(np.allclose(output, oracle, atol=0.016, rtol=0.05))
-                    for output, oracle in zip(candidate_outputs, oracles, strict=True)
-                ),
+                cpu_oracle_passed=_cpu_oracle_verdicts(candidate_outputs, oracles),
             )
         )
     return contract, prepared, tuple(records)
