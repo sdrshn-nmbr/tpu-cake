@@ -201,6 +201,7 @@ def test_weight_placement_source_manifest_binds_runtime_authority() -> None:
     assert "tpu_cake/seqax_weight_placement.py" in paths
     assert "tpu_cake/seqax_weight_placement_runner.py" in paths
     assert "tpu_cake/seqax_pallas_search.py" in paths
+    assert "tpu_cake/physical_geometry.py" in paths
     assert "tpu_cake/dialects/distributed_tensor.py" in paths
     assert "tpu_cake/dialects/tpu_schedule.py" in paths
 

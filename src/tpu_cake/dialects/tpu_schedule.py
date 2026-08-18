@@ -87,9 +87,7 @@ class CollectiveKindAttr(EnumAttribute[CollectiveKind], SpacedOpaqueSyntaxAttrib
 
 
 @irdl_attr_definition
-class VectorMaterializationAttr(
-    EnumAttribute[VectorMaterialization], SpacedOpaqueSyntaxAttribute
-):
+class VectorMaterializationAttr(EnumAttribute[VectorMaterialization], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.vector_materialization"
 
 
@@ -1158,19 +1156,15 @@ class MxuEinsumOp(IRDLOperation):
         if m % tile[0] or k % tile[1] or n % tile[2]:
             raise VerifyException("MXU einsum tiles must divide flattened M, K, and N")
         kernel = self.parent_op()
+        while kernel is not None and not isinstance(kernel, KernelOp):
+            kernel = kernel.parent_op()
         if isinstance(kernel, KernelOp) and kernel.target.data == "tpu7x":
             if tile[0] != m and tile[0] % 8:
-                raise VerifyException(
-                    "TPU Pallas tile M must span M or be divisible by 8"
-                )
+                raise VerifyException("TPU Pallas tile M must span M or be divisible by 8")
             if tile[1] != k and tile[1] % 128:
-                raise VerifyException(
-                    "TPU Pallas tile K must span K or be divisible by 128"
-                )
+                raise VerifyException("TPU Pallas tile K must span K or be divisible by 128")
             if tile[2] != n and tile[2] % 128:
-                raise VerifyException(
-                    "TPU Pallas tile N must span N or be divisible by 128"
-                )
+                raise VerifyException("TPU Pallas tile N must span N or be divisible by 128")
         if batch <= 0:
             raise VerifyException("MXU einsum batch extent must be positive")
 
@@ -2100,6 +2094,43 @@ class PipelineYieldOp(IRDLOperation):
             raise VerifyException("tpu_schedule.pipeline_yield must terminate a pipeline loop")
 
 
+def mxu_accumulator_scratch_bytes(operation: MxuMatmulOp | MxuEinsumOp) -> int:
+    if isinstance(operation, MxuEinsumOp):
+        return operation.tile_m.data * operation.tile_n.data * 4
+    return 0
+
+
+def pipeline_resident_memory_bytes(
+    kernel: KernelOp,
+) -> dict[MemorySpace, int]:
+    def root(value: SSAValue) -> SSAValue:
+        while isinstance(value.owner, ViewOp):
+            value = value.owner.base
+        return value
+
+    resident = {MemorySpace.VMEM: 0, MemorySpace.SMEM: 0}
+    for operation in kernel.body.block.ops:
+        if not isinstance(operation, AllocOp):
+            continue
+        buffer = operation.buffer.type
+        assert isinstance(buffer, BufferType)
+        resident[buffer.space.data] += buffer_bytes(buffer)
+    for operation in kernel.body.block.ops:
+        if not isinstance(operation, PipelineLoopOp):
+            continue
+        rotations = tuple(value.data for value in operation.rotation_counts)
+        if len(rotations) != len(operation.captures) or any(value <= 0 for value in rotations):
+            raise VerifyException(
+                "pipeline rotation counts must be positive and match captured buffers"
+            )
+        for capture, rotation in zip(operation.captures, rotations, strict=True):
+            buffer = root(capture).type
+            assert isinstance(buffer, BufferType)
+            if buffer.ownership.data is not Ownership.EXTERNAL:
+                resident[buffer.space.data] += buffer_bytes(buffer) * (rotation - 1)
+    return resident
+
+
 @irdl_op_definition
 class PipelineLoopOp(IRDLOperation):
     name = "tpu_schedule.pipeline_loop"
@@ -2330,11 +2361,14 @@ class PipelineLoopOp(IRDLOperation):
         horizon = (
             self.trip_count.data - 1
         ) * self.initiation_interval.data + self.pipeline_stages.data
+        resident_bytes = pipeline_resident_memory_bytes(kernel)
         for absolute_stage in range(horizon):
             active_dma = 0
             active_remote_dma = 0
             mxu_uses = 0
+            vector_uses = 0
             ici_uses = 0
+            accumulator_scratch_bytes = 0
             link_uses: dict[str, int] = {}
             semaphore_uses: dict[Operation, int] = {}
             for iteration in range(self.trip_count.data):
@@ -2372,6 +2406,12 @@ class PipelineLoopOp(IRDLOperation):
                         (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp),
                     ):
                         mxu_uses += operation.stage.data == logical_stage
+                        if operation.stage.data == logical_stage and isinstance(
+                            operation, (MxuMatmulOp, MxuEinsumOp)
+                        ):
+                            accumulator_scratch_bytes += mxu_accumulator_scratch_bytes(operation)
+                    elif isinstance(operation, VectorComputeOp):
+                        vector_uses += operation.stage.data == logical_stage
                     elif _is_collective(operation):
                         assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                         if operation.stage.data == logical_stage:
@@ -2399,6 +2439,10 @@ class PipelineLoopOp(IRDLOperation):
                 raise VerifyException(
                     f"pipeline exceeds MXU capacity at absolute stage {absolute_stage}"
                 )
+            if vector_uses > kernel.vector_unit_count.data:
+                raise VerifyException(
+                    f"pipeline exceeds vector capacity at absolute stage {absolute_stage}"
+                )
             if ici_uses > kernel.ici_link_count.data:
                 raise VerifyException(
                     f"pipeline exceeds ICI capacity at absolute stage {absolute_stage}"
@@ -2415,6 +2459,20 @@ class PipelineLoopOp(IRDLOperation):
                     raise VerifyException(
                         f"pipeline exceeds semaphore slots at absolute stage {absolute_stage}"
                     )
+            live_vmem_bytes = resident_bytes[MemorySpace.VMEM] + accumulator_scratch_bytes
+            if live_vmem_bytes > kernel.vmem_capacity_bytes.data:
+                raise VerifyException(
+                    "pipeline VMEM capacity exceeded at absolute stage "
+                    f"{absolute_stage}: {live_vmem_bytes} > "
+                    f"{kernel.vmem_capacity_bytes.data}"
+                )
+            live_smem_bytes = resident_bytes[MemorySpace.SMEM]
+            if live_smem_bytes > kernel.smem_capacity_bytes.data:
+                raise VerifyException(
+                    "pipeline SMEM capacity exceeded at absolute stage "
+                    f"{absolute_stage}: {live_smem_bytes} > "
+                    f"{kernel.smem_capacity_bytes.data}"
+                )
 
 
 @irdl_op_definition
@@ -3109,9 +3167,9 @@ class KernelOp(IRDLOperation):
                 )
                 if space is MemorySpace.VMEM:
                     live_bytes += sum(
-                        operation.tile_m.data * operation.tile_n.data * 4
+                        mxu_accumulator_scratch_bytes(operation)
                         for operation in operations
-                        if isinstance(operation, MxuEinsumOp)
+                        if isinstance(operation, (MxuMatmulOp, MxuEinsumOp))
                         and operation.stage.data == stage
                     )
                 if live_bytes > capacity:

@@ -92,6 +92,7 @@ def _search_source_manifest() -> tuple[SourceFileContract, ...]:
         package / "contracts.py",
         package / "identity.py",
         package / "ledger.py",
+        package / "physical_geometry.py",
         package / "runner.py",
         package / "seqax_pallas_lowering.py",
         package / "seqax_pallas_runner.py",

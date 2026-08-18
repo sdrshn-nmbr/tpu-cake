@@ -55,6 +55,10 @@ uv sync
 uv run pytest
 
 uv run tpu-cake verify-schedule examples/matmul.mlir
+uv run tpu-cake estimate-physical-cost PHYSICAL_SCHEDULE.xdsl \
+  --output PHYSICAL_COST_REPORT.json
+uv run tpu-cake verify-physical-cost PHYSICAL_COST_REPORT.json \
+  --schedule PHYSICAL_SCHEDULE.xdsl
 uv run tpu-cake render-workload inkling-rpa
 uv run tpu-cake experiment inkling-rpa
 uv run tpu-cake inspect-profile CAPTURE_ROOT \
@@ -110,6 +114,8 @@ This full-forward path now lowers declared contraction tiles into Pallas grids a
 The Seqax workload-surface experiment compares the unwrapped `shard_map` control with the canonical whole-program JIT across three forward shapes. Inputs are placed on their declared TPU shards before timing. Each scenario is resampled independently, and promotion requires a confidence interval above the declared practical threshold without a material regression in any scenario. Saved HLO is runner-captured integrity evidence with exact hashes and structural replay checks; it is not independently signed compiler attestation.
 
 The first Seqax cost calibration replays the accepted three-shape trace and counter bundle, then fits a fixed residual-overhead term plus a layer-count-associated residual term on top of the IR-derived idealized resource floor. It describes that exact profiler-instrumented surface within a declared residual bound, but has no held-out predictive validation. It therefore quantifies an overhead-dominated gap in the advertised-rate floor; neither coefficient has causal attribution, and the fit has no sampling-uncertainty or coefficient-confidence-interval estimate. It is not a production latency model, a calibrated model-size or sequence-length scaling law, or a calibration of MXU, HBM, or ICI rates.
+
+The generic physical cost report consumes the verified `tpu_schedule.kernel` directly. It binds the exact physical schedule hash and accounts for declared MXU tiles and grids, per-operation vector work, explicit DMA, inclusive buffer lifetimes, view aliases, pipeline trip counts and rotation storage, collective traffic, remote-DMA routes, topology links, and resource concurrency. It can therefore distinguish legal physical schedules that share one distributed program. BF16 MXU compute and explicit-HBM values are advertised-rate analytical floors; F16, F32, vector, and special-function work remain unpriced. Remote-DMA time includes exact declared per-link bandwidth and per-device injection/ejection floors. Collective time is a separate ring-equivalent injection-rate scenario because collective plans do not define an exact per-link byte schedule. The report does not claim compiler execution, measured latency, fusion savings, or predictive calibration.
 
 Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution, bounded block-size search, separate timing/trace/counter captures, and a search-bound receipt. It delegates execution to the pinned upstream RPA Pallas wrapper and covers one fixed decode-only local-shard fixture. It does not yet represent the wrapper's internal Pallas schedule, own the outer multi-device `shard_map`, prove full Inkling serving, or establish a global block-size optimum.
 

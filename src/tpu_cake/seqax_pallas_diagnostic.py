@@ -272,6 +272,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "identity.py",
         package / "ledger.py",
         package / "metrics.py",
+        package / "physical_geometry.py",
         package / "runner.py",
         package / "seqax_cost_model.py",
         package / "seqax_pallas_diagnostic.py",

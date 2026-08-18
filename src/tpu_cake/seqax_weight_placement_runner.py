@@ -127,6 +127,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "jax_lowering.py",
         package / "ledger.py",
         package / "lowering.py",
+        package / "physical_geometry.py",
         package / "runner.py",
         package / "seqax_pallas_lowering.py",
         package / "seqax_pallas_runner.py",

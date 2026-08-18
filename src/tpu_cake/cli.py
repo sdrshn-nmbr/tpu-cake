@@ -7,7 +7,7 @@ import tomllib
 from pathlib import Path
 
 from xdsl.context import Context
-from xdsl.dialects.builtin import Builtin
+from xdsl.dialects.builtin import Builtin, ModuleOp
 from xdsl.parser import Parser
 
 from tpu_cake.contracts import (
@@ -16,9 +16,15 @@ from tpu_cake.contracts import (
     RunReceipt,
     experiment_artifact_json,
 )
+from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
+from tpu_cake.physical_cost_model import (
+    PhysicalKernelResourceReport,
+    validate_physical_kernel_report,
+    write_physical_kernel_report,
+)
 from tpu_cake.receipt import validate_receipt
 from tpu_cake.rpa_bundle import build_fused_rpa_receipt, validate_fused_rpa_receipt
 from tpu_cake.rpa_receipt_search import (
@@ -112,6 +118,14 @@ def _parser() -> argparse.ArgumentParser:
 
     verify = commands.add_parser("verify-schedule")
     verify.add_argument("schedule", type=Path)
+
+    estimate_physical_cost = commands.add_parser("estimate-physical-cost")
+    estimate_physical_cost.add_argument("schedule", type=Path)
+    estimate_physical_cost.add_argument("--output", required=True, type=Path)
+
+    verify_physical_cost = commands.add_parser("verify-physical-cost")
+    verify_physical_cost.add_argument("report", type=Path)
+    verify_physical_cost.add_argument("--schedule", required=True, type=Path)
 
     inspect = commands.add_parser("inspect-profile")
     inspect.add_argument("capture", type=Path)
@@ -286,14 +300,51 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _verify_schedule(path: Path) -> int:
+def _parse_schedule(path: Path) -> ModuleOp:
     context = Context()
     context.load_dialect(Builtin)
     context.load_dialect(DistributedTensor)
     context.load_dialect(TPUSchedule)
-    module = Parser(context, path.read_text(), name=str(path)).parse_module()
+    return Parser(context, path.read_text(), name=str(path)).parse_module()
+
+
+def _verify_schedule(path: Path) -> int:
+    module = _parse_schedule(path)
     module.verify()
     print(f"SCHEDULE_ACCEPTED path={path}")
+    return 0
+
+
+def _estimate_physical_cost(schedule_path: Path, output: Path) -> int:
+    module = _parse_schedule(schedule_path)
+    report = write_physical_kernel_report(
+        output,
+        module=module,
+        hardware=tpu7x_tensorcore_rates(),
+    )
+    print(
+        "PHYSICAL_COST_DERIVED "
+        f"schedule_sha256={report.physical_schedule_sha256} "
+        f"mxu_regions={len(report.mxu_regions)} "
+        f"limiting_priced_resource={report.predicted_limiting_priced_resource}"
+    )
+    return 0
+
+
+def _verify_physical_cost(report_path: Path, schedule_path: Path) -> int:
+    module = _parse_schedule(schedule_path)
+    report = PhysicalKernelResourceReport.model_validate_json(report_path.read_text())
+    validate_physical_kernel_report(
+        report,
+        module=module,
+        hardware=tpu7x_tensorcore_rates(),
+    )
+    print(
+        "PHYSICAL_COST_REPLAYED "
+        f"schedule_sha256={report.physical_schedule_sha256} "
+        f"mxu_regions={len(report.mxu_regions)} "
+        f"limiting_priced_resource={report.predicted_limiting_priced_resource}"
+    )
     return 0
 
 
@@ -375,6 +426,10 @@ def main() -> None:
     args = _parser().parse_args()
     if args.command == "verify-schedule":
         code = _verify_schedule(args.schedule)
+    elif args.command == "estimate-physical-cost":
+        code = _estimate_physical_cost(args.schedule, args.output)
+    elif args.command == "verify-physical-cost":
+        code = _verify_physical_cost(args.report, args.schedule)
     elif args.command == "inspect-profile":
         code = _inspect_profile(args.capture, args.contract, args.output)
     elif args.command == "render-workload":

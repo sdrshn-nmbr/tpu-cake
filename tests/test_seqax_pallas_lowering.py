@@ -83,6 +83,7 @@ def test_complete_seqax_physical_schedule_lowers_to_replayable_pallas_plan() -> 
     assert plan.uses_pallas is True
     assert plan.execution_scope == "multi-device-local-shards-with-pallas-einsums"
     assert plan.pallas_region_count == 17
+    assert "tpu_cake/physical_geometry.py" in dict(plan.implementation_manifest)
 
     source = plan.render_executable_source()
     namespace: dict[str, object] = {}
@@ -90,6 +91,18 @@ def test_complete_seqax_physical_schedule_lowers_to_replayable_pallas_plan() -> 
     replayed = namespace["PLAN"]
     assert replayed.manifest() == plan.manifest()
     assert replayed.source_sha256() == hashlib.sha256(source.encode()).hexdigest()
+
+
+def test_pallas_plan_rejects_missing_geometry_source_authority() -> None:
+    plan = _plan()
+    without_geometry = tuple(
+        value
+        for value in plan.implementation_manifest
+        if value[0] != "tpu_cake/physical_geometry.py"
+    )
+
+    with pytest.raises(UnsupportedSeqaxPallasLoweringError, match="source manifest"):
+        replace(plan, implementation_manifest=without_geometry)._validated_modules()
 
 
 def test_typed_bf16_materialization_lowers_into_the_physical_schedule() -> None:

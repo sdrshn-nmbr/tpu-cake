@@ -20,6 +20,7 @@ from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import BufferType, MxuEinsumOp, TPUSchedule
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.jax_lowering import JaxTensorContract, lower_distributed_program_to_jax_mesh
+from tpu_cake.physical_geometry import named_einsum_geometry
 from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 
@@ -43,6 +44,7 @@ def _implementation_manifest() -> tuple[tuple[str, str], ...]:
         package / "frontend.py",
         package / "jax_lowering.py",
         package / "lowering.py",
+        package / "physical_geometry.py",
         package / "seqax_pallas_lowering.py",
         package / "seqax_physical_execution.py",
         package / "seqax_physical_lowering.py",
@@ -115,31 +117,7 @@ def _pallas_einsum(
     assert isinstance(lhs_type, BufferType)
     assert isinstance(rhs_type, BufferType)
     assert isinstance(result_type, BufferType)
-    lhs_names = _names(lhs_type)
-    rhs_names = _names(rhs_type)
-    result_names = _names(result_type)
-    contractions = tuple(value.data for value in physical.contracting_dimensions)
-    batch_names = tuple(
-        name for name in lhs_names if name in rhs_names and name not in contractions
-    )
-    lhs_contract = tuple(lhs_names.index(name) for name in contractions)
-    rhs_contract = tuple(rhs_names.index(name) for name in contractions)
-    lhs_batch = tuple(lhs_names.index(name) for name in batch_names)
-    rhs_batch = tuple(rhs_names.index(name) for name in batch_names)
-    lhs_free_names = tuple(
-        name for name in lhs_names if name not in batch_names and name not in contractions
-    )
-    rhs_free_names = tuple(
-        name for name in rhs_names if name not in batch_names and name not in contractions
-    )
-    lhs_free = tuple(lhs_names.index(name) for name in lhs_free_names)
-    rhs_free = tuple(rhs_names.index(name) for name in rhs_free_names)
-    dot_names = (*batch_names, *lhs_free_names, *rhs_free_names)
-    if set(dot_names) != set(result_names):
-        raise UnsupportedSeqaxPallasLoweringError(
-            "physical Pallas einsum cannot reconstruct result dimensions"
-        )
-    permutation = tuple(dot_names.index(name) for name in result_names)
+    geometry = named_einsum_geometry(physical)
     expected_lhs = physical.lhs.type.storage.get_shape()
     expected_rhs = physical.rhs.type.storage.get_shape()
     expected_output = physical.accumulator.type.storage.get_shape()
@@ -147,29 +125,15 @@ def _pallas_einsum(
         raise UnsupportedSeqaxPallasLoweringError(
             "physical MXU operand shape does not match traced local shard"
         )
-    batch_shape = tuple(expected_lhs[index] for index in lhs_batch)
-    lhs_free_shape = tuple(expected_lhs[index] for index in lhs_free)
-    rhs_free_shape = tuple(expected_rhs[index] for index in rhs_free)
-    contraction_shape = tuple(expected_lhs[index] for index in lhs_contract)
-    if batch_shape != tuple(expected_rhs[index] for index in rhs_batch):
-        raise UnsupportedSeqaxPallasLoweringError("physical MXU batch dimensions do not match")
-    if contraction_shape != tuple(expected_rhs[index] for index in rhs_contract):
-        raise UnsupportedSeqaxPallasLoweringError(
-            "physical MXU contraction dimensions do not match"
-        )
-    batch_size = math.prod(batch_shape)
-    lhs_free_size = math.prod(lhs_free_shape)
-    rhs_free_size = math.prod(rhs_free_shape)
-    contraction_size = math.prod(contraction_shape)
-    lhs_permutation = (*lhs_batch, *lhs_free, *lhs_contract)
-    rhs_permutation = (*rhs_batch, *rhs_contract, *rhs_free)
-    tile_m = physical.tile_m.data
-    tile_k = physical.tile_k.data
-    tile_n = physical.tile_n.data
-    if lhs_free_size % tile_m or contraction_size % tile_k or rhs_free_size % tile_n:
-        raise UnsupportedSeqaxPallasLoweringError(
-            "physical MXU tiles must divide the flattened local contraction"
-        )
+    batch_size = geometry.batch
+    lhs_free_size = geometry.m
+    rhs_free_size = geometry.n
+    contraction_size = geometry.k
+    lhs_permutation = geometry.lhs_permutation
+    rhs_permutation = geometry.rhs_permutation
+    tile_m = geometry.tile_m
+    tile_k = geometry.tile_k
+    tile_n = geometry.tile_n
     _validate_tpu_tile_shape(
         m=lhs_free_size,
         k=contraction_size,
@@ -178,7 +142,7 @@ def _pallas_einsum(
         tile_k=tile_k,
         tile_n=tile_n,
     )
-    k_steps = contraction_size // tile_k
+    k_steps = geometry.grid[3]
 
     lhs_value = jnp.transpose(lhs, lhs_permutation).reshape(
         (batch_size, lhs_free_size, contraction_size)
@@ -251,9 +215,11 @@ def _pallas_einsum(
         },
     )
     value = call(lhs_value, rhs_value)
-    value = value.reshape((*batch_shape, *lhs_free_shape, *rhs_free_shape))
-    if permutation != tuple(range(len(permutation))):
-        value = jnp.transpose(value, permutation)
+    value = value.reshape(
+        (*geometry.batch_shape, *geometry.lhs_free_shape, *geometry.rhs_free_shape)
+    )
+    if geometry.result_permutation != tuple(range(len(geometry.result_permutation))):
+        value = jnp.transpose(value, geometry.result_permutation)
     if tuple(value.shape) != expected_output:
         raise UnsupportedSeqaxPallasLoweringError(
             "physical MXU tiled result does not match the declared accumulator"
