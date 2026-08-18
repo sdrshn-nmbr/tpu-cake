@@ -343,8 +343,17 @@ def _canonical_assessment(value: dict[str, Any]) -> dict[str, Any]:
 
     normalize_paths(normalized)
     capture = normalized.get("capture")
-    if isinstance(capture, dict) and isinstance(capture.get("timed_program_ids"), list):
-        capture["timed_program_ids"] = sorted(capture["timed_program_ids"])
+    if isinstance(capture, dict):
+        if isinstance(capture.get("timed_program_ids"), list):
+            capture["timed_program_ids"] = sorted(capture["timed_program_ids"])
+        programs = capture.get("programs")
+        if isinstance(programs, list):
+            for program in programs:
+                if not isinstance(program, dict):
+                    continue
+                hlo = program.get("hlo")
+                if isinstance(hlo, dict):
+                    hlo.pop("sha256", None)
     return normalized
 
 
@@ -795,18 +804,33 @@ def _validate_xprof(root: Path, xplane: Path) -> None:
 
 
 def _validate_xprof_replay(saved_root: Path, replay_root: Path) -> None:
-    saved = {
-        path.relative_to(saved_root / "xprof").as_posix(): _sha256(path)
+    saved_paths = {
+        path.relative_to(saved_root / "xprof").as_posix(): path
         for path in (saved_root / "xprof").rglob("*")
         if path.is_file()
     }
-    replayed = {
-        path.relative_to(replay_root / "xprof").as_posix(): _sha256(path)
+    replayed_paths = {
+        path.relative_to(replay_root / "xprof").as_posix(): path
         for path in (replay_root / "xprof").rglob("*")
         if path.is_file()
     }
-    if saved != replayed:
+    if set(saved_paths) != set(replayed_paths):
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_XPROF_REPLAY_MISMATCH")
+    for relative, saved_path in saved_paths.items():
+        if relative == "derived_manifest.json" or relative.startswith("derived/"):
+            continue
+        if _sha256(saved_path) != _sha256(replayed_paths[relative]):
+            raise ValueError(f"SEQAX_PALLAS_DIAGNOSTIC_XPROF_REPLAY_MISMATCH path={relative}")
+    saved_derived = tuple(
+        (value["path"], value["size_bytes"])
+        for value in json.loads((saved_root / "xprof" / "derived_manifest.json").read_text())
+    )
+    replayed_derived = tuple(
+        (value["path"], value["size_bytes"])
+        for value in json.loads((replay_root / "xprof" / "derived_manifest.json").read_text())
+    )
+    if saved_derived != replayed_derived:
+        raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_XPROF_DERIVED_REPLAY_MISMATCH")
 
 
 def _profile_files(profile_root: Path) -> tuple[Path, tuple[Path, ...]]:
@@ -1488,16 +1512,25 @@ def _validate_diagnostic(root: Path, *, require_accepted: bool) -> SeqaxPallasDi
             _validate_xprof(phase_root, xplane)
             replay_root = replay_parent / phase
             replay_profile = replay_root / "profile"
-            replay_profile.mkdir(parents=True)
-            replay_xplane = replay_profile / xplane.name
-            os.link(xplane, replay_xplane)
+            replay_xplane = replay_profile / xplane.relative_to(phase_root / "profile")
+            replay_xplane.parent.mkdir(parents=True)
+            shutil.copy2(xplane, replay_xplane)
             _export_xprof(replay_profile, replay_root / "xprof")
             _validate_xprof(replay_root, replay_xplane)
             _validate_xprof_replay(phase_root, replay_root)
-            assessment = assess_capture(replay_root, _expected_profile(counters=counters))
+            expectation = _expected_profile(counters=counters)
+            saved_assessment = assess_capture(phase_root, expectation)
+            assessment = assess_capture(replay_root, expectation)
             if not assessment.accepted:
                 raise ValueError(f"SEQAX_PALLAS_DIAGNOSTIC_PROFILE_REPLAY_REJECTED phase={phase}")
+            if not saved_assessment.accepted or _canonical_assessment(
+                saved_assessment.model_dump(mode="json")
+            ) != _canonical_assessment(assessment.model_dump(mode="json")):
+                raise ValueError(
+                    f"SEQAX_PALLAS_DIAGNOSTIC_XPROF_SEMANTIC_REPLAY_MISMATCH phase={phase}"
+                )
             if counters:
+                _validate_counter_evidence(saved_assessment)
                 _validate_counter_evidence(assessment)
             expected_assessment = _canonical_assessment(assessment.model_dump(mode="json"))
             if (

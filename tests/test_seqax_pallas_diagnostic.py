@@ -25,6 +25,7 @@ from tpu_cake.seqax_pallas_diagnostic import (
     _artifact_manifest,
     _artifact_role,
     _attribution,
+    _canonical_assessment,
     _export_xprof,
     _validate_counter_evidence,
     _validate_manifest,
@@ -274,6 +275,35 @@ def test_counter_evidence_requires_mxu_and_all_counter_families() -> None:
     }
     with pytest.raises(ValueError, match="COUNTER_EVIDENCE_MISMATCH"):
         _validate_counter_evidence(invalid)
+
+
+def test_assessment_projection_ignores_only_nondeterministic_hlo_bytes() -> None:
+    first = {
+        "capture": {
+            "timed_program_ids": ["2", "1"],
+            "counters": {"periodic_counter_names": ["COUNT_MXU_BUSY_0"]},
+            "programs": [
+                {
+                    "program_id": "1",
+                    "timed_self_us": 2.5,
+                    "marker_counts": {"pallas_call": 9},
+                    "hlo": {
+                        "path": "/saved/jit_main(1).hlo_proto.pb",
+                        "size_bytes": 123,
+                        "sha256": "a" * 64,
+                    },
+                }
+            ],
+        }
+    }
+    replayed = json.loads(json.dumps(first))
+    replayed["capture"]["timed_program_ids"] = ["1", "2"]
+    replayed["capture"]["programs"][0]["hlo"]["path"] = "/replayed/jit_main(1).hlo_proto.pb"
+    replayed["capture"]["programs"][0]["hlo"]["sha256"] = "b" * 64
+    assert _canonical_assessment(first) == _canonical_assessment(replayed)
+
+    replayed["capture"]["programs"][0]["marker_counts"]["pallas_call"] = 8
+    assert _canonical_assessment(first) != _canonical_assessment(replayed)
 
 
 def test_manifest_includes_nested_search_receipt_but_not_its_own(tmp_path: Path) -> None:
