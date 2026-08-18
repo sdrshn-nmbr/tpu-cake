@@ -59,6 +59,15 @@ from tpu_cake.seqax_surface_profile import (
     run_seqax_surface_profile_phase,
     validate_seqax_surface_profile_receipt,
 )
+from tpu_cake.seqax_weight_placement import (
+    SeqaxWeightPlacementContract,
+    SeqaxWeightPlacementName,
+)
+from tpu_cake.seqax_weight_placement_runner import (
+    probe_weight_placement_memory,
+    run_seqax_weight_placement,
+    validate_seqax_weight_placement,
+)
 from tpu_cake.workloads import (
     inkling_fused_rpa_experiment,
     inkling_rpa_experiment,
@@ -151,6 +160,21 @@ def _parser() -> argparse.ArgumentParser:
     verify_seqax_pallas_search = commands.add_parser("verify-seqax-physical-pallas-search")
     verify_seqax_pallas_search.add_argument("run_root", type=Path)
     verify_seqax_pallas_search.add_argument("--contract", required=True, type=Path)
+
+    search_seqax_weight_placement = commands.add_parser("search-seqax-weight-placement")
+    search_seqax_weight_placement.add_argument("--contract", required=True, type=Path)
+    search_seqax_weight_placement.add_argument("--output-dir", required=True, type=Path)
+
+    verify_seqax_weight_placement = commands.add_parser("verify-seqax-weight-placement")
+    verify_seqax_weight_placement.add_argument("run_root", type=Path)
+    verify_seqax_weight_placement.add_argument("--contract", required=True, type=Path)
+
+    probe_seqax_weight_memory = commands.add_parser("probe-seqax-weight-placement-memory")
+    probe_seqax_weight_memory.add_argument(
+        "--candidate",
+        required=True,
+        choices=tuple(SeqaxWeightPlacementName),
+    )
 
     diagnose_seqax_pallas = commands.add_parser("diagnose-seqax-physical-pallas")
     diagnose_seqax_pallas.add_argument("--search-root", required=True, type=Path)
@@ -330,9 +354,7 @@ def main() -> None:
         if args.search_root is None:
             receipt = build_fused_rpa_receipt(args.run_root)
         else:
-            contract = RpaSearchContract.model_validate_json(
-                args.search_contract.read_text()
-            )
+            contract = RpaSearchContract.model_validate_json(args.search_contract.read_text())
             receipt = build_search_bound_fused_rpa_receipt(
                 args.run_root,
                 args.search_root,
@@ -345,10 +367,7 @@ def main() -> None:
     elif args.command == "verify-rpa-search":
         contract = RpaSearchContract.model_validate_json(args.contract.read_text())
         result = validate_rpa_search_result(args.run_root, contract)
-        print(
-            f"RPA_SEARCH_ACCEPTED winner={result.winner or 'none'} "
-            f"runs={len(result.runs)}"
-        )
+        print(f"RPA_SEARCH_ACCEPTED winner={result.winner or 'none'} runs={len(result.runs)}")
         code = 0
     elif args.command == "run-seqax-forward":
         result = run_seqax_forward(args.output_dir, mode=RunMode(args.mode))
@@ -394,6 +413,24 @@ def main() -> None:
             f"primitive_cases={len(result.primitive_observations)}"
         )
         code = 0
+    elif args.command == "search-seqax-weight-placement":
+        contract = SeqaxWeightPlacementContract.model_validate_json(args.contract.read_text())
+        result = run_seqax_weight_placement(args.output_dir, contract)
+        print(result.model_dump_json(indent=2))
+        code = 0
+    elif args.command == "verify-seqax-weight-placement":
+        contract = SeqaxWeightPlacementContract.model_validate_json(args.contract.read_text())
+        result = validate_seqax_weight_placement(args.run_root, contract)
+        print(
+            "SEQAX_WEIGHT_PLACEMENT_ACCEPTED "
+            f"winner={result.winner or 'none'} candidates={len(result.candidates)} "
+            f"scope={result.correctness_scope}"
+        )
+        code = 0
+    elif args.command == "probe-seqax-weight-placement-memory":
+        observation = probe_weight_placement_memory(SeqaxWeightPlacementName(args.candidate))
+        print("SEQAX_WEIGHT_PLACEMENT_MEMORY_JSON=" + observation.model_dump_json())
+        code = 0
     elif args.command == "diagnose-seqax-physical-pallas":
         contract = SeqaxPallasSearchContract.model_validate_json(args.contract.read_text())
         receipt = run_seqax_pallas_incumbent_diagnostic(
@@ -430,9 +467,7 @@ def main() -> None:
         code = 0
     elif args.command == "verify-seqax-surface":
         root = args.run_root.resolve()
-        receipt = SeqaxSurfaceReceipt.model_validate_json(
-            (root / "receipt.json").read_text()
-        )
+        receipt = SeqaxSurfaceReceipt.model_validate_json((root / "receipt.json").read_text())
         validate_seqax_surface_receipt(receipt, root=root)
         verdict = "PROMOTED" if receipt.candidate_promoted else "RETAINED_BASELINE"
         print(

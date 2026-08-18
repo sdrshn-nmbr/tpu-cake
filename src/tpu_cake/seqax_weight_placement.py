@@ -70,6 +70,7 @@ class SeqaxWeightPlacementContract(BaseModel):
     baseline: SeqaxWeightPlacementName
     parameters: dict[str, int]
     correctness_seeds: tuple[int, ...] = Field(min_length=5)
+    expected_incumbent_cpu_oracle_passed: tuple[bool, ...] = Field(min_length=5)
     timing_seed: int
     cpu_oracle_replay_absolute_tolerance: float = Field(gt=0)
     warmup_iterations: int = Field(gt=0)
@@ -95,6 +96,14 @@ class SeqaxWeightPlacementContract(BaseModel):
             raise ValueError("Seqax weight-placement parameters are not canonical")
         if self.correctness_seeds != SEQAX_PALLAS_CORRECTNESS_SEEDS:
             raise ValueError("Seqax weight-placement correctness seeds are not canonical")
+        if self.expected_incumbent_cpu_oracle_passed != (
+            True,
+            True,
+            True,
+            False,
+            False,
+        ):
+            raise ValueError("Seqax weight-placement oracle verdict scope is not canonical")
         if self.timing_seed != SEQAX_PALLAS_TIMING_SEED:
             raise ValueError("Seqax weight-placement timing seed is not canonical")
         if self.cpu_oracle_replay_absolute_tolerance != 2e-6:
@@ -160,6 +169,17 @@ class SeqaxWeightResidencyObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     candidate: SeqaxWeightPlacementName
+    runtime: RuntimeIdentity
+    devices: tuple[SeqaxPallasDevice, ...] = Field(min_length=8, max_length=8)
+    distributed_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    physical_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
+    timing_input_sha256: tuple[str, ...] = Field(min_length=1)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     parameter_bytes_per_device: int = Field(gt=0)
     device_bytes_limit: tuple[int, ...] = Field(min_length=8, max_length=8)
     peak_bytes_in_use: tuple[int, ...] = Field(min_length=8, max_length=8)
@@ -173,6 +193,19 @@ class SeqaxWeightResidencyObservation(BaseModel):
             raise ValueError("Seqax weight residency must come from an isolated process")
         if any(value <= 0 for value in self.device_bytes_limit):
             raise ValueError("Seqax weight residency needs positive device limits")
+        if any(value <= 0 for value in self.peak_bytes_in_use):
+            raise ValueError("Seqax weight residency needs positive peak usage")
+        if any(value <= 0 for value in self.largest_allocation_bytes):
+            raise ValueError("Seqax weight residency needs positive allocation sizes")
+        if any(
+            largest > peak
+            for largest, peak in zip(
+                self.largest_allocation_bytes,
+                self.peak_bytes_in_use,
+                strict=True,
+            )
+        ):
+            raise ValueError("Seqax weight residency allocation exceeds peak usage")
         if any(value < self.parameter_bytes_per_device for value in self.peak_bytes_in_use):
             raise ValueError("Seqax weight residency peak cannot be below parameter residency")
         expected = all(
@@ -227,6 +260,18 @@ class SeqaxWeightPlacementResult(BaseModel):
     winner: str | None
     correctness_scope: str = Field(pattern=r"^incumbent-bit-exact$")
 
+    @model_validator(mode="after")
+    def evidence_sets_are_consistent(self) -> SeqaxWeightPlacementResult:
+        plan_names = tuple(value.candidate for value in self.plans)
+        memory_names = tuple(value.candidate for value in self.memory)
+        correctness_names = tuple(value.name for value in self.correctness)
+        statistics_names = tuple(value.name for value in self.candidates)
+        if len(set(plan_names)) != len(plan_names):
+            raise ValueError("Seqax weight-placement plans must be unique")
+        if not (plan_names == memory_names == correctness_names == statistics_names):
+            raise ValueError("Seqax weight-placement evidence candidate sets differ")
+        return self
+
 
 class SeqaxWeightPlacementReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -253,6 +298,7 @@ def default_seqax_weight_placement_contract(
         baseline=SeqaxWeightPlacementName.SHARDED,
         parameters=SEQAX_PALLAS_SEARCH_PARAMETERS,
         correctness_seeds=SEQAX_PALLAS_CORRECTNESS_SEEDS,
+        expected_incumbent_cpu_oracle_passed=(True, True, True, False, False),
         timing_seed=SEQAX_PALLAS_TIMING_SEED,
         cpu_oracle_replay_absolute_tolerance=2e-6,
         warmup_iterations=5,

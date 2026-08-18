@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tpu_cake.contracts import RuntimeIdentity
@@ -52,11 +54,25 @@ def test_weight_placement_contract_is_canonical_and_stable() -> None:
         SeqaxWeightPlacementName.SHARDED,
         SeqaxWeightPlacementName.EMBEDDING_MLP,
     )
+    assert first.expected_incumbent_cpu_oracle_passed == (
+        True,
+        True,
+        True,
+        False,
+        False,
+    )
     assert first.candidates[1].policy == SeqaxWeightPlacementPolicy(
         embedding=SeqaxDataAxisPlacement.REPLICATED,
         attention=SeqaxDataAxisPlacement.SHARDED,
         feed_forward=SeqaxDataAxisPlacement.REPLICATED,
     )
+
+
+def test_tracked_tpu7x_contract_is_the_canonical_external_authority() -> None:
+    path = Path(__file__).resolve().parents[1] / "contracts" / "seqax-weight-placement-tpu7x.json"
+    saved = SeqaxWeightPlacementContract.model_validate_json(path.read_text())
+
+    assert saved == default_seqax_weight_placement_contract(saved.runtime)
 
 
 def test_weight_placement_contract_rejects_policy_and_protocol_drift() -> None:

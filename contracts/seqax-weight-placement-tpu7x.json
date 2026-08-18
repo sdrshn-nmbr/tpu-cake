@@ -1,0 +1,78 @@
+{
+  "search_schema": "seqax-weight-data-placement-search-v1",
+  "identity_schema": "length-prefixed-v2",
+  "baseline": "sharded",
+  "parameters": {
+    "batch": 2,
+    "data_mesh": 2,
+    "feed_forward": 16,
+    "head": 4,
+    "key_value_heads": 4,
+    "layers": 1,
+    "model": 256,
+    "query_groups": 2,
+    "rope_max_timescale": 256,
+    "sequence": 1,
+    "tensor_mesh": 4,
+    "vocabulary": 16
+  },
+  "correctness_seeds": [
+    12655767603698703491,
+    16669898698845158318,
+    9762931224767261018,
+    8742091806033755611,
+    16432226195980612678
+  ],
+  "expected_incumbent_cpu_oracle_passed": [
+    true,
+    true,
+    true,
+    false,
+    false
+  ],
+  "timing_seed": 12655767603698703491,
+  "cpu_oracle_replay_absolute_tolerance": 2e-6,
+  "warmup_iterations": 5,
+  "measured_iterations": 5,
+  "rounds": 12,
+  "confirmation_rounds": 12,
+  "bootstrap_samples": 10000,
+  "minimum_practical_improvement": 0.03,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "require_isolated_memory_observation": true,
+  "candidates": [
+    {
+      "name": "sharded",
+      "policy": {
+        "embedding": "sharded",
+        "attention": "sharded",
+        "feed_forward": "sharded"
+      },
+      "expected_high_level_all_gathers": 14,
+      "expected_physical_collectives": 20,
+      "expected_stablehlo_all_gathers": 17,
+      "expected_parameter_bytes_per_device": 22912
+    },
+    {
+      "name": "embedding-mlp",
+      "policy": {
+        "embedding": "replicated",
+        "attention": "sharded",
+        "feed_forward": "replicated"
+      },
+      "expected_high_level_all_gathers": 9,
+      "expected_physical_collectives": 15,
+      "expected_stablehlo_all_gathers": 12,
+      "expected_parameter_bytes_per_device": 33152
+    }
+  ]
+}
