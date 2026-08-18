@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 from xdsl.dialects.builtin import IntegerType, ModuleOp, Signedness, bf16, f32, i1
@@ -51,9 +52,39 @@ class SeqaxNormScalePlacement(StrEnum):
     REPLICATED = "replicated"
 
 
-class SeqaxWeightDataPlacement(StrEnum):
+class SeqaxDataAxisPlacement(StrEnum):
     SHARDED = "sharded"
     REPLICATED = "replicated"
+
+
+@dataclass(frozen=True)
+class SeqaxWeightDataPlacement:
+    embedding: SeqaxDataAxisPlacement = SeqaxDataAxisPlacement.SHARDED
+    attention: SeqaxDataAxisPlacement = SeqaxDataAxisPlacement.SHARDED
+    feed_forward: SeqaxDataAxisPlacement = SeqaxDataAxisPlacement.SHARDED
+
+    def __post_init__(self) -> None:
+        for name in ("embedding", "attention", "feed_forward"):
+            value = getattr(self, name)
+            if not isinstance(value, SeqaxDataAxisPlacement):
+                raise TypeError(f"{name} must be a SeqaxDataAxisPlacement")
+
+
+SHARDED_WEIGHT_DATA = SeqaxWeightDataPlacement()
+REPLICATED_EMBEDDING_WEIGHT_DATA = SeqaxWeightDataPlacement(
+    embedding=SeqaxDataAxisPlacement.REPLICATED
+)
+REPLICATED_ATTENTION_WEIGHT_DATA = SeqaxWeightDataPlacement(
+    attention=SeqaxDataAxisPlacement.REPLICATED
+)
+REPLICATED_FEED_FORWARD_WEIGHT_DATA = SeqaxWeightDataPlacement(
+    feed_forward=SeqaxDataAxisPlacement.REPLICATED
+)
+REPLICATED_WEIGHT_DATA = SeqaxWeightDataPlacement(
+    embedding=SeqaxDataAxisPlacement.REPLICATED,
+    attention=SeqaxDataAxisPlacement.REPLICATED,
+    feed_forward=SeqaxDataAxisPlacement.REPLICATED,
+)
 
 
 def _source(line: int) -> SourceLocation:
@@ -75,7 +106,7 @@ def seqax_forward_schedule(
     tensor_mesh: int = 4,
     rope_max_timescale: int = 10_000,
     norm_scale_placement: SeqaxNormScalePlacement = SeqaxNormScalePlacement.SHARDED,
-    weight_data_placement: SeqaxWeightDataPlacement = SeqaxWeightDataPlacement.SHARDED,
+    weight_data_placement: SeqaxWeightDataPlacement = SHARDED_WEIGHT_DATA,
 ) -> ModuleOp:
     if not isinstance(norm_scale_placement, SeqaxNormScalePlacement):
         raise TypeError("norm_scale_placement must be a SeqaxNormScalePlacement")
@@ -103,8 +134,10 @@ def seqax_forward_schedule(
 
     def weight_sharding(
         other: dict[str, tuple[str, ...]],
+        *,
+        placement: SeqaxDataAxisPlacement,
     ) -> dict[str, tuple[str, ...]]:
-        if weight_data_placement is SeqaxWeightDataPlacement.REPLICATED:
+        if placement is SeqaxDataAxisPlacement.REPLICATED:
             return other
         return {"M": ("d",), **other}
 
@@ -113,9 +146,10 @@ def seqax_forward_schedule(
         value: SSAValue,
         result: DistributedTensorSpec,
         *,
+        placement: SeqaxDataAxisPlacement,
         source: SourceLocation,
     ) -> SSAValue:
-        if weight_data_placement is SeqaxWeightDataPlacement.REPLICATED:
+        if placement is SeqaxDataAxisPlacement.REPLICATED:
             return value
         return program.all_gather(value, result, source=source)
 
@@ -128,7 +162,10 @@ def seqax_forward_schedule(
     embedding = tensor(
         f32,
         (("V", vocabulary), ("M", model)),
-        sharding=weight_sharding({"V": ("t",)}),
+        sharding=weight_sharding(
+            {"V": ("t",)},
+            placement=weight_data_placement.embedding,
+        ),
     )
     layer_norm = tensor(
         f32,
@@ -144,7 +181,10 @@ def seqax_forward_schedule(
             ("K", key_value_heads),
             ("D", head),
         ),
-        sharding=weight_sharding({"K": ("t",)}),
+        sharding=weight_sharding(
+            {"K": ("t",)},
+            placement=weight_data_placement.attention,
+        ),
     )
     key_value_weights = tensor(
         f32,
@@ -155,13 +195,19 @@ def seqax_forward_schedule(
             ("K", key_value_heads),
             ("D", head),
         ),
-        sharding=weight_sharding({"K": ("t",)}),
+        sharding=weight_sharding(
+            {"K": ("t",)},
+            placement=weight_data_placement.attention,
+        ),
     )
     output_weights = query_weights
     feed_forward_weights = tensor(
         f32,
         (("Z", layers), ("M", model), ("F", feed_forward)),
-        sharding=weight_sharding({"F": ("t",)}),
+        sharding=weight_sharding(
+            {"F": ("t",)},
+            placement=weight_data_placement.feed_forward,
+        ),
     )
     final_layer_norm = tensor(
         f32,
@@ -210,7 +256,10 @@ def seqax_forward_schedule(
         tensor(
             bf16,
             (("V", vocabulary), ("M", model)),
-            sharding=weight_sharding({"V": ("t",)}),
+            sharding=weight_sharding(
+                {"V": ("t",)},
+                placement=weight_data_placement.embedding,
+            ),
         ),
         source=_source(137),
     )
@@ -222,6 +271,7 @@ def seqax_forward_schedule(
             (("V", vocabulary), ("M", model)),
             sharding={"V": ("t",)},
         ),
+        placement=weight_data_placement.embedding,
         source=_source(137),
     )
     embedded = builder.embedding_lookup(
@@ -302,7 +352,10 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
-                sharding=weight_sharding({"K": ("t",)}),
+                sharding=weight_sharding(
+                    {"K": ("t",)},
+                    placement=weight_data_placement.attention,
+                ),
             ),
             source=_source(164),
         )
@@ -314,6 +367,7 @@ def seqax_forward_schedule(
                 (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
                 sharding={"K": ("t",)},
             ),
+            placement=weight_data_placement.attention,
             source=_source(164),
         )
         query_f32 = body.einsum(
@@ -383,7 +437,10 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("KV", 2), ("M", model), ("K", key_value_heads), ("D", head)),
-                sharding=weight_sharding({"K": ("t",)}),
+                sharding=weight_sharding(
+                    {"K": ("t",)},
+                    placement=weight_data_placement.attention,
+                ),
             ),
             source=_source(167),
         )
@@ -400,6 +457,7 @@ def seqax_forward_schedule(
                 ),
                 sharding={"K": ("t",)},
             ),
+            placement=weight_data_placement.attention,
             source=_source(167),
         )
         key_values_f32 = body.einsum(
@@ -535,7 +593,10 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
-                sharding=weight_sharding({"K": ("t",)}),
+                sharding=weight_sharding(
+                    {"K": ("t",)},
+                    placement=weight_data_placement.attention,
+                ),
             ),
             source=_source(178),
         )
@@ -547,6 +608,7 @@ def seqax_forward_schedule(
                 (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
                 sharding={"K": ("t",)},
             ),
+            placement=weight_data_placement.attention,
             source=_source(178),
         )
         attention_partial = body.einsum(
@@ -620,7 +682,10 @@ def seqax_forward_schedule(
                 tensor(
                     bf16,
                     (("M", model), ("F", feed_forward)),
-                    sharding=weight_sharding({"F": ("t",)}),
+                    sharding=weight_sharding(
+                        {"F": ("t",)},
+                        placement=weight_data_placement.feed_forward,
+                    ),
                 ),
                 source=_source(line),
             )
@@ -632,6 +697,7 @@ def seqax_forward_schedule(
                     (("M", model), ("F", feed_forward)),
                     sharding={"F": ("t",)},
                 ),
+                placement=weight_data_placement.feed_forward,
                 source=_source(line),
             )
             result = body.einsum(
@@ -663,7 +729,10 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("M", model), ("F", feed_forward)),
-                sharding=weight_sharding({"F": ("t",)}),
+                sharding=weight_sharding(
+                    {"F": ("t",)},
+                    placement=weight_data_placement.feed_forward,
+                ),
             ),
             source=_source(194),
         )
@@ -675,6 +744,7 @@ def seqax_forward_schedule(
                 (("M", model), ("F", feed_forward)),
                 sharding={"F": ("t",)},
             ),
+            placement=weight_data_placement.feed_forward,
             source=_source(194),
         )
         feed_forward_partial = body.einsum(
@@ -752,7 +822,10 @@ def seqax_forward_schedule(
         tensor(
             bf16,
             (("V", vocabulary), ("M", model)),
-            sharding=weight_sharding({"V": ("t",)}),
+            sharding=weight_sharding(
+                {"V": ("t",)},
+                placement=weight_data_placement.embedding,
+            ),
         ),
         source=_source(206),
     )
@@ -764,6 +837,7 @@ def seqax_forward_schedule(
             (("V", vocabulary), ("M", model)),
             sharding={"V": ("t",)},
         ),
+        placement=weight_data_placement.embedding,
         source=_source(206),
     )
     logits = builder.einsum(

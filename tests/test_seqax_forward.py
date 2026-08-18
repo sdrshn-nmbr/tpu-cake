@@ -16,6 +16,10 @@ from tpu_cake.dtensor_interpreter import interpret_distributed_program
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError, lower_distributed_matmul
 from tpu_cake.workloads.seqax_forward import (
+    REPLICATED_ATTENTION_WEIGHT_DATA,
+    REPLICATED_EMBEDDING_WEIGHT_DATA,
+    REPLICATED_FEED_FORWARD_WEIGHT_DATA,
+    REPLICATED_WEIGHT_DATA,
     SEQAX_REVISION,
     SeqaxNormScalePlacement,
     SeqaxWeightDataPlacement,
@@ -144,11 +148,11 @@ def test_weight_data_replication_is_a_typed_communication_resource_choice() -> N
     sharded = seqax_forward_schedule(**parameters)
     replicated = seqax_forward_schedule(
         **parameters,
-        weight_data_placement=SeqaxWeightDataPlacement.REPLICATED,
+        weight_data_placement=REPLICATED_WEIGHT_DATA,
     )
     replicated_again = seqax_forward_schedule(
         **parameters,
-        weight_data_placement=SeqaxWeightDataPlacement.REPLICATED,
+        weight_data_placement=REPLICATED_WEIGHT_DATA,
     )
     sharded_program = next(
         operation for operation in sharded.walk() if isinstance(operation, ProgramOp)
@@ -159,6 +163,24 @@ def test_weight_data_replication_is_a_typed_communication_resource_choice() -> N
 
     assert len(tuple(operation for operation in sharded.walk() if isinstance(operation, AllGatherOp))) == 14
     assert len(tuple(operation for operation in replicated.walk() if isinstance(operation, AllGatherOp))) == 6
+    assert {
+        placement: sum(
+            isinstance(operation, AllGatherOp)
+            for operation in seqax_forward_schedule(
+                **parameters,
+                weight_data_placement=placement,
+            ).walk()
+        )
+        for placement in (
+            REPLICATED_EMBEDDING_WEIGHT_DATA,
+            REPLICATED_ATTENTION_WEIGHT_DATA,
+            REPLICATED_FEED_FORWARD_WEIGHT_DATA,
+        )
+    } == {
+        REPLICATED_EMBEDDING_WEIGHT_DATA: 12,
+        REPLICATED_ATTENTION_WEIGHT_DATA: 11,
+        REPLICATED_FEED_FORWARD_WEIGHT_DATA: 11,
+    }
     assert sharded_program.body.block.args[2].type.sharding_axes() == (("t",), ("d",))
     assert replicated_program.body.block.args[2].type.sharding_axes() == (("t",), ())
     assert sharded_program.body.block.args[3].type == replicated_program.body.block.args[3].type
@@ -174,6 +196,9 @@ def test_weight_data_replication_is_a_typed_communication_resource_choice() -> N
 
     with pytest.raises(TypeError, match="SeqaxWeightDataPlacement"):
         seqax_forward_schedule(**parameters, weight_data_placement="replicated")
+    for malformed in ("false", 1, None):
+        with pytest.raises(TypeError, match="embedding must be a SeqaxDataAxisPlacement"):
+            SeqaxWeightDataPlacement(embedding=malformed)
 
 
 def test_seqax_forward_uses_configured_rope_timescale_and_source_locations() -> None:

@@ -21,8 +21,11 @@ from tpu_cake.seqax_pallas_lowering import (
 from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import (
+    REPLICATED_ATTENTION_WEIGHT_DATA,
+    REPLICATED_EMBEDDING_WEIGHT_DATA,
+    REPLICATED_FEED_FORWARD_WEIGHT_DATA,
+    REPLICATED_WEIGHT_DATA,
     SeqaxNormScalePlacement,
-    SeqaxWeightDataPlacement,
     seqax_forward_schedule,
 )
 
@@ -107,7 +110,7 @@ def test_replicated_weight_data_removes_exact_physical_gather_chains() -> None:
     sharded = seqax_forward_schedule(**parameters)
     replicated = seqax_forward_schedule(
         **parameters,
-        weight_data_placement=SeqaxWeightDataPlacement.REPLICATED,
+        weight_data_placement=REPLICATED_WEIGHT_DATA,
     )
     sharded_physical = lower_seqax_forward_to_physical(sharded).module
     replicated_physical = lower_seqax_forward_to_physical(replicated).module
@@ -122,6 +125,26 @@ def test_replicated_weight_data_removes_exact_physical_gather_chains() -> None:
         lower_seqax_physical_to_pallas(replicated, replicated_physical).pallas_region_count
         == 9
     )
+    assert {
+        placement: sum(
+            isinstance(operation, CollectiveOp)
+            for operation in lower_seqax_forward_to_physical(
+                seqax_forward_schedule(
+                    **parameters,
+                    weight_data_placement=placement,
+                )
+            ).module.walk()
+        )
+        for placement in (
+            REPLICATED_EMBEDDING_WEIGHT_DATA,
+            REPLICATED_ATTENTION_WEIGHT_DATA,
+            REPLICATED_FEED_FORWARD_WEIGHT_DATA,
+        )
+    } == {
+        REPLICATED_EMBEDDING_WEIGHT_DATA: 18,
+        REPLICATED_ATTENTION_WEIGHT_DATA: 17,
+        REPLICATED_FEED_FORWARD_WEIGHT_DATA: 17,
+    }
 
 
 def test_pallas_plan_rejects_a_noncanonical_physical_schedule() -> None:
