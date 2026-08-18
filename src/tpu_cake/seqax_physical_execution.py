@@ -100,6 +100,9 @@ def _vector_compute(
     input_types = tuple(value.type for value in operation.inputs)
     assert all(isinstance(value, BufferType) for value in input_types)
     typed_inputs = tuple(value for value in input_types if isinstance(value, BufferType))
+    strict_materialization = operation.materialization is not None
+    if strict_materialization:
+        values = tuple(jax.lax.optimization_barrier(value) for value in values)
 
     if function in {"cast", "rename_dimension"}:
         result = values[0]
@@ -208,6 +211,8 @@ def _vector_compute(
             f"unsupported physical vector function {function!r}"
         )
     result = jnp.asarray(result, dtype=_dtype(output_type))
+    if strict_materialization:
+        result = jax.lax.optimization_barrier(result)
     if tuple(result.shape) != output_type.storage.get_shape():
         raise UnsupportedPhysicalExecutionError(
             f"physical {function} produced {tuple(result.shape)}, "

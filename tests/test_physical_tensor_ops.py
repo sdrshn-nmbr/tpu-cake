@@ -11,6 +11,7 @@ from tpu_cake.dialects.tpu_schedule import (
     MxuEinsumOp,
     Ownership,
     VectorComputeOp,
+    VectorMaterialization,
 )
 from tpu_cake.frontend import KernelBuilder, buffer
 from tpu_cake.seqax_physical_execution import _vector_compute
@@ -245,6 +246,45 @@ def test_vector_compute_rejects_duplicate_configuration_keys() -> None:
 
     with pytest.raises(VerifyException, match="keys must be unique"):
         operation.verify()
+
+
+def test_vector_compute_strict_materialization_requires_bf16_silu() -> None:
+    bf16_source = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "bf16_source")
+    bf16_output = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "bf16_output")
+    strict_silu = VectorComputeOp(
+        (bf16_source,),
+        bf16_output,
+        stage=1,
+        function="silu",
+        materialization=VectorMaterialization.STRICT_TYPED,
+    )
+    strict_silu.verify()
+
+    f32_source = AllocOp(
+        _spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_source"
+    )
+    f32_output = AllocOp(
+        _spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_output"
+    )
+    wrong_dtype = VectorComputeOp(
+        (f32_source,),
+        f32_output,
+        stage=1,
+        function="silu",
+        materialization=VectorMaterialization.STRICT_TYPED,
+    )
+    wrong_function = VectorComputeOp(
+        (bf16_source, bf16_source),
+        bf16_output,
+        stage=1,
+        function="add",
+        materialization=VectorMaterialization.STRICT_TYPED,
+    )
+
+    with pytest.raises(VerifyException, match="requires BF16"):
+        wrong_dtype.verify()
+    with pytest.raises(VerifyException, match="only supported for SiLU"):
+        wrong_function.verify()
 
 
 def test_vector_compute_rejects_missing_slice_contract() -> None:

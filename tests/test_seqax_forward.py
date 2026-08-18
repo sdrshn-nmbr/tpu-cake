@@ -7,6 +7,8 @@ from xdsl.utils.exceptions import VerifyException
 from tpu_cake.dialects.distributed_tensor import (
     AllGatherOp,
     CastOp,
+    ElementwiseMaterialization,
+    ElementwiseOp,
     ProgramOp,
     RenameDimensionOp,
     RotaryEmbeddingOp,
@@ -27,6 +29,7 @@ from tpu_cake.workloads.seqax_forward import (
     REPLICATED_WEIGHT_DATA,
     SEQAX_REVISION,
     SeqaxNormScalePlacement,
+    SeqaxNumericalSemantics,
     SeqaxWeightDataPlacement,
     seqax_forward_schedule,
 )
@@ -62,6 +65,42 @@ def test_complete_seqax_forward_algebra_verifies_and_hashes_stably() -> None:
             "dtensor.slice": 2,
         }
     )
+
+
+def test_seqax_typed_bf16_semantics_bind_the_silu_materialization_boundary() -> None:
+    legacy = seqax_forward_schedule()
+    strict = seqax_forward_schedule(
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1
+    )
+    strict_again = seqax_forward_schedule(
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1
+    )
+    legacy_silu = tuple(
+        operation
+        for operation in legacy.walk()
+        if isinstance(operation, ElementwiseOp) and operation.function.data == "silu"
+    )
+    strict_silu = tuple(
+        operation
+        for operation in strict.walk()
+        if isinstance(operation, ElementwiseOp) and operation.function.data == "silu"
+    )
+
+    assert all(operation.materialization is None for operation in legacy_silu)
+    assert len(strict_silu) == 1
+    assert strict_silu[0].materialization is not None
+    assert (
+        strict_silu[0].materialization.data
+        is ElementwiseMaterialization.STRICT_TYPED
+    )
+    assert schedule_sha256(legacy) != schedule_sha256(strict)
+    assert schedule_sha256(strict) == schedule_sha256(strict_again)
+    assert schedule_sha256(
+        seqax_forward_schedule(**SEQAX_PALLAS_SEARCH_PARAMETERS)
+    ) == "7329886614acbc40053590195455a41ba0779247274f9a27ba6c0f999e5f650b"
+
+    with pytest.raises(TypeError, match="SeqaxNumericalSemantics"):
+        seqax_forward_schedule(numerical_semantics="typed_bf16_v1")
 
 
 def test_seqax_forward_returns_sharded_vocabulary_logits() -> None:

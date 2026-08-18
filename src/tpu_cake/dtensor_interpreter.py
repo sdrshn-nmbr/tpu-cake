@@ -347,6 +347,9 @@ def _execute_block(
             result = _einsum(operation, environment)
         elif isinstance(operation, ElementwiseOp):
             values = tuple(environment[value] for value in operation.values)
+            strict_materialization = operation.materialization is not None
+            if strict_materialization:
+                values = tuple(jax.lax.optimization_barrier(value) for value in values)
             function = operation.function.data
             if function == "add":
                 result = values[0] + values[1]
@@ -361,6 +364,8 @@ def _execute_block(
             result_type = operation.result.type
             assert isinstance(result_type, DTensorType)
             result = _cast(result, result_type)
+            if strict_materialization:
+                result = jax.lax.optimization_barrier(result)
         elif isinstance(operation, LayerScanOp):
             captures = tuple(environment[value] for value in operation.captures)
             carries = captures[: operation.carry_count.data]

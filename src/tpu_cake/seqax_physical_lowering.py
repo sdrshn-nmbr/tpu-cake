@@ -17,6 +17,7 @@ from tpu_cake.dialects.distributed_tensor import (
     DTensorType,
     EinsumLocalOp,
     EinsumOp,
+    ElementwiseMaterialization,
     ElementwiseOp,
     EmbeddingLookupOp,
     LayerScanOp,
@@ -41,6 +42,7 @@ from tpu_cake.dialects.tpu_schedule import (
     LifetimeAttr,
     MemorySpace,
     Ownership,
+    VectorMaterialization,
 )
 from tpu_cake.frontend import (
     BufferSpec,
@@ -171,6 +173,7 @@ class _LoweringState:
         output_type: DTensorType,
         function: str,
         configuration: tuple[str, ...] = (),
+        materialization: VectorMaterialization | None = None,
     ) -> SSAValue:
         output = self.allocate(output_type, operation)
         scheduled = self.builder.vector_compute(
@@ -180,6 +183,7 @@ class _LoweringState:
             function=function,
             configuration=configuration,
             pending_reduction_axes=tuple(output_type.pending_reductions()),
+            materialization=materialization,
         )
         scheduled.location = operation.location
         self.stage += 1
@@ -428,6 +432,13 @@ class _LoweringState:
             result,
             function,
             configuration,
+            materialization=(
+                VectorMaterialization.STRICT_TYPED
+                if isinstance(operation, ElementwiseOp)
+                and operation.materialization is not None
+                and operation.materialization.data is ElementwiseMaterialization.STRICT_TYPED
+                else None
+            ),
         )
 
     def lower_block(self, block: Block) -> tuple[SSAValue, ...]:

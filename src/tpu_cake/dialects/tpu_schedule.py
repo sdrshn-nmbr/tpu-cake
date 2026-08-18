@@ -17,6 +17,7 @@ from xdsl.dialects.builtin import (
     StringAttr,
 )
 from xdsl.ir import (
+    Attribute,
     Block,
     Dialect,
     EnumAttribute,
@@ -66,6 +67,10 @@ class CollectiveKind(StrEnum):
     REDUCE_SCATTER = "reduce_scatter"
 
 
+class VectorMaterialization(StrEnum):
+    STRICT_TYPED = "strict_typed"
+
+
 @irdl_attr_definition
 class MemorySpaceAttr(EnumAttribute[MemorySpace], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.memory_space"
@@ -79,6 +84,13 @@ class OwnershipAttr(EnumAttribute[Ownership], SpacedOpaqueSyntaxAttribute):
 @irdl_attr_definition
 class CollectiveKindAttr(EnumAttribute[CollectiveKind], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.collective_kind"
+
+
+@irdl_attr_definition
+class VectorMaterializationAttr(
+    EnumAttribute[VectorMaterialization], SpacedOpaqueSyntaxAttribute
+):
+    name = "tpu_schedule.vector_materialization"
 
 
 @irdl_attr_definition
@@ -1172,6 +1184,7 @@ class VectorComputeOp(IRDLOperation):
     function = prop_def(StringAttr)
     configuration = prop_def(ArrayAttr[StringAttr])
     pending_reduction_axes = prop_def(ArrayAttr[StringAttr])
+    materialization = opt_prop_def(VectorMaterializationAttr)
 
     def __init__(
         self,
@@ -1182,17 +1195,21 @@ class VectorComputeOp(IRDLOperation):
         function: str,
         configuration: tuple[str, ...] = (),
         pending_reduction_axes: tuple[str, ...] = (),
+        materialization: VectorMaterialization | None = None,
     ) -> None:
+        properties: dict[str, Attribute] = {
+            "stage": IntAttr(stage),
+            "function": StringAttr(function),
+            "configuration": ArrayAttr(StringAttr(value) for value in sorted(configuration)),
+            "pending_reduction_axes": ArrayAttr(
+                StringAttr(value) for value in sorted(pending_reduction_axes)
+            ),
+        }
+        if materialization is not None:
+            properties["materialization"] = VectorMaterializationAttr(materialization)
         super().__init__(
             operands=[list(inputs), output],
-            properties={
-                "stage": IntAttr(stage),
-                "function": StringAttr(function),
-                "configuration": ArrayAttr(StringAttr(value) for value in sorted(configuration)),
-                "pending_reduction_axes": ArrayAttr(
-                    StringAttr(value) for value in sorted(pending_reduction_axes)
-                ),
-            },
+            properties=properties,
         )
 
     def verify_(self) -> None:
@@ -1276,6 +1293,11 @@ class VectorComputeOp(IRDLOperation):
             raise VerifyException("unary vector operations must preserve buffer type")
         if function in {"silu", "exp"} and not _is_float_buffer(output):
             raise VerifyException("nonlinear physical vector operations require floating point")
+        if self.materialization is not None:
+            if function != "silu":
+                raise VerifyException("strict typed materialization is only supported for SiLU")
+            if not isinstance(output.storage.element_type, BFloat16Type):
+                raise VerifyException("strict typed SiLU materialization requires BF16")
         if function in {"cast", "rename_dimension"}:
             source = inputs[0]
             assert isinstance(source, BufferType)
@@ -3124,6 +3146,7 @@ TPUSchedule = Dialect(
         MemorySpaceAttr,
         OwnershipAttr,
         CollectiveKindAttr,
+        VectorMaterializationAttr,
         ShapeAttr,
         ShardingAttr,
         LayoutAttr,

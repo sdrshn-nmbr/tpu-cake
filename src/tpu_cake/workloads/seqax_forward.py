@@ -18,6 +18,7 @@ from tpu_cake.contracts import (
     WorkloadContract,
     WorkloadStage,
 )
+from tpu_cake.dialects.distributed_tensor import ElementwiseMaterialization
 from tpu_cake.distributed_frontend import (
     DistributedProgramBuilder,
     DistributedTensorSpec,
@@ -55,6 +56,11 @@ class SeqaxNormScalePlacement(StrEnum):
 class SeqaxDataAxisPlacement(StrEnum):
     SHARDED = "sharded"
     REPLICATED = "replicated"
+
+
+class SeqaxNumericalSemantics(StrEnum):
+    LEGACY_FUSED_V0 = "legacy_fused_v0"
+    TYPED_BF16_V1 = "typed_bf16_v1"
 
 
 @dataclass(frozen=True)
@@ -111,11 +117,14 @@ def seqax_forward_schedule(
     rope_max_timescale: int = 10_000,
     norm_scale_placement: SeqaxNormScalePlacement = SeqaxNormScalePlacement.SHARDED,
     weight_data_placement: SeqaxWeightDataPlacement = SHARDED_WEIGHT_DATA,
+    numerical_semantics: SeqaxNumericalSemantics = SeqaxNumericalSemantics.LEGACY_FUSED_V0,
 ) -> ModuleOp:
     if not isinstance(norm_scale_placement, SeqaxNormScalePlacement):
         raise TypeError("norm_scale_placement must be a SeqaxNormScalePlacement")
     if not isinstance(weight_data_placement, SeqaxWeightDataPlacement):
         raise TypeError("weight_data_placement must be a SeqaxWeightDataPlacement")
+    if not isinstance(numerical_semantics, SeqaxNumericalSemantics):
+        raise TypeError("numerical_semantics must be a SeqaxNumericalSemantics")
     norm_scale_sharding = (
         {}
         if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED
@@ -719,6 +728,11 @@ def seqax_forward_schedule(
             gate,
             result=projected_bf16,
             function="silu",
+            materialization=(
+                ElementwiseMaterialization.STRICT_TYPED
+                if numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_V1
+                else None
+            ),
             source=_source(193),
         )
         feed_forward_value = body.elementwise(

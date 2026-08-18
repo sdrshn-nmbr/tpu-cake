@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -13,12 +14,22 @@ from xdsl.dialects.builtin import (
     StringAttr,
     f32,
 )
-from xdsl.ir import Attribute, Dialect, ParametrizedAttribute, Region, SSAValue, TypeAttribute
+from xdsl.ir import (
+    Attribute,
+    Dialect,
+    EnumAttribute,
+    ParametrizedAttribute,
+    Region,
+    SpacedOpaqueSyntaxAttribute,
+    SSAValue,
+    TypeAttribute,
+)
 from xdsl.irdl import (
     IRDLOperation,
     irdl_attr_definition,
     irdl_op_definition,
     operand_def,
+    opt_prop_def,
     prop_def,
     region_def,
     result_def,
@@ -28,6 +39,17 @@ from xdsl.irdl import (
 )
 from xdsl.traits import IsolatedFromAbove, IsTerminator
 from xdsl.utils.exceptions import VerifyException
+
+
+class ElementwiseMaterialization(StrEnum):
+    STRICT_TYPED = "strict_typed"
+
+
+@irdl_attr_definition
+class ElementwiseMaterializationAttr(
+    EnumAttribute[ElementwiseMaterialization], SpacedOpaqueSyntaxAttribute
+):
+    name = "dtensor.elementwise_materialization"
 
 
 @irdl_attr_definition
@@ -169,17 +191,22 @@ class ElementwiseOp(IRDLOperation):
     values = var_operand_def(DTensorType)
     result = result_def(DTensorType)
     function = prop_def(StringAttr)
+    materialization = opt_prop_def(ElementwiseMaterializationAttr)
 
     def __init__(
         self,
         values: tuple[SSAValue | IRDLOperation, ...],
         result_type: DTensorType,
         function: str,
+        materialization: ElementwiseMaterialization | None = None,
     ) -> None:
+        properties: dict[str, Attribute] = {"function": StringAttr(function)}
+        if materialization is not None:
+            properties["materialization"] = ElementwiseMaterializationAttr(materialization)
         super().__init__(
             operands=[list(values)],
             result_types=[result_type],
-            properties={"function": StringAttr(function)},
+            properties=properties,
         )
 
     def verify_(self) -> None:
@@ -208,6 +235,11 @@ class ElementwiseOp(IRDLOperation):
             result.element_type, (BFloat16Type, Float16Type, Float32Type)
         ):
             raise VerifyException("nonlinear elementwise functions require floating-point values")
+        if self.materialization is not None:
+            if self.function.data != "silu":
+                raise VerifyException("strict typed materialization is only supported for SiLU")
+            if not isinstance(result.element_type, BFloat16Type):
+                raise VerifyException("strict typed SiLU materialization requires BF16")
 
 
 @irdl_op_definition
@@ -1285,5 +1317,13 @@ DistributedTensor = Dialect(
         ScanYieldOp,
         ReturnOp,
     ],
-    [DimensionAttr, AxisListAttr, MeshAttr, ShardingAttr, PendingReductionsAttr, DTensorType],
+    [
+        ElementwiseMaterializationAttr,
+        DimensionAttr,
+        AxisListAttr,
+        MeshAttr,
+        ShardingAttr,
+        PendingReductionsAttr,
+        DTensorType,
+    ],
 )

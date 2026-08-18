@@ -9,7 +9,14 @@ import numpy as np
 import pytest
 from xdsl.dialects.builtin import bf16, f32
 
-from tpu_cake.dialects.tpu_schedule import AllocOp, CollectiveOp, MemorySpace, MxuEinsumOp
+from tpu_cake.dialects.tpu_schedule import (
+    AllocOp,
+    CollectiveOp,
+    MemorySpace,
+    MxuEinsumOp,
+    VectorComputeOp,
+    VectorMaterialization,
+)
 from tpu_cake.frontend import buffer, canonical_module_text
 from tpu_cake.seqax_pallas_lowering import (
     SEQAX_PALLAS_EXECUTION_SCHEMA,
@@ -27,6 +34,7 @@ from tpu_cake.workloads.seqax_forward import (
     REPLICATED_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_WEIGHT_DATA,
     SeqaxNormScalePlacement,
+    SeqaxNumericalSemantics,
     seqax_forward_schedule,
 )
 
@@ -82,6 +90,36 @@ def test_complete_seqax_physical_schedule_lowers_to_replayable_pallas_plan() -> 
     replayed = namespace["PLAN"]
     assert replayed.manifest() == plan.manifest()
     assert replayed.source_sha256() == hashlib.sha256(source.encode()).hexdigest()
+
+
+def test_typed_bf16_materialization_lowers_into_the_physical_schedule() -> None:
+    legacy = seqax_forward_schedule(**SMALL_SEQAX)
+    strict = seqax_forward_schedule(
+        **SMALL_SEQAX,
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+    )
+    legacy_physical = lower_seqax_forward_to_physical(legacy).module
+    strict_physical = lower_seqax_forward_to_physical(strict).module
+    legacy_silu = tuple(
+        operation
+        for operation in legacy_physical.walk()
+        if isinstance(operation, VectorComputeOp) and operation.function.data == "silu"
+    )
+    strict_silu = tuple(
+        operation
+        for operation in strict_physical.walk()
+        if isinstance(operation, VectorComputeOp) and operation.function.data == "silu"
+    )
+
+    assert all(operation.materialization is None for operation in legacy_silu)
+    assert len(strict_silu) == SMALL_SEQAX["layers"]
+    assert all(operation.materialization is not None for operation in strict_silu)
+    assert all(
+        operation.materialization.data is VectorMaterialization.STRICT_TYPED
+        for operation in strict_silu
+        if operation.materialization is not None
+    )
+    assert canonical_module_text(legacy_physical) != canonical_module_text(strict_physical)
 
 
 def test_replicated_norm_scales_remove_exact_physical_gather_chains() -> None:
@@ -167,6 +205,27 @@ def test_pallas_plan_rejects_a_noncanonical_physical_schedule() -> None:
     with pytest.raises(
         UnsupportedSeqaxPallasLoweringError,
         match="not the canonical lowering",
+    ):
+        replace(plan, canonical_physical_xdsl=mutated)._validated_modules()
+
+
+def test_pallas_plan_rejects_a_bypassed_typed_materialization_boundary() -> None:
+    distributed = seqax_forward_schedule(
+        **SMALL_SEQAX,
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    plan = lower_seqax_physical_to_pallas(distributed, physical)
+    property_text = (
+        ", materialization = "
+        "#tpu_schedule<vector_materialization strict_typed>"
+    )
+    mutated = plan.canonical_physical_xdsl.replace(property_text, "", 1)
+    assert mutated != plan.canonical_physical_xdsl
+
+    with pytest.raises(
+        UnsupportedSeqaxPallasLoweringError,
+        match="physical schedule hash mismatch",
     ):
         replace(plan, canonical_physical_xdsl=mutated)._validated_modules()
 
@@ -334,7 +393,8 @@ import numpy as np
 
 from tpu_cake.seqax_pallas_lowering import _einsum_tiles, lower_seqax_physical_to_pallas
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
-from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
+from tpu_cake.seqax_numerical import validate_strict_silu_stablehlo
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs, seqax_forward_reference
 
 parameters = {
@@ -353,7 +413,10 @@ parameters = {
 }
 devices = jax.devices("cpu")
 assert len(devices) == 8, len(devices)
-distributed = seqax_forward_schedule(**parameters)
+distributed = seqax_forward_schedule(
+    **parameters,
+    numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+)
 default_physical = lower_seqax_forward_to_physical(distributed).module
 tiles = tuple(
     (
@@ -377,6 +440,8 @@ assert namespace["PLAN"].manifest() == plan.manifest()
 executable, mesh = namespace["build"](interpret=True, devices=devices)
 inputs = seqax_forward_inputs(seed=9173, **parameters)
 arrays = tuple(jnp.asarray(value) for value in inputs)
+stablehlo = str(executable.lower(*arrays).compiler_ir("stablehlo"))
+validate_strict_silu_stablehlo(stablehlo, expected_count=parameters["layers"])
 (actual,) = executable(*arrays)
 actual.block_until_ready()
 expected = seqax_forward_reference(inputs, **parameters)

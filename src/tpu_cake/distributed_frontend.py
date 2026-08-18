@@ -16,6 +16,7 @@ from tpu_cake.dialects.distributed_tensor import (
     DTensorType,
     EinsumLocalOp,
     EinsumOp,
+    ElementwiseMaterialization,
     ElementwiseOp,
     EmbeddingLookupOp,
     LayerScanOp,
@@ -157,10 +158,17 @@ class DistributedProgramBuilder:
         *values: SSAValue,
         result: DistributedTensorSpec,
         function: str,
+        materialization: ElementwiseMaterialization | None = None,
         source: SourceLocation | None = None,
     ) -> SSAValue:
         operation = attach_source(
-            ElementwiseOp(tuple(values), result.to_type(), function), source
+            ElementwiseOp(
+                tuple(values),
+                result.to_type(),
+                function,
+                materialization,
+            ),
+            source,
         )
         assert isinstance(operation, ElementwiseOp)
         self.block.add_op(operation)

@@ -32,6 +32,7 @@ from tpu_cake.dialects.tpu_schedule import (
     ShardingAttr,
     TopologyAttr,
     VectorComputeOp,
+    VectorMaterialization,
     ViewOp,
     YieldOp,
 )
@@ -337,6 +338,7 @@ class KernelBuilder:
         function: str,
         configuration: tuple[str, ...] = (),
         pending_reduction_axes: tuple[str, ...] = (),
+        materialization: VectorMaterialization | None = None,
         source: SourceLocation | None = None,
     ) -> VectorComputeOp:
         operation = attach_source(
@@ -347,6 +349,7 @@ class KernelBuilder:
                 function=function,
                 configuration=configuration,
                 pending_reduction_axes=pending_reduction_axes,
+                materialization=materialization,
             ),
             source,
         )
