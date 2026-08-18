@@ -11,7 +11,10 @@ from tpu_cake.seqax_cost_model import (
     UnsupportedSeqaxCostModelError,
     estimate_seqax_forward,
 )
-from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxNormScalePlacement,
+    seqax_forward_schedule,
+)
 
 
 def _source() -> MetricSource:
@@ -171,6 +174,49 @@ def test_complete_seqax_forward_expands_layer_scan_and_emits_typed_bounds() -> N
     assert report.balance.maximum_to_minimum_work_ratio == Decimal(1)
     assert report.predicted_limiting_resource in {"compute", "hbm", "ici"}
     assert any("none of its values are device measurements" in item for item in report.omissions)
+
+
+def test_norm_scale_replication_accounts_for_memory_and_communication_tradeoff() -> None:
+    parameters = {
+        "batch": 2,
+        "sequence": 1,
+        "model": 256,
+        "vocabulary": 16,
+        "feed_forward": 16,
+        "query_groups": 2,
+        "key_value_heads": 4,
+        "head": 4,
+        "layers": 1,
+        "data_mesh": 2,
+        "tensor_mesh": 4,
+        "rope_max_timescale": 256,
+    }
+    sharded = estimate_seqax_forward(
+        seqax_forward_schedule(**parameters),
+        hardware=tpu7x_tensorcore_rates(),
+        source=_source(),
+    )
+    replicated = estimate_seqax_forward(
+        seqax_forward_schedule(
+            **parameters,
+            norm_scale_placement=SeqaxNormScalePlacement.REPLICATED,
+        ),
+        hardware=tpu7x_tensorcore_rates(),
+        source=_source(),
+    )
+
+    assert (
+        replicated.counts.minimum_hbm_read_bytes_per_device
+        - sharded.counts.minimum_hbm_read_bytes_per_device
+        == 2_688
+    )
+    assert (
+        sharded.counts.ici_bidirectional_bytes_per_device
+        - replicated.counts.ici_bidirectional_bytes_per_device
+        == 5_376
+    )
+    assert sharded.predicted_limiting_resource == "ici"
+    assert replicated.predicted_limiting_resource == "ici"
 
 
 def test_elementwise_without_an_explicit_work_convention_fails_closed() -> None:

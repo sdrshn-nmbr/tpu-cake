@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from xdsl.dialects.builtin import bf16, f32
 
-from tpu_cake.dialects.tpu_schedule import AllocOp, MemorySpace, MxuEinsumOp
+from tpu_cake.dialects.tpu_schedule import AllocOp, CollectiveOp, MemorySpace, MxuEinsumOp
 from tpu_cake.frontend import buffer, canonical_module_text
 from tpu_cake.seqax_pallas_lowering import (
     SEQAX_PALLAS_EXECUTION_SCHEMA,
@@ -20,7 +20,10 @@ from tpu_cake.seqax_pallas_lowering import (
 )
 from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
-from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxNormScalePlacement,
+    seqax_forward_schedule,
+)
 
 SMALL_SEQAX = {
     "batch": 2,
@@ -74,6 +77,28 @@ def test_complete_seqax_physical_schedule_lowers_to_replayable_pallas_plan() -> 
     replayed = namespace["PLAN"]
     assert replayed.manifest() == plan.manifest()
     assert replayed.source_sha256() == hashlib.sha256(source.encode()).hexdigest()
+
+
+def test_replicated_norm_scales_remove_exact_physical_gather_chains() -> None:
+    parameters = {**TILED_SEQAX, "sequence": 1, "layers": 1}
+    sharded = seqax_forward_schedule(**parameters)
+    replicated = seqax_forward_schedule(
+        **parameters,
+        norm_scale_placement=SeqaxNormScalePlacement.REPLICATED,
+    )
+    sharded_physical = lower_seqax_forward_to_physical(sharded).module
+    replicated_physical = lower_seqax_forward_to_physical(replicated).module
+
+    assert sum(isinstance(operation, CollectiveOp) for operation in sharded_physical.walk()) == 20
+    assert (
+        sum(isinstance(operation, CollectiveOp) for operation in replicated_physical.walk())
+        == 14
+    )
+    assert lower_seqax_physical_to_pallas(sharded, sharded_physical).pallas_region_count == 9
+    assert (
+        lower_seqax_physical_to_pallas(replicated, replicated_physical).pallas_region_count
+        == 9
+    )
 
 
 def test_pallas_plan_rejects_a_noncanonical_physical_schedule() -> None:

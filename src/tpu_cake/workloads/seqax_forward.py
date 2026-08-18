@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from enum import StrEnum
+
 from xdsl.dialects.builtin import IntegerType, ModuleOp, Signedness, bf16, f32, i1
 from xdsl.ir import SSAValue
 
@@ -44,6 +46,11 @@ SEQAX_FORWARD_INPUT_NAMES = (
 )
 
 
+class SeqaxNormScalePlacement(StrEnum):
+    SHARDED = "sharded"
+    REPLICATED = "replicated"
+
+
 def _source(line: int) -> SourceLocation:
     return SourceLocation(SEQAX_FORWARD_SOURCE, line, 1)
 
@@ -62,7 +69,30 @@ def seqax_forward_schedule(
     data_mesh: int = 2,
     tensor_mesh: int = 4,
     rope_max_timescale: int = 10_000,
+    norm_scale_placement: SeqaxNormScalePlacement = SeqaxNormScalePlacement.SHARDED,
 ) -> ModuleOp:
+    if not isinstance(norm_scale_placement, SeqaxNormScalePlacement):
+        raise TypeError("norm_scale_placement must be a SeqaxNormScalePlacement")
+    norm_scale_sharding = (
+        {}
+        if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED
+        else {"M": ("t", "d")}
+    )
+
+    def gather_norm_scale(
+        program: DistributedProgramBuilder,
+        value: SSAValue,
+        *,
+        source: SourceLocation,
+    ) -> SSAValue:
+        if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED:
+            return value
+        return program.all_gather(
+            value,
+            tensor(f32, (("M", model),)),
+            source=source,
+        )
+
     tokens = tensor(U32, (("B", batch), ("L", sequence)), sharding={"B": ("d",)})
     sequence_starts = tensor(
         i1,
@@ -77,7 +107,7 @@ def seqax_forward_schedule(
     layer_norm = tensor(
         f32,
         (("Z", layers), ("M", model)),
-        sharding={"M": ("t", "d")},
+        sharding=norm_scale_sharding,
     )
     query_weights = tensor(
         f32,
@@ -110,7 +140,7 @@ def seqax_forward_schedule(
     final_layer_norm = tensor(
         f32,
         (("M", model),),
-        sharding={"M": ("t", "d")},
+        sharding=norm_scale_sharding,
     )
     unembedding = embedding
     inputs = (
@@ -230,8 +260,7 @@ def seqax_forward_schedule(
             (("B", batch), ("L", sequence), ("M", model)),
             sharding={"B": ("d",)},
         )
-        norm_scale = tensor(f32, (("M", model),))
-        gathered_ln1 = body.all_gather(layer_ln1, norm_scale, source=_source(159))
+        gathered_ln1 = gather_norm_scale(body, layer_ln1, source=_source(159))
         gathered_x = body.all_gather(carry, full_model_activation, source=_source(160))
         normalized = body.rms_norm(
             gathered_x,
@@ -535,7 +564,7 @@ def seqax_forward_schedule(
             source=_source(181),
         )
 
-        gathered_ln2 = body.all_gather(layer_ln2, norm_scale, source=_source(184))
+        gathered_ln2 = gather_norm_scale(body, layer_ln2, source=_source(184))
         gathered_x = body.all_gather(carry, full_model_activation, source=_source(185))
         normalized = body.rms_norm(
             gathered_x,
@@ -670,9 +699,9 @@ def seqax_forward_schedule(
         ),
         source=_source(203),
     )
-    gathered_final_ln = builder.all_gather(
+    gathered_final_ln = gather_norm_scale(
+        builder,
         final_ln,
-        tensor(f32, (("M", model),)),
         source=_source(204),
     )
     normalized = builder.rms_norm(
