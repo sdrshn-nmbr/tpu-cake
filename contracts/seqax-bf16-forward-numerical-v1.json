@@ -1,0 +1,752 @@
+{
+  "schema_version": "bf16-forward-numerical-v1",
+  "policy": {
+    "schema_version": "bf16-forward-numerical-v1",
+    "numerical_semantics": "typed_bf16_v1",
+    "unit_roundoff": 0.00390625,
+    "cpu_relative_l2_units": 2.0,
+    "cpu_row_scaled_max_units": 4.0,
+    "cross_path_relative_l2_units": 0.5,
+    "cross_path_row_scaled_max_units": 1.0,
+    "row_scale_floor": 1.0,
+    "cpu_reference": "seqax_forward_canonical_reference",
+    "cpu_reference_quantization_decimals": 6,
+    "checkpoint_storage_dtype": "uint16",
+    "checkpoint_logical_dtype": "bfloat16",
+    "checkpoint_encoding": "bf16-bit-pattern-v1",
+    "require_float32_output": true,
+    "require_finite_output": true,
+    "require_exact_mathematical_silu": true
+  },
+  "scenarios": [
+    {
+      "name": "calibration-m256-b2-s1-l1",
+      "role": "calibration",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 16,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 256,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 1,
+        "tensor_mesh": 4,
+        "vocabulary": 16
+      },
+      "seeds": [
+        12655767603698703491,
+        16669898698845158318,
+        9762931224767261018,
+        8742091806033755611,
+        16432226195980612678
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            1
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            1
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            16,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            256,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            256,
+            16
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            256,
+            16
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            256,
+            16
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            16,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          1,
+          16
+        ],
+        "dtype": "float32"
+      },
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "bfloat16"
+        }
+      ]
+    },
+    {
+      "name": "m128-b2-s3-l2",
+      "role": "held_out",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 24,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 2,
+        "model": 128,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 3,
+        "tensor_mesh": 4,
+        "vocabulary": 32
+      },
+      "seeds": [
+        6042203553212274171,
+        10603397142569382053,
+        3026464508390727466,
+        1070316191617039669
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            3
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            3
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            32,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            2,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            2,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            2,
+            128,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            2,
+            2,
+            128,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            2,
+            128,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            2,
+            128,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            2,
+            128,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            2,
+            128,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            32,
+            128
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          3,
+          32
+        ],
+        "dtype": "float32"
+      },
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_gate",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_silu",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ]
+    },
+    {
+      "name": "m256-b4-s2-l1",
+      "role": "held_out",
+      "parameters": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 32,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 256,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 2,
+        "tensor_mesh": 4,
+        "vocabulary": 32
+      },
+      "seeds": [
+        8123625544957883741,
+        7174777708327241960,
+        5425376508671894203,
+        10421717126016701137
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            32,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            256,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            32,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          4,
+          2,
+          32
+        ],
+        "dtype": "float32"
+      },
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ]
+    },
+    {
+      "name": "m384-b2-s2-l1",
+      "role": "held_out",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 24,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 384,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 2,
+        "tensor_mesh": 4,
+        "vocabulary": 32
+      },
+      "seeds": [
+        6631100977370813797,
+        9250414000661891682,
+        6604608890550403218,
+        6763199503083722720
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            2
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            2
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            32,
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            384,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            384,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            384,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            384,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            384,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            384,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            32,
+            384
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          2,
+          32
+        ],
+        "dtype": "float32"
+      },
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ]
+    }
+  ],
+  "required_discriminators": [
+    "remove_input_barrier",
+    "remove_output_barrier",
+    "identity_silu",
+    "relu_silu",
+    "drop_reduction_collective",
+    "drop_embedding_shard",
+    "roll_model_shard",
+    "omit_mlp_term",
+    "swap_gate_up",
+    "localized_spike",
+    "distributed_drift",
+    "nonfinite_output",
+    "dtype_output",
+    "shape_output"
+  ],
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "acceptance_authority": "authenticated-runner-and-relocated-public-replay",
+  "require_instrumented_output_parity": true,
+  "require_discriminator_artifact_replay": true
+}
