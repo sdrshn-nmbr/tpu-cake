@@ -773,6 +773,109 @@ def _function_operations(function: ir.Operation) -> tuple[ir.Operation, ...]:
     return tuple(operations)
 
 
+def _require_single_result(operation: ir.Operation, expected_type: ir.Type) -> ir.Value:
+    if len(operation.results) != 1 or operation.results[0].type != expected_type:
+        raise ValueError("strict SiLU implementation has an invalid result type")
+    return operation.results[0]
+
+
+def _require_operands(operation: ir.Operation, expected: tuple[ir.Value, ...]) -> None:
+    if tuple(operation.operands) != expected:
+        raise ValueError("strict SiLU implementation has invalid operand wiring")
+
+
+def _require_attribute_names(operation: ir.Operation, expected: frozenset[str]) -> None:
+    observed = frozenset(str(name) for name in operation.attributes)
+    if observed != expected:
+        raise ValueError(
+            "strict SiLU implementation has invalid operation attributes "
+            f"operation={operation.name} expected={sorted(expected)} "
+            f"observed={sorted(observed)}"
+        )
+
+
+def _require_bf16_one(operation: ir.Operation) -> ir.Value:
+    _require_attribute_names(operation, frozenset({"value"}))
+    if len(operation.results) != 1 or not _is_bf16_tensor(operation.results[0]):
+        raise ValueError("strict SiLU implementation must use an exact BF16 one")
+    result = operation.results[0]
+    if ir.RankedTensorType(result.type).rank != 0:
+        raise ValueError("strict SiLU implementation must use an exact BF16 one")
+    value = ir.DenseElementsAttr(operation.attributes["value"])
+    if not value.is_splat or str(value.get_splat_value()) != "1.000000e+00 : bf16":
+        raise ValueError("strict SiLU implementation must use an exact BF16 one")
+    return result
+
+
+def _validate_silu_function(function: ir.Operation) -> None:
+    _require_attribute_names(
+        function,
+        frozenset({"function_type", "sym_name", "sym_visibility"}),
+    )
+    if str(function.attributes["sym_visibility"]) != '"private"':
+        raise ValueError("strict SiLU implementation must be private")
+    if len(function.regions) != 1 or len(function.regions[0].blocks) != 1:
+        raise ValueError("strict SiLU implementation must have one body block")
+    block = function.regions[0].blocks[0]
+    if len(block.arguments) != 1 or not _is_bf16_tensor(block.arguments[0]):
+        raise ValueError("strict SiLU implementation must take one BF16 tensor")
+    argument = block.arguments[0]
+    operations = tuple(operation.operation for operation in block.operations)
+    expected_names = (
+        "stablehlo.negate",
+        "stablehlo.exponential",
+        "stablehlo.constant",
+        "stablehlo.broadcast_in_dim",
+        "stablehlo.add",
+        "stablehlo.constant",
+        "stablehlo.broadcast_in_dim",
+        "stablehlo.divide",
+        "stablehlo.multiply",
+        "func.return",
+    )
+    if tuple(operation.name for operation in operations) != expected_names:
+        raise ValueError("strict SiLU implementation has an invalid operation sequence")
+
+    (
+        negate,
+        exponential,
+        one,
+        broadcast_one,
+        add,
+        numerator,
+        broadcast_numerator,
+        divide,
+        multiply,
+        result,
+    ) = operations
+    tensor_type = argument.type
+    for operation in (negate, exponential, add, divide, multiply, result):
+        _require_attribute_names(operation, frozenset())
+    for operation in (broadcast_one, broadcast_numerator):
+        _require_attribute_names(operation, frozenset({"broadcast_dimensions"}))
+    _require_operands(negate, (argument,))
+    negated = _require_single_result(negate, tensor_type)
+    _require_operands(exponential, (negated,))
+    exponentiated = _require_single_result(exponential, tensor_type)
+    one_value = _require_bf16_one(one)
+    _require_operands(broadcast_one, (one_value,))
+    broadcast_one_value = _require_single_result(broadcast_one, tensor_type)
+    if str(broadcast_one.attributes["broadcast_dimensions"]) != "array<i64>":
+        raise ValueError("strict SiLU implementation must scalar-broadcast BF16 one")
+    _require_operands(add, (broadcast_one_value, exponentiated))
+    denominator = _require_single_result(add, tensor_type)
+    numerator_value = _require_bf16_one(numerator)
+    _require_operands(broadcast_numerator, (numerator_value,))
+    broadcast_numerator_value = _require_single_result(broadcast_numerator, tensor_type)
+    if str(broadcast_numerator.attributes["broadcast_dimensions"]) != "array<i64>":
+        raise ValueError("strict SiLU implementation must scalar-broadcast BF16 one")
+    _require_operands(divide, (broadcast_numerator_value, denominator))
+    sigmoid = _require_single_result(divide, tensor_type)
+    _require_operands(multiply, (argument, sigmoid))
+    silu = _require_single_result(multiply, tensor_type)
+    _require_operands(result, (silu,))
+
+
 def validate_strict_silu_stablehlo(stablehlo: str, *, expected_count: int) -> None:
     if expected_count <= 0:
         raise ValueError("strict SiLU StableHLO expected count must be positive")
@@ -780,66 +883,90 @@ def validate_strict_silu_stablehlo(stablehlo: str, *, expected_count: int) -> No
         with mlir.make_ir_context():
             module = ir.Module.parse(stablehlo)
             module.operation.verify()
-            strict_chains = 0
-            for top_level in module.body:
-                if top_level.operation.name != "func.func":
+            silu_functions = tuple(
+                operation.operation
+                for operation in module.body
+                if operation.operation.name == "func.func"
+                and str(operation.operation.attributes["sym_name"]) == '"silu"'
+            )
+            if len(silu_functions) != 1:
+                raise ValueError("strict SiLU StableHLO must define exactly one @silu function")
+            _validate_silu_function(silu_functions[0])
+            functions = tuple(
+                operation.operation
+                for operation in module.body
+                if operation.operation.name == "func.func"
+            )
+            entry_functions = tuple(
+                function
+                for function in functions
+                if str(function.attributes["sym_name"]) == '"main"'
+                and str(function.attributes.get("sym_visibility")) == '"public"'
+            )
+            if len(entry_functions) != 1:
+                raise ValueError("strict SiLU StableHLO must define one public @main entry")
+            entry_function = entry_functions[0]
+            for function in functions:
+                if function is entry_function:
                     continue
-                operations = _function_operations(top_level.operation)
-                silu_calls = tuple(
-                    operation
-                    for operation in operations
-                    if operation.name == "func.call"
-                    and str(operation.attributes["callee"]) == "@silu"
-                )
-                for silu_call in silu_calls:
-                    if len(silu_call.operands) != 1 or len(silu_call.results) != 1:
-                        raise ValueError("strict SiLU call must have one input and one result")
-                    source = silu_call.operands[0]
-                    result = silu_call.results[0]
-                    if not _is_bf16_tensor(source) or not _is_bf16_tensor(result):
-                        raise ValueError("strict SiLU call must use BF16 tensors")
-                    input_barrier = _as_operation(source.owner)
-                    if input_barrier is None or input_barrier.name != (
-                        "stablehlo.optimization_barrier"
-                    ):
-                        raise ValueError("strict SiLU StableHLO is missing its input barrier")
-                    if tuple(_as_operation(use.owner) for use in source.uses) != (silu_call,):
-                        raise ValueError("strict SiLU input barrier must feed only its SiLU call")
-                    result_uses = tuple(result.uses)
-                    if (
-                        len(result_uses) != 1
-                        or _as_operation(result_uses[0].owner).name
-                        != "stablehlo.optimization_barrier"
-                    ):
-                        raise ValueError("strict SiLU result must feed only its result barrier")
-                    result_barrier = _as_operation(result_uses[0].owner)
-                    assert result_barrier is not None
-                    if len(result_barrier.results) != 1:
-                        raise ValueError(
-                            "strict SiLU StableHLO is missing its unique result barrier"
-                        )
-                    barrier_result = result_barrier.results[0]
-                    barrier_uses = tuple(barrier_result.uses)
-                    if (
-                        len(barrier_uses) != 1
-                        or _as_operation(barrier_uses[0].owner).name != "stablehlo.multiply"
-                    ):
-                        raise ValueError(
-                            "strict SiLU result barrier must feed exactly one BF16 multiply"
-                        )
-                    multiply = _as_operation(barrier_uses[0].owner)
-                    assert multiply is not None
-                    if not all(_is_bf16_tensor(value) for value in multiply.operands):
-                        raise ValueError(
-                            "strict SiLU result barrier must feed exactly one BF16 multiply"
-                        )
-                    if len(multiply.results) != 1 or not _is_bf16_tensor(multiply.results[0]):
-                        raise ValueError(
-                            "strict SiLU result barrier must feed exactly one BF16 multiply"
-                        )
-                    if not _result_reaches_function_return(multiply.results[0]):
-                        raise ValueError("strict SiLU BF16 multiply must reach its function return")
-                    strict_chains += 1
+                if any(
+                    operation.name == "func.call" and str(operation.attributes["callee"]) == "@silu"
+                    for operation in _function_operations(function)
+                ):
+                    raise ValueError("strict SiLU calls are permitted only in public @main")
+            strict_chains = 0
+            operations = _function_operations(entry_function)
+            silu_calls = tuple(
+                operation
+                for operation in operations
+                if operation.name == "func.call" and str(operation.attributes["callee"]) == "@silu"
+            )
+            for silu_call in silu_calls:
+                if len(silu_call.operands) != 1 or len(silu_call.results) != 1:
+                    raise ValueError("strict SiLU call must have one input and one result")
+                source = silu_call.operands[0]
+                result = silu_call.results[0]
+                if not _is_bf16_tensor(source) or not _is_bf16_tensor(result):
+                    raise ValueError("strict SiLU call must use BF16 tensors")
+                input_barrier = _as_operation(source.owner)
+                if input_barrier is None or input_barrier.name != (
+                    "stablehlo.optimization_barrier"
+                ):
+                    raise ValueError("strict SiLU StableHLO is missing its input barrier")
+                if tuple(_as_operation(use.owner) for use in source.uses) != (silu_call,):
+                    raise ValueError("strict SiLU input barrier must feed only its SiLU call")
+                result_uses = tuple(result.uses)
+                if (
+                    len(result_uses) != 1
+                    or _as_operation(result_uses[0].owner).name != "stablehlo.optimization_barrier"
+                ):
+                    raise ValueError("strict SiLU result must feed only its result barrier")
+                result_barrier = _as_operation(result_uses[0].owner)
+                assert result_barrier is not None
+                if len(result_barrier.results) != 1:
+                    raise ValueError("strict SiLU StableHLO is missing its unique result barrier")
+                barrier_result = result_barrier.results[0]
+                barrier_uses = tuple(barrier_result.uses)
+                if (
+                    len(barrier_uses) != 1
+                    or _as_operation(barrier_uses[0].owner).name != "stablehlo.multiply"
+                ):
+                    raise ValueError(
+                        "strict SiLU result barrier must feed exactly one BF16 multiply"
+                    )
+                multiply = _as_operation(barrier_uses[0].owner)
+                assert multiply is not None
+                if not all(_is_bf16_tensor(value) for value in multiply.operands):
+                    raise ValueError(
+                        "strict SiLU result barrier must feed exactly one BF16 multiply"
+                    )
+                if len(multiply.results) != 1 or not _is_bf16_tensor(multiply.results[0]):
+                    raise ValueError(
+                        "strict SiLU result barrier must feed exactly one BF16 multiply"
+                    )
+                if not _result_reaches_function_return(multiply.results[0]):
+                    raise ValueError("strict SiLU BF16 multiply must reach its function return")
+                strict_chains += 1
             if strict_chains != expected_count:
                 raise ValueError(
                     f"strict SiLU StableHLO expected {expected_count} calls, found {strict_chains}"

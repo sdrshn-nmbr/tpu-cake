@@ -40,6 +40,21 @@ from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_inputs,
 )
 
+_SILU_FUNCTION = """
+      func.func private @silu(%arg0: tensor<1x4xbf16>) -> tensor<1x4xbf16> {
+        %0 = stablehlo.negate %arg0 : tensor<1x4xbf16>
+        %1 = stablehlo.exponential %0 : tensor<1x4xbf16>
+        %cst = stablehlo.constant dense<1.000000e+00> : tensor<bf16>
+        %2 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<bf16>) -> tensor<1x4xbf16>
+        %3 = stablehlo.add %2, %1 : tensor<1x4xbf16>
+        %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<bf16>
+        %4 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<bf16>) -> tensor<1x4xbf16>
+        %5 = stablehlo.divide %4, %3 : tensor<1x4xbf16>
+        %6 = stablehlo.multiply %arg0, %5 : tensor<1x4xbf16>
+        return %6 : tensor<1x4xbf16>
+      }
+"""
+
 
 def _calibration_evidence(
     seed_index: int = 0,
@@ -105,18 +120,18 @@ def test_mathematical_silu_reference_rejects_non_bf16_or_nonfinite_input() -> No
 
 
 def test_strict_silu_stablehlo_requires_barrier_dataflow_into_multiply() -> None:
-    stablehlo = """module {
-      func.func private @silu(tensor<1x4xbf16>) -> tensor<1x4xbf16>
-      func.func @main(
+    stablehlo = f"""module {{
+      {_SILU_FUNCTION}
+      func.func public @main(
         %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
-      ) -> tensor<1x4xbf16> {
+      ) -> tensor<1x4xbf16> {{
         %1 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
         %2 = func.call @silu(%1) : (tensor<1x4xbf16>) -> tensor<1x4xbf16>
         %3 = stablehlo.optimization_barrier %2 : tensor<1x4xbf16>
         %4 = stablehlo.multiply %other, %3 : tensor<1x4xbf16>
         return %4 : tensor<1x4xbf16>
-      }
-    }"""
+      }}
+    }}"""
 
     validate_strict_silu_stablehlo(stablehlo, expected_count=1)
 
@@ -158,9 +173,9 @@ def test_strict_silu_stablehlo_requires_barrier_dataflow_into_multiply() -> None
         validate_strict_silu_stablehlo(stablehlo, expected_count=2)
 
 
-def test_strict_silu_stablehlo_scopes_ssa_values_per_function() -> None:
+def test_strict_silu_stablehlo_rejects_a_dead_private_decoy_chain() -> None:
     function = """
-      func.func @{name}(
+      func.func private @{name}(
         %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
       ) -> tensor<1x4xbf16> {{
         %0 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
@@ -170,16 +185,16 @@ def test_strict_silu_stablehlo_scopes_ssa_values_per_function() -> None:
         return %3 : tensor<1x4xbf16>
       }}
     """
-    stablehlo = (
-        """module {
-      func.func private @silu(tensor<1x4xbf16>) -> tensor<1x4xbf16>
-    """
-        + function.format(name="first")
-        + function.format(name="second")
-        + "}"
-    )
+    stablehlo = f"""module {{
+      {_SILU_FUNCTION}
+      {function.format(name="decoy")}
+      func.func public @main(%arg0: tensor<1x4xbf16>) -> tensor<1x4xbf16> {{
+        return %arg0 : tensor<1x4xbf16>
+      }}
+    }}"""
 
-    validate_strict_silu_stablehlo(stablehlo, expected_count=2)
+    with pytest.raises(ValueError, match="only in public @main"):
+        validate_strict_silu_stablehlo(stablehlo, expected_count=1)
 
 
 def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
@@ -561,7 +576,7 @@ def test_bf16_forward_policy_rejects_dtype_shape_and_checkpoint_failures() -> No
 
 def test_strict_silu_stablehlo_rejects_identity_and_relu_substitutions() -> None:
     identity = """module {
-      func.func @main(
+      func.func public @main(
         %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
       ) -> tensor<1x4xbf16> {
         %1 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
@@ -583,10 +598,49 @@ def test_strict_silu_stablehlo_rejects_identity_and_relu_substitutions() -> None
       }
     }"""
 
-    with pytest.raises(ValueError, match="expected 1 calls"):
+    with pytest.raises(ValueError, match="exactly one @silu"):
         validate_strict_silu_stablehlo(identity, expected_count=1)
-    with pytest.raises(ValueError, match="expected 1 calls"):
+    with pytest.raises(ValueError, match="exactly one @silu"):
         validate_strict_silu_stablehlo(relu, expected_count=1)
+
+
+def test_strict_silu_stablehlo_authenticates_the_silu_function_body() -> None:
+    stablehlo = f"""module {{
+      {_SILU_FUNCTION}
+      func.func @main(
+        %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
+      ) -> tensor<1x4xbf16> {{
+        %1 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
+        %2 = func.call @silu(%1) : (tensor<1x4xbf16>) -> tensor<1x4xbf16>
+        %3 = stablehlo.optimization_barrier %2 : tensor<1x4xbf16>
+        %4 = stablehlo.multiply %other, %3 : tensor<1x4xbf16>
+        return %4 : tensor<1x4xbf16>
+      }}
+    }}"""
+    identity = stablehlo.replace(
+        "%6 = stablehlo.multiply %arg0, %5 : tensor<1x4xbf16>\n"
+        "        return %6 : tensor<1x4xbf16>",
+        "return %arg0 : tensor<1x4xbf16>",
+    )
+    relu = stablehlo.replace(
+        "%0 = stablehlo.negate %arg0 : tensor<1x4xbf16>",
+        "%zero = stablehlo.constant dense<0.000000e+00> : tensor<1x4xbf16>\n"
+        "        %0 = stablehlo.maximum %arg0, %zero : tensor<1x4xbf16>",
+    )
+    relaxed_exponential = stablehlo.replace(
+        "%1 = stablehlo.exponential %0 : tensor<1x4xbf16>",
+        "%1 = stablehlo.exponential %0 "
+        "{result_accuracy = #stablehlo.result_accuracy<atol = 1.0, rtol = 1.0, "
+        "ulps = 1000000, mode = #stablehlo.result_accuracy_mode<TOLERANCE>>} "
+        ": tensor<1x4xbf16>",
+    )
+
+    with pytest.raises(ValueError, match="implementation"):
+        validate_strict_silu_stablehlo(identity, expected_count=1)
+    with pytest.raises(ValueError, match="implementation"):
+        validate_strict_silu_stablehlo(relu, expected_count=1)
+    with pytest.raises(ValueError, match="operation attributes"):
+        validate_strict_silu_stablehlo(relaxed_exponential, expected_count=1)
 
 
 def test_bf16_forward_collective_drop_mutation_fails_physical_verification() -> None:
