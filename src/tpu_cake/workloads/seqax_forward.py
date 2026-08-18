@@ -63,6 +63,11 @@ class SeqaxNumericalSemantics(StrEnum):
     TYPED_BF16_V1 = "typed_bf16_v1"
 
 
+class SeqaxFeedForwardFusion(StrEnum):
+    SEPARATE = "separate"
+    SILU_MULTIPLY = "silu_multiply"
+
+
 @dataclass(frozen=True)
 class SeqaxWeightDataPlacement:
     embedding: SeqaxDataAxisPlacement = SeqaxDataAxisPlacement.SHARDED
@@ -118,6 +123,7 @@ def seqax_forward_schedule(
     norm_scale_placement: SeqaxNormScalePlacement = SeqaxNormScalePlacement.SHARDED,
     weight_data_placement: SeqaxWeightDataPlacement = SHARDED_WEIGHT_DATA,
     numerical_semantics: SeqaxNumericalSemantics = SeqaxNumericalSemantics.LEGACY_FUSED_V0,
+    feed_forward_fusion: SeqaxFeedForwardFusion = SeqaxFeedForwardFusion.SEPARATE,
 ) -> ModuleOp:
     if not isinstance(norm_scale_placement, SeqaxNormScalePlacement):
         raise TypeError("norm_scale_placement must be a SeqaxNormScalePlacement")
@@ -125,10 +131,15 @@ def seqax_forward_schedule(
         raise TypeError("weight_data_placement must be a SeqaxWeightDataPlacement")
     if not isinstance(numerical_semantics, SeqaxNumericalSemantics):
         raise TypeError("numerical_semantics must be a SeqaxNumericalSemantics")
+    if not isinstance(feed_forward_fusion, SeqaxFeedForwardFusion):
+        raise TypeError("feed_forward_fusion must be a SeqaxFeedForwardFusion")
+    if (
+        feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY
+        and numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_V1
+    ):
+        raise ValueError("fused SiLU multiply does not implement strict BF16 materialization")
     norm_scale_sharding = (
-        {}
-        if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED
-        else {"M": ("t", "d")}
+        {} if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED else {"M": ("t", "d")}
     )
 
     def gather_norm_scale(
@@ -510,12 +521,8 @@ def seqax_forward_schedule(
             (("B", batch), ("L", sequence), ("K", key_value_heads), ("D", head)),
             sharding={"B": ("d",), "K": ("t",)},
         )
-        key = body.slice(
-            key_values, key_value, dimension="KV", index=0, source=_source(168)
-        )
-        value = body.slice(
-            key_values, key_value, dimension="KV", index=1, source=_source(168)
-        )
+        key = body.slice(key_values, key_value, dimension="KV", index=0, source=_source(168))
+        value = body.slice(key_values, key_value, dimension="KV", index=1, source=_source(168))
         renamed_key_value = tensor(
             bf16,
             (("B", batch), ("Klen", sequence), ("K", key_value_heads), ("D", head)),
@@ -658,9 +665,7 @@ def seqax_forward_schedule(
             destination_dimension="L",
             source=_source(180),
         )
-        attention_output = body.cast(
-            attention_output, activation, source=_source(180)
-        )
+        attention_output = body.cast(attention_output, activation, source=_source(180))
         carry = body.elementwise(
             carry,
             attention_output,
@@ -724,24 +729,33 @@ def seqax_forward_schedule(
 
         gate = project(layer_wgate, 189)
         up = project(layer_wup, 191)
-        gate = body.elementwise(
-            gate,
-            result=projected_bf16,
-            function="silu",
-            materialization=(
-                ElementwiseMaterialization.STRICT_TYPED
-                if numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_V1
-                else None
-            ),
-            source=_source(193),
-        )
-        feed_forward_value = body.elementwise(
-            gate,
-            up,
-            result=projected_bf16,
-            function="multiply",
-            source=_source(193),
-        )
+        if feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY:
+            feed_forward_value = body.elementwise(
+                gate,
+                up,
+                result=projected_bf16,
+                function="silu_multiply",
+                source=_source(193),
+            )
+        else:
+            gate = body.elementwise(
+                gate,
+                result=projected_bf16,
+                function="silu",
+                materialization=(
+                    ElementwiseMaterialization.STRICT_TYPED
+                    if numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_V1
+                    else None
+                ),
+                source=_source(193),
+            )
+            feed_forward_value = body.elementwise(
+                gate,
+                up,
+                result=projected_bf16,
+                function="multiply",
+                source=_source(193),
+            )
         layer_wdown = body.cast(
             layer_wdown,
             tensor(
@@ -788,9 +802,7 @@ def seqax_forward_schedule(
             scatter_dimensions=("M",),
             source=_source(196),
         )
-        feed_forward_output = body.cast(
-            feed_forward_output, activation, source=_source(196)
-        )
+        feed_forward_output = body.cast(feed_forward_output, activation, source=_source(196))
         return (
             body.elementwise(
                 carry,

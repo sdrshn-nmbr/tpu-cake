@@ -1219,6 +1219,7 @@ class VectorComputeOp(IRDLOperation):
             "add": 2,
             "multiply": 2,
             "silu": 1,
+            "silu_multiply": 2,
             "exp": 1,
         }
         required_configuration = {
@@ -1241,6 +1242,7 @@ class VectorComputeOp(IRDLOperation):
             "add": set(),
             "multiply": set(),
             "silu": set(),
+            "silu_multiply": set(),
             "exp": set(),
         }
         function = self.function.data
@@ -1279,13 +1281,13 @@ class VectorComputeOp(IRDLOperation):
         inputs = tuple(value.type for value in self.inputs)
         assert all(isinstance(value, BufferType) for value in inputs)
 
-        if function in {"add", "multiply"} and any(
+        if function in {"add", "multiply", "silu_multiply"} and any(
             not _same_physical_value_contract(value, output) for value in inputs
         ):
             raise VerifyException("binary vector operands must have identical buffer types")
         if function in {"silu", "exp"} and not _same_physical_value_contract(inputs[0], output):
             raise VerifyException("unary vector operations must preserve buffer type")
-        if function in {"silu", "exp"} and not _is_float_buffer(output):
+        if function in {"silu", "silu_multiply", "exp"} and not _is_float_buffer(output):
             raise VerifyException("nonlinear physical vector operations require floating point")
         if self.materialization is not None:
             if function != "silu":

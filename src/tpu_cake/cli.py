@@ -25,6 +25,12 @@ from tpu_cake.physical_cost_model import (
     validate_physical_kernel_report,
     write_physical_kernel_report,
 )
+from tpu_cake.physical_fusion import (
+    SeqaxSiluMultiplyFusionContract,
+    SeqaxSiluMultiplyFusionReport,
+    validate_seqax_silu_multiply_fusion_report,
+    write_seqax_silu_multiply_fusion_report,
+)
 from tpu_cake.receipt import validate_receipt
 from tpu_cake.rpa_bundle import build_fused_rpa_receipt, validate_fused_rpa_receipt
 from tpu_cake.rpa_receipt_search import (
@@ -126,6 +132,14 @@ def _parser() -> argparse.ArgumentParser:
     verify_physical_cost = commands.add_parser("verify-physical-cost")
     verify_physical_cost.add_argument("report", type=Path)
     verify_physical_cost.add_argument("--schedule", required=True, type=Path)
+
+    compare_physical_fusion = commands.add_parser("compare-seqax-silu-fusion")
+    compare_physical_fusion.add_argument("contract", type=Path)
+    compare_physical_fusion.add_argument("--output", required=True, type=Path)
+
+    verify_physical_fusion = commands.add_parser("verify-seqax-silu-fusion")
+    verify_physical_fusion.add_argument("report", type=Path)
+    verify_physical_fusion.add_argument("--contract", required=True, type=Path)
 
     inspect = commands.add_parser("inspect-profile")
     inspect.add_argument("capture", type=Path)
@@ -348,6 +362,40 @@ def _verify_physical_cost(report_path: Path, schedule_path: Path) -> int:
     return 0
 
 
+def _compare_physical_fusion(contract_path: Path, output: Path) -> int:
+    contract = SeqaxSiluMultiplyFusionContract.model_validate_json(contract_path.read_text())
+    report = write_seqax_silu_multiply_fusion_report(
+        output,
+        contract=contract,
+    )
+    print(
+        "SEQAX_SILU_FUSION_COMPARED "
+        f"contract_id={report.contract_id} "
+        f"scenarios={len(report.scenarios)} "
+        f"measured_winner={report.measured_performance_winner}"
+    )
+    return 0
+
+
+def _verify_physical_fusion(
+    report_path: Path,
+    contract_path: Path,
+) -> int:
+    report = SeqaxSiluMultiplyFusionReport.model_validate_json(report_path.read_text())
+    contract = SeqaxSiluMultiplyFusionContract.model_validate_json(contract_path.read_text())
+    validate_seqax_silu_multiply_fusion_report(
+        report,
+        contract=contract,
+    )
+    print(
+        "SEQAX_SILU_FUSION_REPLAYED "
+        f"contract_id={report.contract_id} "
+        f"scenarios={len(report.scenarios)} "
+        f"measured_winner={report.measured_performance_winner}"
+    )
+    return 0
+
+
 def _inspect_profile(capture: Path, contract_path: Path, output: Path | None) -> int:
     contract = ProfileExpectation.model_validate(tomllib.loads(contract_path.read_text()))
     assessment = assess_capture(capture, contract)
@@ -430,6 +478,10 @@ def main() -> None:
         code = _estimate_physical_cost(args.schedule, args.output)
     elif args.command == "verify-physical-cost":
         code = _verify_physical_cost(args.report, args.schedule)
+    elif args.command == "compare-seqax-silu-fusion":
+        code = _compare_physical_fusion(args.contract, args.output)
+    elif args.command == "verify-seqax-silu-fusion":
+        code = _verify_physical_fusion(args.report, args.contract)
     elif args.command == "inspect-profile":
         code = _inspect_profile(args.capture, args.contract, args.output)
     elif args.command == "render-workload":

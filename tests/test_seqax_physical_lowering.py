@@ -14,7 +14,7 @@ from tpu_cake.dialects.tpu_schedule import (
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.lowering import TPU7X_TARGET, UnsupportedLoweringError
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
-from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import SeqaxFeedForwardFusion, seqax_forward_schedule
 
 SMALL_SEQAX = {
     "batch": 2,
@@ -55,12 +55,39 @@ def test_complete_seqax_forward_lowers_to_canonical_physical_schedule() -> None:
     assert any(isinstance(operation, VectorComputeOp) for operation in kernel.body.block.ops)
 
 
+def test_fused_silu_multiply_changes_the_executed_physical_schedule() -> None:
+    separate = lower_seqax_forward_to_physical(seqax_forward_schedule(**SMALL_SEQAX)).module
+    fused = lower_seqax_forward_to_physical(
+        seqax_forward_schedule(
+            **SMALL_SEQAX,
+            feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY,
+        )
+    ).module
+    separate_functions = tuple(
+        operation.function.data
+        for operation in separate.walk()
+        if isinstance(operation, VectorComputeOp)
+    )
+    fused_functions = tuple(
+        operation.function.data
+        for operation in fused.walk()
+        if isinstance(operation, VectorComputeOp)
+    )
+
+    fused.verify()
+    assert separate_functions.count("silu") == SMALL_SEQAX["layers"]
+    assert separate_functions.count("multiply") == SMALL_SEQAX["layers"]
+    assert fused_functions.count("silu_multiply") == SMALL_SEQAX["layers"]
+    assert "silu" not in fused_functions
+    assert "multiply" not in fused_functions
+    assert len(fused_functions) + SMALL_SEQAX["layers"] == len(separate_functions)
+    assert schedule_sha256(fused) != schedule_sha256(separate)
+
+
 def test_scan_unrolling_derives_lifetimes_beyond_sixteen_layers() -> None:
     parameters = dict(SMALL_SEQAX)
     parameters["layers"] = 16
-    physical = lower_seqax_forward_to_physical(
-        seqax_forward_schedule(**parameters)
-    ).module
+    physical = lower_seqax_forward_to_physical(seqax_forward_schedule(**parameters)).module
 
     physical.verify()
     allocations = tuple(

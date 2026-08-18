@@ -260,12 +260,8 @@ def test_vector_compute_strict_materialization_requires_bf16_silu() -> None:
     )
     strict_silu.verify()
 
-    f32_source = AllocOp(
-        _spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_source"
-    )
-    f32_output = AllocOp(
-        _spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_output"
-    )
+    f32_source = AllocOp(_spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_source")
+    f32_output = AllocOp(_spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_output")
     wrong_dtype = VectorComputeOp(
         (f32_source,),
         f32_output,
@@ -433,12 +429,18 @@ def test_vector_compute_rejects_noninteger_embedding_indices() -> None:
         operation.verify()
 
 
-@pytest.mark.parametrize("function", ("silu", "exp"))
-def test_vector_compute_rejects_integer_nonlinear_operations(function: str) -> None:
+@pytest.mark.parametrize(
+    ("function", "input_count"),
+    (("silu", 1), ("exp", 1), ("silu_multiply", 2)),
+)
+def test_vector_compute_rejects_integer_nonlinear_operations(
+    function: str,
+    input_count: int,
+) -> None:
     source = AllocOp(_spec((2, 4), ("B", "M"), dtype=i32).to_type(), "source")
     output = AllocOp(_spec((2, 4), ("B", "M"), dtype=i32).to_type(), "output")
     operation = VectorComputeOp(
-        (source,),
+        (source,) * input_count,
         output,
         stage=1,
         function=function,

@@ -136,9 +136,7 @@ class DTensorType(ParametrizedAttribute, TypeAttribute):
         for dimension in self.dimensions:
             dimension.verify()
         self.pending.verify()
-        sharding_axes = {
-            axis for dimension in self.sharding_axes() for axis in dimension
-        }
+        sharding_axes = {axis for dimension in self.sharding_axes() for axis in dimension}
         overlap = sharding_axes & set(self.pending_reductions())
         if overlap:
             raise VerifyException(
@@ -214,7 +212,15 @@ class ElementwiseOp(IRDLOperation):
             raise VerifyException("elementwise operation needs at least one input")
         result = self.result.type
         assert isinstance(result, DTensorType)
-        if self.function.data not in {"add", "multiply", "silu", "gelu", "relu", "exp"}:
+        if self.function.data not in {
+            "add",
+            "multiply",
+            "silu",
+            "silu_multiply",
+            "gelu",
+            "relu",
+            "exp",
+        }:
             raise VerifyException("unsupported elementwise function")
         unary = {"silu", "gelu", "relu", "exp"}
         expected_arity = 1 if self.function.data in unary else 2
@@ -231,7 +237,7 @@ class ElementwiseOp(IRDLOperation):
                 )
         if self.function.data != "add":
             _require_fully_reduced(result)
-        if self.function.data in unary and not isinstance(
+        if self.function.data in {*unary, "silu_multiply"} and not isinstance(
             result.element_type, (BFloat16Type, Float16Type, Float32Type)
         ):
             raise VerifyException("nonlinear elementwise functions require floating-point values")
@@ -265,8 +271,7 @@ class CastOp(IRDLOperation):
             before.element_type, IntegerType
         )
         supported = supported and (
-            _is_float_type(after.element_type)
-            or isinstance(after.element_type, IntegerType)
+            _is_float_type(after.element_type) or isinstance(after.element_type, IntegerType)
         )
         if not supported or before.element_type == after.element_type:
             raise VerifyException("cast needs distinct supported numeric types")
@@ -305,9 +310,7 @@ class RmsNormOp(IRDLOperation):
         assert isinstance(scale, DTensorType)
         assert isinstance(result, DTensorType)
         _require_fully_reduced(value, scale, result)
-        if not all(
-            _is_float_type(tensor.element_type) for tensor in (value, scale, result)
-        ):
+        if not all(_is_float_type(tensor.element_type) for tensor in (value, scale, result)):
             raise VerifyException("RMSNorm requires floating-point tensors")
         if value.logical_shape() != result.logical_shape() or (
             value.sharding_axes() != result.sharding_axes()
@@ -364,16 +367,12 @@ class RotaryEmbeddingOp(IRDLOperation):
         if not _is_float_type(before.element_type) or not isinstance(
             after.element_type, Float32Type
         ):
-            raise VerifyException(
-                "rotary embedding must promote a floating-point tensor to f32"
-            )
+            raise VerifyException("rotary embedding must promote a floating-point tensor to f32")
         if (
             before.logical_shape() != after.logical_shape()
             or before.sharding_axes() != after.sharding_axes()
         ):
-            raise VerifyException(
-                "rotary embedding must preserve logical shape and sharding"
-            )
+            raise VerifyException("rotary embedding must preserve logical shape and sharding")
         shape = dict(before.logical_shape())
         sequence = self.sequence_dimension.data
         head = self.head_dimension.data
@@ -435,9 +434,7 @@ class SliceOp(IRDLOperation):
             or before.element_type != after.element_type
             or before.pending_reductions() != after.pending_reductions()
         ):
-            raise VerifyException(
-                "slice result must remove only its indexed unsharded dimension"
-            )
+            raise VerifyException("slice result must remove only its indexed unsharded dimension")
 
 
 @irdl_op_definition
@@ -472,18 +469,12 @@ class RenameDimensionOp(IRDLOperation):
         destination = self.destination_dimension.data
         before_shape = before.logical_shape()
         names = tuple(name for name, _ in before_shape)
-        if (
-            not source
-            or not destination
-            or source not in names
-            or destination in names
-        ):
+        if not source or not destination or source not in names or destination in names:
             raise VerifyException(
                 "dimension rename needs one present source and one fresh destination"
             )
         expected_shape = tuple(
-            (destination if name == source else name, size)
-            for name, size in before_shape
+            (destination if name == source else name, size) for name, size in before_shape
         )
         if (
             after.logical_shape() != expected_shape
@@ -526,9 +517,7 @@ class PackedCausalMaskOp(IRDLOperation):
         before, after = self.sequence_starts.type, self.result.type
         assert isinstance(before, DTensorType) and isinstance(after, DTensorType)
         _require_fully_reduced(before, after)
-        if not _is_boolean_type(before.element_type) or not _is_boolean_type(
-            after.element_type
-        ):
+        if not _is_boolean_type(before.element_type) or not _is_boolean_type(after.element_type):
             raise VerifyException("packed causal masks require boolean tensors")
         sequence = self.sequence_dimension.data
         query = self.query_dimension.data
@@ -540,14 +529,10 @@ class PackedCausalMaskOp(IRDLOperation):
         if before.sharding_axes()[sequence_index]:
             raise VerifyException("packed causal mask sequence dimension cannot be sharded")
         expected_shape = tuple(
-            (name, size)
-            for name, size in before.logical_shape()
-            if name != sequence
+            (name, size) for name, size in before.logical_shape() if name != sequence
         ) + ((query, before_shape[sequence]), (key, before_shape[sequence]))
         expected_sharding = tuple(
-            axes
-            for index, axes in enumerate(before.sharding_axes())
-            if index != sequence_index
+            axes for index, axes in enumerate(before.sharding_axes()) if index != sequence_index
         ) + ((), ())
         if after.logical_shape() != expected_shape or after.sharding_axes() != expected_sharding:
             raise VerifyException("packed causal mask result has the wrong shape or sharding")
@@ -596,9 +581,7 @@ class MaskedSoftmaxOp(IRDLOperation):
             raise VerifyException("masked softmax references an unknown dimension")
         if value_sharding[self.dimension.data]:
             raise VerifyException("masked softmax dimension cannot be sharded")
-        for (name, size), axes in zip(
-            mask.logical_shape(), mask.sharding_axes(), strict=True
-        ):
+        for (name, size), axes in zip(mask.logical_shape(), mask.sharding_axes(), strict=True):
             if value_shape.get(name) != size or value_sharding[name] != axes:
                 raise VerifyException(
                     "masked softmax mask dimensions must be a named subset of its values"
@@ -645,9 +628,7 @@ class ReduceLocalOp(IRDLOperation):
             raise VerifyException("local reduction references an unknown dimension")
         retained = tuple(
             (shape, sharding)
-            for shape, sharding in zip(
-                before.logical_shape(), before.sharding_axes(), strict=True
-            )
+            for shape, sharding in zip(before.logical_shape(), before.sharding_axes(), strict=True)
             if shape[0] not in dimensions
         )
         if after.logical_shape() != tuple(shape for shape, _ in retained):
@@ -697,9 +678,7 @@ class TransposeOp(IRDLOperation):
             raise VerifyException("transpose permutation must cover every dimension exactly once")
         if after.logical_shape() != tuple(before.logical_shape()[index] for index in permutation):
             raise VerifyException("transpose result has the wrong logical shape")
-        if after.sharding_axes() != tuple(
-            before.sharding_axes()[index] for index in permutation
-        ):
+        if after.sharding_axes() != tuple(before.sharding_axes()[index] for index in permutation):
             raise VerifyException("transpose result has the wrong sharding")
         if before.element_type != after.element_type:
             raise VerifyException("transpose cannot change element type")
@@ -899,9 +878,7 @@ class EinsumOp(IRDLOperation):
             operands=[lhs, rhs],
             result_types=[result_type],
             properties={
-                "contracting_dimensions": _string_array(
-                    tuple(sorted(contracting_dimensions))
-                ),
+                "contracting_dimensions": _string_array(tuple(sorted(contracting_dimensions))),
                 "accumulation_type": accumulation_type,
             },
         )
@@ -933,9 +910,7 @@ class EinsumOp(IRDLOperation):
         rhs_sharding = dict(zip(rhs_shape, rhs.sharding_axes(), strict=True))
         shared = set(lhs_shape) & set(rhs_shape)
         if not set(contractions) <= shared:
-            raise VerifyException(
-                "every einsum contracting dimension must exist in both operands"
-            )
+            raise VerifyException("every einsum contracting dimension must exist in both operands")
         for dimension in shared:
             if lhs_shape[dimension] != rhs_shape[dimension]:
                 raise VerifyException(f"einsum dimension {dimension} has unequal sizes")
@@ -953,26 +928,16 @@ class EinsumOp(IRDLOperation):
         expected_sharding: list[tuple[str, ...]] = []
         for dimension, size in result.logical_shape():
             source_shape = lhs_shape if dimension in lhs_shape else rhs_shape
-            source_sharding = (
-                lhs_sharding if dimension in lhs_sharding else rhs_sharding
-            )
+            source_sharding = lhs_sharding if dimension in lhs_sharding else rhs_sharding
             if source_shape[dimension] != size:
-                raise VerifyException(
-                    f"einsum result dimension {dimension} has the wrong size"
-                )
+                raise VerifyException(f"einsum result dimension {dimension} has the wrong size")
             expected_sharding.append(source_sharding[dimension])
         if result.sharding_axes() != tuple(expected_sharding):
             raise VerifyException(
                 "einsum result must preserve sharding on every retained dimension"
             )
-        pending_axes = {
-            axis
-            for dimension in contractions
-            for axis in lhs_sharding[dimension]
-        }
-        if result.pending_reductions() != {
-            axis: "sum" for axis in sorted(pending_axes)
-        }:
+        pending_axes = {axis for dimension in contractions for axis in lhs_sharding[dimension]}
+        if result.pending_reductions() != {axis: "sum" for axis in sorted(pending_axes)}:
             raise VerifyException("einsum result has incorrect pending reductions")
 
 
@@ -1101,14 +1066,10 @@ def _without_dimension(tensor: DTensorType, dimension: str) -> DTensorType:
         raise VerifyException("scan layer dimension must be locally replicated")
     return DTensorType(
         tensor.element_type,
-        ArrayAttr(
-            value for offset, value in enumerate(tensor.dimensions) if offset != index
-        ),
+        ArrayAttr(value for offset, value in enumerate(tensor.dimensions) if offset != index),
         ShardingAttr(
             ArrayAttr(
-                value
-                for offset, value in enumerate(tensor.sharding.dimensions)
-                if offset != index
+                value for offset, value in enumerate(tensor.sharding.dimensions) if offset != index
             )
         ),
         tensor.pending,
@@ -1168,9 +1129,7 @@ class LayerScanOp(IRDLOperation):
         carry_count = self.carry_count.data
         stacked_count = self.stacked_count.data
         if carry_count <= 0 or stacked_count <= 0 or self.trip_count.data <= 0:
-            raise VerifyException(
-                "layer scan needs positive carry, stacked-input, and trip counts"
-            )
+            raise VerifyException("layer scan needs positive carry, stacked-input, and trip counts")
         captures = tuple(self.captures)
         if carry_count + stacked_count > len(captures):
             raise VerifyException("layer scan capture segments exceed its inputs")

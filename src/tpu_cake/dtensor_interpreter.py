@@ -358,6 +358,8 @@ def _execute_block(
                 result = values[0] * values[1]
             elif function == "silu":
                 result = jax.nn.silu(values[0])
+            elif function == "silu_multiply":
+                result = jax.nn.silu(values[0]) * values[1]
             elif function == "exp":
                 result = jnp.exp(values[0])
             else:

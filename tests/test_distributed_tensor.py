@@ -334,7 +334,7 @@ def test_pending_axis_cannot_also_shard_a_retained_dimension() -> None:
 
 @pytest.mark.parametrize(
     ("function", "arity"),
-    (("add", 1), ("exp", 2), ("multiply", 3)),
+    (("add", 1), ("exp", 2), ("multiply", 3), ("silu_multiply", 1)),
 )
 def test_elementwise_signatures_are_strict(function: str, arity: int) -> None:
     value = tensor(bf16, (("B", 8),))

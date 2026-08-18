@@ -364,6 +364,9 @@ def _vector_counts(operation: VectorComputeOp) -> tuple[int, int, int, int]:
     elif function == "silu":
         scalar = 4 * elements
         special = elements
+    elif function == "silu_multiply":
+        scalar = 5 * elements
+        special = elements
     elif function == "exp":
         special = elements
     elif function == "rms_norm":

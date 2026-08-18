@@ -1,0 +1,13 @@
+{
+  "schema_version": "seqax-silu-multiply-fusion-v1",
+  "surface_id": "2c80e1856a985e674b14b1e94ff3cf50102ac8b246aeac17f5a01ad0acb3a1de",
+  "scenario_names": [
+    "tiny",
+    "wider",
+    "deeper"
+  ],
+  "target": "tpu7x",
+  "numerical_semantics": "legacy_fused_v0",
+  "baseline": "separate",
+  "candidate": "silu_multiply"
+}

@@ -28,6 +28,7 @@ from tpu_cake.workloads.seqax_forward import (
     REPLICATED_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_WEIGHT_DATA,
     SEQAX_REVISION,
+    SeqaxFeedForwardFusion,
     SeqaxNormScalePlacement,
     SeqaxNumericalSemantics,
     SeqaxWeightDataPlacement,
@@ -69,12 +70,8 @@ def test_complete_seqax_forward_algebra_verifies_and_hashes_stably() -> None:
 
 def test_seqax_typed_bf16_semantics_bind_the_silu_materialization_boundary() -> None:
     legacy = seqax_forward_schedule()
-    strict = seqax_forward_schedule(
-        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1
-    )
-    strict_again = seqax_forward_schedule(
-        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1
-    )
+    strict = seqax_forward_schedule(numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1)
+    strict_again = seqax_forward_schedule(numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1)
     legacy_silu = tuple(
         operation
         for operation in legacy.walk()
@@ -89,18 +86,50 @@ def test_seqax_typed_bf16_semantics_bind_the_silu_materialization_boundary() -> 
     assert all(operation.materialization is None for operation in legacy_silu)
     assert len(strict_silu) == 1
     assert strict_silu[0].materialization is not None
-    assert (
-        strict_silu[0].materialization.data
-        is ElementwiseMaterialization.STRICT_TYPED
-    )
+    assert strict_silu[0].materialization.data is ElementwiseMaterialization.STRICT_TYPED
     assert schedule_sha256(legacy) != schedule_sha256(strict)
     assert schedule_sha256(strict) == schedule_sha256(strict_again)
-    assert schedule_sha256(
-        seqax_forward_schedule(**SEQAX_PALLAS_SEARCH_PARAMETERS)
-    ) == "7329886614acbc40053590195455a41ba0779247274f9a27ba6c0f999e5f650b"
+    assert (
+        schedule_sha256(seqax_forward_schedule(**SEQAX_PALLAS_SEARCH_PARAMETERS))
+        == "7329886614acbc40053590195455a41ba0779247274f9a27ba6c0f999e5f650b"
+    )
 
     with pytest.raises(TypeError, match="SeqaxNumericalSemantics"):
         seqax_forward_schedule(numerical_semantics="typed_bf16_v1")
+
+
+def test_seqax_fused_silu_multiply_is_an_explicit_canonical_operation() -> None:
+    separate = seqax_forward_schedule()
+    fused = seqax_forward_schedule(feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY)
+    fused_again = seqax_forward_schedule(feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY)
+    separate_functions = tuple(
+        operation.function.data
+        for operation in separate.walk()
+        if isinstance(operation, ElementwiseOp)
+    )
+    fused_functions = tuple(
+        operation.function.data
+        for operation in fused.walk()
+        if isinstance(operation, ElementwiseOp)
+    )
+
+    assert "silu" in separate_functions
+    assert "multiply" in separate_functions
+    assert "silu_multiply" not in separate_functions
+    assert "silu_multiply" in fused_functions
+    assert "silu" not in fused_functions
+    assert "multiply" not in fused_functions
+    assert len(fused_functions) + 1 == len(separate_functions)
+    assert schedule_sha256(fused) != schedule_sha256(separate)
+    assert schedule_sha256(fused) == schedule_sha256(fused_again)
+
+    with pytest.raises(TypeError, match="SeqaxFeedForwardFusion"):
+        seqax_forward_schedule(feed_forward_fusion="silu_multiply")
+    with pytest.raises(ValueError, match="strict BF16 materialization"):
+        seqax_forward_schedule(
+            numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+            feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY,
+        )
 
 
 def test_seqax_forward_returns_sharded_vocabulary_logits() -> None:
@@ -121,7 +150,9 @@ def test_seqax_forward_preserves_source_weight_types_and_casts() -> None:
     assert isinstance(inputs[0].element_type, IntegerType)
     assert inputs[0].element_type.signedness.data is Signedness.UNSIGNED
     assert all(value.element_type == f32 for value in inputs[2:])
-    assert len(tuple(operation for operation in module.walk() if isinstance(operation, CastOp))) == 15
+    assert (
+        len(tuple(operation for operation in module.walk() if isinstance(operation, CastOp))) == 15
+    )
 
 
 def test_norm_scale_replication_is_a_typed_communication_resource_choice() -> None:
@@ -155,8 +186,18 @@ def test_norm_scale_replication_is_a_typed_communication_resource_choice() -> No
         operation for operation in replicated.walk() if isinstance(operation, ProgramOp)
     )
 
-    assert len(tuple(operation for operation in sharded.walk() if isinstance(operation, AllGatherOp))) == 14
-    assert len(tuple(operation for operation in replicated.walk() if isinstance(operation, AllGatherOp))) == 11
+    assert (
+        len(tuple(operation for operation in sharded.walk() if isinstance(operation, AllGatherOp)))
+        == 14
+    )
+    assert (
+        len(
+            tuple(
+                operation for operation in replicated.walk() if isinstance(operation, AllGatherOp)
+            )
+        )
+        == 11
+    )
     assert sharded_program.body.block.args[3].type.sharding_axes() == ((), ("t", "d"))
     assert replicated_program.body.block.args[3].type.sharding_axes() == ((), ())
     assert sharded_program.body.block.args[2].type == replicated_program.body.block.args[2].type
@@ -205,8 +246,18 @@ def test_weight_data_replication_is_a_typed_communication_resource_choice() -> N
         operation for operation in replicated.walk() if isinstance(operation, ProgramOp)
     )
 
-    assert len(tuple(operation for operation in sharded.walk() if isinstance(operation, AllGatherOp))) == 14
-    assert len(tuple(operation for operation in replicated.walk() if isinstance(operation, AllGatherOp))) == 6
+    assert (
+        len(tuple(operation for operation in sharded.walk() if isinstance(operation, AllGatherOp)))
+        == 14
+    )
+    assert (
+        len(
+            tuple(
+                operation for operation in replicated.walk() if isinstance(operation, AllGatherOp)
+            )
+        )
+        == 6
+    )
     assert {
         placement: sum(
             isinstance(operation, AllGatherOp)

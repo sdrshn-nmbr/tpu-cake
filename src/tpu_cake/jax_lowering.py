@@ -84,7 +84,7 @@ _SUPPORTED_OPERATIONS = (
     ScanYieldOp,
     ReturnOp,
 )
-_SUPPORTED_ELEMENTWISE_FUNCTIONS = {"add", "multiply", "silu", "exp"}
+_SUPPORTED_ELEMENTWISE_FUNCTIONS = {"add", "multiply", "silu", "silu_multiply", "exp"}
 _COLLECTIVE_OPERATIONS = (AllGatherOp, ReduceScatterOp, AllReduceOp)
 
 
