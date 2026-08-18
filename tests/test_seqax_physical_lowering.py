@@ -99,3 +99,23 @@ def test_pallas_accumulator_scratch_is_charged_to_vmem_capacity() -> None:
         match="VMEM capacity exceeded at stage 33: 2168 > 2040",
     ):
         lower_seqax_forward_to_physical(distributed, target=constrained).module.verify()
+
+
+def test_tpu_pallas_tiles_reject_compiler_illegal_partial_blocks() -> None:
+    distributed = seqax_forward_schedule(**SMALL_SEQAX)
+    default = lower_seqax_forward_to_physical(distributed).module
+    tiles = tuple(
+        (operation.tile_m.data, operation.tile_k.data, operation.tile_n.data)
+        for operation in default.walk()
+        if isinstance(operation, MxuEinsumOp)
+    )
+    first_m, first_k, first_n = tiles[0]
+
+    with pytest.raises(
+        VerifyException,
+        match="TPU Pallas tile M must span M or be divisible by 8",
+    ):
+        lower_seqax_forward_to_physical(
+            distributed,
+            einsum_tiles=((first_m // 2, first_k, first_n), *tiles[1:]),
+        )

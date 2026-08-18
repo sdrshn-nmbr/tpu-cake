@@ -36,6 +36,20 @@ SMALL_SEQAX = {
     "tensor_mesh": 4,
     "rope_max_timescale": 256,
 }
+TILED_SEQAX = {**SMALL_SEQAX, "model": 256}
+
+
+def _partial_tpu_tiles(
+    tiles: tuple[tuple[int, int, int], ...],
+) -> tuple[tuple[int, int, int], ...]:
+    return tuple(
+        (
+            m,
+            128 if k > 128 and k % 128 == 0 else k,
+            128 if n > 128 and n % 128 == 0 else n,
+        )
+        for m, k, n in tiles
+    )
 
 
 def _plan():
@@ -79,16 +93,14 @@ def test_pallas_plan_rejects_a_noncanonical_physical_schedule() -> None:
 
 
 def test_explicit_tiled_physical_schedule_is_canonical_and_replayable() -> None:
-    distributed = seqax_forward_schedule(**SMALL_SEQAX)
+    distributed = seqax_forward_schedule(**TILED_SEQAX)
     default = lower_seqax_forward_to_physical(distributed).module
-    tiles = tuple(
-        (max(1, m // 2), max(1, k // 2), max(1, n // 2))
-        for m, k, n in _einsum_tiles(default)
-    )
+    tiles = _partial_tpu_tiles(_einsum_tiles(default))
     tiled = lower_seqax_forward_to_physical(distributed, einsum_tiles=tiles).module
     plan = lower_seqax_physical_to_pallas(distributed, tiled)
 
     assert _einsum_tiles(tiled) == tiles
+    assert sum(left != right for left, right in zip(_einsum_tiles(default), tiles)) == 13
     assert plan.physical_schedule_sha256 != _plan().physical_schedule_sha256
     replayed_distributed, replayed_physical = plan._validated_modules()
     assert canonical_module_text(replayed_distributed) == plan.canonical_distributed_xdsl
@@ -140,15 +152,15 @@ def test_physical_schedule_contains_one_pallas_region_per_distributed_einsum() -
 
 def test_pallas_einsum_executes_declared_m_k_n_tiles() -> None:
     lhs_alloc = AllocOp(
-        buffer((2, 4, 4), ("B", "M", "K"), bf16, memory=MemorySpace.VMEM).to_type(),
+        buffer((2, 16, 256), ("B", "M", "K"), bf16, memory=MemorySpace.VMEM).to_type(),
         "lhs",
     )
     rhs_alloc = AllocOp(
-        buffer((2, 4, 6), ("B", "K", "N"), bf16, memory=MemorySpace.VMEM).to_type(),
+        buffer((2, 256, 256), ("B", "K", "N"), bf16, memory=MemorySpace.VMEM).to_type(),
         "rhs",
     )
     output_alloc = AllocOp(
-        buffer((2, 4, 6), ("B", "M", "N"), f32, memory=MemorySpace.VMEM).to_type(),
+        buffer((2, 16, 256), ("B", "M", "N"), f32, memory=MemorySpace.VMEM).to_type(),
         "output",
     )
     operation = MxuEinsumOp(
@@ -157,13 +169,13 @@ def test_pallas_einsum_executes_declared_m_k_n_tiles() -> None:
         output_alloc,
         stage=0,
         contracting_dimensions=("K",),
-        tile_m=2,
-        tile_k=2,
-        tile_n=3,
+        tile_m=8,
+        tile_k=128,
+        tile_n=128,
     )
     operation.verify()
-    lhs = jnp.arange(32, dtype=jnp.bfloat16).reshape(2, 4, 4) / 8
-    rhs = jnp.arange(48, dtype=jnp.bfloat16).reshape(2, 4, 6) / 8
+    lhs = jnp.arange(8192, dtype=jnp.bfloat16).reshape(2, 16, 256) / 1024
+    rhs = jnp.arange(131072, dtype=jnp.bfloat16).reshape(2, 256, 256) / 4096
 
     actual = _pallas_einsum(
         operation,
@@ -249,7 +261,7 @@ from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs, seqax_forward_
 parameters = {
     "batch": 2,
     "sequence": 4,
-    "model": 8,
+    "model": 256,
     "vocabulary": 16,
     "feed_forward": 16,
     "query_groups": 2,
@@ -265,12 +277,20 @@ assert len(devices) == 8, len(devices)
 distributed = seqax_forward_schedule(**parameters)
 default_physical = lower_seqax_forward_to_physical(distributed).module
 tiles = tuple(
-    (max(1, m // 2), max(1, k // 2), max(1, n // 2))
+    (
+        m,
+        128 if k > 128 and k % 128 == 0 else k,
+        128 if n > 128 and n % 128 == 0 else n,
+    )
     for m, k, n in _einsum_tiles(default_physical)
 )
 physical = lower_seqax_forward_to_physical(distributed, einsum_tiles=tiles).module
 plan = lower_seqax_physical_to_pallas(distributed, physical)
 assert _einsum_tiles(physical) == tiles
+assert sum(
+    left != right
+    for left, right in zip(_einsum_tiles(default_physical), tiles)
+) == 13
 source = plan.render_executable_source()
 namespace = {}
 exec(compile(source, "<seqax-physical-pallas>", "exec"), namespace)

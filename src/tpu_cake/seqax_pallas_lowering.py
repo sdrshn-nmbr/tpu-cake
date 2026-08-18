@@ -77,6 +77,29 @@ def _einsum_tiles(module: ModuleOp) -> tuple[tuple[int, int, int], ...]:
     )
 
 
+def _validate_tpu_tile_shape(
+    *,
+    m: int,
+    k: int,
+    n: int,
+    tile_m: int,
+    tile_k: int,
+    tile_n: int,
+) -> None:
+    if tile_m != m and tile_m % 8:
+        raise UnsupportedSeqaxPallasLoweringError(
+            "TPU Pallas tile M must span M or be divisible by 8"
+        )
+    if tile_k != k and tile_k % 128:
+        raise UnsupportedSeqaxPallasLoweringError(
+            "TPU Pallas tile K must span K or be divisible by 128"
+        )
+    if tile_n != n and tile_n % 128:
+        raise UnsupportedSeqaxPallasLoweringError(
+            "TPU Pallas tile N must span N or be divisible by 128"
+        )
+
+
 def _pallas_einsum(
     physical: MxuEinsumOp,
     lhs: jax.Array,
@@ -152,6 +175,14 @@ def _pallas_einsum(
         raise UnsupportedSeqaxPallasLoweringError(
             "physical MXU tiles must divide the flattened local contraction"
         )
+    _validate_tpu_tile_shape(
+        m=lhs_free_size,
+        k=contraction_size,
+        n=rhs_free_size,
+        tile_m=tile_m,
+        tile_k=tile_k,
+        tile_n=tile_n,
+    )
     k_steps = contraction_size // tile_k
 
     lhs_value = jnp.transpose(lhs, lhs_permutation).reshape(

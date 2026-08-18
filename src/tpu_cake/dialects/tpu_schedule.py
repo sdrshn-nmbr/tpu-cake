@@ -1145,6 +1145,20 @@ class MxuEinsumOp(IRDLOperation):
             raise VerifyException("MXU einsum tile dimensions must be positive")
         if m % tile[0] or k % tile[1] or n % tile[2]:
             raise VerifyException("MXU einsum tiles must divide flattened M, K, and N")
+        kernel = self.parent_op()
+        if isinstance(kernel, KernelOp) and kernel.target.data == "tpu7x":
+            if tile[0] != m and tile[0] % 8:
+                raise VerifyException(
+                    "TPU Pallas tile M must span M or be divisible by 8"
+                )
+            if tile[1] != k and tile[1] % 128:
+                raise VerifyException(
+                    "TPU Pallas tile K must span K or be divisible by 128"
+                )
+            if tile[2] != n and tile[2] % 128:
+                raise VerifyException(
+                    "TPU Pallas tile N must span N or be divisible by 128"
+                )
         if batch <= 0:
             raise VerifyException("MXU einsum batch extent must be positive")
 
