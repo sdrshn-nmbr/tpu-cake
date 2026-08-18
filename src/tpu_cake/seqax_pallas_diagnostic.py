@@ -820,7 +820,12 @@ def _validate_xprof_replay(saved_root: Path, replay_root: Path) -> None:
     for relative, saved_path in saved_paths.items():
         if relative == "derived_manifest.json" or relative.startswith("derived/"):
             continue
-        if _sha256(saved_path) != _sha256(replayed_paths[relative]):
+        replayed_path = replayed_paths[relative]
+        if relative == "op_profile.json":
+            matches = _canonical_op_profile(saved_path) == _canonical_op_profile(replayed_path)
+        else:
+            matches = _sha256(saved_path) == _sha256(replayed_path)
+        if not matches:
             raise ValueError(f"SEQAX_PALLAS_DIAGNOSTIC_XPROF_REPLAY_MISMATCH path={relative}")
     saved_derived = tuple(
         (value["path"], value["size_bytes"])
@@ -832,6 +837,28 @@ def _validate_xprof_replay(saved_root: Path, replay_root: Path) -> None:
     )
     if saved_derived != replayed_derived:
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_XPROF_DERIVED_REPLAY_MISMATCH")
+
+
+def _canonical_op_profile(path: Path) -> object:
+    def canonicalize(value: object) -> object:
+        if isinstance(value, dict):
+            canonical = {key: canonicalize(item) for key, item in value.items()}
+            children = canonical.get("children")
+            if isinstance(children, list):
+                canonical["children"] = sorted(
+                    children,
+                    key=lambda child: json.dumps(
+                        child,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            return canonical
+        if isinstance(value, list):
+            return [canonicalize(item) for item in value]
+        return value
+
+    return canonicalize(json.loads(path.read_text()))
 
 
 def _profile_files(profile_root: Path) -> tuple[Path, tuple[Path, ...]]:

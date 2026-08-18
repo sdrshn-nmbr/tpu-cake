@@ -391,6 +391,57 @@ def test_xprof_export_isolated_and_closed_world(
         _validate_xprof_replay(phase, replay)
 
 
+def test_op_profile_replay_ignores_only_recursive_sibling_order(tmp_path: Path) -> None:
+    saved = tmp_path / "saved" / "xprof"
+    replay = tmp_path / "replay" / "xprof"
+    saved.mkdir(parents=True)
+    replay.mkdir(parents=True)
+    profile = {
+        "dimensions": ["program", "category"],
+        "children": [
+            {
+                "name": "program",
+                "children": [
+                    {"name": "add", "selfTimePs": 11},
+                    {"name": "multiply", "selfTimePs": 17},
+                ],
+            },
+            {"name": "other", "children": [{"name": "copy", "selfTimePs": 5}]},
+        ],
+    }
+    reordered = {
+        **profile,
+        "children": [
+            profile["children"][1],
+            {
+                **profile["children"][0],
+                "children": list(reversed(profile["children"][0]["children"])),
+            },
+        ],
+    }
+    for root, value in ((saved, profile), (replay, reordered)):
+        (root / "op_profile.json").write_text(json.dumps(value))
+        (root / "derived_manifest.json").write_text("[]")
+    _validate_xprof_replay(saved.parent, replay.parent)
+
+    changed = json.loads((replay / "op_profile.json").read_text())
+    changed["children"][1]["children"][0]["selfTimePs"] = 12
+    (replay / "op_profile.json").write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="XPROF_REPLAY_MISMATCH path=op_profile.json"):
+        _validate_xprof_replay(saved.parent, replay.parent)
+
+    changed = reordered | {"dimensions": list(reversed(profile["dimensions"]))}
+    (replay / "op_profile.json").write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="XPROF_REPLAY_MISMATCH path=op_profile.json"):
+        _validate_xprof_replay(saved.parent, replay.parent)
+
+    duplicated = json.loads(json.dumps(reordered))
+    duplicated["children"].append(duplicated["children"][0])
+    (replay / "op_profile.json").write_text(json.dumps(duplicated))
+    with pytest.raises(ValueError, match="XPROF_REPLAY_MISMATCH path=op_profile.json"):
+        _validate_xprof_replay(saved.parent, replay.parent)
+
+
 def test_diagnostic_commands_are_public() -> None:
     parser = _parser()
     run = parser.parse_args(
