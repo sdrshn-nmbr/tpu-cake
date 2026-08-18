@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import tarfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +29,7 @@ from tpu_cake.seqax_pallas_diagnostic import (
     _attribution,
     _canonical_assessment,
     _export_xprof,
+    _replay_search_with_recorded_validator,
     _validate_counter_evidence,
     _validate_manifest,
     _validate_xprof,
@@ -407,3 +410,25 @@ def test_diagnostic_commands_are_public() -> None:
         parser.parse_args(["verify-seqax-physical-pallas-diagnostic", "run"]).command
         == "verify-seqax-physical-pallas-diagnostic"
     )
+
+
+def test_recorded_search_validator_is_cpu_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = BytesIO()
+    with tarfile.open(fileobj=archive, mode="w"):
+        pass
+    observed_environments = []
+
+    def fake_run(args, **kwargs):
+        if args[:2] == ["git", "archive"]:
+            return SimpleNamespace(stdout=archive.getvalue())
+        observed_environments.append(kwargs["env"])
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr("tpu_cake.seqax_pallas_diagnostic.subprocess.run", fake_run)
+    _replay_search_with_recorded_validator(tmp_path, "c" * 40)
+
+    assert len(observed_environments) == 1
+    assert observed_environments[0]["JAX_PLATFORMS"] == "cpu"

@@ -393,6 +393,7 @@ runner.validate_seqax_pallas_search(root, contract)
 """
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(source_root / "src")
+        environment["JAX_PLATFORMS"] = "cpu"
         try:
             subprocess.run(
                 [sys.executable, "-c", script, str(root), commit],
