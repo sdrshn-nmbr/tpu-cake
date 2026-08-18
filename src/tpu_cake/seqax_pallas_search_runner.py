@@ -815,7 +815,7 @@ def _compiler_tile_metadata(
     compiler_hlo: str,
 ) -> tuple[tuple[int, str, int, int, int], ...]:
     matches = re.findall(
-        r"(?ms)^\s*pallas_call\.\d+\s*=\s*[^\n]+\s+custom-call\([^\n]*\),\s*"
+        r"(?ms)^\s*(?:ROOT\s+)?pallas_call\.\d+\s*=\s*[^\n]+\s+custom-call\([^\n]*\),\s*"
         r'custom_call_target="tpu_custom_call"[^\n]*frontend_attributes=\{kernel_metadata=\{\s*'
         r'"region_index"\s*:\s*(\d+)\s*,\s*'
         r'"schedule_sha256"\s*:\s*"([0-9a-f]{64})"\s*,\s*'

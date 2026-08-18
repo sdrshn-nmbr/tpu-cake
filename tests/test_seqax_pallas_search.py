@@ -195,8 +195,9 @@ ENTRY main {{
 def test_seqax_pallas_compiler_tiles_use_semantic_region_order() -> None:
     schedule = "a" * 64
 
-    def custom_call(region: int, tile_k: int) -> str:
-        return f'''  pallas_call.{region + 20} = f32[1] custom-call(), custom_call_target="tpu_custom_call", frontend_attributes={{kernel_metadata={{
+    def custom_call(region: int, tile_k: int, *, root: bool = False) -> str:
+        prefix = "ROOT " if root else ""
+        return f'''  {prefix}pallas_call.{region + 20} = f32[1] custom-call(), custom_call_target="tpu_custom_call", frontend_attributes={{kernel_metadata={{
 "region_index":{region},
 "schedule_sha256":"{schedule}",
 "tile_k":{tile_k},
@@ -205,7 +206,13 @@ def test_seqax_pallas_compiler_tiles_use_semantic_region_order() -> None:
 }}}}, backend_config={{}}'''
 
     compiler_hlo = "\n".join(
-        ("HloModule test", "ENTRY main {", custom_call(1, 256), custom_call(0, 128), "}"),
+        (
+            "HloModule test",
+            "ENTRY main {",
+            custom_call(1, 256),
+            custom_call(0, 128, root=True),
+            "}",
+        ),
     )
 
     assert _compiler_tile_metadata(compiler_hlo) == (
