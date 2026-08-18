@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import ml_dtypes
@@ -26,6 +27,7 @@ from tpu_cake.seqax_numerical_runner import (
     _remove_strict_barrier,
     _replace_silu_body,
     _require_safe_root,
+    _transition_or_replay,
     _write_json_atomic,
 )
 from tpu_cake.workloads.seqax_oracle import (
@@ -327,7 +329,7 @@ def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     sentinel = unrelated / "valuable.txt"
     sentinel.write_text("preserve")
     with pytest.raises(ValueError, match="ROOT_NOT_OWNED"):
-        _prepare_output_root(unrelated, identity)
+        _prepare_output_root(unrelated, identity, contract)
     assert sentinel.read_text() == "preserve"
     assert not tuple(tmp_path.glob("unrelated.incomplete-*"))
 
@@ -336,7 +338,7 @@ def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     wrong_identity = identity.model_copy(update={"run_id": "4" * 64})
     (mismatched / "run_identity.json").write_text(wrong_identity.model_dump_json(indent=2) + "\n")
     with pytest.raises(ValueError, match="ROOT_NOT_OWNED"):
-        _prepare_output_root(mismatched, identity)
+        _prepare_output_root(mismatched, identity, contract)
     assert mismatched.is_dir()
 
     accepted = tmp_path / "accepted"
@@ -344,14 +346,14 @@ def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     (accepted / "run_identity.json").write_text(identity.model_dump_json(indent=2) + "\n")
     (accepted / "receipt.json").write_text("preserve")
     with pytest.raises(ValueError, match="ACCEPTED_ROOT_NOT_RETRYABLE"):
-        _prepare_output_root(accepted, identity)
+        _prepare_output_root(accepted, identity, contract)
     assert (accepted / "receipt.json").read_text() == "preserve"
 
     owned = tmp_path / "owned"
     owned.mkdir()
     (owned / "run_identity.json").write_text(identity.model_dump_json(indent=2) + "\n")
     (owned / "partial.txt").write_text("negative evidence")
-    archived = _prepare_output_root(owned, identity)
+    archived = _prepare_output_root(owned, identity, contract)
     assert archived is not None
     assert archived.parent == tmp_path
     assert (archived / "partial.txt").read_text() == "negative evidence"
@@ -377,6 +379,211 @@ def test_runner_records_a_terminal_failure_before_retry(tmp_path: Path) -> None:
     assert '"previous_state": "created"' in failure
 
 
+def test_runner_replays_exact_historical_ledger_states(tmp_path: Path) -> None:
+    run_id = "7" * 64
+    created = {"contract": "test"}
+    verified = {"schedule": "8" * 64}
+    with ExperimentLedger(tmp_path / "ledger.sqlite") as ledger:
+        _transition_or_replay(ledger, run_id, RunState.CREATED, created)
+        _transition_or_replay(ledger, run_id, RunState.VERIFIED, verified)
+        _transition_or_replay(ledger, run_id, RunState.CREATED, created)
+        _transition_or_replay(ledger, run_id, RunState.VERIFIED, verified)
+        with pytest.raises(ValueError, match="LEDGER_REPLAY_MISMATCH state=created"):
+            _transition_or_replay(
+                ledger,
+                run_id,
+                RunState.CREATED,
+                {"contract": "changed"},
+            )
+
+    history = read_ledger_history(tmp_path / "ledger.sqlite", run_id)
+    assert tuple(event.state for event in history) == (
+        RunState.CREATED,
+        RunState.VERIFIED,
+    )
+
+
+def test_runner_resumes_active_owned_root_and_archives_rejected_root(
+    tmp_path: Path,
+) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    identity = SeqaxBf16RunIdentity(
+        schema_version="seqax-bf16-forward-validation-run-v1",
+        contract_id=contract.contract_id,
+        run_id="8" * 64,
+        source_commit="9" * 40,
+    )
+    active = tmp_path / "active"
+    active.mkdir()
+    (active / "run_identity.json").write_text(identity.model_dump_json(indent=2) + "\n")
+    with ExperimentLedger(active / "ledger.sqlite") as ledger:
+        ledger.create(identity.run_id, {"contract": "test"})
+        active_before = {
+            path.name: path.read_bytes() for path in active.iterdir() if path.is_file()
+        }
+        assert numerical_runner._root_is_resumable(active, identity, contract)
+        assert {
+            path.name: path.read_bytes() for path in active.iterdir() if path.is_file()
+        } == active_before
+    active_closed = {path.name: path.read_bytes() for path in active.iterdir() if path.is_file()}
+    assert _prepare_output_root(active, identity, contract) is None
+    assert {
+        path.name: path.read_bytes() for path in active.iterdir() if path.is_file()
+    } == active_closed
+    assert active.is_dir()
+    assert not tuple(tmp_path.glob("active.incomplete-*"))
+
+    rejected = tmp_path / "rejected"
+    rejected.mkdir()
+    (rejected / "run_identity.json").write_text(identity.model_dump_json(indent=2) + "\n")
+    with ExperimentLedger(rejected / "ledger.sqlite") as ledger:
+        ledger.create(identity.run_id, {"contract": "test"})
+        ledger.transition(identity.run_id, RunState.REJECTED, {"error": "failed"})
+        rejected_before = {
+            path.name: path.read_bytes() for path in rejected.iterdir() if path.is_file()
+        }
+        assert not numerical_runner._root_is_resumable(rejected, identity, contract)
+        assert {
+            path.name: path.read_bytes() for path in rejected.iterdir() if path.is_file()
+        } == rejected_before
+    rejected_closed = {
+        path.name: path.read_bytes() for path in rejected.iterdir() if path.is_file()
+    }
+    archived = _prepare_output_root(rejected, identity, contract)
+    assert archived is not None
+    assert {
+        path.name: path.read_bytes() for path in archived.iterdir() if path.is_file()
+    } == rejected_closed
+    assert (archived / "ledger.sqlite").is_file()
+    assert rejected.is_dir() and not any(rejected.iterdir())
+
+
+def test_runner_reuses_same_root_after_uncaught_active_run_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    root = tmp_path / "run"
+    calls = 0
+
+    def crash_once(
+        active_root: Path,
+        active_contract: object,
+        _runtime: object,
+        _devices: object,
+        run_id: str,
+        source_commit: str,
+    ) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            with ExperimentLedger(active_root / "ledger.sqlite") as ledger:
+                ledger.create(
+                    run_id,
+                    {
+                        "schema": "seqax-bf16-forward-validation-run-v1",
+                        "contract_id": active_contract.contract_id,
+                        "source_commit": source_commit,
+                    },
+                )
+            raise KeyboardInterrupt("simulated process death")
+        return sentinel
+
+    sentinel = object()
+    monkeypatch.setattr(numerical_runner, "_require_clean_repository", lambda _root: None)
+    monkeypatch.setattr(numerical_runner, "_runtime", lambda _contract: object())
+    monkeypatch.setattr(numerical_runner.jax, "devices", list)
+    monkeypatch.setattr(numerical_runner, "_validate_devices", lambda _devices, _contract: None)
+    monkeypatch.setattr(numerical_runner, "_execute_seqax_bf16_validation", crash_once)
+
+    with pytest.raises(KeyboardInterrupt, match="simulated process death"):
+        numerical_runner.run_seqax_bf16_validation(root, contract)
+    identity_bytes = (root / "run_identity.json").read_bytes()
+
+    assert numerical_runner.run_seqax_bf16_validation(root, contract) is sentinel
+    assert (root / "run_identity.json").read_bytes() == identity_bytes
+    assert not tuple(tmp_path.glob("run.incomplete-*"))
+
+
+def test_runner_rejects_a_concurrent_live_owner_without_mutation(
+    tmp_path: Path,
+) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    root = tmp_path / "run"
+    root.mkdir()
+    repository_root = Path(__file__).resolve().parents[1]
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    run_id = numerical_runner.semantic_sha256(
+        "seqax-bf16-forward-validation-run-v1",
+        contract.contract_id,
+        source_commit,
+    )
+    identity = SeqaxBf16RunIdentity(
+        schema_version="seqax-bf16-forward-validation-run-v1",
+        contract_id=contract.contract_id,
+        run_id=run_id,
+        source_commit=source_commit,
+    )
+    (root / "run_identity.json").write_text(identity.model_dump_json(indent=2) + "\n")
+    with ExperimentLedger(root / "ledger.sqlite") as ledger:
+        ledger.create(
+            run_id,
+            {
+                "schema": "seqax-bf16-forward-validation-run-v1",
+                "contract_id": contract.contract_id,
+                "source_commit": source_commit,
+            },
+        )
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    script = """
+import sys
+import time
+from pathlib import Path
+from tpu_cake.seqax_numerical_runner import _exclusive_run_lock
+
+root, ready, release = map(Path, sys.argv[1:])
+with _exclusive_run_lock(root):
+    ready.write_text("locked")
+    while not release.exists():
+        time.sleep(0.01)
+"""
+    process = subprocess.Popen([sys.executable, "-c", script, str(root), str(ready), str(release)])
+    try:
+        for _ in range(500):
+            if ready.exists():
+                break
+            if process.poll() is not None:
+                raise AssertionError(f"lock holder exited with {process.returncode}")
+            time.sleep(0.01)
+        else:
+            raise AssertionError("lock holder did not acquire the run lock")
+        before = {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        with pytest.raises(ValueError, match="SEQAX_BF16_RUN_LOCKED"):
+            numerical_runner.run_seqax_bf16_validation(root, contract)
+        after = {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        assert after == before
+        assert not tuple(tmp_path.glob("run.incomplete-*"))
+    finally:
+        release.write_text("release")
+        process.wait(timeout=10)
+    assert process.returncode == 0
+
+
 def test_atomic_run_markers_do_not_publish_truncated_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -400,7 +607,7 @@ def test_atomic_run_markers_do_not_publish_truncated_targets(
         _write_json_atomic(root / "run_identity.json", identity.model_dump(mode="json"))
     assert not (root / "run_identity.json").exists()
     assert not any(root.iterdir())
-    assert _prepare_output_root(root, identity) is None
+    assert _prepare_output_root(root, identity, contract) is None
 
     monkeypatch.setattr("tpu_cake.seqax_numerical_runner.os.replace", original_replace)
     _write_json_atomic(root / "run_identity.json", identity.model_dump(mode="json"))
@@ -410,7 +617,7 @@ def test_atomic_run_markers_do_not_publish_truncated_targets(
         _write_json_atomic(root / "receipt.json", {"status": "passed"})
     assert not (root / "receipt.json").exists()
     monkeypatch.setattr("tpu_cake.seqax_numerical_runner.os.replace", original_replace)
-    archived = _prepare_output_root(root, identity)
+    archived = _prepare_output_root(root, identity, contract)
     assert archived is not None
     assert (archived / "partial.txt").read_text() == "preserve"
 

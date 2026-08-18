@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
+import stat
 import subprocess
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -314,9 +320,43 @@ def _require_safe_root(root: Path) -> None:
         raise ValueError(f"SEQAX_BF16_UNSAFE_ROOT path={root}")
 
 
+@contextmanager
+def _exclusive_run_lock(root: Path) -> Iterator[None]:
+    lock_root = Path(tempfile.gettempdir()) / f"tpu-cake-seqax-bf16-locks-{os.getuid()}"
+    lock_root.mkdir(mode=0o700, exist_ok=True)
+    lock_root_stat = lock_root.lstat()
+    if (
+        not stat.S_ISDIR(lock_root_stat.st_mode)
+        or lock_root_stat.st_uid != os.getuid()
+        or lock_root_stat.st_mode & 0o077
+    ):
+        raise ValueError(f"SEQAX_BF16_LOCK_ROOT_INVALID path={lock_root}")
+    lock_name = hashlib.sha256(str(root).encode()).hexdigest()
+    descriptor = os.open(
+        lock_root / f"{lock_name}.lock",
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        lock_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1:
+            raise ValueError(f"SEQAX_BF16_LOCK_FILE_INVALID path={root}")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError(f"SEQAX_BF16_RUN_LOCKED path={root}") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 def _prepare_output_root(
     root: Path,
     identity: SeqaxBf16RunIdentity,
+    contract: SeqaxBf16ValidationContract,
 ) -> Path | None:
     if not root.exists():
         root.mkdir(parents=True, exist_ok=False)
@@ -334,6 +374,9 @@ def _prepare_output_root(
         raise ValueError(f"SEQAX_BF16_ROOT_NOT_OWNED path={root}")
     if (root / "receipt.json").exists():
         raise ValueError(f"SEQAX_BF16_ACCEPTED_ROOT_NOT_RETRYABLE path={root}")
+    if _root_is_resumable(root, identity, contract):
+        print(f"SEQAX_BF16_RESUMING run_id={identity.run_id} root={root}")
+        return None
     while True:
         archived = root.with_name(f"{root.name}.incomplete-{time.time_ns()}")
         if not archived.exists() and not archived.is_symlink():
@@ -342,6 +385,70 @@ def _prepare_output_root(
     root.mkdir(parents=True, exist_ok=False)
     print(f"SEQAX_BF16_ARCHIVED_INCOMPLETE source={root} archive={archived}")
     return archived
+
+
+def _root_is_resumable(
+    root: Path,
+    identity: SeqaxBf16RunIdentity,
+    contract: SeqaxBf16ValidationContract,
+) -> bool:
+    if (root / "failure.json").exists() or (root / "failure.json").is_symlink():
+        return False
+    ledger_path = root / "ledger.sqlite"
+    allowed = _expected_files(root, contract, receipt_present=False)
+    allowed.update(
+        {
+            ledger_path.with_name(f"{ledger_path.name}-shm").resolve(),
+            ledger_path.with_name(f"{ledger_path.name}-wal").resolve(),
+        }
+    )
+    observed = {path.resolve() for path in root.rglob("*") if path.is_file()}
+    if not observed.issubset(allowed):
+        return False
+    if not ledger_path.exists():
+        return True
+    try:
+        rows = _read_resume_ledger(ledger_path)
+        if any(run_id != identity.run_id for run_id, _state in rows):
+            return False
+        states = tuple(RunState(state) for _run_id, state in rows)
+    except (OSError, sqlite3.Error, ValueError):
+        return False
+    expected_prefix = (
+        RunState.CREATED,
+        RunState.VERIFIED,
+        RunState.LOWERED,
+        RunState.COMPILED,
+        RunState.CORRECT,
+        RunState.VALIDATED,
+        RunState.ACCEPTED,
+    )
+    return states == expected_prefix[: len(states)]
+
+
+def _read_resume_ledger(ledger_path: Path) -> list[tuple[str, str]]:
+    sidecars = (
+        ledger_path.with_name(f"{ledger_path.name}-shm"),
+        ledger_path.with_name(f"{ledger_path.name}-wal"),
+    )
+    if not any(path.exists() for path in sidecars):
+        uri = f"{ledger_path.resolve().as_uri()}?mode=ro&immutable=1"
+        with sqlite3.connect(uri, uri=True) as connection:
+            return connection.execute(
+                "SELECT run_id, state FROM events ORDER BY sequence"
+            ).fetchall()
+    with tempfile.TemporaryDirectory(prefix="seqax-bf16-ledger-inspection-") as directory:
+        temporary_root = Path(directory)
+        temporary_ledger = temporary_root / ledger_path.name
+        shutil.copy2(ledger_path, temporary_ledger)
+        for sidecar in sidecars:
+            if sidecar.exists():
+                shutil.copy2(sidecar, temporary_root / sidecar.name)
+        uri = f"{temporary_ledger.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as connection:
+            return connection.execute(
+                "SELECT run_id, state FROM events ORDER BY sequence"
+            ).fetchall()
 
 
 def _preflight_existing_root(root: Path) -> None:
@@ -361,6 +468,24 @@ def _close_ledger(path: Path) -> None:
     sidecars = (path.with_name(f"{path.name}-shm"), path.with_name(f"{path.name}-wal"))
     if any(value.exists() for value in sidecars):
         raise ValueError("SEQAX_BF16_LEDGER_SIDECAR_PRESENT")
+
+
+def _transition_or_replay(
+    ledger: ExperimentLedger,
+    run_id: str,
+    state: RunState,
+    payload: dict[str, object],
+) -> None:
+    expected_hash = ExperimentLedger.payload_sha256(payload)
+    existing = next((event for event in ledger.history(run_id) if event.state is state), None)
+    if existing is not None:
+        if existing.payload_sha256 != expected_hash:
+            raise ValueError(f"SEQAX_BF16_LEDGER_REPLAY_MISMATCH state={state.value}")
+        return
+    if state is RunState.CREATED:
+        ledger.create(run_id, payload)
+    else:
+        ledger.transition(run_id, state, payload)
 
 
 def _record_failure(root: Path, run_id: str, error: Exception) -> None:
@@ -1300,8 +1425,10 @@ def _execute_seqax_bf16_validation(
         raise ValueError("SEQAX_BF16_SOURCE_CHANGED_DURING_RUN")
     ledger_path = root / "ledger.sqlite"
     with ExperimentLedger(ledger_path) as ledger:
-        ledger.create(
+        _transition_or_replay(
+            ledger,
             run_id,
+            RunState.CREATED,
             {
                 "schema": SEQAX_BF16_RUN_SCHEMA,
                 "contract_id": contract.contract_id,
@@ -1311,7 +1438,8 @@ def _execute_seqax_bf16_validation(
 
     compiled = tuple(_prepare_scenario(root, scenario, devices) for scenario in contract.scenarios)
     with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
+        _transition_or_replay(
+            ledger,
             run_id,
             RunState.VERIFIED,
             {
@@ -1321,7 +1449,8 @@ def _execute_seqax_bf16_validation(
                 }
             },
         )
-        ledger.transition(
+        _transition_or_replay(
+            ledger,
             run_id,
             RunState.LOWERED,
             {
@@ -1333,7 +1462,8 @@ def _execute_seqax_bf16_validation(
                 },
             },
         )
-        ledger.transition(
+        _transition_or_replay(
+            ledger,
             run_id,
             RunState.COMPILED,
             {"plans": [value.record.model_dump(mode="json") for value in compiled]},
@@ -1345,7 +1475,8 @@ def _execute_seqax_bf16_validation(
         for seed in value.scenario.seeds
     )
     with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
+        _transition_or_replay(
+            ledger,
             run_id,
             RunState.CORRECT,
             {
@@ -1372,7 +1503,8 @@ def _execute_seqax_bf16_validation(
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
     with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
+        _transition_or_replay(
+            ledger,
             run_id,
             RunState.VALIDATED,
             {
@@ -1386,10 +1518,17 @@ def _execute_seqax_bf16_validation(
                 "result_sha256": _sha256(root / "result.json"),
             },
         )
+        already_accepted = ledger.current_state(run_id) is RunState.ACCEPTED
     _close_ledger(ledger_path)
-    _validate(root, contract, require_accepted=False)
+    _validate(
+        root,
+        contract,
+        require_accepted=already_accepted,
+        require_receipt=False,
+    )
     with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
+        _transition_or_replay(
+            ledger,
             run_id,
             RunState.ACCEPTED,
             {"result_sha256": _sha256(root / "result.json"), "passed": True},
@@ -1410,47 +1549,48 @@ def run_seqax_bf16_validation(
         raise ValueError(f"SEQAX_BF16_ROOT_INVALID path={root}")
     root = root.resolve()
     _require_safe_root(root)
-    repository_root = Path(__file__).resolve().parents[2]
-    _require_clean_repository(repository_root)
-    if _sha256(repository_root / "uv.lock") != contract.runtime.uv_lock_sha256:
-        raise ValueError("SEQAX_BF16_LOCK_MISMATCH")
-    if (root / "receipt.json").exists() or (root / "receipt.json").is_symlink():
-        return validate_seqax_bf16_validation(root, contract)
-    source_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repository_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    run_id = semantic_sha256(
-        SEQAX_BF16_RUN_SCHEMA,
-        contract.contract_id,
-        source_commit,
-    )
-    identity = SeqaxBf16RunIdentity(
-        schema_version=SEQAX_BF16_RUN_SCHEMA,
-        contract_id=contract.contract_id,
-        run_id=run_id,
-        source_commit=source_commit,
-    )
-    runtime = _runtime(contract)
-    devices = tuple(jax.devices())
-    _validate_devices(devices, contract)
-    _prepare_output_root(root, identity)
-    _write_json_atomic(root / "run_identity.json", identity.model_dump(mode="json"))
-    try:
-        return _execute_seqax_bf16_validation(
-            root,
-            contract,
-            runtime,
-            devices,
-            run_id,
+    with _exclusive_run_lock(root):
+        repository_root = Path(__file__).resolve().parents[2]
+        _require_clean_repository(repository_root)
+        if _sha256(repository_root / "uv.lock") != contract.runtime.uv_lock_sha256:
+            raise ValueError("SEQAX_BF16_LOCK_MISMATCH")
+        if (root / "receipt.json").exists() or (root / "receipt.json").is_symlink():
+            return validate_seqax_bf16_validation(root, contract)
+        source_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        run_id = semantic_sha256(
+            SEQAX_BF16_RUN_SCHEMA,
+            contract.contract_id,
             source_commit,
         )
-    except Exception as error:
-        _record_failure(root, run_id, error)
-        raise
+        identity = SeqaxBf16RunIdentity(
+            schema_version=SEQAX_BF16_RUN_SCHEMA,
+            contract_id=contract.contract_id,
+            run_id=run_id,
+            source_commit=source_commit,
+        )
+        runtime = _runtime(contract)
+        devices = tuple(jax.devices())
+        _validate_devices(devices, contract)
+        _prepare_output_root(root, identity, contract)
+        _write_json_atomic(root / "run_identity.json", identity.model_dump(mode="json"))
+        try:
+            return _execute_seqax_bf16_validation(
+                root,
+                contract,
+                runtime,
+                devices,
+                run_id,
+                source_commit,
+            )
+        except Exception as error:
+            _record_failure(root, run_id, error)
+            raise
 
 
 def _canonical_plans(
@@ -2049,10 +2189,15 @@ def _validate(
     trusted_contract: SeqaxBf16ValidationContract,
     *,
     require_accepted: bool,
+    require_receipt: bool | None = None,
 ) -> SeqaxBf16ValidationResult:
+    if require_receipt is None:
+        require_receipt = require_accepted
+    if require_receipt and not require_accepted:
+        raise ValueError("SEQAX_BF16_RECEIPT_REQUIRES_ACCEPTED_LEDGER")
     _validate_closed_world(
         root,
-        _expected_files(root, trusted_contract, receipt_present=require_accepted),
+        _expected_files(root, trusted_contract, receipt_present=require_receipt),
     )
     saved_contract = SeqaxBf16ValidationContract.model_validate_json(
         (root / "contract.json").read_text()
@@ -2131,7 +2276,7 @@ def _validate(
         ExperimentLedger.payload_sha256(payload) for _state, payload in payloads
     ):
         raise ValueError("SEQAX_BF16_LEDGER_PAYLOAD_MISMATCH")
-    if require_accepted:
+    if require_receipt:
         receipt = SeqaxBf16ValidationReceipt.model_validate_json(
             (root / "receipt.json").read_text()
         )
