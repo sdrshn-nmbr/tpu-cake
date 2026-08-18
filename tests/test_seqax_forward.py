@@ -18,6 +18,7 @@ from tpu_cake.lowering import UnsupportedLoweringError, lower_distributed_matmul
 from tpu_cake.workloads.seqax_forward import (
     SEQAX_REVISION,
     SeqaxNormScalePlacement,
+    SeqaxWeightDataPlacement,
     seqax_forward_schedule,
 )
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
@@ -123,6 +124,56 @@ def test_norm_scale_replication_is_a_typed_communication_resource_choice() -> No
 
     with pytest.raises(TypeError, match="SeqaxNormScalePlacement"):
         seqax_forward_schedule(**parameters, norm_scale_placement="replicated")
+
+
+def test_weight_data_replication_is_a_typed_communication_resource_choice() -> None:
+    parameters = {
+        "batch": 2,
+        "sequence": 1,
+        "model": 8,
+        "vocabulary": 16,
+        "feed_forward": 16,
+        "query_groups": 2,
+        "key_value_heads": 4,
+        "head": 4,
+        "layers": 1,
+        "data_mesh": 2,
+        "tensor_mesh": 4,
+        "rope_max_timescale": 256,
+    }
+    sharded = seqax_forward_schedule(**parameters)
+    replicated = seqax_forward_schedule(
+        **parameters,
+        weight_data_placement=SeqaxWeightDataPlacement.REPLICATED,
+    )
+    replicated_again = seqax_forward_schedule(
+        **parameters,
+        weight_data_placement=SeqaxWeightDataPlacement.REPLICATED,
+    )
+    sharded_program = next(
+        operation for operation in sharded.walk() if isinstance(operation, ProgramOp)
+    )
+    replicated_program = next(
+        operation for operation in replicated.walk() if isinstance(operation, ProgramOp)
+    )
+
+    assert len(tuple(operation for operation in sharded.walk() if isinstance(operation, AllGatherOp))) == 14
+    assert len(tuple(operation for operation in replicated.walk() if isinstance(operation, AllGatherOp))) == 6
+    assert sharded_program.body.block.args[2].type.sharding_axes() == (("t",), ("d",))
+    assert replicated_program.body.block.args[2].type.sharding_axes() == (("t",), ())
+    assert sharded_program.body.block.args[3].type == replicated_program.body.block.args[3].type
+    assert schedule_sha256(sharded) != schedule_sha256(replicated)
+    assert schedule_sha256(replicated) == schedule_sha256(replicated_again)
+
+    inputs = seqax_forward_inputs(seed=9173, **parameters)
+    (sharded_output,) = interpret_distributed_program(sharded, inputs)
+    (replicated_output,) = interpret_distributed_program(replicated, inputs)
+    assert sharded_output.dtype == replicated_output.dtype
+    assert sharded_output.shape == replicated_output.shape
+    assert (sharded_output == replicated_output).all()
+
+    with pytest.raises(TypeError, match="SeqaxWeightDataPlacement"):
+        seqax_forward_schedule(**parameters, weight_data_placement="replicated")
 
 
 def test_seqax_forward_uses_configured_rope_timescale_and_source_locations() -> None:

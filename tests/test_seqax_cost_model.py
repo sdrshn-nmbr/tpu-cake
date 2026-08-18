@@ -13,6 +13,7 @@ from tpu_cake.seqax_cost_model import (
 )
 from tpu_cake.workloads.seqax_forward import (
     SeqaxNormScalePlacement,
+    SeqaxWeightDataPlacement,
     seqax_forward_schedule,
 )
 
@@ -214,6 +215,49 @@ def test_norm_scale_replication_accounts_for_memory_and_communication_tradeoff()
         sharded.counts.ici_bidirectional_bytes_per_device
         - replicated.counts.ici_bidirectional_bytes_per_device
         == 5_376
+    )
+    assert sharded.predicted_limiting_resource == "ici"
+    assert replicated.predicted_limiting_resource == "ici"
+
+
+def test_weight_data_replication_accounts_for_memory_and_communication_tradeoff() -> None:
+    parameters = {
+        "batch": 2,
+        "sequence": 1,
+        "model": 256,
+        "vocabulary": 16,
+        "feed_forward": 16,
+        "query_groups": 2,
+        "key_value_heads": 4,
+        "head": 4,
+        "layers": 1,
+        "data_mesh": 2,
+        "tensor_mesh": 4,
+        "rope_max_timescale": 256,
+    }
+    sharded = estimate_seqax_forward(
+        seqax_forward_schedule(**parameters),
+        hardware=tpu7x_tensorcore_rates(),
+        source=_source(),
+    )
+    replicated = estimate_seqax_forward(
+        seqax_forward_schedule(
+            **parameters,
+            weight_data_placement=SeqaxWeightDataPlacement.REPLICATED,
+        ),
+        hardware=tpu7x_tensorcore_rates(),
+        source=_source(),
+    )
+
+    assert (
+        replicated.counts.minimum_hbm_read_bytes_per_device
+        - sharded.counts.minimum_hbm_read_bytes_per_device
+        == 22_528
+    )
+    assert (
+        sharded.counts.ici_bidirectional_bytes_per_device
+        - replicated.counts.ici_bidirectional_bytes_per_device
+        == 22_528
     )
     assert sharded.predicted_limiting_resource == "ici"
     assert replicated.predicted_limiting_resource == "ici"

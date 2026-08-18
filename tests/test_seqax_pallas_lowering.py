@@ -22,6 +22,7 @@ from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import (
     SeqaxNormScalePlacement,
+    SeqaxWeightDataPlacement,
     seqax_forward_schedule,
 )
 
@@ -93,6 +94,28 @@ def test_replicated_norm_scales_remove_exact_physical_gather_chains() -> None:
     assert (
         sum(isinstance(operation, CollectiveOp) for operation in replicated_physical.walk())
         == 14
+    )
+    assert lower_seqax_physical_to_pallas(sharded, sharded_physical).pallas_region_count == 9
+    assert (
+        lower_seqax_physical_to_pallas(replicated, replicated_physical).pallas_region_count
+        == 9
+    )
+
+
+def test_replicated_weight_data_removes_exact_physical_gather_chains() -> None:
+    parameters = {**TILED_SEQAX, "sequence": 1, "layers": 1}
+    sharded = seqax_forward_schedule(**parameters)
+    replicated = seqax_forward_schedule(
+        **parameters,
+        weight_data_placement=SeqaxWeightDataPlacement.REPLICATED,
+    )
+    sharded_physical = lower_seqax_forward_to_physical(sharded).module
+    replicated_physical = lower_seqax_forward_to_physical(replicated).module
+
+    assert sum(isinstance(operation, CollectiveOp) for operation in sharded_physical.walk()) == 20
+    assert (
+        sum(isinstance(operation, CollectiveOp) for operation in replicated_physical.walk())
+        == 12
     )
     assert lower_seqax_physical_to_pallas(sharded, sharded_physical).pallas_region_count == 9
     assert (

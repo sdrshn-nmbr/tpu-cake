@@ -51,6 +51,11 @@ class SeqaxNormScalePlacement(StrEnum):
     REPLICATED = "replicated"
 
 
+class SeqaxWeightDataPlacement(StrEnum):
+    SHARDED = "sharded"
+    REPLICATED = "replicated"
+
+
 def _source(line: int) -> SourceLocation:
     return SourceLocation(SEQAX_FORWARD_SOURCE, line, 1)
 
@@ -70,9 +75,12 @@ def seqax_forward_schedule(
     tensor_mesh: int = 4,
     rope_max_timescale: int = 10_000,
     norm_scale_placement: SeqaxNormScalePlacement = SeqaxNormScalePlacement.SHARDED,
+    weight_data_placement: SeqaxWeightDataPlacement = SeqaxWeightDataPlacement.SHARDED,
 ) -> ModuleOp:
     if not isinstance(norm_scale_placement, SeqaxNormScalePlacement):
         raise TypeError("norm_scale_placement must be a SeqaxNormScalePlacement")
+    if not isinstance(weight_data_placement, SeqaxWeightDataPlacement):
+        raise TypeError("weight_data_placement must be a SeqaxWeightDataPlacement")
     norm_scale_sharding = (
         {}
         if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED
@@ -93,6 +101,24 @@ def seqax_forward_schedule(
             source=source,
         )
 
+    def weight_sharding(
+        other: dict[str, tuple[str, ...]],
+    ) -> dict[str, tuple[str, ...]]:
+        if weight_data_placement is SeqaxWeightDataPlacement.REPLICATED:
+            return other
+        return {"M": ("d",), **other}
+
+    def gather_weight_data_axis(
+        program: DistributedProgramBuilder,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        source: SourceLocation,
+    ) -> SSAValue:
+        if weight_data_placement is SeqaxWeightDataPlacement.REPLICATED:
+            return value
+        return program.all_gather(value, result, source=source)
+
     tokens = tensor(U32, (("B", batch), ("L", sequence)), sharding={"B": ("d",)})
     sequence_starts = tensor(
         i1,
@@ -102,7 +128,7 @@ def seqax_forward_schedule(
     embedding = tensor(
         f32,
         (("V", vocabulary), ("M", model)),
-        sharding={"V": ("t",), "M": ("d",)},
+        sharding=weight_sharding({"V": ("t",)}),
     )
     layer_norm = tensor(
         f32,
@@ -118,7 +144,7 @@ def seqax_forward_schedule(
             ("K", key_value_heads),
             ("D", head),
         ),
-        sharding={"M": ("d",), "K": ("t",)},
+        sharding=weight_sharding({"K": ("t",)}),
     )
     key_value_weights = tensor(
         f32,
@@ -129,13 +155,13 @@ def seqax_forward_schedule(
             ("K", key_value_heads),
             ("D", head),
         ),
-        sharding={"M": ("d",), "K": ("t",)},
+        sharding=weight_sharding({"K": ("t",)}),
     )
     output_weights = query_weights
     feed_forward_weights = tensor(
         f32,
         (("Z", layers), ("M", model), ("F", feed_forward)),
-        sharding={"M": ("d",), "F": ("t",)},
+        sharding=weight_sharding({"F": ("t",)}),
     )
     final_layer_norm = tensor(
         f32,
@@ -184,11 +210,12 @@ def seqax_forward_schedule(
         tensor(
             bf16,
             (("V", vocabulary), ("M", model)),
-            sharding={"V": ("t",), "M": ("d",)},
+            sharding=weight_sharding({"V": ("t",)}),
         ),
         source=_source(137),
     )
-    gathered_embedding = builder.all_gather(
+    gathered_embedding = gather_weight_data_axis(
+        builder,
         embedding_bf16,
         tensor(
             bf16,
@@ -275,11 +302,12 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
-                sharding={"M": ("d",), "K": ("t",)},
+                sharding=weight_sharding({"K": ("t",)}),
             ),
             source=_source(164),
         )
-        gathered_wq = body.all_gather(
+        gathered_wq = gather_weight_data_axis(
+            body,
             layer_wq,
             tensor(
                 bf16,
@@ -355,11 +383,12 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("KV", 2), ("M", model), ("K", key_value_heads), ("D", head)),
-                sharding={"M": ("d",), "K": ("t",)},
+                sharding=weight_sharding({"K": ("t",)}),
             ),
             source=_source(167),
         )
-        gathered_wkv = body.all_gather(
+        gathered_wkv = gather_weight_data_axis(
+            body,
             layer_wkv,
             tensor(
                 bf16,
@@ -506,11 +535,12 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("M", model), ("Q", query_groups), ("K", key_value_heads), ("D", head)),
-                sharding={"M": ("d",), "K": ("t",)},
+                sharding=weight_sharding({"K": ("t",)}),
             ),
             source=_source(178),
         )
-        gathered_wo = body.all_gather(
+        gathered_wo = gather_weight_data_axis(
+            body,
             layer_wo,
             tensor(
                 bf16,
@@ -590,11 +620,12 @@ def seqax_forward_schedule(
                 tensor(
                     bf16,
                     (("M", model), ("F", feed_forward)),
-                    sharding={"M": ("d",), "F": ("t",)},
+                    sharding=weight_sharding({"F": ("t",)}),
                 ),
                 source=_source(line),
             )
-            gathered = body.all_gather(
+            gathered = gather_weight_data_axis(
+                body,
                 weight,
                 tensor(
                     bf16,
@@ -632,11 +663,12 @@ def seqax_forward_schedule(
             tensor(
                 bf16,
                 (("M", model), ("F", feed_forward)),
-                sharding={"M": ("d",), "F": ("t",)},
+                sharding=weight_sharding({"F": ("t",)}),
             ),
             source=_source(194),
         )
-        gathered_down = body.all_gather(
+        gathered_down = gather_weight_data_axis(
+            body,
             layer_wdown,
             tensor(
                 bf16,
@@ -720,11 +752,12 @@ def seqax_forward_schedule(
         tensor(
             bf16,
             (("V", vocabulary), ("M", model)),
-            sharding={"V": ("t",), "M": ("d",)},
+            sharding=weight_sharding({"V": ("t",)}),
         ),
         source=_source(206),
     )
-    gathered_unembed = builder.all_gather(
+    gathered_unembed = gather_weight_data_axis(
+        builder,
         unembed,
         tensor(
             bf16,
