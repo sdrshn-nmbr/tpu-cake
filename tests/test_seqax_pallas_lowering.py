@@ -134,14 +134,10 @@ def test_replicated_norm_scales_remove_exact_physical_gather_chains() -> None:
 
     assert sum(isinstance(operation, CollectiveOp) for operation in sharded_physical.walk()) == 20
     assert (
-        sum(isinstance(operation, CollectiveOp) for operation in replicated_physical.walk())
-        == 14
+        sum(isinstance(operation, CollectiveOp) for operation in replicated_physical.walk()) == 14
     )
     assert lower_seqax_physical_to_pallas(sharded, sharded_physical).pallas_region_count == 9
-    assert (
-        lower_seqax_physical_to_pallas(replicated, replicated_physical).pallas_region_count
-        == 9
-    )
+    assert lower_seqax_physical_to_pallas(replicated, replicated_physical).pallas_region_count == 9
 
 
 def test_replicated_weight_data_removes_exact_physical_gather_chains() -> None:
@@ -156,14 +152,10 @@ def test_replicated_weight_data_removes_exact_physical_gather_chains() -> None:
 
     assert sum(isinstance(operation, CollectiveOp) for operation in sharded_physical.walk()) == 20
     assert (
-        sum(isinstance(operation, CollectiveOp) for operation in replicated_physical.walk())
-        == 12
+        sum(isinstance(operation, CollectiveOp) for operation in replicated_physical.walk()) == 12
     )
     assert lower_seqax_physical_to_pallas(sharded, sharded_physical).pallas_region_count == 9
-    assert (
-        lower_seqax_physical_to_pallas(replicated, replicated_physical).pallas_region_count
-        == 9
-    )
+    assert lower_seqax_physical_to_pallas(replicated, replicated_physical).pallas_region_count == 9
     assert {
         placement: sum(
             isinstance(operation, CollectiveOp)
@@ -216,10 +208,7 @@ def test_pallas_plan_rejects_a_bypassed_typed_materialization_boundary() -> None
     )
     physical = lower_seqax_forward_to_physical(distributed).module
     plan = lower_seqax_physical_to_pallas(distributed, physical)
-    property_text = (
-        ", materialization = "
-        "#tpu_schedule<vector_materialization strict_typed>"
-    )
+    property_text = ", materialization = #tpu_schedule<vector_materialization strict_typed>"
     mutated = plan.canonical_physical_xdsl.replace(property_text, "", 1)
     assert mutated != plan.canonical_physical_xdsl
 
@@ -394,7 +383,7 @@ import numpy as np
 from tpu_cake.seqax_pallas_lowering import _einsum_tiles, lower_seqax_physical_to_pallas
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
-from tpu_cake.seqax_numerical import validate_strict_silu_stablehlo
+from tpu_cake.seqax_numerical import _validate_strict_silu_stablehlo
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs, seqax_forward_reference
 
 parameters = {
@@ -441,7 +430,12 @@ executable, mesh = namespace["build"](interpret=True, devices=devices)
 inputs = seqax_forward_inputs(seed=9173, **parameters)
 arrays = tuple(jnp.asarray(value) for value in inputs)
 stablehlo = str(executable.lower(*arrays).compiler_ir("stablehlo"))
-validate_strict_silu_stablehlo(stablehlo, expected_count=parameters["layers"])
+_validate_strict_silu_stablehlo(
+    stablehlo,
+    expected_count=parameters["layers"],
+    instrumented=False,
+    allow_callbacks=True,
+)
 (actual,) = executable(*arrays)
 actual.block_until_ready()
 expected = seqax_forward_reference(inputs, **parameters)

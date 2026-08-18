@@ -241,8 +241,9 @@ def test_bf16_forward_external_contract_is_canonical() -> None:
     )
 
     assert saved == default_seqax_bf16_validation_contract()
-    assert saved.contract_id == "07a9f56c80b3019ee30aa30253e24256448f4bbe4b8add70ccbf6dec7d21135a"
+    assert saved.contract_id == "7d45ba2e62265c8f61e31c4109672d573fb1e9aa3a9af1bd86cca88a98a6c03e"
     assert saved.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
+    assert saved.checkpoint_capture == "typed-extra-outputs-v1"
     assert saved.require_instrumented_output_parity
     assert saved.require_discriminator_artifact_replay
 
@@ -317,7 +318,9 @@ def test_bf16_checkpoint_uint16_codec_preserves_exact_logical_bits() -> None:
     (
         (("device_count",), True, "device_count"),
         (("policy", "cpu_relative_l2_units"), 2.1, "not canonical"),
+        (("policy", "metric_quantization_decimals"), 14, "not canonical"),
         (("acceptance_authority",), "pure-evaluator", "acceptance authority"),
+        (("checkpoint_capture",), "host-callback", "acceptance authority"),
         (("scenarios", 0, "parameters", "model"), "256", "model"),
         (("scenarios", 0, "inputs", 0, "dtype"), "int32", "input ABI"),
         (
@@ -373,6 +376,36 @@ def test_bf16_forward_policy_distinguishes_row_spikes_and_distributed_drift() ->
     assert distributed_assessment.cpu_pallas_row_scaled_max < 4 * BF16_UNIT_ROUNDOFF
     assert not distributed_assessment.final_outputs_satisfy_policy
     assert distributed_assessment.checkpoint_values_consistent
+
+
+def test_bf16_forward_metrics_are_layout_independent_and_quantized() -> None:
+    contract, scenario, _inputs, reference, evidence = _calibration_evidence()
+    perturbation = np.linspace(
+        -1e-3,
+        1e-3,
+        num=reference.size,
+        dtype=np.float32,
+    ).reshape(reference.shape)
+    contiguous = np.asarray(reference + perturbation, order="C")
+    fortran = np.asarray(reference + perturbation, order="F")
+
+    contiguous_assessment = assess_seqax_bf16_forward(
+        contiguous,
+        reference,
+        policy=contract.policy,
+        scenario=scenario,
+        **evidence,
+    )
+    fortran_assessment = assess_seqax_bf16_forward(
+        fortran,
+        reference,
+        policy=contract.policy,
+        scenario=scenario,
+        **evidence,
+    )
+
+    assert contiguous_assessment == fortran_assessment
+    assert len(str(contiguous_assessment.cpu_pallas_relative_l2).split(".")[-1]) <= 15
 
 
 def test_bf16_forward_policy_reports_top1_without_using_it_as_the_oracle() -> None:

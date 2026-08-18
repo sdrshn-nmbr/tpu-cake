@@ -9,6 +9,7 @@
     "cross_path_relative_l2_units": 0.5,
     "cross_path_row_scaled_max_units": 1.0,
     "row_scale_floor": 1.0,
+    "metric_quantization_decimals": 15,
     "cpu_reference": "seqax_forward_canonical_reference",
     "cpu_reference_quantization_decimals": 6,
     "checkpoint_storage_dtype": "uint16",
@@ -743,10 +744,20 @@
     "dtype_output",
     "shape_output"
   ],
+  "runtime": {
+    "python_major_minor": "3.12",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "ml_dtypes": "0.6.0",
+    "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true",
+    "uv_lock_sha256": "7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b"
+  },
   "backend": "tpu",
   "device_kind": "TPU7x",
   "device_count": 8,
   "acceptance_authority": "authenticated-runner-and-relocated-public-replay",
+  "checkpoint_capture": "typed-extra-outputs-v1",
   "require_instrumented_output_parity": true,
   "require_discriminator_artifact_replay": true
 }

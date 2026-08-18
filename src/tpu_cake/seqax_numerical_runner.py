@@ -1,0 +1,1995 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import sqlite3
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import jax
+import jax.numpy as jnp
+import ml_dtypes
+import numpy as np
+from jax.sharding import NamedSharding, PartitionSpec
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from xdsl.utils.exceptions import VerifyException
+
+from tpu_cake.canonical import canonical_text
+from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity, SourceFileContract
+from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
+from tpu_cake.jax_lowering import JaxDistributedMeshPlan, lower_distributed_program_to_jax_mesh
+from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.runner import _runtime_identity, _source_state
+from tpu_cake.seqax_numerical import (
+    SeqaxBf16NumericalAssessment,
+    SeqaxBf16NumericalScenario,
+    SeqaxBf16ValidationContract,
+    SeqaxDiscriminatorClause,
+    SeqaxInputMutation,
+    SeqaxNumericalDiscriminator,
+    assess_seqax_bf16_forward,
+    decode_seqax_bf16_checkpoint,
+    default_seqax_bf16_validation_contract,
+    encode_seqax_bf16_checkpoint,
+    mutate_seqax_forward_inputs,
+    seqax_discriminator_clause,
+    validate_activation_mutant_stablehlo,
+    validate_instrumented_strict_silu_stablehlo,
+    validate_strict_silu_stablehlo,
+)
+from tpu_cake.seqax_pallas_lowering import (
+    SeqaxPallasPlan,
+    _parse_physical,
+    lower_seqax_physical_to_pallas,
+)
+from tpu_cake.seqax_pallas_runner import (
+    _compiler_hlo,
+    _physical_collective_counts,
+    _validate_compiled_program,
+)
+from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
+from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
+from tpu_cake.workloads.seqax_oracle import seqax_forward_canonical_reference, seqax_forward_inputs
+
+SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v1"
+
+
+class SeqaxBf16Device(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: int = Field(ge=0)
+    process_index: int = Field(ge=0)
+    platform: str = Field(min_length=1)
+    device_kind: str = Field(min_length=1)
+
+
+class SeqaxBf16Runtime(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    runtime: RuntimeIdentity
+    ml_dtypes: str = Field(min_length=1)
+
+
+class SeqaxBf16PlanRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    scenario: str = Field(min_length=1)
+    distributed_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    physical_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_pallas_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_control_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_region_count: int = Field(gt=0)
+    all_gather_count: int = Field(ge=0)
+    reduce_scatter_count: int = Field(ge=0)
+    strict_silu_count: int = Field(gt=0)
+
+
+class SeqaxBf16SeedObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    scenario: str = Field(min_length=1)
+    seed: int = Field(ge=0)
+    input_sha256: tuple[str, ...] = Field(min_length=13, max_length=13)
+    cpu_reference_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_pallas_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_control_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_gate_sha256: tuple[str, ...] = Field(min_length=1)
+    control_gate_sha256: tuple[str, ...] = Field(min_length=1)
+    pallas_silu_sha256: tuple[str, ...] = Field(min_length=1)
+    control_silu_sha256: tuple[str, ...] = Field(min_length=1)
+    assessment: SeqaxBf16NumericalAssessment
+    instrumented_output_parity: bool
+
+    @model_validator(mode="after")
+    def input_hashes_are_valid(self) -> SeqaxBf16SeedObservation:
+        if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in self.input_sha256):
+            raise ValueError("Seqax BF16 input artifact hash is invalid")
+        return self
+
+
+class SeqaxBf16DiscriminatorObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    discriminator: SeqaxNumericalDiscriminator
+    clause: SeqaxDiscriminatorClause
+    artifact_paths: tuple[str, ...] = Field(min_length=1)
+    artifact_sha256: tuple[str, ...] = Field(min_length=1)
+    rejected: bool
+    failure: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def artifacts_match(self) -> SeqaxBf16DiscriminatorObservation:
+        if len(self.artifact_paths) != len(self.artifact_sha256):
+            raise ValueError("Seqax BF16 discriminator artifact identity count mismatch")
+        if self.clause is not seqax_discriminator_clause(self.discriminator):
+            raise ValueError("Seqax BF16 discriminator clause mismatch")
+        return self
+
+
+class SeqaxBf16ValidationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v1$")
+    contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime: SeqaxBf16Runtime
+    devices: tuple[SeqaxBf16Device, ...] = Field(min_length=8, max_length=8)
+    source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
+    plans: tuple[SeqaxBf16PlanRecord, ...] = Field(min_length=4, max_length=4)
+    observations: tuple[SeqaxBf16SeedObservation, ...] = Field(min_length=17, max_length=17)
+    discriminators: tuple[SeqaxBf16DiscriminatorObservation, ...] = Field(min_length=14)
+    passed: bool
+    claim_scope: str = Field(pattern=r"^declared-surface-bf16-numerical-correctness$")
+
+
+class SeqaxBf16ValidationReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v1$")
+    contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: str = Field(pattern=r"^passed$")
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ledger_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
+
+
+@dataclass(frozen=True)
+class _CompiledPath:
+    plan: SeqaxPallasPlan | JaxDistributedMeshPlan
+    executable: Any
+    mesh: Any
+    stablehlo: str
+    compiler_hlo: str
+
+
+@dataclass(frozen=True)
+class _InstrumentedPath:
+    plan: SeqaxPallasPlan | JaxDistributedMeshPlan
+    executable: Any
+    mesh: Any
+    stablehlo: str
+    compiler_hlo: str
+
+
+@dataclass(frozen=True)
+class _CompiledScenario:
+    scenario: SeqaxBf16NumericalScenario
+    distributed: Any
+    physical: Any
+    pallas: _CompiledPath
+    control: _CompiledPath
+    instrumented_pallas: _InstrumentedPath
+    instrumented_control: _InstrumentedPath
+    record: SeqaxBf16PlanRecord
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _text_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value)
+
+
+def _write_json(path: Path, value: object) -> None:
+    _write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def _save_array(path: Path, value: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(path, np.asarray(value), allow_pickle=False)
+
+
+def _load_array(path: Path) -> np.ndarray:
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+        raise ValueError(f"SEQAX_BF16_ARRAY_INVALID path={path}")
+    return np.load(path, allow_pickle=False)
+
+
+def _source_manifest() -> tuple[SourceFileContract, ...]:
+    package = Path(__file__).resolve().parent
+    paths = (
+        package / "canonical.py",
+        package / "cli.py",
+        package / "contracts.py",
+        package / "dtensor_interpreter.py",
+        package / "identity.py",
+        package / "jax_lowering.py",
+        package / "ledger.py",
+        package / "lowering.py",
+        package / "runner.py",
+        package / "seqax_numerical.py",
+        package / "seqax_numerical_runner.py",
+        package / "seqax_pallas_lowering.py",
+        package / "seqax_pallas_runner.py",
+        package / "seqax_physical_execution.py",
+        package / "seqax_physical_lowering.py",
+        package / "seqax_runner.py",
+        package / "dialects" / "distributed_tensor.py",
+        package / "dialects" / "tpu_schedule.py",
+        package / "workloads" / "seqax_forward.py",
+        package / "workloads" / "seqax_oracle.py",
+    )
+    return tuple(
+        SourceFileContract(path=path.relative_to(package.parent).as_posix(), sha256=_sha256(path))
+        for path in paths
+    )
+
+
+def _require_clean_repository(repository_root: Path) -> None:
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    if status:
+        raise ValueError(f"SEQAX_BF16_SOURCE_DIRTY status={status}")
+
+
+def _require_safe_new_root(root: Path) -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    protected = (Path("/").resolve(), Path.home().resolve(), repository_root)
+    if any(root == value or root in value.parents for value in protected) or (
+        repository_root in root.parents
+    ):
+        raise ValueError(f"SEQAX_BF16_UNSAFE_ROOT path={root}")
+    if root.exists():
+        raise ValueError(f"SEQAX_BF16_ROOT_EXISTS path={root}")
+
+
+def _preflight_existing_root(root: Path) -> None:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"SEQAX_BF16_ROOT_INVALID path={root}")
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"SEQAX_BF16_SYMLINK path={path}")
+        if path.is_file() and path.stat().st_nlink != 1:
+            raise ValueError(f"SEQAX_BF16_HARDLINK path={path}")
+
+
+def _close_ledger(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.execute("PRAGMA journal_mode=DELETE")
+    sidecars = (path.with_name(f"{path.name}-shm"), path.with_name(f"{path.name}-wal"))
+    if any(value.exists() for value in sidecars):
+        raise ValueError("SEQAX_BF16_LEDGER_SIDECAR_PRESENT")
+
+
+def _device_inventory(devices: tuple[Any, ...]) -> tuple[SeqaxBf16Device, ...]:
+    return tuple(
+        SeqaxBf16Device(
+            id=value.id,
+            process_index=value.process_index,
+            platform=value.platform,
+            device_kind=value.device_kind,
+        )
+        for value in devices
+    )
+
+
+def _validate_devices(devices: tuple[Any, ...], contract: SeqaxBf16ValidationContract) -> None:
+    inventory = _device_inventory(devices)
+    if (
+        len(inventory) != contract.device_count
+        or tuple(value.id for value in inventory) != tuple(range(contract.device_count))
+        or len({value.process_index for value in inventory}) != 1
+        or any(value.platform != contract.backend for value in inventory)
+        or any(value.device_kind not in {contract.device_kind, "TPU v7x"} for value in inventory)
+    ):
+        raise ValueError(f"SEQAX_BF16_DEVICE_MISMATCH devices={inventory}")
+
+
+def _resident_inputs(host_inputs: tuple[np.ndarray, ...], plan: Any, mesh: Any) -> tuple[Any, ...]:
+    return tuple(
+        jax.device_put(
+            jnp.asarray(value),
+            NamedSharding(mesh, tensor_contract.partition_spec()),
+        )
+        for value, tensor_contract in zip(host_inputs, plan.input_contracts, strict=True)
+    )
+
+
+def _execute_outputs(executable: Any, inputs: tuple[Any, ...]) -> tuple[np.ndarray, ...]:
+    outputs = executable(*inputs)
+    jax.block_until_ready(outputs)
+    return tuple(np.asarray(value) for value in outputs)
+
+
+def _execute(executable: Any, inputs: tuple[Any, ...]) -> np.ndarray:
+    outputs = _execute_outputs(executable, inputs)
+    if len(outputs) != 1:
+        raise ValueError("SEQAX_BF16_OUTPUT_COUNT_MISMATCH")
+    return outputs[0]
+
+
+def _compile_path(
+    plan: SeqaxPallasPlan | JaxDistributedMeshPlan,
+    host_inputs: tuple[np.ndarray, ...],
+    devices: tuple[Any, ...],
+    *,
+    pallas: bool,
+    interpret_pallas: bool = False,
+) -> _CompiledPath:
+    if pallas:
+        callable_, mesh = plan.build(interpret=interpret_pallas, devices=devices)
+    else:
+        callable_, mesh = plan.build(devices=devices)
+    resident = _resident_inputs(host_inputs, plan, mesh)
+    lowered = callable_.lower(*resident)
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+    compiler_hlo = _compiler_hlo(lowered)
+    return _CompiledPath(
+        plan=plan,
+        executable=lowered.compile(),
+        mesh=mesh,
+        stablehlo=stablehlo,
+        compiler_hlo=compiler_hlo,
+    )
+
+
+def _compile_instrumented_pallas(
+    plan: SeqaxPallasPlan,
+    host_inputs: tuple[np.ndarray, ...],
+    devices: tuple[Any, ...],
+    *,
+    expected_layers: int,
+    interpret: bool = False,
+) -> _InstrumentedPath:
+    callable_, mesh = plan.build_with_strict_silu_checkpoints(
+        expected_layers=expected_layers,
+        checkpoint_spec=PartitionSpec("d", None, "t"),
+        interpret=interpret,
+        devices=devices,
+    )
+    resident = _resident_inputs(host_inputs, plan, mesh)
+    lowered = callable_.lower(*resident)
+    return _InstrumentedPath(
+        plan=plan,
+        executable=lowered.compile(),
+        mesh=mesh,
+        stablehlo=str(lowered.compiler_ir(dialect="stablehlo")),
+        compiler_hlo=_compiler_hlo(lowered),
+    )
+
+
+def _compile_instrumented_control(
+    plan: JaxDistributedMeshPlan,
+    host_inputs: tuple[np.ndarray, ...],
+    devices: tuple[Any, ...],
+    *,
+    expected_layers: int,
+) -> _InstrumentedPath:
+    callable_, mesh = plan.build_with_strict_silu_checkpoints(
+        expected_layers=expected_layers,
+        checkpoint_spec=PartitionSpec("d", None, "t"),
+        devices=devices,
+    )
+    resident = _resident_inputs(host_inputs, plan, mesh)
+    lowered = callable_.lower(*resident)
+    return _InstrumentedPath(
+        plan=plan,
+        executable=lowered.compile(),
+        mesh=mesh,
+        stablehlo=str(lowered.compiler_ir(dialect="stablehlo")),
+        compiler_hlo=_compiler_hlo(lowered),
+    )
+
+
+def _split_instrumented_outputs(
+    outputs: tuple[np.ndarray, ...],
+    scenario: SeqaxBf16NumericalScenario,
+) -> tuple[np.ndarray, tuple[np.ndarray, ...], tuple[np.ndarray, ...]]:
+    expected_count = 1 + 2 * scenario.parameters.layers
+    if len(outputs) != expected_count:
+        raise ValueError(
+            "SEQAX_BF16_INSTRUMENTED_OUTPUT_COUNT_MISMATCH "
+            f"expected={expected_count} observed={len(outputs)}"
+        )
+    return outputs[0], outputs[1::2], outputs[2::2]
+
+
+def _plan_root(root: Path, scenario: SeqaxBf16NumericalScenario) -> Path:
+    return root / "plans" / scenario.name
+
+
+def _prepare_scenario(
+    root: Path,
+    scenario: SeqaxBf16NumericalScenario,
+    devices: tuple[Any, ...],
+) -> _CompiledScenario:
+    parameters = scenario.parameters.model_dump()
+    host_inputs = tuple(
+        np.asarray(value) for value in seqax_forward_inputs(seed=scenario.seeds[0], **parameters)
+    )
+    distributed = seqax_forward_schedule(
+        **parameters,
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    pallas_plan = lower_seqax_physical_to_pallas(distributed, physical)
+    control_plan = lower_distributed_program_to_jax_mesh(distributed)
+    pallas = _compile_path(pallas_plan, host_inputs, devices, pallas=True)
+    control = _compile_path(control_plan, host_inputs, devices, pallas=False)
+    validate_strict_silu_stablehlo(pallas.stablehlo, expected_count=parameters["layers"])
+    validate_strict_silu_stablehlo(control.stablehlo, expected_count=parameters["layers"])
+    all_gathers, reduce_scatters = _physical_collective_counts(physical)
+    _validate_compiled_program(
+        pallas.stablehlo,
+        pallas.compiler_hlo,
+        pallas_region_count=pallas_plan.pallas_region_count,
+        all_gather_count=all_gathers,
+        reduce_scatter_count=reduce_scatters,
+    )
+    instrumented_pallas = _compile_instrumented_pallas(
+        pallas_plan,
+        host_inputs,
+        devices,
+        expected_layers=parameters["layers"],
+    )
+    instrumented_control = _compile_instrumented_control(
+        control_plan,
+        host_inputs,
+        devices,
+        expected_layers=parameters["layers"],
+    )
+    validate_instrumented_strict_silu_stablehlo(
+        instrumented_pallas.stablehlo,
+        expected_count=parameters["layers"],
+    )
+    validate_instrumented_strict_silu_stablehlo(
+        instrumented_control.stablehlo,
+        expected_count=parameters["layers"],
+    )
+    plan_root = _plan_root(root, scenario)
+    files = {
+        "distributed.xdsl": canonical_text(distributed),
+        "physical.xdsl": canonical_text(physical),
+        "lowered_pallas.py": pallas_plan.render_executable_source(),
+        "lowered_control.py": control_plan.render_executable_source(),
+        "pallas_stablehlo.txt": pallas.stablehlo + "\n",
+        "pallas_compiler_hlo.txt": pallas.compiler_hlo + "\n",
+        "control_stablehlo.txt": control.stablehlo + "\n",
+        "control_compiler_hlo.txt": control.compiler_hlo + "\n",
+        "instrumented_pallas_stablehlo.txt": instrumented_pallas.stablehlo + "\n",
+        "instrumented_pallas_compiler_hlo.txt": instrumented_pallas.compiler_hlo + "\n",
+        "instrumented_control_stablehlo.txt": instrumented_control.stablehlo + "\n",
+        "instrumented_control_compiler_hlo.txt": instrumented_control.compiler_hlo + "\n",
+    }
+    for name, value in files.items():
+        _write_text(plan_root / name, value)
+    _write_json(plan_root / "pallas_manifest.json", pallas_plan.manifest())
+    _write_json(plan_root / "control_manifest.json", control_plan.manifest())
+    record = SeqaxBf16PlanRecord(
+        scenario=scenario.name,
+        distributed_schedule_sha256=pallas_plan.distributed_schedule_sha256,
+        physical_schedule_sha256=pallas_plan.physical_schedule_sha256,
+        pallas_source_sha256=pallas_plan.source_sha256(),
+        control_source_sha256=control_plan.source_sha256(),
+        pallas_stablehlo_sha256=_sha256(plan_root / "pallas_stablehlo.txt"),
+        pallas_compiler_hlo_sha256=_sha256(plan_root / "pallas_compiler_hlo.txt"),
+        control_stablehlo_sha256=_sha256(plan_root / "control_stablehlo.txt"),
+        control_compiler_hlo_sha256=_sha256(plan_root / "control_compiler_hlo.txt"),
+        instrumented_pallas_stablehlo_sha256=_sha256(
+            plan_root / "instrumented_pallas_stablehlo.txt"
+        ),
+        instrumented_pallas_compiler_hlo_sha256=_sha256(
+            plan_root / "instrumented_pallas_compiler_hlo.txt"
+        ),
+        instrumented_control_stablehlo_sha256=_sha256(
+            plan_root / "instrumented_control_stablehlo.txt"
+        ),
+        instrumented_control_compiler_hlo_sha256=_sha256(
+            plan_root / "instrumented_control_compiler_hlo.txt"
+        ),
+        pallas_region_count=pallas_plan.pallas_region_count,
+        all_gather_count=all_gathers,
+        reduce_scatter_count=reduce_scatters,
+        strict_silu_count=parameters["layers"],
+    )
+    _write_json(plan_root / "plan.json", record.model_dump(mode="json"))
+    return _CompiledScenario(
+        scenario=scenario,
+        distributed=distributed,
+        physical=physical,
+        pallas=pallas,
+        control=control,
+        instrumented_pallas=instrumented_pallas,
+        instrumented_control=instrumented_control,
+        record=record,
+    )
+
+
+def _seed_root(root: Path, scenario: str, seed: int) -> Path:
+    return root / "scenarios" / scenario / f"seed-{seed}"
+
+
+def _checkpoint_hashes(values: tuple[np.ndarray, ...]) -> tuple[str, ...]:
+    return tuple(array_sha256(value) for value in values)
+
+
+def _save_checkpoints(
+    root: Path,
+    prefix: str,
+    gates: tuple[np.ndarray, ...],
+    silus: tuple[np.ndarray, ...],
+    scenario: SeqaxBf16NumericalScenario,
+) -> None:
+    for layer, (gate, silu, gate_contract, silu_contract) in enumerate(
+        zip(
+            gates,
+            silus,
+            scenario.gate_checkpoints,
+            scenario.silu_checkpoints,
+            strict=True,
+        )
+    ):
+        _save_array(
+            root / "checkpoints" / f"{prefix}_gate_{layer:02d}.npy",
+            encode_seqax_bf16_checkpoint(gate, gate_contract),
+        )
+        _save_array(
+            root / "checkpoints" / f"{prefix}_silu_{layer:02d}.npy",
+            encode_seqax_bf16_checkpoint(silu, silu_contract),
+        )
+
+
+def _run_seed(
+    root: Path,
+    compiled: _CompiledScenario,
+    seed: int,
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16SeedObservation:
+    scenario = compiled.scenario
+    parameters = scenario.parameters.model_dump()
+    host_inputs = tuple(
+        np.asarray(value) for value in seqax_forward_inputs(seed=seed, **parameters)
+    )
+    seed_root = _seed_root(root, scenario.name, seed)
+    for index, value in enumerate(host_inputs):
+        _save_array(seed_root / "inputs" / f"{index:02d}.npy", value)
+    cpu_reference = np.asarray(
+        seqax_forward_canonical_reference(
+            host_inputs,
+            quantization_decimals=contract.policy.cpu_reference_quantization_decimals,
+            **parameters,
+        )
+    )
+    _save_array(seed_root / "cpu_reference.npy", cpu_reference)
+
+    pallas_inputs = _resident_inputs(host_inputs, compiled.pallas.plan, compiled.pallas.mesh)
+    control_inputs = _resident_inputs(host_inputs, compiled.control.plan, compiled.control.mesh)
+    pallas_output = _execute(compiled.pallas.executable, pallas_inputs)
+    control_output = _execute(compiled.control.executable, control_inputs)
+    _save_array(seed_root / "pallas_output.npy", pallas_output)
+    _save_array(seed_root / "control_output.npy", control_output)
+
+    instrumented_pallas_inputs = _resident_inputs(
+        host_inputs,
+        compiled.instrumented_pallas.plan,
+        compiled.instrumented_pallas.mesh,
+    )
+    instrumented_pallas_outputs = _execute_outputs(
+        compiled.instrumented_pallas.executable,
+        instrumented_pallas_inputs,
+    )
+    instrumented_pallas_output, pallas_gates, pallas_silus = _split_instrumented_outputs(
+        instrumented_pallas_outputs,
+        scenario,
+    )
+    instrumented_control_inputs = _resident_inputs(
+        host_inputs,
+        compiled.instrumented_control.plan,
+        compiled.instrumented_control.mesh,
+    )
+    instrumented_control_outputs = _execute_outputs(
+        compiled.instrumented_control.executable,
+        instrumented_control_inputs,
+    )
+    instrumented_control_output, control_gates, control_silus = _split_instrumented_outputs(
+        instrumented_control_outputs,
+        scenario,
+    )
+    _save_array(seed_root / "instrumented_pallas_output.npy", instrumented_pallas_output)
+    _save_array(seed_root / "instrumented_control_output.npy", instrumented_control_output)
+    _save_checkpoints(seed_root, "pallas", pallas_gates, pallas_silus, scenario)
+    _save_checkpoints(seed_root, "control", control_gates, control_silus, scenario)
+
+    instrumented_parity = np.array_equal(
+        pallas_output, instrumented_pallas_output
+    ) and np.array_equal(control_output, instrumented_control_output)
+    assessment = assess_seqax_bf16_forward(
+        pallas_output,
+        control_output,
+        seed=seed,
+        inputs=host_inputs,
+        pallas_gate_checkpoints=pallas_gates,
+        control_gate_checkpoints=control_gates,
+        pallas_silu_checkpoints=pallas_silus,
+        control_silu_checkpoints=control_silus,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    if (
+        not instrumented_parity
+        or not assessment.final_outputs_satisfy_policy
+        or not assessment.checkpoint_values_consistent
+    ):
+        raise ValueError(
+            f"SEQAX_BF16_SEED_REJECTED scenario={scenario.name} seed={seed} "
+            f"instrumented_parity={instrumented_parity} assessment={assessment}"
+        )
+    observation = SeqaxBf16SeedObservation(
+        scenario=scenario.name,
+        seed=seed,
+        input_sha256=arrays_sha256(host_inputs),
+        cpu_reference_sha256=array_sha256(cpu_reference),
+        pallas_output_sha256=array_sha256(pallas_output),
+        control_output_sha256=array_sha256(control_output),
+        instrumented_pallas_output_sha256=array_sha256(instrumented_pallas_output),
+        instrumented_control_output_sha256=array_sha256(instrumented_control_output),
+        pallas_gate_sha256=_checkpoint_hashes(pallas_gates),
+        control_gate_sha256=_checkpoint_hashes(control_gates),
+        pallas_silu_sha256=_checkpoint_hashes(pallas_silus),
+        control_silu_sha256=_checkpoint_hashes(control_silus),
+        assessment=assessment,
+        instrumented_output_parity=instrumented_parity,
+    )
+    _write_json(seed_root / "observation.json", observation.model_dump(mode="json"))
+    return observation
+
+
+def _remove_strict_barrier(stablehlo: str, *, input_barrier: bool) -> str:
+    lines = stablehlo.splitlines()
+    call_index = next(
+        (index for index, line in enumerate(lines) if "func.call @silu(" in line),
+        None,
+    )
+    if call_index is None:
+        raise ValueError("SEQAX_BF16_DISCRIMINATOR_SILU_CALL_MISSING")
+    call_match = re.search(
+        r"(?P<result>%[A-Za-z0-9_]+) = func\.call @silu\((?P<input>%[A-Za-z0-9_]+)\)",
+        lines[call_index],
+    )
+    if call_match is None:
+        raise ValueError("SEQAX_BF16_DISCRIMINATOR_SILU_CALL_INVALID")
+    if input_barrier:
+        barrier_result = call_match.group("input")
+        barrier_index = next(
+            (
+                index
+                for index, line in enumerate(lines[:call_index])
+                if re.search(
+                    rf"^\s*{re.escape(barrier_result)} = stablehlo\.optimization_barrier ",
+                    line,
+                )
+            ),
+            None,
+        )
+        if barrier_index is None:
+            raise ValueError("SEQAX_BF16_DISCRIMINATOR_INPUT_BARRIER_MISSING")
+        source_match = re.search(
+            r"stablehlo\.optimization_barrier (?P<source>%[A-Za-z0-9_]+)",
+            lines[barrier_index],
+        )
+        assert source_match is not None
+        replacement = source_match.group("source")
+    else:
+        call_result = call_match.group("result")
+        barrier_index = next(
+            (
+                index
+                for index, line in enumerate(lines[call_index + 1 :], start=call_index + 1)
+                if "stablehlo.optimization_barrier" in line
+                and re.search(rf"\s{re.escape(call_result)}\s*:", line)
+            ),
+            None,
+        )
+        if barrier_index is None:
+            raise ValueError("SEQAX_BF16_DISCRIMINATOR_OUTPUT_BARRIER_MISSING")
+        result_match = re.search(r"^\s*(?P<result>%[A-Za-z0-9_]+) =", lines[barrier_index])
+        assert result_match is not None
+        barrier_result = result_match.group("result")
+        replacement = call_result
+    del lines[barrier_index]
+    return re.sub(rf"{re.escape(barrier_result)}\b", replacement, "\n".join(lines)) + "\n"
+
+
+def _replace_silu_body(stablehlo: str, *, relu: bool) -> str:
+    match = re.search(
+        r"(?ms)^  func\.func private @silu\(%arg0: (?P<type>tensor<[^\n]+xbf16>)\) "
+        r"-> (?P=type) \{.*?^  \}",
+        stablehlo,
+    )
+    if match is None:
+        raise ValueError("SEQAX_BF16_DISCRIMINATOR_SILU_BODY_MISSING")
+    tensor_type = match.group("type")
+    if relu:
+        replacement = f"""  func.func private @silu(%arg0: {tensor_type}) -> {tensor_type} {{
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
+    %0 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<bf16>) -> {tensor_type}
+    %1 = stablehlo.maximum %arg0, %0 : {tensor_type}
+    return %1 : {tensor_type}
+  }}"""
+    else:
+        replacement = f"""  func.func private @silu(%arg0: {tensor_type}) -> {tensor_type} {{
+    return %arg0 : {tensor_type}
+  }}"""
+    return stablehlo[: match.start()] + replacement + stablehlo[match.end() :]
+
+
+def _drop_reduction_collective(physical: str) -> str:
+    removed = False
+    lines = []
+    for line in physical.splitlines():
+        if not removed and '"tpu_schedule.collective"' in line and "reduce_scatter" in line:
+            removed = True
+            continue
+        lines.append(line)
+    if not removed:
+        raise ValueError("SEQAX_BF16_DISCRIMINATOR_REDUCE_SCATTER_MISSING")
+    return "\n".join(lines) + "\n"
+
+
+def _load_saved_checkpoints(
+    seed_root: Path,
+    scenario: SeqaxBf16NumericalScenario,
+    prefix: str,
+) -> tuple[tuple[np.ndarray, ...], tuple[np.ndarray, ...]]:
+    gates = tuple(
+        decode_seqax_bf16_checkpoint(
+            _load_array(seed_root / "checkpoints" / f"{prefix}_gate_{layer:02d}.npy"),
+            contract,
+        )
+        for layer, contract in enumerate(scenario.gate_checkpoints)
+    )
+    silus = tuple(
+        decode_seqax_bf16_checkpoint(
+            _load_array(seed_root / "checkpoints" / f"{prefix}_silu_{layer:02d}.npy"),
+            contract,
+        )
+        for layer, contract in enumerate(scenario.silu_checkpoints)
+    )
+    return gates, silus
+
+
+def _mutation_failure(
+    output: np.ndarray,
+    *,
+    clause: SeqaxDiscriminatorClause,
+    contract: SeqaxBf16ValidationContract,
+    scenario: SeqaxBf16NumericalScenario,
+    seed: int,
+    inputs: tuple[np.ndarray, ...],
+    gates: tuple[np.ndarray, ...],
+    silus: tuple[np.ndarray, ...],
+) -> str:
+    try:
+        assessment = assess_seqax_bf16_forward(
+            output,
+            output,
+            seed=seed,
+            inputs=inputs,
+            pallas_gate_checkpoints=gates,
+            control_gate_checkpoints=gates,
+            pallas_silu_checkpoints=silus,
+            control_silu_checkpoints=silus,
+            policy=contract.policy,
+            scenario=scenario,
+        )
+    except (TypeError, ValueError) as error:
+        expected = {
+            SeqaxDiscriminatorClause.FINITE_OUTPUT: "finite",
+            SeqaxDiscriminatorClause.OUTPUT_DTYPE: "float32",
+            SeqaxDiscriminatorClause.OUTPUT_SHAPE: "shape",
+        }.get(clause)
+        if expected is None or expected not in str(error):
+            raise ValueError(
+                f"SEQAX_BF16_DISCRIMINATOR_WRONG_FAILURE clause={clause} error={error}"
+            ) from error
+        return f"{type(error).__name__}: {error}"
+    unit = contract.policy.unit_roundoff
+    clause_rejected = {
+        SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY: (
+            not assessment.final_outputs_satisfy_policy
+        ),
+        SeqaxDiscriminatorClause.ROW_SCALED_MAXIMUM: (
+            assessment.cpu_pallas_row_scaled_max > contract.policy.cpu_row_scaled_max_units * unit
+        ),
+        SeqaxDiscriminatorClause.RELATIVE_L2: (
+            assessment.cpu_pallas_relative_l2 > contract.policy.cpu_relative_l2_units * unit
+        ),
+    }.get(clause, False)
+    if not clause_rejected:
+        raise ValueError(
+            f"SEQAX_BF16_DISCRIMINATOR_FALSE_ACCEPT clause={clause} assessment={assessment}"
+        )
+    return f"{clause.value}: rejected metrics={assessment.model_dump(mode='json')}"
+
+
+def _compile_activation_mutant(
+    path: _CompiledPath,
+    host_inputs: tuple[np.ndarray, ...],
+    devices: tuple[Any, ...],
+    *,
+    pallas: bool,
+    relu: bool,
+    interpret_pallas: bool = False,
+) -> tuple[str, np.ndarray]:
+    original = jax.nn.silu
+
+    def identity(value: Any) -> Any:
+        return value
+
+    jax.nn.silu = jax.nn.relu if relu else identity
+    try:
+        if pallas:
+            if not isinstance(path.plan, SeqaxPallasPlan):
+                raise TypeError("SEQAX_BF16_PALLAS_MUTANT_PLAN_MISMATCH")
+            callable_, mesh = path.plan.build(interpret=interpret_pallas, devices=devices)
+        else:
+            if not isinstance(path.plan, JaxDistributedMeshPlan):
+                raise TypeError("SEQAX_BF16_CONTROL_MUTANT_PLAN_MISMATCH")
+            callable_, mesh = path.plan.build(devices=devices)
+        resident = _resident_inputs(host_inputs, path.plan, mesh)
+        lowered = callable_.lower(*resident)
+    finally:
+        jax.nn.silu = original
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+    output = _execute(lowered.compile(), resident)
+    return stablehlo, output
+
+
+def _artifact_identities(
+    root: Path, paths: tuple[Path, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return (
+        tuple(path.relative_to(root).as_posix() for path in paths),
+        tuple(_sha256(path) for path in paths),
+    )
+
+
+def _run_discriminators(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+    compiled: _CompiledScenario,
+    devices: tuple[Any, ...],
+) -> tuple[SeqaxBf16DiscriminatorObservation, ...]:
+    scenario = compiled.scenario
+    seed = scenario.seeds[0]
+    seed_root = _seed_root(root, scenario.name, seed)
+    host_inputs = tuple(
+        np.asarray(value)
+        for value in seqax_forward_inputs(seed=seed, **scenario.parameters.model_dump())
+    )
+    baseline = _load_array(seed_root / "pallas_output.npy")
+    gates, silus = _load_saved_checkpoints(seed_root, scenario, "pallas")
+    observations = []
+
+    def record(
+        discriminator: SeqaxNumericalDiscriminator,
+        paths: tuple[Path, ...],
+        failure: str,
+    ) -> None:
+        artifact_paths, artifact_sha256 = _artifact_identities(root, paths)
+        observations.append(
+            SeqaxBf16DiscriminatorObservation(
+                discriminator=discriminator,
+                clause=seqax_discriminator_clause(discriminator),
+                artifact_paths=artifact_paths,
+                artifact_sha256=artifact_sha256,
+                rejected=True,
+                failure=failure,
+            )
+        )
+
+    pallas_hlo = compiled.pallas.stablehlo
+    hlo_mutants = {
+        SeqaxNumericalDiscriminator.REMOVE_INPUT_BARRIER: _remove_strict_barrier(
+            pallas_hlo, input_barrier=True
+        ),
+        SeqaxNumericalDiscriminator.REMOVE_OUTPUT_BARRIER: _remove_strict_barrier(
+            pallas_hlo, input_barrier=False
+        ),
+        SeqaxNumericalDiscriminator.IDENTITY_SILU: _replace_silu_body(pallas_hlo, relu=False),
+        SeqaxNumericalDiscriminator.RELU_SILU: _replace_silu_body(pallas_hlo, relu=True),
+    }
+    for discriminator, mutant in hlo_mutants.items():
+        path = root / "discriminators" / discriminator / "mutant_stablehlo.txt"
+        _write_text(path, mutant)
+        try:
+            validate_strict_silu_stablehlo(
+                mutant,
+                expected_count=scenario.parameters.layers,
+            )
+        except ValueError as error:
+            failure = f"{type(error).__name__}: {error}"
+        else:
+            raise ValueError(f"SEQAX_BF16_HLO_DISCRIMINATOR_ACCEPTED name={discriminator}")
+        paths = [path]
+        if discriminator in {
+            SeqaxNumericalDiscriminator.IDENTITY_SILU,
+            SeqaxNumericalDiscriminator.RELU_SILU,
+        }:
+            for label, compiled_path, pallas in (
+                ("pallas", compiled.pallas, True),
+                ("control", compiled.control, False),
+            ):
+                runtime_hlo, runtime_output = _compile_activation_mutant(
+                    compiled_path,
+                    host_inputs,
+                    devices,
+                    pallas=pallas,
+                    relu=discriminator is SeqaxNumericalDiscriminator.RELU_SILU,
+                )
+                validate_activation_mutant_stablehlo(
+                    runtime_hlo,
+                    expected_count=scenario.parameters.layers,
+                    relu=discriminator is SeqaxNumericalDiscriminator.RELU_SILU,
+                )
+                runtime_hlo_path = path.with_name(f"{label}_runtime_stablehlo.txt")
+                runtime_output_path = path.with_name(f"{label}_runtime_output.npy")
+                _write_text(runtime_hlo_path, runtime_hlo + "\n")
+                _save_array(runtime_output_path, runtime_output)
+                causal_failure = _mutation_failure(
+                    runtime_output,
+                    clause=SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
+                    contract=contract,
+                    scenario=scenario,
+                    seed=seed,
+                    inputs=host_inputs,
+                    gates=gates,
+                    silus=silus,
+                )
+                if np.array_equal(runtime_output, baseline):
+                    raise ValueError(
+                        f"SEQAX_BF16_ACTIVATION_MUTANT_NOT_CAUSAL name={discriminator} path={label}"
+                    )
+                failure += f"; {label}_causal {causal_failure}"
+                paths.extend((runtime_hlo_path, runtime_output_path))
+        record(discriminator, tuple(paths), failure)
+
+    collective = _drop_reduction_collective(canonical_text(compiled.physical))
+    collective_path = (
+        root
+        / "discriminators"
+        / SeqaxNumericalDiscriminator.DROP_REDUCTION_COLLECTIVE
+        / "mutant_physical.xdsl"
+    )
+    _write_text(collective_path, collective)
+    try:
+        _parse_physical(collective).verify()
+    except VerifyException as error:
+        collective_failure = f"{type(error).__name__}: {error}"
+    else:
+        raise ValueError("SEQAX_BF16_COLLECTIVE_DISCRIMINATOR_ACCEPTED")
+    record(
+        SeqaxNumericalDiscriminator.DROP_REDUCTION_COLLECTIVE,
+        (collective_path,),
+        collective_failure,
+    )
+
+    input_mutations = {
+        SeqaxNumericalDiscriminator.DROP_EMBEDDING_SHARD: (SeqaxInputMutation.DROP_EMBEDDING_SHARD),
+        SeqaxNumericalDiscriminator.ROLL_MODEL_SHARD: SeqaxInputMutation.ROLL_MODEL_SHARD,
+        SeqaxNumericalDiscriminator.OMIT_MLP_TERM: SeqaxInputMutation.OMIT_MLP_TERM,
+        SeqaxNumericalDiscriminator.SWAP_GATE_UP: SeqaxInputMutation.SWAP_GATE_UP,
+    }
+    for discriminator, mutation in input_mutations.items():
+        mutant_inputs = mutate_seqax_forward_inputs(host_inputs, mutation)
+        resident = _resident_inputs(mutant_inputs, compiled.pallas.plan, compiled.pallas.mesh)
+        output = _execute(compiled.pallas.executable, resident)
+        mutation_root = root / "discriminators" / discriminator
+        paths = []
+        for index, value in enumerate(mutant_inputs):
+            path = mutation_root / "inputs" / f"{index:02d}.npy"
+            _save_array(path, value)
+            paths.append(path)
+        output_path = mutation_root / "runtime_output.npy"
+        _save_array(output_path, output)
+        paths.append(output_path)
+        failure = _mutation_failure(
+            output,
+            clause=SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
+            contract=contract,
+            scenario=scenario,
+            seed=seed,
+            inputs=host_inputs,
+            gates=gates,
+            silus=silus,
+        )
+        record(discriminator, tuple(paths), failure)
+
+    output_mutations: dict[SeqaxNumericalDiscriminator, np.ndarray] = {}
+    localized = baseline.copy()
+    localized.reshape(-1)[0] += np.float32(1.0)
+    output_mutations[SeqaxNumericalDiscriminator.LOCALIZED_SPIKE] = localized
+    output_mutations[SeqaxNumericalDiscriminator.DISTRIBUTED_DRIFT] = baseline + np.float32(0.5)
+    nonfinite = baseline.copy()
+    nonfinite.reshape(-1)[0] = np.nan
+    output_mutations[SeqaxNumericalDiscriminator.NONFINITE_OUTPUT] = nonfinite
+    output_mutations[SeqaxNumericalDiscriminator.DTYPE_OUTPUT] = baseline.astype(np.float64)
+    output_mutations[SeqaxNumericalDiscriminator.SHAPE_OUTPUT] = baseline[..., :-1]
+    for discriminator, output in output_mutations.items():
+        path = root / "discriminators" / discriminator / "mutant_output.npy"
+        _save_array(path, output)
+        failure = _mutation_failure(
+            output,
+            clause=seqax_discriminator_clause(discriminator),
+            contract=contract,
+            scenario=scenario,
+            seed=seed,
+            inputs=host_inputs,
+            gates=gates,
+            silus=silus,
+        )
+        record(discriminator, (path,), failure)
+
+    result = tuple(observations)
+    if tuple(value.discriminator for value in result) != contract.required_discriminators:
+        raise ValueError("SEQAX_BF16_DISCRIMINATOR_ORDER_MISMATCH")
+    _write_json(
+        root / "discriminators" / "observations.json",
+        [value.model_dump(mode="json") for value in result],
+    )
+    return result
+
+
+def _runtime(contract: SeqaxBf16ValidationContract) -> SeqaxBf16Runtime:
+    runtime = _runtime_identity()
+    expected = contract.runtime
+    if (
+        not runtime.python.startswith(expected.python_major_minor + ".")
+        or runtime.jax != expected.jax
+        or runtime.jaxlib != expected.jaxlib
+        or runtime.libtpu != expected.libtpu
+        or runtime.xla != expected.libtpu_init_args
+        or ml_dtypes.__version__ != expected.ml_dtypes
+    ):
+        raise ValueError(
+            "SEQAX_BF16_RUNTIME_MISMATCH "
+            f"runtime={runtime} ml_dtypes={ml_dtypes.__version__} expected={expected}"
+        )
+    return SeqaxBf16Runtime(runtime=runtime, ml_dtypes=ml_dtypes.__version__)
+
+
+def _artifact_role(path: Path) -> ArtifactRole:
+    value = path.as_posix()
+    if value == "contract.json":
+        return ArtifactRole.SEARCH_CONTRACT
+    if value == "result.json":
+        return ArtifactRole.SEARCH_RESULT
+    if value == "ledger.sqlite":
+        return ArtifactRole.EXECUTION_LEDGER
+    if value == "source_state.json":
+        return ArtifactRole.SOURCE_STATE
+    if value == "source_diff.patch":
+        return ArtifactRole.SOURCE_DIFF
+    if value.endswith("/distributed.xdsl"):
+        return ArtifactRole.DISTRIBUTED_IR
+    if value.endswith(("/physical.xdsl", "mutant_physical.xdsl")):
+        return ArtifactRole.PHYSICAL_IR
+    if value.endswith("/lowered_pallas.py"):
+        return ArtifactRole.PALLAS_SOURCE
+    if value.endswith("/lowered_control.py"):
+        return ArtifactRole.JAX_SOURCE
+    if value.endswith(("/plan.json", "_manifest.json")):
+        return ArtifactRole.PLAN_MANIFEST
+    if value.endswith("stablehlo.txt"):
+        return ArtifactRole.STABLEHLO
+    if value.endswith("compiler_hlo.txt"):
+        return ArtifactRole.COMPILER_HLO
+    if "/inputs/" in value:
+        return ArtifactRole.CORRECTNESS_INPUT
+    if value.endswith("cpu_reference.npy"):
+        return ArtifactRole.ORACLE_OUTPUT
+    if value.endswith(".npy"):
+        return ArtifactRole.CORRECTNESS_OUTPUT
+    return ArtifactRole.SEARCH_EVIDENCE
+
+
+def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
+    return tuple(
+        ArtifactReference(
+            path=path.relative_to(root).as_posix(),
+            size_bytes=path.stat().st_size,
+            sha256=_sha256(path),
+            role=_artifact_role(path.relative_to(root)),
+        )
+        for path in sorted(value for value in root.rglob("*") if value.is_file())
+        if path.name != "receipt.json"
+    )
+
+
+def _build_receipt(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+    run_id: str,
+) -> SeqaxBf16ValidationReceipt:
+    path = root / "receipt.json"
+    if path.exists():
+        raise ValueError("SEQAX_BF16_RECEIPT_EXISTS")
+    receipt = SeqaxBf16ValidationReceipt(
+        schema_version="seqax-bf16-forward-validation-receipt-v1",
+        contract_id=contract.contract_id,
+        run_id=run_id,
+        status="passed",
+        result_sha256=_sha256(root / "result.json"),
+        ledger_sha256=_sha256(root / "ledger.sqlite"),
+        artifacts=_artifact_manifest(root),
+    )
+    _write_json(path, receipt.model_dump(mode="json"))
+    return receipt
+
+
+def run_seqax_bf16_validation(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16ValidationResult:
+    canonical_contract = default_seqax_bf16_validation_contract()
+    if contract != canonical_contract:
+        raise ValueError("SEQAX_BF16_EXTERNAL_CONTRACT_MISMATCH")
+    root = root.resolve()
+    _require_safe_new_root(root)
+    repository_root = Path(__file__).resolve().parents[2]
+    _require_clean_repository(repository_root)
+    if _sha256(repository_root / "uv.lock") != contract.runtime.uv_lock_sha256:
+        raise ValueError("SEQAX_BF16_LOCK_MISMATCH")
+    runtime = _runtime(contract)
+    devices = tuple(jax.devices())
+    _validate_devices(devices, contract)
+    root.mkdir(parents=True)
+    _write_json(
+        root / "contract.json",
+        contract.model_dump(mode="json", exclude_computed_fields=True),
+    )
+    _source_state(repository_root, root)
+    source_state = json.loads((root / "source_state.json").read_text())
+    run_id = semantic_sha256(
+        SEQAX_BF16_RUN_SCHEMA,
+        contract.contract_id,
+        source_state["git_commit"],
+    )
+    ledger_path = root / "ledger.sqlite"
+    with ExperimentLedger(ledger_path) as ledger:
+        ledger.create(
+            run_id,
+            {
+                "schema": SEQAX_BF16_RUN_SCHEMA,
+                "contract_id": contract.contract_id,
+                "source_commit": source_state["git_commit"],
+            },
+        )
+
+    compiled = tuple(_prepare_scenario(root, scenario, devices) for scenario in contract.scenarios)
+    with ExperimentLedger(ledger_path) as ledger:
+        ledger.transition(
+            run_id,
+            RunState.VERIFIED,
+            {
+                "distributed_schedules": {
+                    value.scenario.name: value.record.distributed_schedule_sha256
+                    for value in compiled
+                }
+            },
+        )
+        ledger.transition(
+            run_id,
+            RunState.LOWERED,
+            {
+                "physical_schedules": {
+                    value.scenario.name: value.record.physical_schedule_sha256 for value in compiled
+                },
+                "pallas_sources": {
+                    value.scenario.name: value.record.pallas_source_sha256 for value in compiled
+                },
+            },
+        )
+        ledger.transition(
+            run_id,
+            RunState.COMPILED,
+            {"plans": [value.record.model_dump(mode="json") for value in compiled]},
+        )
+
+    observations = tuple(
+        _run_seed(root, value, seed, contract)
+        for value in compiled
+        for seed in value.scenario.seeds
+    )
+    with ExperimentLedger(ledger_path) as ledger:
+        ledger.transition(
+            run_id,
+            RunState.CORRECT,
+            {
+                "observations": len(observations),
+                "pallas_outputs": [value.pallas_output_sha256 for value in observations],
+                "control_outputs": [value.control_output_sha256 for value in observations],
+            },
+        )
+
+    discriminators = _run_discriminators(root, contract, compiled[0], devices)
+    result = SeqaxBf16ValidationResult(
+        schema_version=SEQAX_BF16_RUN_SCHEMA,
+        contract_id=contract.contract_id,
+        run_id=run_id,
+        runtime=runtime,
+        devices=_device_inventory(devices),
+        source_state_sha256=_sha256(root / "source_state.json"),
+        source_manifest=_source_manifest(),
+        plans=tuple(value.record for value in compiled),
+        observations=observations,
+        discriminators=discriminators,
+        passed=True,
+        claim_scope="declared-surface-bf16-numerical-correctness",
+    )
+    _write_json(root / "result.json", result.model_dump(mode="json"))
+    with ExperimentLedger(ledger_path) as ledger:
+        ledger.transition(
+            run_id,
+            RunState.VALIDATED,
+            {
+                "discriminators": [
+                    {
+                        "name": value.discriminator.value,
+                        "artifacts": list(value.artifact_sha256),
+                    }
+                    for value in discriminators
+                ],
+                "result_sha256": _sha256(root / "result.json"),
+            },
+        )
+    _close_ledger(ledger_path)
+    _validate(root, contract, require_accepted=False)
+    with ExperimentLedger(ledger_path) as ledger:
+        ledger.transition(
+            run_id,
+            RunState.ACCEPTED,
+            {"result_sha256": _sha256(root / "result.json"), "passed": True},
+        )
+    _close_ledger(ledger_path)
+    _build_receipt(root, contract, run_id)
+    return validate_seqax_bf16_validation(root, contract)
+
+
+def _canonical_plans(
+    scenario: SeqaxBf16NumericalScenario,
+) -> tuple[Any, Any, SeqaxPallasPlan, JaxDistributedMeshPlan]:
+    distributed = seqax_forward_schedule(
+        **scenario.parameters.model_dump(),
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    return (
+        distributed,
+        physical,
+        lower_seqax_physical_to_pallas(distributed, physical),
+        lower_distributed_program_to_jax_mesh(distributed),
+    )
+
+
+def _expected_files(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+    *,
+    receipt_present: bool,
+) -> set[Path]:
+    expected = {
+        root / "contract.json",
+        root / "source_state.json",
+        root / "source_diff.patch",
+        root / "ledger.sqlite",
+        root / "result.json",
+        root / "discriminators" / "observations.json",
+    }
+    plan_files = (
+        "distributed.xdsl",
+        "physical.xdsl",
+        "lowered_pallas.py",
+        "lowered_control.py",
+        "pallas_stablehlo.txt",
+        "pallas_compiler_hlo.txt",
+        "control_stablehlo.txt",
+        "control_compiler_hlo.txt",
+        "instrumented_pallas_stablehlo.txt",
+        "instrumented_pallas_compiler_hlo.txt",
+        "instrumented_control_stablehlo.txt",
+        "instrumented_control_compiler_hlo.txt",
+        "pallas_manifest.json",
+        "control_manifest.json",
+        "plan.json",
+    )
+    for scenario in contract.scenarios:
+        expected.update(_plan_root(root, scenario) / name for name in plan_files)
+        for seed in scenario.seeds:
+            seed_root = _seed_root(root, scenario.name, seed)
+            expected.update(seed_root / "inputs" / f"{index:02d}.npy" for index in range(13))
+            expected.update(
+                seed_root / name
+                for name in (
+                    "cpu_reference.npy",
+                    "pallas_output.npy",
+                    "control_output.npy",
+                    "instrumented_pallas_output.npy",
+                    "instrumented_control_output.npy",
+                    "observation.json",
+                )
+            )
+            for layer in range(scenario.parameters.layers):
+                expected.update(
+                    seed_root / "checkpoints" / f"{path}_{kind}_{layer:02d}.npy"
+                    for path in ("pallas", "control")
+                    for kind in ("gate", "silu")
+                )
+    for discriminator in contract.required_discriminators:
+        discriminator_root = root / "discriminators" / discriminator
+        if discriminator in {
+            SeqaxNumericalDiscriminator.REMOVE_INPUT_BARRIER,
+            SeqaxNumericalDiscriminator.REMOVE_OUTPUT_BARRIER,
+        }:
+            expected.add(discriminator_root / "mutant_stablehlo.txt")
+        elif discriminator in {
+            SeqaxNumericalDiscriminator.IDENTITY_SILU,
+            SeqaxNumericalDiscriminator.RELU_SILU,
+        }:
+            expected.update(
+                discriminator_root / name
+                for name in (
+                    "mutant_stablehlo.txt",
+                    "pallas_runtime_stablehlo.txt",
+                    "pallas_runtime_output.npy",
+                    "control_runtime_stablehlo.txt",
+                    "control_runtime_output.npy",
+                )
+            )
+        elif discriminator is SeqaxNumericalDiscriminator.DROP_REDUCTION_COLLECTIVE:
+            expected.add(discriminator_root / "mutant_physical.xdsl")
+        elif discriminator in {
+            SeqaxNumericalDiscriminator.DROP_EMBEDDING_SHARD,
+            SeqaxNumericalDiscriminator.ROLL_MODEL_SHARD,
+            SeqaxNumericalDiscriminator.OMIT_MLP_TERM,
+            SeqaxNumericalDiscriminator.SWAP_GATE_UP,
+        }:
+            expected.update(
+                discriminator_root / "inputs" / f"{index:02d}.npy" for index in range(13)
+            )
+            expected.add(discriminator_root / "runtime_output.npy")
+        else:
+            expected.add(discriminator_root / "mutant_output.npy")
+    if receipt_present:
+        expected.add(root / "receipt.json")
+    return {path.resolve() for path in expected}
+
+
+def _validate_closed_world(root: Path, expected: set[Path]) -> None:
+    _preflight_existing_root(root)
+    observed = {path.resolve() for path in root.rglob("*") if path.is_file()}
+    if observed != expected:
+        raise ValueError(
+            "SEQAX_BF16_CLOSED_WORLD_MISMATCH "
+            f"missing={sorted(map(str, expected - observed))} "
+            f"extra={sorted(map(str, observed - expected))}"
+        )
+
+
+def _validate_source(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+    result: SeqaxBf16ValidationResult,
+) -> str:
+    repository_root = Path(__file__).resolve().parents[2]
+    _require_clean_repository(repository_root)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    state_path = root / "source_state.json"
+    state = json.loads(state_path.read_text())
+    if (
+        result.source_state_sha256 != _sha256(state_path)
+        or state.get("git_commit") != commit
+        or state.get("git_dirty") is not False
+        or state.get("git_status") != []
+        or state.get("uv_lock_sha256") != contract.runtime.uv_lock_sha256
+        or _sha256(repository_root / "uv.lock") != contract.runtime.uv_lock_sha256
+        or (root / "source_diff.patch").read_bytes() != b""
+        or result.source_manifest != _source_manifest()
+    ):
+        raise ValueError("SEQAX_BF16_SOURCE_STATE_MISMATCH")
+    for source in result.source_manifest:
+        blob = subprocess.run(
+            ["git", "show", f"{commit}:src/{source.path}"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+        ).stdout
+        if hashlib.sha256(blob).hexdigest() != source.sha256:
+            raise ValueError(f"SEQAX_BF16_SOURCE_BLOB_MISMATCH path={source.path}")
+    return commit
+
+
+def _validate_plan(
+    root: Path,
+    scenario: SeqaxBf16NumericalScenario,
+    record: SeqaxBf16PlanRecord,
+) -> None:
+    distributed, physical, pallas_plan, control_plan = _canonical_plans(scenario)
+    plan_root = _plan_root(root, scenario)
+    if (
+        (plan_root / "distributed.xdsl").read_text() != canonical_text(distributed)
+        or (plan_root / "physical.xdsl").read_text() != canonical_text(physical)
+        or (plan_root / "lowered_pallas.py").read_text() != pallas_plan.render_executable_source()
+        or (plan_root / "lowered_control.py").read_text() != control_plan.render_executable_source()
+        or json.loads((plan_root / "pallas_manifest.json").read_text()) != pallas_plan.manifest()
+        or json.loads((plan_root / "control_manifest.json").read_text()) != control_plan.manifest()
+    ):
+        raise ValueError(f"SEQAX_BF16_PLAN_REPLAY_MISMATCH scenario={scenario.name}")
+    pallas_stablehlo = (plan_root / "pallas_stablehlo.txt").read_text()
+    control_stablehlo = (plan_root / "control_stablehlo.txt").read_text()
+    pallas_compiler_hlo = (plan_root / "pallas_compiler_hlo.txt").read_text()
+    validate_strict_silu_stablehlo(
+        pallas_stablehlo,
+        expected_count=scenario.parameters.layers,
+    )
+    validate_strict_silu_stablehlo(
+        control_stablehlo,
+        expected_count=scenario.parameters.layers,
+    )
+    validate_instrumented_strict_silu_stablehlo(
+        (plan_root / "instrumented_pallas_stablehlo.txt").read_text(),
+        expected_count=scenario.parameters.layers,
+    )
+    validate_instrumented_strict_silu_stablehlo(
+        (plan_root / "instrumented_control_stablehlo.txt").read_text(),
+        expected_count=scenario.parameters.layers,
+    )
+    all_gathers, reduce_scatters = _physical_collective_counts(physical)
+    _validate_compiled_program(
+        pallas_stablehlo,
+        pallas_compiler_hlo,
+        pallas_region_count=pallas_plan.pallas_region_count,
+        all_gather_count=all_gathers,
+        reduce_scatter_count=reduce_scatters,
+    )
+    expected = SeqaxBf16PlanRecord(
+        scenario=scenario.name,
+        distributed_schedule_sha256=pallas_plan.distributed_schedule_sha256,
+        physical_schedule_sha256=pallas_plan.physical_schedule_sha256,
+        pallas_source_sha256=pallas_plan.source_sha256(),
+        control_source_sha256=control_plan.source_sha256(),
+        pallas_stablehlo_sha256=_sha256(plan_root / "pallas_stablehlo.txt"),
+        pallas_compiler_hlo_sha256=_sha256(plan_root / "pallas_compiler_hlo.txt"),
+        control_stablehlo_sha256=_sha256(plan_root / "control_stablehlo.txt"),
+        control_compiler_hlo_sha256=_sha256(plan_root / "control_compiler_hlo.txt"),
+        instrumented_pallas_stablehlo_sha256=_sha256(
+            plan_root / "instrumented_pallas_stablehlo.txt"
+        ),
+        instrumented_pallas_compiler_hlo_sha256=_sha256(
+            plan_root / "instrumented_pallas_compiler_hlo.txt"
+        ),
+        instrumented_control_stablehlo_sha256=_sha256(
+            plan_root / "instrumented_control_stablehlo.txt"
+        ),
+        instrumented_control_compiler_hlo_sha256=_sha256(
+            plan_root / "instrumented_control_compiler_hlo.txt"
+        ),
+        pallas_region_count=pallas_plan.pallas_region_count,
+        all_gather_count=all_gathers,
+        reduce_scatter_count=reduce_scatters,
+        strict_silu_count=scenario.parameters.layers,
+    )
+    saved = SeqaxBf16PlanRecord.model_validate_json((plan_root / "plan.json").read_text())
+    if record != expected or saved != expected:
+        raise ValueError(f"SEQAX_BF16_PLAN_IDENTITY_MISMATCH scenario={scenario.name}")
+
+
+def _validate_seed(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+    scenario: SeqaxBf16NumericalScenario,
+    seed: int,
+) -> SeqaxBf16SeedObservation:
+    seed_root = _seed_root(root, scenario.name, seed)
+    expected_inputs = tuple(
+        np.asarray(value)
+        for value in seqax_forward_inputs(seed=seed, **scenario.parameters.model_dump())
+    )
+    saved_inputs = tuple(
+        _load_array(seed_root / "inputs" / f"{index:02d}.npy") for index in range(13)
+    )
+    if any(
+        saved.shape != expected.shape
+        or saved.dtype != expected.dtype
+        or not np.array_equal(saved, expected)
+        for saved, expected in zip(saved_inputs, expected_inputs, strict=True)
+    ):
+        raise ValueError(f"SEQAX_BF16_INPUT_REPLAY_MISMATCH scenario={scenario.name} seed={seed}")
+    fresh_cpu = np.asarray(
+        seqax_forward_canonical_reference(
+            expected_inputs,
+            quantization_decimals=contract.policy.cpu_reference_quantization_decimals,
+            **scenario.parameters.model_dump(),
+        )
+    )
+    saved_cpu = _load_array(seed_root / "cpu_reference.npy")
+    if (
+        saved_cpu.shape != fresh_cpu.shape
+        or saved_cpu.dtype != fresh_cpu.dtype
+        or not np.array_equal(saved_cpu, fresh_cpu)
+    ):
+        raise ValueError(f"SEQAX_BF16_CPU_REPLAY_MISMATCH scenario={scenario.name} seed={seed}")
+    pallas = _load_array(seed_root / "pallas_output.npy")
+    control = _load_array(seed_root / "control_output.npy")
+    instrumented_pallas = _load_array(seed_root / "instrumented_pallas_output.npy")
+    instrumented_control = _load_array(seed_root / "instrumented_control_output.npy")
+    if not np.array_equal(pallas, instrumented_pallas) or not np.array_equal(
+        control, instrumented_control
+    ):
+        raise ValueError(
+            f"SEQAX_BF16_INSTRUMENTED_OUTPUT_MISMATCH scenario={scenario.name} seed={seed}"
+        )
+    pallas_gates, pallas_silus = _load_saved_checkpoints(seed_root, scenario, "pallas")
+    control_gates, control_silus = _load_saved_checkpoints(seed_root, scenario, "control")
+    assessment = assess_seqax_bf16_forward(
+        pallas,
+        control,
+        seed=seed,
+        inputs=saved_inputs,
+        pallas_gate_checkpoints=pallas_gates,
+        control_gate_checkpoints=control_gates,
+        pallas_silu_checkpoints=pallas_silus,
+        control_silu_checkpoints=control_silus,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    expected = SeqaxBf16SeedObservation(
+        scenario=scenario.name,
+        seed=seed,
+        input_sha256=arrays_sha256(saved_inputs),
+        cpu_reference_sha256=array_sha256(saved_cpu),
+        pallas_output_sha256=array_sha256(pallas),
+        control_output_sha256=array_sha256(control),
+        instrumented_pallas_output_sha256=array_sha256(instrumented_pallas),
+        instrumented_control_output_sha256=array_sha256(instrumented_control),
+        pallas_gate_sha256=_checkpoint_hashes(pallas_gates),
+        control_gate_sha256=_checkpoint_hashes(control_gates),
+        pallas_silu_sha256=_checkpoint_hashes(pallas_silus),
+        control_silu_sha256=_checkpoint_hashes(control_silus),
+        assessment=assessment,
+        instrumented_output_parity=True,
+    )
+    saved = SeqaxBf16SeedObservation.model_validate_json(
+        (seed_root / "observation.json").read_text()
+    )
+    if (
+        expected != saved
+        or not assessment.final_outputs_satisfy_policy
+        or not assessment.checkpoint_values_consistent
+    ):
+        raise ValueError(
+            f"SEQAX_BF16_OBSERVATION_REPLAY_MISMATCH scenario={scenario.name} seed={seed}"
+        )
+    return expected
+
+
+def _discriminator_observation(
+    root: Path,
+    discriminator: SeqaxNumericalDiscriminator,
+    paths: tuple[Path, ...],
+    failure: str,
+) -> SeqaxBf16DiscriminatorObservation:
+    artifact_paths, artifact_sha256 = _artifact_identities(root, paths)
+    return SeqaxBf16DiscriminatorObservation(
+        discriminator=discriminator,
+        clause=seqax_discriminator_clause(discriminator),
+        artifact_paths=artifact_paths,
+        artifact_sha256=artifact_sha256,
+        rejected=True,
+        failure=failure,
+    )
+
+
+def _validate_discriminators(
+    root: Path,
+    contract: SeqaxBf16ValidationContract,
+) -> tuple[SeqaxBf16DiscriminatorObservation, ...]:
+    scenario = contract.scenarios[0]
+    seed = scenario.seeds[0]
+    seed_root = _seed_root(root, scenario.name, seed)
+    host_inputs = tuple(
+        np.asarray(value)
+        for value in seqax_forward_inputs(seed=seed, **scenario.parameters.model_dump())
+    )
+    baseline = _load_array(seed_root / "pallas_output.npy")
+    gates, silus = _load_saved_checkpoints(seed_root, scenario, "pallas")
+    pallas_hlo = (_plan_root(root, scenario) / "pallas_stablehlo.txt").read_text()
+    pallas_hlo = pallas_hlo.removesuffix("\n")
+    expected = []
+
+    hlo_mutants = {
+        SeqaxNumericalDiscriminator.REMOVE_INPUT_BARRIER: _remove_strict_barrier(
+            pallas_hlo, input_barrier=True
+        ),
+        SeqaxNumericalDiscriminator.REMOVE_OUTPUT_BARRIER: _remove_strict_barrier(
+            pallas_hlo, input_barrier=False
+        ),
+        SeqaxNumericalDiscriminator.IDENTITY_SILU: _replace_silu_body(pallas_hlo, relu=False),
+        SeqaxNumericalDiscriminator.RELU_SILU: _replace_silu_body(pallas_hlo, relu=True),
+    }
+    for discriminator, mutant in hlo_mutants.items():
+        path = root / "discriminators" / discriminator / "mutant_stablehlo.txt"
+        if path.read_text() != mutant:
+            raise ValueError(f"SEQAX_BF16_HLO_MUTANT_REPLAY_MISMATCH name={discriminator}")
+        try:
+            validate_strict_silu_stablehlo(
+                mutant,
+                expected_count=scenario.parameters.layers,
+            )
+        except ValueError as error:
+            failure = f"{type(error).__name__}: {error}"
+        else:
+            raise ValueError(f"SEQAX_BF16_HLO_DISCRIMINATOR_ACCEPTED name={discriminator}")
+        paths = [path]
+        if discriminator in {
+            SeqaxNumericalDiscriminator.IDENTITY_SILU,
+            SeqaxNumericalDiscriminator.RELU_SILU,
+        }:
+            for label in ("pallas", "control"):
+                runtime_hlo_path = path.with_name(f"{label}_runtime_stablehlo.txt")
+                runtime_output_path = path.with_name(f"{label}_runtime_output.npy")
+                runtime_hlo = runtime_hlo_path.read_text()
+                runtime_output = _load_array(runtime_output_path)
+                validate_activation_mutant_stablehlo(
+                    runtime_hlo,
+                    expected_count=scenario.parameters.layers,
+                    relu=discriminator is SeqaxNumericalDiscriminator.RELU_SILU,
+                )
+                causal_failure = _mutation_failure(
+                    runtime_output,
+                    clause=SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
+                    contract=contract,
+                    scenario=scenario,
+                    seed=seed,
+                    inputs=host_inputs,
+                    gates=gates,
+                    silus=silus,
+                )
+                if np.array_equal(runtime_output, baseline):
+                    raise ValueError(
+                        f"SEQAX_BF16_ACTIVATION_MUTANT_NOT_CAUSAL name={discriminator} path={label}"
+                    )
+                failure += f"; {label}_causal {causal_failure}"
+                paths.extend((runtime_hlo_path, runtime_output_path))
+        expected.append(_discriminator_observation(root, discriminator, tuple(paths), failure))
+
+    _distributed, physical, _pallas, _control = _canonical_plans(scenario)
+    collective = _drop_reduction_collective(canonical_text(physical))
+    collective_path = (
+        root
+        / "discriminators"
+        / SeqaxNumericalDiscriminator.DROP_REDUCTION_COLLECTIVE
+        / "mutant_physical.xdsl"
+    )
+    if collective_path.read_text() != collective:
+        raise ValueError("SEQAX_BF16_COLLECTIVE_MUTANT_REPLAY_MISMATCH")
+    try:
+        _parse_physical(collective).verify()
+    except VerifyException as error:
+        failure = f"{type(error).__name__}: {error}"
+    else:
+        raise ValueError("SEQAX_BF16_COLLECTIVE_DISCRIMINATOR_ACCEPTED")
+    expected.append(
+        _discriminator_observation(
+            root,
+            SeqaxNumericalDiscriminator.DROP_REDUCTION_COLLECTIVE,
+            (collective_path,),
+            failure,
+        )
+    )
+
+    input_mutations = {
+        SeqaxNumericalDiscriminator.DROP_EMBEDDING_SHARD: (SeqaxInputMutation.DROP_EMBEDDING_SHARD),
+        SeqaxNumericalDiscriminator.ROLL_MODEL_SHARD: SeqaxInputMutation.ROLL_MODEL_SHARD,
+        SeqaxNumericalDiscriminator.OMIT_MLP_TERM: SeqaxInputMutation.OMIT_MLP_TERM,
+        SeqaxNumericalDiscriminator.SWAP_GATE_UP: SeqaxInputMutation.SWAP_GATE_UP,
+    }
+    for discriminator, mutation in input_mutations.items():
+        mutation_root = root / "discriminators" / discriminator
+        regenerated = mutate_seqax_forward_inputs(host_inputs, mutation)
+        saved_inputs = tuple(
+            _load_array(mutation_root / "inputs" / f"{index:02d}.npy") for index in range(13)
+        )
+        if any(
+            saved.shape != fresh.shape
+            or saved.dtype != fresh.dtype
+            or not np.array_equal(saved, fresh)
+            for saved, fresh in zip(saved_inputs, regenerated, strict=True)
+        ):
+            raise ValueError(f"SEQAX_BF16_INPUT_MUTANT_REPLAY_MISMATCH name={discriminator}")
+        output_path = mutation_root / "runtime_output.npy"
+        output = _load_array(output_path)
+        failure = _mutation_failure(
+            output,
+            clause=SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
+            contract=contract,
+            scenario=scenario,
+            seed=seed,
+            inputs=host_inputs,
+            gates=gates,
+            silus=silus,
+        )
+        paths = tuple(
+            [mutation_root / "inputs" / f"{index:02d}.npy" for index in range(13)] + [output_path]
+        )
+        expected.append(_discriminator_observation(root, discriminator, paths, failure))
+
+    output_mutations: dict[SeqaxNumericalDiscriminator, np.ndarray] = {}
+    localized = baseline.copy()
+    localized.reshape(-1)[0] += np.float32(1.0)
+    output_mutations[SeqaxNumericalDiscriminator.LOCALIZED_SPIKE] = localized
+    output_mutations[SeqaxNumericalDiscriminator.DISTRIBUTED_DRIFT] = baseline + np.float32(0.5)
+    nonfinite = baseline.copy()
+    nonfinite.reshape(-1)[0] = np.nan
+    output_mutations[SeqaxNumericalDiscriminator.NONFINITE_OUTPUT] = nonfinite
+    output_mutations[SeqaxNumericalDiscriminator.DTYPE_OUTPUT] = baseline.astype(np.float64)
+    output_mutations[SeqaxNumericalDiscriminator.SHAPE_OUTPUT] = baseline[..., :-1]
+    for discriminator, regenerated in output_mutations.items():
+        path = root / "discriminators" / discriminator / "mutant_output.npy"
+        saved = _load_array(path)
+        if (
+            saved.shape != regenerated.shape
+            or saved.dtype != regenerated.dtype
+            or not np.array_equal(saved, regenerated, equal_nan=True)
+        ):
+            raise ValueError(f"SEQAX_BF16_OUTPUT_MUTANT_REPLAY_MISMATCH name={discriminator}")
+        failure = _mutation_failure(
+            saved,
+            clause=seqax_discriminator_clause(discriminator),
+            contract=contract,
+            scenario=scenario,
+            seed=seed,
+            inputs=host_inputs,
+            gates=gates,
+            silus=silus,
+        )
+        expected.append(_discriminator_observation(root, discriminator, (path,), failure))
+
+    expected_tuple = tuple(expected)
+    saved_tuple = tuple(
+        SeqaxBf16DiscriminatorObservation.model_validate_json(json.dumps(value))
+        for value in json.loads((root / "discriminators" / "observations.json").read_text())
+    )
+    if (
+        tuple(value.discriminator for value in expected_tuple) != contract.required_discriminators
+        or saved_tuple != expected_tuple
+    ):
+        raise ValueError("SEQAX_BF16_DISCRIMINATOR_REPLAY_MISMATCH")
+    return expected_tuple
+
+
+def _ledger_payloads(
+    contract: SeqaxBf16ValidationContract,
+    result: SeqaxBf16ValidationResult,
+    source_commit: str,
+    result_sha256: str,
+    *,
+    require_accepted: bool,
+) -> tuple[tuple[RunState, dict[str, object]], ...]:
+    payloads: tuple[tuple[RunState, dict[str, object]], ...] = (
+        (
+            RunState.CREATED,
+            {
+                "schema": SEQAX_BF16_RUN_SCHEMA,
+                "contract_id": contract.contract_id,
+                "source_commit": source_commit,
+            },
+        ),
+        (
+            RunState.VERIFIED,
+            {
+                "distributed_schedules": {
+                    value.scenario: value.distributed_schedule_sha256 for value in result.plans
+                }
+            },
+        ),
+        (
+            RunState.LOWERED,
+            {
+                "physical_schedules": {
+                    value.scenario: value.physical_schedule_sha256 for value in result.plans
+                },
+                "pallas_sources": {
+                    value.scenario: value.pallas_source_sha256 for value in result.plans
+                },
+            },
+        ),
+        (
+            RunState.COMPILED,
+            {"plans": [value.model_dump(mode="json") for value in result.plans]},
+        ),
+        (
+            RunState.CORRECT,
+            {
+                "observations": len(result.observations),
+                "pallas_outputs": [value.pallas_output_sha256 for value in result.observations],
+                "control_outputs": [value.control_output_sha256 for value in result.observations],
+            },
+        ),
+        (
+            RunState.VALIDATED,
+            {
+                "discriminators": [
+                    {
+                        "name": value.discriminator.value,
+                        "artifacts": list(value.artifact_sha256),
+                    }
+                    for value in result.discriminators
+                ],
+                "result_sha256": result_sha256,
+            },
+        ),
+    )
+    if require_accepted:
+        payloads += (
+            (
+                RunState.ACCEPTED,
+                {"result_sha256": result_sha256, "passed": True},
+            ),
+        )
+    return payloads
+
+
+def _validate(
+    root: Path,
+    trusted_contract: SeqaxBf16ValidationContract,
+    *,
+    require_accepted: bool,
+) -> SeqaxBf16ValidationResult:
+    _validate_closed_world(
+        root,
+        _expected_files(root, trusted_contract, receipt_present=require_accepted),
+    )
+    saved_contract = SeqaxBf16ValidationContract.model_validate_json(
+        (root / "contract.json").read_text()
+    )
+    if saved_contract != trusted_contract:
+        raise ValueError("SEQAX_BF16_CONTRACT_MISMATCH")
+    result = SeqaxBf16ValidationResult.model_validate_json((root / "result.json").read_text())
+    source_commit = _validate_source(root, trusted_contract, result)
+    expected_run_id = semantic_sha256(
+        SEQAX_BF16_RUN_SCHEMA,
+        trusted_contract.contract_id,
+        source_commit,
+    )
+    expected_runtime = trusted_contract.runtime
+    if (
+        result.schema_version != SEQAX_BF16_RUN_SCHEMA
+        or result.contract_id != trusted_contract.contract_id
+        or result.run_id != expected_run_id
+        or not result.runtime.runtime.python.startswith(expected_runtime.python_major_minor + ".")
+        or result.runtime.runtime.jax != expected_runtime.jax
+        or result.runtime.runtime.jaxlib != expected_runtime.jaxlib
+        or result.runtime.runtime.libtpu != expected_runtime.libtpu
+        or result.runtime.runtime.xla != expected_runtime.libtpu_init_args
+        or result.runtime.ml_dtypes != expected_runtime.ml_dtypes
+        or not result.passed
+        or result.claim_scope != "declared-surface-bf16-numerical-correctness"
+    ):
+        raise ValueError("SEQAX_BF16_RESULT_IDENTITY_MISMATCH")
+    if (
+        tuple(value.id for value in result.devices) != tuple(range(trusted_contract.device_count))
+        or len({value.process_index for value in result.devices}) != 1
+        or any(value.platform != trusted_contract.backend for value in result.devices)
+        or any(
+            value.device_kind not in {trusted_contract.device_kind, "TPU v7x"}
+            for value in result.devices
+        )
+    ):
+        raise ValueError("SEQAX_BF16_DEVICE_INVENTORY_MISMATCH")
+    if tuple(value.scenario for value in result.plans) != tuple(
+        scenario.name for scenario in trusted_contract.scenarios
+    ):
+        raise ValueError("SEQAX_BF16_PLAN_ORDER_MISMATCH")
+    for scenario, record in zip(trusted_contract.scenarios, result.plans, strict=True):
+        _validate_plan(root, scenario, record)
+    observations = tuple(
+        _validate_seed(root, trusted_contract, scenario, seed)
+        for scenario in trusted_contract.scenarios
+        for seed in scenario.seeds
+    )
+    if result.observations != observations:
+        raise ValueError("SEQAX_BF16_RESULT_OBSERVATIONS_MISMATCH")
+    discriminators = _validate_discriminators(root, trusted_contract)
+    if result.discriminators != discriminators:
+        raise ValueError("SEQAX_BF16_RESULT_DISCRIMINATORS_MISMATCH")
+
+    result_sha256 = _sha256(root / "result.json")
+    payloads = _ledger_payloads(
+        trusted_contract,
+        result,
+        source_commit,
+        result_sha256,
+        require_accepted=require_accepted,
+    )
+    history = read_ledger_history(root / "ledger.sqlite", result.run_id)
+    if tuple(value.state for value in history) != tuple(state for state, _payload in payloads):
+        raise ValueError("SEQAX_BF16_LEDGER_STATE_MISMATCH")
+    if tuple(value.payload_sha256 for value in history) != tuple(
+        ExperimentLedger.payload_sha256(payload) for _state, payload in payloads
+    ):
+        raise ValueError("SEQAX_BF16_LEDGER_PAYLOAD_MISMATCH")
+    if require_accepted:
+        receipt = SeqaxBf16ValidationReceipt.model_validate_json(
+            (root / "receipt.json").read_text()
+        )
+        if (
+            receipt.contract_id != trusted_contract.contract_id
+            or receipt.run_id != result.run_id
+            or receipt.result_sha256 != result_sha256
+            or receipt.ledger_sha256 != _sha256(root / "ledger.sqlite")
+            or receipt.artifacts != _artifact_manifest(root)
+        ):
+            raise ValueError("SEQAX_BF16_RECEIPT_MISMATCH")
+    return result
+
+
+def validate_seqax_bf16_validation(
+    root: Path,
+    trusted_contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16ValidationResult:
+    canonical = default_seqax_bf16_validation_contract()
+    if trusted_contract != canonical:
+        raise ValueError("SEQAX_BF16_EXTERNAL_CONTRACT_MISMATCH")
+    if root.is_symlink():
+        raise ValueError(f"SEQAX_BF16_ROOT_INVALID path={root}")
+    root = root.resolve()
+    _preflight_existing_root(root)
+    return _validate(root, trusted_contract, require_accepted=True)

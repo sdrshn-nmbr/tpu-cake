@@ -33,6 +33,11 @@ from tpu_cake.seqax_bundle import (
     build_seqax_forward_receipt,
     validate_seqax_forward_receipt,
 )
+from tpu_cake.seqax_numerical import SeqaxBf16ValidationContract
+from tpu_cake.seqax_numerical_runner import (
+    run_seqax_bf16_validation,
+    validate_seqax_bf16_validation,
+)
 from tpu_cake.seqax_pallas_bundle import (
     build_seqax_pallas_receipt,
     validate_seqax_pallas_receipt,
@@ -190,6 +195,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     verify_seqax_weight_confirmation.add_argument("run_root", type=Path)
     verify_seqax_weight_confirmation.add_argument("--contract", required=True, type=Path)
+
+    validate_seqax_bf16 = commands.add_parser("validate-seqax-bf16-forward")
+    validate_seqax_bf16.add_argument("--contract", required=True, type=Path)
+    validate_seqax_bf16.add_argument("--output-dir", required=True, type=Path)
+
+    verify_seqax_bf16 = commands.add_parser("verify-seqax-bf16-forward")
+    verify_seqax_bf16.add_argument("run_root", type=Path)
+    verify_seqax_bf16.add_argument("--contract", required=True, type=Path)
 
     diagnose_seqax_weight_placement = commands.add_parser("diagnose-seqax-weight-placement")
     diagnose_seqax_weight_placement.add_argument("--search-root", required=True, type=Path)
@@ -477,6 +490,20 @@ def main() -> None:
             f"winner={result.winner or 'none'} rounds={result.statistics.round_count} "
             f"confidence={result.statistics.confidence_level} "
             f"scope={result.correctness_scope}"
+        )
+        code = 0
+    elif args.command == "validate-seqax-bf16-forward":
+        contract = SeqaxBf16ValidationContract.model_validate_json(args.contract.read_text())
+        result = run_seqax_bf16_validation(args.output_dir, contract)
+        print(result.model_dump_json(indent=2))
+        code = 0 if result.passed else 1
+    elif args.command == "verify-seqax-bf16-forward":
+        contract = SeqaxBf16ValidationContract.model_validate_json(args.contract.read_text())
+        result = validate_seqax_bf16_validation(args.run_root, contract)
+        print(
+            "SEQAX_BF16_FORWARD_ACCEPTED "
+            f"scenarios={len(result.plans)} observations={len(result.observations)} "
+            f"discriminators={len(result.discriminators)} scope={result.claim_scope}"
         )
         code = 0
     elif args.command == "diagnose-seqax-weight-placement":

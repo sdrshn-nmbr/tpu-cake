@@ -49,6 +49,7 @@ from tpu_cake.dialects.distributed_tensor import (
 from tpu_cake.dtensor_interpreter import (
     execute_distributed_program_jax,
     execute_distributed_program_jax_sharded,
+    execute_distributed_program_jax_sharded_with_strict_silu,
 )
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 
@@ -445,6 +446,51 @@ class JaxDistributedMeshPlan:
 
     def build(self, *, devices=None):
         mapped, mesh = self.build_mapped(devices=devices)
+        return jax.jit(mapped), mesh
+
+    def build_with_strict_silu_checkpoints(
+        self,
+        *,
+        expected_layers: int,
+        checkpoint_spec: PartitionSpec,
+        devices=None,
+    ):
+        if expected_layers <= 0:
+            raise ValueError("strict SiLU checkpoint count must be positive")
+        selected_devices = tuple(devices or jax.devices())
+        if len(selected_devices) != self.device_count:
+            raise ValueError(
+                f"distributed JAX plan needs exactly {self.device_count} devices for "
+                f"mesh {self.mesh}, found {len(selected_devices)}"
+            )
+        module = _parse_canonical_module(self.canonical_xdsl)
+        replayed = lower_distributed_program_to_jax_mesh(module)
+        if replayed.schedule_sha256 != self.schedule_sha256:
+            raise UnsupportedJaxLoweringError(
+                "replayed distributed JAX schedule does not match the plan hash"
+            )
+        axis_names = tuple(axis for axis, _ in self.mesh_axes)
+        axis_shape = tuple(size for _, size in self.mesh_axes)
+        mesh = Mesh(np.asarray(selected_devices, dtype=object).reshape(axis_shape), axis_names)
+
+        def execute(*inputs):
+            outputs, checkpoints = execute_distributed_program_jax_sharded_with_strict_silu(
+                module, inputs
+            )
+            if len(checkpoints) != expected_layers:
+                raise ValueError(
+                    f"strict SiLU expected {expected_layers} checkpoints, found {len(checkpoints)}"
+                )
+            return (*outputs, *(value for checkpoint in checkpoints for value in checkpoint))
+
+        checkpoint_specs = (checkpoint_spec,) * (2 * expected_layers)
+        mapped = jax.shard_map(
+            execute,
+            mesh=mesh,
+            in_specs=self.input_partition_specs,
+            out_specs=(*self.output_partition_specs, *checkpoint_specs),
+            check_vma=False,
+        )
         return jax.jit(mapped), mesh
 
     def render_executable_source(self) -> str:

@@ -21,6 +21,7 @@ class RunState(StrEnum):
     TIMED = "timed"
     TRACED = "traced"
     COUNTERED = "countered"
+    VALIDATED = "validated"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
 
@@ -30,10 +31,13 @@ _NEXT_STATES = {
     RunState.VERIFIED: frozenset({RunState.LOWERED}),
     RunState.LOWERED: frozenset({RunState.COMPILED}),
     RunState.COMPILED: frozenset({RunState.CORRECT}),
-    RunState.CORRECT: frozenset({RunState.TIMED, RunState.TRACED, RunState.COUNTERED}),
+    RunState.CORRECT: frozenset(
+        {RunState.TIMED, RunState.TRACED, RunState.COUNTERED, RunState.VALIDATED}
+    ),
     RunState.TIMED: frozenset({RunState.ACCEPTED}),
     RunState.TRACED: frozenset({RunState.ACCEPTED}),
     RunState.COUNTERED: frozenset({RunState.ACCEPTED}),
+    RunState.VALIDATED: frozenset({RunState.ACCEPTED}),
 }
 
 

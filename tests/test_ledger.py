@@ -57,6 +57,18 @@ def test_ledger_rejects_skipped_profile_and_counter_gates(tmp_path) -> None:
             ledger.transition(RUN_ID, RunState.ACCEPTED, {})
 
 
+def test_correct_result_requires_validation_before_acceptance(tmp_path) -> None:
+    with ExperimentLedger(tmp_path / "ledger.sqlite") as ledger:
+        ledger.create(RUN_ID, {})
+        for state in (RunState.VERIFIED, RunState.LOWERED, RunState.COMPILED, RunState.CORRECT):
+            ledger.transition(RUN_ID, state, {"state": state.value})
+        with pytest.raises(ValueError, match="correct -> accepted"):
+            ledger.transition(RUN_ID, RunState.ACCEPTED, {})
+        ledger.transition(RUN_ID, RunState.VALIDATED, {"replayed": True})
+        ledger.transition(RUN_ID, RunState.ACCEPTED, {"accepted": True})
+        assert ledger.current_state(RUN_ID) is RunState.ACCEPTED
+
+
 def test_duplicate_completion_is_idempotent_only_for_same_evidence(tmp_path) -> None:
     with ExperimentLedger(tmp_path / "ledger.sqlite") as ledger:
         ledger.create(RUN_ID, {"schedule": "a"})

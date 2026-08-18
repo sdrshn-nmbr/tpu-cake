@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
-from jax.sharding import Mesh
+from jax.sharding import Mesh, PartitionSpec
 from xdsl.context import Context
 from xdsl.dialects.builtin import Builtin, ModuleOp
 from xdsl.parser import Parser
@@ -330,7 +330,14 @@ class SeqaxPallasPlan:
             )
         return distributed, physical
 
-    def build_mapped(self, *, interpret: bool = False, devices=None):
+    def _build_mapped(
+        self,
+        *,
+        interpret: bool,
+        devices,
+        strict_silu_layers: int,
+        checkpoint_spec: PartitionSpec | None,
+    ):
         _distributed, physical = self._validated_modules()
         selected_devices = tuple(devices or jax.devices())
         if len(selected_devices) != self.device_count:
@@ -354,6 +361,9 @@ class SeqaxPallasPlan:
 
         def physical_call(*inputs):
             index = 0
+            checkpoints: list[tuple[jax.Array, jax.Array]] | None = (
+                [] if strict_silu_layers else None
+            )
 
             def einsum(
                 physical_operation: MxuEinsumOp,
@@ -385,24 +395,64 @@ class SeqaxPallasPlan:
                 physical,
                 inputs,
                 einsum=einsum,
+                strict_silu_checkpoints=checkpoints,
             )
             if index != len(physical_einsums):
                 raise UnsupportedSeqaxPallasLoweringError(
                     "physical schedule contains unused Pallas einsum regions"
                 )
-            return outputs
+            if checkpoints is None:
+                return outputs
+            if len(checkpoints) != strict_silu_layers:
+                raise ValueError(
+                    f"strict SiLU expected {strict_silu_layers} checkpoints, "
+                    f"found {len(checkpoints)}"
+                )
+            return (*outputs, *(value for checkpoint in checkpoints for value in checkpoint))
+
+        output_specs = tuple(contract.partition_spec() for contract in self.output_contracts)
+        if strict_silu_layers:
+            if checkpoint_spec is None:
+                raise ValueError("strict SiLU checkpoint sharding must be explicit")
+            output_specs += (checkpoint_spec,) * (2 * strict_silu_layers)
 
         mapped = jax.shard_map(
             physical_call,
             mesh=mesh,
             in_specs=tuple(contract.partition_spec() for contract in self.input_contracts),
-            out_specs=tuple(contract.partition_spec() for contract in self.output_contracts),
+            out_specs=output_specs,
             check_vma=False,
         )
         return mapped, mesh
 
+    def build_mapped(self, *, interpret: bool = False, devices=None):
+        return self._build_mapped(
+            interpret=interpret,
+            devices=devices,
+            strict_silu_layers=0,
+            checkpoint_spec=None,
+        )
+
     def build(self, *, interpret: bool = False, devices=None):
         mapped, mesh = self.build_mapped(interpret=interpret, devices=devices)
+        return jax.jit(mapped), mesh
+
+    def build_with_strict_silu_checkpoints(
+        self,
+        *,
+        expected_layers: int,
+        checkpoint_spec: PartitionSpec,
+        interpret: bool = False,
+        devices=None,
+    ):
+        if expected_layers <= 0:
+            raise ValueError("strict SiLU checkpoint count must be positive")
+        mapped, mesh = self._build_mapped(
+            interpret=interpret,
+            devices=devices,
+            strict_silu_layers=expected_layers,
+            checkpoint_spec=checkpoint_spec,
+        )
         return jax.jit(mapped), mesh
 
     def manifest(self) -> dict[str, Any]:

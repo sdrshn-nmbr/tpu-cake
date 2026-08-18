@@ -185,6 +185,7 @@ def _execute_block(
     block: Block,
     environment: dict[SSAValue, jax.Array],
     semantics: _ExecutionSemantics = _LOGICAL_SEMANTICS,
+    strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
 ) -> tuple[jax.Array, ...] | None:
     for operation in block.ops:
         if isinstance(operation, (ReturnOp, ScanYieldOp)):
@@ -366,6 +367,12 @@ def _execute_block(
             result = _cast(result, result_type)
             if strict_materialization:
                 result = jax.lax.optimization_barrier(result)
+            if (
+                strict_materialization
+                and function == "silu"
+                and strict_silu_checkpoints is not None
+            ):
+                strict_silu_checkpoints.append((values[0], result))
         elif isinstance(operation, LayerScanOp):
             captures = tuple(environment[value] for value in operation.captures)
             carries = captures[: operation.carry_count.data]
@@ -391,6 +398,7 @@ def _execute_block(
                     operation.body.block,
                     nested_environment,
                     semantics,
+                    strict_silu_checkpoints,
                 )
                 if yielded is None:
                     raise UnsupportedInterpretationError("layer scan body did not yield")
@@ -496,6 +504,50 @@ def execute_distributed_program_jax_sharded(
     if outputs is None:
         raise UnsupportedInterpretationError("distributed program did not return")
     return outputs
+
+
+def execute_distributed_program_jax_sharded_with_strict_silu(
+    module: ModuleOp,
+    inputs: Sequence[jax.Array],
+) -> tuple[tuple[jax.Array, ...], tuple[tuple[jax.Array, jax.Array], ...]]:
+    module.verify()
+    programs = tuple(
+        operation for operation in module.body.block.ops if isinstance(operation, ProgramOp)
+    )
+    if len(programs) != 1 or len(tuple(module.body.block.ops)) != 1:
+        raise UnsupportedInterpretationError(
+            "sharded interpretation expects one distributed program"
+        )
+    program = programs[0]
+    if len(inputs) != len(program.body.block.args):
+        raise ValueError(
+            f"distributed program expects {len(program.body.block.args)} inputs, got {len(inputs)}"
+        )
+    semantics = _ExecutionSemantics(program.mesh.sizes())
+    environment: dict[SSAValue, jax.Array] = {}
+    for argument, value in zip(program.body.block.args, inputs, strict=True):
+        value_type = argument.type
+        assert isinstance(value_type, DTensorType)
+        actual_dtype = jnp.dtype(value.dtype)
+        expected_dtype = jnp.dtype(_dtype(value_type))
+        if actual_dtype != expected_dtype:
+            raise ValueError(f"input dtype {actual_dtype} does not match {expected_dtype}")
+        if tuple(value.shape) != semantics.shape(value_type):
+            raise ValueError(
+                f"local input shape {tuple(value.shape)} does not match "
+                f"{semantics.shape(value_type)}"
+            )
+        environment[argument] = value
+    checkpoints: list[tuple[jax.Array, jax.Array]] = []
+    outputs = _execute_block(
+        program.body.block,
+        environment,
+        semantics,
+        checkpoints,
+    )
+    if outputs is None:
+        raise UnsupportedInterpretationError("distributed program did not return")
+    return outputs, tuple(checkpoints)
 
 
 def interpret_distributed_program(

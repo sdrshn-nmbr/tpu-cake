@@ -92,6 +92,7 @@ def _vector_compute(
     operation: VectorComputeOp,
     values: tuple[jax.Array, ...],
     mesh: dict[str, int],
+    strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
 ) -> jax.Array:
     function = operation.function.data
     configuration = _configuration(operation)
@@ -213,6 +214,8 @@ def _vector_compute(
     result = jnp.asarray(result, dtype=_dtype(output_type))
     if strict_materialization:
         result = jax.lax.optimization_barrier(result)
+    if strict_materialization and function == "silu" and strict_silu_checkpoints is not None:
+        strict_silu_checkpoints.append((values[0], result))
     if tuple(result.shape) != output_type.storage.get_shape():
         raise UnsupportedPhysicalExecutionError(
             f"physical {function} produced {tuple(result.shape)}, "
@@ -226,6 +229,7 @@ def execute_seqax_physical_program_jax(
     inputs: Sequence[jax.Array],
     *,
     einsum: Callable[[MxuEinsumOp, jax.Array, jax.Array], jax.Array],
+    strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
 ) -> tuple[jax.Array, ...]:
     module.verify()
     kernels = tuple(
@@ -298,7 +302,13 @@ def execute_seqax_physical_program_jax(
             continue
         if isinstance(operation, VectorComputeOp):
             values = tuple(environment[value] for value in operation.inputs)
-            environment[operation.output] = _vector_compute(operation, values, mesh)
+            result = _vector_compute(
+                operation,
+                values,
+                mesh,
+                strict_silu_checkpoints,
+            )
+            environment[operation.output] = result
             continue
         if isinstance(operation, MxuEinsumOp):
             environment[operation.accumulator] = einsum(
