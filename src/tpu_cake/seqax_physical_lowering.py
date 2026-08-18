@@ -124,6 +124,7 @@ class _LoweringState:
         environment: dict[SSAValue, SSAValue],
         *,
         stage: int,
+        einsum_tiles: tuple[tuple[int, int, int], ...] | None,
     ) -> None:
         self.builder = builder
         self.mesh = mesh
@@ -132,6 +133,14 @@ class _LoweringState:
         self.operation_count = 0
         self.unrolled_layer_count = 0
         self._role_index = 0
+        self._einsum_tiles = einsum_tiles
+        self._einsum_index = 0
+
+    def require_all_einsum_tiles_consumed(self) -> None:
+        if self._einsum_tiles is not None and self._einsum_index != len(self._einsum_tiles):
+            raise UnsupportedLoweringError(
+                "Seqax physical lowering received unused MXU einsum tile declarations"
+            )
 
     def _next_role(self, operation: Operation) -> str:
         self._role_index += 1
@@ -327,6 +336,12 @@ class _LoweringState:
             )
             if name not in shared and name not in contractions
         )
+        tile = (m, k, n)
+        if self._einsum_tiles is not None:
+            if self._einsum_index >= len(self._einsum_tiles):
+                raise _reject(operation, "Seqax physical lowering is missing an MXU einsum tile")
+            tile = self._einsum_tiles[self._einsum_index]
+        self._einsum_index += 1
         output = self.allocate(result_type, operation)
         scheduled = self.builder.einsum(
             self.environment[operation.lhs],
@@ -335,9 +350,9 @@ class _LoweringState:
             stage=self.stage,
             contracting_dimensions=contractions,
             pending_reduction_axes=tuple(result_type.pending_reductions()),
-            tile_m=m,
-            tile_k=k,
-            tile_n=n,
+            tile_m=tile[0],
+            tile_k=tile[1],
+            tile_n=tile[2],
         )
         scheduled.location = operation.location
         self.stage += 1
@@ -512,6 +527,7 @@ def lower_seqax_forward_to_physical(
     module: ModuleOp,
     *,
     target: LoweringTarget = TPU7X_TARGET,
+    einsum_tiles: tuple[tuple[int, int, int], ...] | None = None,
 ) -> SeqaxPhysicalLoweringResult:
     distributed_schedule_hash = schedule_sha256(module)
     context = Context()
@@ -583,8 +599,15 @@ def lower_seqax_forward_to_physical(
             builder.dma_wait(token, stage=stage + 1)
         stage += 2
 
-    state = _LoweringState(builder, mesh, environment, stage=stage)
+    state = _LoweringState(
+        builder,
+        mesh,
+        environment,
+        stage=stage,
+        einsum_tiles=einsum_tiles,
+    )
     outputs = state.lower_block(program.body.block)
+    state.require_all_einsum_tiles_consumed()
     output_arguments = builder.inputs[input_count:]
     pending_outputs = []
     for source, destination in zip(outputs, output_arguments, strict=True):

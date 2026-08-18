@@ -9,7 +9,6 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 from jax.sharding import Mesh
@@ -68,6 +67,14 @@ def _parse_physical(text: str) -> ModuleOp:
 
 def _names(buffer: BufferType) -> tuple[str, ...]:
     return tuple(value.data for value in buffer.shape.dimensions)
+
+
+def _einsum_tiles(module: ModuleOp) -> tuple[tuple[int, int, int], ...]:
+    return tuple(
+        (operation.tile_m.data, operation.tile_k.data, operation.tile_n.data)
+        for operation in module.walk()
+        if isinstance(operation, MxuEinsumOp)
+    )
 
 
 def _pallas_einsum(
@@ -134,35 +141,40 @@ def _pallas_einsum(
     contraction_size = math.prod(contraction_shape)
     lhs_permutation = (*lhs_batch, *lhs_free, *lhs_contract)
     rhs_permutation = (*rhs_batch, *rhs_contract, *rhs_free)
+    tile_m = physical.tile_m.data
+    tile_k = physical.tile_k.data
+    tile_n = physical.tile_n.data
+    if (
+        lhs_free_size % tile_m
+        or contraction_size % tile_k
+        or rhs_free_size % tile_n
+    ):
+        raise UnsupportedSeqaxPallasLoweringError(
+            "physical MXU tiles must divide the flattened local contraction"
+        )
+    k_steps = contraction_size // tile_k
 
-    def kernel(lhs_ref, rhs_ref, output_ref) -> None:
-        lhs_value = jnp.transpose(lhs_ref[...], lhs_permutation)
-        rhs_value = jnp.transpose(rhs_ref[...], rhs_permutation)
-        if batch_names:
-            lhs_value = lhs_value.reshape((batch_size, lhs_free_size, contraction_size))
-            rhs_value = rhs_value.reshape((batch_size, contraction_size, rhs_free_size))
-            value = lax.dot_general(
-                lhs_value,
-                rhs_value,
-                dimension_numbers=(((2,), (1,)), ((0,), (0,))),
-                preferred_element_type=jnp.float32,
-            )
-        else:
-            lhs_value = lhs_value.reshape((lhs_free_size, contraction_size))
-            rhs_value = rhs_value.reshape((contraction_size, rhs_free_size))
-            value = lax.dot_general(
-                lhs_value,
-                rhs_value,
-                dimension_numbers=(((1,), (0,)), ((), ())),
-                preferred_element_type=jnp.float32,
-            )
-        value = value.reshape((*batch_shape, *lhs_free_shape, *rhs_free_shape))
-        if permutation != tuple(range(len(permutation))):
-            value = jnp.transpose(value, permutation)
-        output_ref[...] = value
+    lhs_value = jnp.transpose(lhs, lhs_permutation).reshape(
+        (batch_size, lhs_free_size, contraction_size)
+    )
+    rhs_value = jnp.transpose(rhs, rhs_permutation).reshape(
+        (batch_size, contraction_size, rhs_free_size)
+    )
 
-    def full_block(shape: tuple[int, ...]):
-        return pl.BlockSpec(shape, lambda: (0,) * len(shape))
+    def kernel(lhs_ref, rhs_ref, output_ref, accumulator_ref) -> None:
+        @pl.when(pl.program_id(3) == 0)
+        def initialize() -> None:
+            accumulator_ref[...] = jnp.zeros_like(accumulator_ref)
+
+        accumulator_ref[...] = accumulator_ref[...] + jnp.dot(
+            lhs_ref[0, ...],
+            rhs_ref[0, ...],
+            preferred_element_type=jnp.float32,
+        )
+
+        @pl.when(pl.program_id(3) == k_steps - 1)
+        def store() -> None:
+            output_ref[0, ...] = accumulator_ref[...]
 
     interpret_setting = (
         pltpu.InterpretParams(detect_races=True, out_of_bounds_reads="raise")
@@ -171,20 +183,55 @@ def _pallas_einsum(
     )
     call = pl.pallas_call(
         kernel,
-        out_shape=jax.ShapeDtypeStruct(expected_output, jnp.float32),
-        in_specs=(full_block(expected_lhs), full_block(expected_rhs)),
-        out_specs=full_block(expected_output),
-        grid=(),
+        out_shape=jax.ShapeDtypeStruct(
+            (batch_size, lhs_free_size, rhs_free_size),
+            jnp.float32,
+        ),
+        grid_spec=pltpu.PrefetchScalarGridSpec(
+            num_scalar_prefetch=0,
+            in_specs=(
+                pl.BlockSpec(
+                    (1, tile_m, tile_k),
+                    lambda batch, m, _n, k: (batch, m, k),
+                ),
+                pl.BlockSpec(
+                    (1, tile_k, tile_n),
+                    lambda batch, _m, n, k: (batch, k, n),
+                ),
+            ),
+            out_specs=pl.BlockSpec(
+                (1, tile_m, tile_n),
+                lambda batch, m, n, _k: (batch, m, n),
+            ),
+            grid=(
+                batch_size,
+                lhs_free_size // tile_m,
+                rhs_free_size // tile_n,
+                k_steps,
+            ),
+            scratch_shapes=(pltpu.VMEM((tile_m, tile_n), jnp.float32),),
+        ),
+        compiler_params=pltpu.CompilerParams(
+            dimension_semantics=("parallel", "parallel", "parallel", "arbitrary")
+        ),
         interpret=interpret_setting,
         name="seqax_named_einsum",
         metadata={
             "schedule_sha256": schedule_sha256_value,
-            "tile_m": physical.tile_m.data,
-            "tile_k": physical.tile_k.data,
-            "tile_n": physical.tile_n.data,
+            "tile_m": tile_m,
+            "tile_k": tile_k,
+            "tile_n": tile_n,
         },
     )
-    return call(lhs, rhs)
+    value = call(lhs_value, rhs_value)
+    value = value.reshape((*batch_shape, *lhs_free_shape, *rhs_free_shape))
+    if permutation != tuple(range(len(permutation))):
+        value = jnp.transpose(value, permutation)
+    if tuple(value.shape) != expected_output:
+        raise UnsupportedSeqaxPallasLoweringError(
+            "physical MXU tiled result does not match the declared accumulator"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -223,7 +270,10 @@ class SeqaxPallasPlan:
             raise UnsupportedSeqaxPallasLoweringError("distributed schedule hash mismatch")
         if schedule_sha256(physical) != self.physical_schedule_sha256:
             raise UnsupportedSeqaxPallasLoweringError("physical schedule hash mismatch")
-        regenerated = lower_seqax_forward_to_physical(distributed)
+        regenerated = lower_seqax_forward_to_physical(
+            distributed,
+            einsum_tiles=_einsum_tiles(physical),
+        )
         if canonical_module_text(regenerated.module) != self.canonical_physical_xdsl:
             raise UnsupportedSeqaxPallasLoweringError(
                 "physical schedule is not the canonical lowering of the distributed program"
@@ -379,7 +429,10 @@ def lower_seqax_physical_to_pallas(
 ) -> SeqaxPallasPlan:
     distributed.verify()
     physical.verify()
-    regenerated = lower_seqax_forward_to_physical(distributed)
+    regenerated = lower_seqax_forward_to_physical(
+        distributed,
+        einsum_tiles=_einsum_tiles(physical),
+    )
     canonical_physical = canonical_module_text(physical)
     if canonical_module_text(regenerated.module) != canonical_physical:
         raise UnsupportedSeqaxPallasLoweringError(

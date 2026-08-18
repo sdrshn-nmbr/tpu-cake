@@ -1145,10 +1145,6 @@ class MxuEinsumOp(IRDLOperation):
             raise VerifyException("MXU einsum tile dimensions must be positive")
         if m % tile[0] or k % tile[1] or n % tile[2]:
             raise VerifyException("MXU einsum tiles must divide flattened M, K, and N")
-        if tile[1] != k:
-            raise VerifyException("the current MXU einsum schedule requires a complete K tile")
-        if tile[0] != m or tile[2] != n:
-            raise VerifyException("the current MXU einsum schedule requires complete M and N tiles")
         if batch <= 0:
             raise VerifyException("MXU einsum batch extent must be positive")
 
@@ -3075,6 +3071,13 @@ class KernelOp(IRDLOperation):
                     if buffer.space.data is space
                     and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
                 )
+                if space is MemorySpace.VMEM:
+                    live_bytes += sum(
+                        operation.tile_m.data * operation.tile_n.data * 4
+                        for operation in operations
+                        if isinstance(operation, MxuEinsumOp)
+                        and operation.stage.data == stage
+                    )
                 if live_bytes > capacity:
                     raise VerifyException(
                         f"{label} capacity exceeded at stage {stage}: {live_bytes} > {capacity}"

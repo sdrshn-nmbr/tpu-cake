@@ -5,13 +5,17 @@ import sys
 from dataclasses import replace
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from xdsl.dialects.builtin import bf16, f32
 
-from tpu_cake.dialects.tpu_schedule import MxuEinsumOp
-from tpu_cake.frontend import canonical_module_text
+from tpu_cake.dialects.tpu_schedule import AllocOp, MemorySpace, MxuEinsumOp
+from tpu_cake.frontend import buffer, canonical_module_text
 from tpu_cake.seqax_pallas_lowering import (
     SEQAX_PALLAS_EXECUTION_SCHEMA,
     UnsupportedSeqaxPallasLoweringError,
+    _einsum_tiles,
+    _pallas_einsum,
     lower_seqax_physical_to_pallas,
 )
 from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
@@ -74,6 +78,23 @@ def test_pallas_plan_rejects_a_noncanonical_physical_schedule() -> None:
         replace(plan, canonical_physical_xdsl=mutated)._validated_modules()
 
 
+def test_explicit_tiled_physical_schedule_is_canonical_and_replayable() -> None:
+    distributed = seqax_forward_schedule(**SMALL_SEQAX)
+    default = lower_seqax_forward_to_physical(distributed).module
+    tiles = tuple(
+        (max(1, m // 2), max(1, k // 2), max(1, n // 2))
+        for m, k, n in _einsum_tiles(default)
+    )
+    tiled = lower_seqax_forward_to_physical(distributed, einsum_tiles=tiles).module
+    plan = lower_seqax_physical_to_pallas(distributed, tiled)
+
+    assert _einsum_tiles(tiled) == tiles
+    assert plan.physical_schedule_sha256 != _plan().physical_schedule_sha256
+    replayed_distributed, replayed_physical = plan._validated_modules()
+    assert canonical_module_text(replayed_distributed) == plan.canonical_distributed_xdsl
+    assert canonical_module_text(replayed_physical) == plan.canonical_physical_xdsl
+
+
 @pytest.mark.parametrize(
     "mutate, message",
     (
@@ -115,6 +136,45 @@ def test_physical_schedule_contains_one_pallas_region_per_distributed_einsum() -
     assert len(einsums) == 17
     assert all(operation.tile_k.data > 0 for operation in einsums)
     assert canonical_module_text(physical) == _plan().canonical_physical_xdsl
+
+
+def test_pallas_einsum_executes_declared_m_k_n_tiles() -> None:
+    lhs_alloc = AllocOp(
+        buffer((2, 4, 4), ("B", "M", "K"), bf16, memory=MemorySpace.VMEM).to_type(),
+        "lhs",
+    )
+    rhs_alloc = AllocOp(
+        buffer((2, 4, 6), ("B", "K", "N"), bf16, memory=MemorySpace.VMEM).to_type(),
+        "rhs",
+    )
+    output_alloc = AllocOp(
+        buffer((2, 4, 6), ("B", "M", "N"), f32, memory=MemorySpace.VMEM).to_type(),
+        "output",
+    )
+    operation = MxuEinsumOp(
+        lhs_alloc,
+        rhs_alloc,
+        output_alloc,
+        stage=0,
+        contracting_dimensions=("K",),
+        tile_m=2,
+        tile_k=2,
+        tile_n=3,
+    )
+    operation.verify()
+    lhs = jnp.arange(32, dtype=jnp.bfloat16).reshape(2, 4, 4) / 8
+    rhs = jnp.arange(48, dtype=jnp.bfloat16).reshape(2, 4, 6) / 8
+
+    actual = _pallas_einsum(
+        operation,
+        lhs,
+        rhs,
+        interpret=True,
+        schedule_sha256_value="0" * 64,
+    )
+    expected = jnp.einsum("bmk,bkn->bmn", lhs, rhs, preferred_element_type=jnp.float32)
+
+    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=1e-5, rtol=1e-5)
 
 
 def _local_inputs(plan):
@@ -181,7 +241,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
+from tpu_cake.seqax_pallas_lowering import _einsum_tiles, lower_seqax_physical_to_pallas
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs, seqax_forward_reference
@@ -203,8 +263,14 @@ parameters = {
 devices = jax.devices("cpu")
 assert len(devices) == 8, len(devices)
 distributed = seqax_forward_schedule(**parameters)
-physical = lower_seqax_forward_to_physical(distributed).module
+default_physical = lower_seqax_forward_to_physical(distributed).module
+tiles = tuple(
+    (max(1, m // 2), max(1, k // 2), max(1, n // 2))
+    for m, k, n in _einsum_tiles(default_physical)
+)
+physical = lower_seqax_forward_to_physical(distributed, einsum_tiles=tiles).module
 plan = lower_seqax_physical_to_pallas(distributed, physical)
+assert _einsum_tiles(physical) == tiles
 source = plan.render_executable_source()
 namespace = {}
 exec(compile(source, "<seqax-physical-pallas>", "exec"), namespace)

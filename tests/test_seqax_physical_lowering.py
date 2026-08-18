@@ -1,4 +1,8 @@
 from collections import Counter
+from dataclasses import replace
+
+import pytest
+from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
@@ -8,6 +12,7 @@ from tpu_cake.dialects.tpu_schedule import (
     VectorComputeOp,
 )
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
+from tpu_cake.lowering import TPU7X_TARGET, UnsupportedLoweringError
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
 
@@ -68,3 +73,29 @@ def test_scan_unrolling_derives_lifetimes_beyond_sixteen_layers() -> None:
     )
     assert max(value.end.data for value in lifetimes) > 512
     assert all(value.start.data <= value.end.data for value in lifetimes)
+
+
+def test_explicit_einsum_tiles_must_cover_every_region_exactly() -> None:
+    distributed = seqax_forward_schedule(**SMALL_SEQAX)
+    default = lower_seqax_forward_to_physical(distributed).module
+    tiles = tuple(
+        (operation.tile_m.data, operation.tile_k.data, operation.tile_n.data)
+        for operation in default.walk()
+        if isinstance(operation, MxuEinsumOp)
+    )
+
+    with pytest.raises(UnsupportedLoweringError, match="missing an MXU einsum tile"):
+        lower_seqax_forward_to_physical(distributed, einsum_tiles=tiles[:-1])
+    with pytest.raises(UnsupportedLoweringError, match="unused MXU einsum tile"):
+        lower_seqax_forward_to_physical(distributed, einsum_tiles=(*tiles, (1, 1, 1)))
+
+
+def test_pallas_accumulator_scratch_is_charged_to_vmem_capacity() -> None:
+    distributed = seqax_forward_schedule(**SMALL_SEQAX)
+    constrained = replace(TPU7X_TARGET, vmem_capacity_bytes=2040)
+
+    with pytest.raises(
+        VerifyException,
+        match="VMEM capacity exceeded at stage 33: 2168 > 2040",
+    ):
+        lower_seqax_forward_to_physical(distributed, target=constrained).module.verify()
