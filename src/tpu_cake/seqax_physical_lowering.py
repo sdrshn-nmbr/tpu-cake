@@ -42,6 +42,7 @@ from tpu_cake.dialects.tpu_schedule import (
     LifetimeAttr,
     MemorySpace,
     Ownership,
+    VectorImplementation,
     VectorMaterialization,
 )
 from tpu_cake.frontend import (
@@ -174,6 +175,7 @@ class _LoweringState:
         function: str,
         configuration: tuple[str, ...] = (),
         materialization: VectorMaterialization | None = None,
+        implementation: VectorImplementation | None = None,
     ) -> SSAValue:
         output = self.allocate(output_type, operation)
         scheduled = self.builder.vector_compute(
@@ -184,6 +186,7 @@ class _LoweringState:
             configuration=configuration,
             pending_reduction_axes=tuple(output_type.pending_reductions()),
             materialization=materialization,
+            implementation=implementation,
         )
         scheduled.location = operation.location
         self.stage += 1
@@ -437,6 +440,12 @@ class _LoweringState:
                 if isinstance(operation, ElementwiseOp)
                 and operation.materialization is not None
                 and operation.materialization.data is ElementwiseMaterialization.STRICT_TYPED
+                else None
+            ),
+            implementation=(
+                VectorImplementation.PALLAS_FULL_LOCAL
+                if isinstance(operation, ElementwiseOp)
+                and operation.function.data == "silu_multiply"
                 else None
             ),
         )

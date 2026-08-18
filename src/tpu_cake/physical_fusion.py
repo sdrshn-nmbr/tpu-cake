@@ -512,14 +512,15 @@ def compare_physical_silu_multiply_fusion(
         measured_performance_winner=None,
         predictive_validation=False,
         assumptions=(
-            "The candidate is a distinct execution-capable physical-IR rewrite; JAX/XLA still controls realized vector fusion and materialization.",
+            "The candidate physical IR selects the full-local Pallas implementation for each fused vector operation.",
             "Static preference means equal declared work with fewer operations and no worse declared memory.",
             "Memory savings are declared schedule-model savings, not measured physical VMEM savings.",
         ),
         omissions=(
             "The generic pair comparator does not establish program provenance or semantic equivalence.",
+            "This static report does not bind the Pallas lowering implementation, compiled source, or executable HLO.",
             "No launch, vector, or special-function rate is priced.",
-            "No warm timing, TPU trace, hardware counters, or predictive calibration is attached.",
+            "No TPU Mosaic compile, warm timing, trace, hardware counters, or predictive calibration is attached.",
             "Static preference is not a performance promotion.",
         ),
     )

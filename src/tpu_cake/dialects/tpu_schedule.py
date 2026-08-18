@@ -71,6 +71,10 @@ class VectorMaterialization(StrEnum):
     STRICT_TYPED = "strict_typed"
 
 
+class VectorImplementation(StrEnum):
+    PALLAS_FULL_LOCAL = "pallas_full_local"
+
+
 @irdl_attr_definition
 class MemorySpaceAttr(EnumAttribute[MemorySpace], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.memory_space"
@@ -89,6 +93,11 @@ class CollectiveKindAttr(EnumAttribute[CollectiveKind], SpacedOpaqueSyntaxAttrib
 @irdl_attr_definition
 class VectorMaterializationAttr(EnumAttribute[VectorMaterialization], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.vector_materialization"
+
+
+@irdl_attr_definition
+class VectorImplementationAttr(EnumAttribute[VectorImplementation], SpacedOpaqueSyntaxAttribute):
+    name = "tpu_schedule.vector_implementation"
 
 
 @irdl_attr_definition
@@ -1179,6 +1188,7 @@ class VectorComputeOp(IRDLOperation):
     configuration = prop_def(ArrayAttr[StringAttr])
     pending_reduction_axes = prop_def(ArrayAttr[StringAttr])
     materialization = opt_prop_def(VectorMaterializationAttr)
+    implementation = opt_prop_def(VectorImplementationAttr)
 
     def __init__(
         self,
@@ -1190,6 +1200,7 @@ class VectorComputeOp(IRDLOperation):
         configuration: tuple[str, ...] = (),
         pending_reduction_axes: tuple[str, ...] = (),
         materialization: VectorMaterialization | None = None,
+        implementation: VectorImplementation | None = None,
     ) -> None:
         properties: dict[str, Attribute] = {
             "stage": IntAttr(stage),
@@ -1201,6 +1212,8 @@ class VectorComputeOp(IRDLOperation):
         }
         if materialization is not None:
             properties["materialization"] = VectorMaterializationAttr(materialization)
+        if implementation is not None:
+            properties["implementation"] = VectorImplementationAttr(implementation)
         super().__init__(
             operands=[list(inputs), output],
             properties=properties,
@@ -1294,6 +1307,20 @@ class VectorComputeOp(IRDLOperation):
                 raise VerifyException("strict typed materialization is only supported for SiLU")
             if not isinstance(output.storage.element_type, BFloat16Type):
                 raise VerifyException("strict typed SiLU materialization requires BF16")
+        if function == "silu_multiply":
+            if (
+                self.implementation is None
+                or self.implementation.data is not VectorImplementation.PALLAS_FULL_LOCAL
+            ):
+                raise VerifyException(
+                    "physical fused SiLU multiply requires the full-local Pallas implementation"
+                )
+            if not isinstance(output.storage.element_type, BFloat16Type):
+                raise VerifyException("full-local Pallas fused SiLU multiply requires BF16 buffers")
+        elif self.implementation is not None:
+            raise VerifyException(
+                "physical vector implementation is only supported for fused SiLU multiply"
+            )
         if function in {"cast", "rename_dimension"}:
             source = inputs[0]
             assert isinstance(source, BufferType)
@@ -3207,6 +3234,7 @@ TPUSchedule = Dialect(
         OwnershipAttr,
         CollectiveKindAttr,
         VectorMaterializationAttr,
+        VectorImplementationAttr,
         ShapeAttr,
         ShardingAttr,
         LayoutAttr,

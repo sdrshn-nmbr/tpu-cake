@@ -20,6 +20,7 @@ from tpu_cake.physical_fusion import (
     derive_seqax_silu_multiply_fusion_report,
     validate_seqax_silu_multiply_fusion_report,
 )
+from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import SeqaxFeedForwardFusion, seqax_forward_schedule
 
@@ -124,6 +125,35 @@ def test_fusion_comparison_rejects_swapped_gate_and_up_lineage() -> None:
             candidate,
             hardware=tpu7x_tensorcore_rates(),
         )
+
+
+def test_fused_schedule_binds_owned_pallas_vector_regions() -> None:
+    baseline_distributed = seqax_forward_schedule(
+        **SMALL_SEQAX,
+        feed_forward_fusion=SeqaxFeedForwardFusion.SEPARATE,
+    )
+    baseline_physical = lower_seqax_forward_to_physical(baseline_distributed).module
+    baseline_plan = lower_seqax_physical_to_pallas(baseline_distributed, baseline_physical)
+    distributed = seqax_forward_schedule(
+        **SMALL_SEQAX,
+        feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    plan = lower_seqax_physical_to_pallas(distributed, physical)
+
+    assert plan.pallas_region_count == 17
+    assert plan.pallas_vector_region_count == 2
+    assert plan.execution_scope.endswith("pallas-einsums-and-fused-vectors")
+    assert plan.manifest()["pallas_vector_region_count"] == 2
+    assert baseline_plan.pallas_vector_region_count == 0
+    assert "pallas_vector_region_count" not in baseline_plan.manifest()
+    assert "pallas_vector_region_count=" not in baseline_plan.render_executable_source()
+    assert plan.source_sha256() != baseline_plan.source_sha256()
+    namespace: dict[str, object] = {}
+    exec(  # noqa: S102
+        compile(plan.render_executable_source(), "<fused-pallas>", "exec"), namespace
+    )
+    assert namespace["PLAN"].manifest() == plan.manifest()  # type: ignore[union-attr]
 
 
 def test_public_fusion_cli_derives_and_replays_without_schedule_inputs(tmp_path: Path) -> None:

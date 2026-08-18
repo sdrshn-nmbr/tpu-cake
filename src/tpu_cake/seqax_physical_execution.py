@@ -25,6 +25,7 @@ from tpu_cake.dialects.tpu_schedule import (
     MxuEinsumOp,
     SemaphoreAllocOp,
     VectorComputeOp,
+    VectorImplementation,
     YieldOp,
 )
 
@@ -93,6 +94,8 @@ def _vector_compute(
     values: tuple[jax.Array, ...],
     mesh: dict[str, int],
     strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
+    pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
+    | None = None,
 ) -> jax.Array:
     function = operation.function.data
     configuration = _configuration(operation)
@@ -206,7 +209,15 @@ def _vector_compute(
     elif function == "silu":
         result = jax.nn.silu(values[0])
     elif function == "silu_multiply":
-        result = jax.nn.silu(values[0]) * values[1]
+        if (
+            operation.implementation is None
+            or operation.implementation.data is not VectorImplementation.PALLAS_FULL_LOCAL
+            or pallas_silu_multiply is None
+        ):
+            raise UnsupportedPhysicalExecutionError(
+                "physical fused SiLU multiply requires its declared Pallas implementation"
+            )
+        result = pallas_silu_multiply(operation, values[0], values[1])
     elif function == "exp":
         result = jnp.exp(values[0])
     else:
@@ -232,6 +243,8 @@ def execute_seqax_physical_program_jax(
     *,
     einsum: Callable[[MxuEinsumOp, jax.Array, jax.Array], jax.Array],
     strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
+    pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
+    | None = None,
 ) -> tuple[jax.Array, ...]:
     module.verify()
     kernels = tuple(
@@ -309,6 +322,7 @@ def execute_seqax_physical_program_jax(
                 values,
                 mesh,
                 strict_silu_checkpoints,
+                pallas_silu_multiply,
             )
             environment[operation.output] = result
             continue

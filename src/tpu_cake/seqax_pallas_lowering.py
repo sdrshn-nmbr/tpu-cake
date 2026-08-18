@@ -13,11 +13,17 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 from jax.sharding import Mesh, PartitionSpec
 from xdsl.context import Context
-from xdsl.dialects.builtin import Builtin, ModuleOp
+from xdsl.dialects.builtin import BFloat16Type, Builtin, ModuleOp
 from xdsl.parser import Parser
 
 from tpu_cake.dialects.distributed_tensor import DistributedTensor
-from tpu_cake.dialects.tpu_schedule import BufferType, MxuEinsumOp, TPUSchedule
+from tpu_cake.dialects.tpu_schedule import (
+    BufferType,
+    MxuEinsumOp,
+    TPUSchedule,
+    VectorComputeOp,
+    VectorImplementation,
+)
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.jax_lowering import JaxTensorContract, lower_distributed_program_to_jax_mesh
 from tpu_cake.physical_geometry import named_einsum_geometry
@@ -227,6 +233,65 @@ def _pallas_einsum(
     return value
 
 
+def _pallas_silu_multiply(
+    physical: VectorComputeOp,
+    gate: jax.Array,
+    up: jax.Array,
+    *,
+    interpret: bool,
+    schedule_sha256_value: str,
+    region_index: int = -1,
+) -> jax.Array:
+    gate_type, up_type, output_type = (
+        physical.inputs[0].type,
+        physical.inputs[1].type,
+        physical.output.type,
+    )
+    assert isinstance(gate_type, BufferType)
+    assert isinstance(up_type, BufferType)
+    assert isinstance(output_type, BufferType)
+    if (
+        physical.function.data != "silu_multiply"
+        or physical.implementation is None
+        or physical.implementation.data is not VectorImplementation.PALLAS_FULL_LOCAL
+    ):
+        raise UnsupportedSeqaxPallasLoweringError(
+            "Pallas fused vector lowering requires the declared full-local implementation"
+        )
+    expected_shape = output_type.storage.get_shape()
+    if (
+        tuple(gate.shape) != expected_shape
+        or tuple(up.shape) != expected_shape
+        or not isinstance(output_type.storage.element_type, BFloat16Type)
+        or gate.dtype != jnp.bfloat16
+        or up.dtype != jnp.bfloat16
+    ):
+        raise UnsupportedSeqaxPallasLoweringError(
+            "Pallas fused SiLU multiply requires matching local BF16 buffers"
+        )
+
+    def kernel(gate_ref, up_ref, output_ref) -> None:
+        output_ref[...] = jax.nn.silu(gate_ref[...]) * up_ref[...]
+
+    interpret_setting = (
+        pltpu.InterpretParams(detect_races=True, out_of_bounds_reads="raise")
+        if interpret
+        else False
+    )
+    call = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct(expected_shape, jnp.bfloat16),
+        interpret=interpret_setting,
+        name="seqax_silu_multiply",
+        metadata={
+            "schedule_sha256": schedule_sha256_value,
+            "vector_region_index": region_index,
+            "implementation": VectorImplementation.PALLAS_FULL_LOCAL.value,
+        },
+    )
+    return call(gate, up)
+
+
 @dataclass(frozen=True)
 class SeqaxPallasPlan:
     name: str
@@ -254,7 +319,20 @@ class SeqaxPallasPlan:
 
     @property
     def execution_scope(self) -> str:
+        if self.pallas_vector_region_count:
+            return "multi-device-local-shards-with-pallas-einsums-and-fused-vectors"
         return "multi-device-local-shards-with-pallas-einsums"
+
+    @property
+    def pallas_vector_region_count(self) -> int:
+        physical = _parse_physical(self.canonical_physical_xdsl)
+        physical.verify()
+        return sum(
+            isinstance(operation, VectorComputeOp)
+            and operation.implementation is not None
+            and operation.implementation.data is VectorImplementation.PALLAS_FULL_LOCAL
+            for operation in physical.walk()
+        )
 
     def _validated_modules(self) -> tuple[ModuleOp, ModuleOp]:
         distributed = _parse_distributed(self.canonical_distributed_xdsl)
@@ -285,10 +363,20 @@ class SeqaxPallasPlan:
             raise UnsupportedSeqaxPallasLoweringError(
                 "Pallas plan outputs do not match the distributed program"
             )
-        expected_regions = sum(isinstance(operation, MxuEinsumOp) for operation in physical.walk())
-        if self.pallas_region_count != expected_regions:
+        expected_einsums = sum(isinstance(operation, MxuEinsumOp) for operation in physical.walk())
+        expected_vectors = sum(
+            isinstance(operation, VectorComputeOp)
+            and operation.implementation is not None
+            and operation.implementation.data is VectorImplementation.PALLAS_FULL_LOCAL
+            for operation in physical.walk()
+        )
+        if self.pallas_region_count != expected_einsums:
             raise UnsupportedSeqaxPallasLoweringError(
                 "Pallas region count does not match the physical schedule"
+            )
+        if self.pallas_vector_region_count != expected_vectors:
+            raise UnsupportedSeqaxPallasLoweringError(
+                "Pallas vector region count does not match the physical schedule"
             )
         if self.implementation_manifest != _implementation_manifest():
             raise UnsupportedSeqaxPallasLoweringError(
@@ -320,13 +408,24 @@ class SeqaxPallasPlan:
         physical_einsums = tuple(
             operation for operation in physical.walk() if isinstance(operation, MxuEinsumOp)
         )
-        if len(physical_einsums) != self.pallas_region_count:
+        physical_vectors = tuple(
+            operation
+            for operation in physical.walk()
+            if isinstance(operation, VectorComputeOp)
+            and operation.implementation is not None
+            and operation.implementation.data is VectorImplementation.PALLAS_FULL_LOCAL
+        )
+        if (
+            len(physical_einsums) != self.pallas_region_count
+            or len(physical_vectors) != self.pallas_vector_region_count
+        ):
             raise UnsupportedSeqaxPallasLoweringError(
                 "physical Pallas region count does not match the plan"
             )
 
         def physical_call(*inputs):
-            index = 0
+            einsum_index = 0
+            vector_index = 0
             checkpoints: list[tuple[jax.Array, jax.Array]] | None = (
                 [] if strict_silu_layers else None
             )
@@ -336,14 +435,14 @@ class SeqaxPallasPlan:
                 lhs: jax.Array,
                 rhs: jax.Array,
             ) -> jax.Array:
-                nonlocal index
-                if index >= len(physical_einsums):
+                nonlocal einsum_index
+                if einsum_index >= len(physical_einsums):
                     raise UnsupportedSeqaxPallasLoweringError(
                         "distributed program executed more einsums than the physical schedule"
                     )
-                region_index = index
+                region_index = einsum_index
                 expected_operation = physical_einsums[region_index]
-                index += 1
+                einsum_index += 1
                 if physical_operation is not expected_operation:
                     raise UnsupportedSeqaxPallasLoweringError(
                         "physical execution changed the Pallas region order"
@@ -357,15 +456,46 @@ class SeqaxPallasPlan:
                     region_index=region_index,
                 )
 
+            def silu_multiply(
+                physical_operation: VectorComputeOp,
+                gate: jax.Array,
+                up: jax.Array,
+            ) -> jax.Array:
+                nonlocal vector_index
+                if vector_index >= len(physical_vectors):
+                    raise UnsupportedSeqaxPallasLoweringError(
+                        "distributed program executed more fused vectors than the physical schedule"
+                    )
+                region_index = vector_index
+                expected_operation = physical_vectors[region_index]
+                vector_index += 1
+                if physical_operation is not expected_operation:
+                    raise UnsupportedSeqaxPallasLoweringError(
+                        "physical execution changed the fused Pallas vector region order"
+                    )
+                return _pallas_silu_multiply(
+                    physical_operation,
+                    gate,
+                    up,
+                    interpret=interpret,
+                    schedule_sha256_value=self.physical_schedule_sha256,
+                    region_index=region_index,
+                )
+
             outputs = execute_seqax_physical_program_jax(
                 physical,
                 inputs,
                 einsum=einsum,
                 strict_silu_checkpoints=checkpoints,
+                pallas_silu_multiply=silu_multiply if physical_vectors else None,
             )
-            if index != len(physical_einsums):
+            if einsum_index != len(physical_einsums):
                 raise UnsupportedSeqaxPallasLoweringError(
                     "physical schedule contains unused Pallas einsum regions"
+                )
+            if vector_index != len(physical_vectors):
+                raise UnsupportedSeqaxPallasLoweringError(
+                    "physical schedule contains unused fused Pallas vector regions"
                 )
             if checkpoints is None:
                 return outputs
@@ -423,7 +553,7 @@ class SeqaxPallasPlan:
 
     def manifest(self) -> dict[str, Any]:
         mesh = dict(self.mesh)
-        return {
+        manifest = {
             "schema": self.schema,
             "name": self.name,
             "distributed_schedule_sha256": self.distributed_schedule_sha256,
@@ -439,6 +569,9 @@ class SeqaxPallasPlan:
                 contract.manifest(mesh=mesh) for contract in self.output_contracts
             ],
         }
+        if self.pallas_vector_region_count:
+            manifest["pallas_vector_region_count"] = self.pallas_vector_region_count
+        return manifest
 
     def render_executable_source(self) -> str:
         return f"""from __future__ import annotations
@@ -484,10 +617,10 @@ def lower_seqax_physical_to_pallas(
             "physical schedule is not the canonical lowering of the distributed program"
         )
     jax_plan = lower_distributed_program_to_jax_mesh(distributed)
-    pallas_regions = tuple(
+    pallas_einsums = tuple(
         operation for operation in physical.walk() if isinstance(operation, MxuEinsumOp)
     )
-    if not pallas_regions:
+    if not pallas_einsums:
         raise UnsupportedSeqaxPallasLoweringError(
             "Seqax physical schedule contains no Pallas regions"
         )
@@ -500,6 +633,6 @@ def lower_seqax_physical_to_pallas(
         mesh=tuple(sorted(jax_plan.mesh.items())),
         input_contracts=jax_plan.input_contracts,
         output_contracts=jax_plan.output_contracts,
-        pallas_region_count=len(pallas_regions),
+        pallas_region_count=len(pallas_einsums),
         implementation_manifest=_implementation_manifest(),
     )

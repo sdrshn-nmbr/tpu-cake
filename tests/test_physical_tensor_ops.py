@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from xdsl.dialects.builtin import bf16, f32, i1, i32
+from xdsl.dialects.builtin import bf16, f16, f32, i1, i32
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
@@ -11,6 +11,7 @@ from tpu_cake.dialects.tpu_schedule import (
     MxuEinsumOp,
     Ownership,
     VectorComputeOp,
+    VectorImplementation,
     VectorMaterialization,
 )
 from tpu_cake.frontend import KernelBuilder, buffer
@@ -444,10 +445,78 @@ def test_vector_compute_rejects_integer_nonlinear_operations(
         output,
         stage=1,
         function=function,
+        implementation=(
+            VectorImplementation.PALLAS_FULL_LOCAL if function == "silu_multiply" else None
+        ),
     )
 
     with pytest.raises(VerifyException, match="require floating point"):
         operation.verify()
+
+
+def test_fused_vector_requires_its_declared_pallas_implementation() -> None:
+    gate = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "gate")
+    up = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "up")
+    output = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "output")
+    missing = VectorComputeOp(
+        (gate, up),
+        output,
+        stage=1,
+        function="silu_multiply",
+    )
+    misplaced = VectorComputeOp(
+        (gate, up),
+        output,
+        stage=1,
+        function="multiply",
+        implementation=VectorImplementation.PALLAS_FULL_LOCAL,
+    )
+
+    with pytest.raises(VerifyException, match="requires the full-local Pallas"):
+        missing.verify()
+    with pytest.raises(VerifyException, match="only supported for fused SiLU"):
+        misplaced.verify()
+
+
+@pytest.mark.parametrize("dtype", (f16, f32))
+def test_fused_pallas_vector_requires_bf16(dtype) -> None:
+    gate = AllocOp(_spec((2, 4), ("B", "M"), dtype=dtype).to_type(), "gate")
+    up = AllocOp(_spec((2, 4), ("B", "M"), dtype=dtype).to_type(), "up")
+    output = AllocOp(_spec((2, 4), ("B", "M"), dtype=dtype).to_type(), "output")
+    operation = VectorComputeOp(
+        (gate, up),
+        output,
+        stage=1,
+        function="silu_multiply",
+        implementation=VectorImplementation.PALLAS_FULL_LOCAL,
+    )
+
+    with pytest.raises(VerifyException, match="requires BF16 buffers"):
+        operation.verify()
+
+
+def test_fused_vector_execution_requires_the_owned_pallas_callback() -> None:
+    gate = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "gate")
+    up = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "up")
+    output = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "output")
+    operation = VectorComputeOp(
+        (gate, up),
+        output,
+        stage=1,
+        function="silu_multiply",
+        implementation=VectorImplementation.PALLAS_FULL_LOCAL,
+    )
+    operation.verify()
+
+    with pytest.raises(ValueError, match="declared Pallas implementation"):
+        _vector_compute(
+            operation,
+            (
+                jnp.ones((2, 4), dtype=jnp.bfloat16),
+                jnp.ones((2, 4), dtype=jnp.bfloat16),
+            ),
+            {},
+        )
 
 
 @pytest.mark.parametrize("maximum_timescale", ("nan", "inf"))
