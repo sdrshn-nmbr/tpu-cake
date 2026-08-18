@@ -37,6 +37,10 @@ from tpu_cake.seqax_pallas_bundle import (
     build_seqax_pallas_receipt,
     validate_seqax_pallas_receipt,
 )
+from tpu_cake.seqax_pallas_diagnostic import (
+    run_seqax_pallas_incumbent_diagnostic,
+    validate_seqax_pallas_incumbent_diagnostic,
+)
 from tpu_cake.seqax_pallas_runner import run_seqax_physical_pallas
 from tpu_cake.seqax_pallas_search import SeqaxPallasSearchContract
 from tpu_cake.seqax_pallas_search_runner import (
@@ -147,6 +151,14 @@ def _parser() -> argparse.ArgumentParser:
     verify_seqax_pallas_search = commands.add_parser("verify-seqax-physical-pallas-search")
     verify_seqax_pallas_search.add_argument("run_root", type=Path)
     verify_seqax_pallas_search.add_argument("--contract", required=True, type=Path)
+
+    diagnose_seqax_pallas = commands.add_parser("diagnose-seqax-physical-pallas")
+    diagnose_seqax_pallas.add_argument("--search-root", required=True, type=Path)
+    diagnose_seqax_pallas.add_argument("--contract", required=True, type=Path)
+    diagnose_seqax_pallas.add_argument("--output-dir", required=True, type=Path)
+
+    verify_seqax_pallas_diagnostic = commands.add_parser("verify-seqax-physical-pallas-diagnostic")
+    verify_seqax_pallas_diagnostic.add_argument("run_root", type=Path)
 
     finalize_seqax = commands.add_parser("finalize-seqax-forward")
     finalize_seqax.add_argument("run_root", type=Path)
@@ -380,6 +392,22 @@ def main() -> None:
             "SEQAX_PHYSICAL_PALLAS_SEARCH_ACCEPTED "
             f"winner={result.winner or 'none'} candidates={len(result.candidates)} "
             f"primitive_cases={len(result.primitive_observations)}"
+        )
+        code = 0
+    elif args.command == "diagnose-seqax-physical-pallas":
+        contract = SeqaxPallasSearchContract.model_validate_json(args.contract.read_text())
+        receipt = run_seqax_pallas_incumbent_diagnostic(
+            args.output_dir,
+            args.search_root,
+            contract,
+        )
+        print(receipt.model_dump_json(indent=2))
+        code = 0
+    elif args.command == "verify-seqax-physical-pallas-diagnostic":
+        receipt = validate_seqax_pallas_incumbent_diagnostic(args.run_root)
+        print(
+            "SEQAX_PHYSICAL_PALLAS_DIAGNOSTIC_ACCEPTED "
+            f"artifacts={len(receipt.artifacts)} search_id={receipt.search_id}"
         )
         code = 0
     elif args.command == "finalize-seqax-forward":
