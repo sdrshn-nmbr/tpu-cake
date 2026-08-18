@@ -59,6 +59,11 @@ from tpu_cake.seqax_surface_profile import (
     run_seqax_surface_profile_phase,
     validate_seqax_surface_profile_receipt,
 )
+from tpu_cake.seqax_weight_confirmation import SeqaxWeightConfirmationContract
+from tpu_cake.seqax_weight_confirmation_runner import (
+    run_seqax_weight_confirmation,
+    validate_seqax_weight_confirmation,
+)
 from tpu_cake.seqax_weight_placement import (
     SeqaxWeightPlacementContract,
     SeqaxWeightPlacementName,
@@ -175,6 +180,16 @@ def _parser() -> argparse.ArgumentParser:
     verify_seqax_weight_placement = commands.add_parser("verify-seqax-weight-placement")
     verify_seqax_weight_placement.add_argument("run_root", type=Path)
     verify_seqax_weight_placement.add_argument("--contract", required=True, type=Path)
+
+    confirm_seqax_weight_placement = commands.add_parser("confirm-seqax-weight-placement")
+    confirm_seqax_weight_placement.add_argument("--contract", required=True, type=Path)
+    confirm_seqax_weight_placement.add_argument("--output-dir", required=True, type=Path)
+
+    verify_seqax_weight_confirmation = commands.add_parser(
+        "verify-seqax-weight-placement-confirmation"
+    )
+    verify_seqax_weight_confirmation.add_argument("run_root", type=Path)
+    verify_seqax_weight_confirmation.add_argument("--contract", required=True, type=Path)
 
     diagnose_seqax_weight_placement = commands.add_parser("diagnose-seqax-weight-placement")
     diagnose_seqax_weight_placement.add_argument("--search-root", required=True, type=Path)
@@ -446,6 +461,21 @@ def main() -> None:
         print(
             "SEQAX_WEIGHT_PLACEMENT_ACCEPTED "
             f"winner={result.winner or 'none'} candidates={len(result.candidates)} "
+            f"scope={result.correctness_scope}"
+        )
+        code = 0
+    elif args.command == "confirm-seqax-weight-placement":
+        contract = SeqaxWeightConfirmationContract.model_validate_json(args.contract.read_text())
+        result = run_seqax_weight_confirmation(args.output_dir, contract)
+        print(result.model_dump_json(indent=2))
+        code = 0
+    elif args.command == "verify-seqax-weight-placement-confirmation":
+        contract = SeqaxWeightConfirmationContract.model_validate_json(args.contract.read_text())
+        result = validate_seqax_weight_confirmation(args.run_root, contract)
+        print(
+            "SEQAX_WEIGHT_PLACEMENT_CONFIRMATION_ACCEPTED "
+            f"winner={result.winner or 'none'} rounds={result.statistics.round_count} "
+            f"confidence={result.statistics.confidence_level} "
             f"scope={result.correctness_scope}"
         )
         code = 0

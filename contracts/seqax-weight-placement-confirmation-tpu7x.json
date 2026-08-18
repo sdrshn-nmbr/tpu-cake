@@ -1,0 +1,71 @@
+{
+    "confirmation_schema": "seqax-weight-placement-confirmation-v1",
+    "identity_schema": "length-prefixed-v2",
+    "source_search_id": "81085697c16f46649c708ef858d1d3339db71a4986bd58a550e5e536b55652f5",
+    "source_search_receipt_sha256": "41c86a2267a435070a087e6de89ae92925f7de318314f410c394c0212f75a347",
+    "source_diagnostic_id": "b35419f66644bcf0008ac51dc7f43e25156a4cc47e40ab4d0e48196a76b74d76",
+    "source_diagnostic_receipt_sha256": "08f25e62c67e659e088c9ced6116045d5c3ff8959d0807179fb2508392cf3ace",
+    "accepted_search_plans": [
+        {
+            "candidate": "sharded",
+            "distributed_schedule_sha256": "7329886614acbc40053590195455a41ba0779247274f9a27ba6c0f999e5f650b",
+            "physical_schedule_sha256": "7c0ae576c1223cb900c2f76914173204a4c1087e2e31de7d817e4704ff04c4d1",
+            "pallas_source_sha256": "e9ec2b17823a39c632ba1b468ce73fe81efa1e540806f179cefd3825b73fcf36",
+            "stablehlo_sha256": "906ed9c814950bfdd560e5e7a3f315d4512076bceadf0bb6a1212d2fc3b6a6f6",
+            "compiler_hlo_sha256": "005f33e40b6c8451eb144f765e06b656b23d174be05f50c4f79046657fe0c5a7"
+        },
+        {
+            "candidate": "embedding-mlp",
+            "distributed_schedule_sha256": "3557eaf671703274ca47d6a90f2190903f60e5b8eb4ef215cbcb9ae919c4297a",
+            "physical_schedule_sha256": "2e2253b4631bbc871b7752df22d5df22d402e2d28020a73a073a6616a8a907a3",
+            "pallas_source_sha256": "937782206f2483eea3bf128a1c5f5db47faa0dc09ec6a221195c2f71dff0f18a",
+            "stablehlo_sha256": "4ece103be808492f2155db1ea9f4cd5daed7ad88caa417f27374ba3ed85a703a",
+            "compiler_hlo_sha256": "3ec6ba9308b494f4af57108fd475c1cc73f9f35b1ef4e0656cf567e774ed3c9e"
+        }
+    ],
+    "baseline": "sharded",
+    "candidate": "embedding-mlp",
+    "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 16,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 256,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 1,
+        "tensor_mesh": 4,
+        "vocabulary": 16
+    },
+    "correctness_seeds": [
+        12655767603698703491,
+        16669898698845158318,
+        9762931224767261018,
+        8742091806033755611,
+        16432226195980612678
+    ],
+    "expected_incumbent_cpu_oracle_passed": [true, true, true, false, false],
+    "timing_seed": 12655767603698703491,
+    "cpu_oracle_replay_absolute_tolerance": 2e-6,
+    "warmup_iterations": 5,
+    "measured_iterations": 5,
+    "paired_rounds": 32,
+    "bootstrap_samples": 100000,
+    "confidence_level": 0.99,
+    "minimum_practical_improvement": 0.03,
+    "analysis_index": 2,
+    "allow_early_stopping": false,
+    "allow_further_retry": false,
+    "runtime": {
+        "python": "3.12.3",
+        "jax": "0.11.0",
+        "jaxlib": "0.11.0",
+        "libtpu": "0.0.44.1",
+        "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+    },
+    "backend": "tpu",
+    "device_kind": "TPU7x",
+    "device_count": 8
+}

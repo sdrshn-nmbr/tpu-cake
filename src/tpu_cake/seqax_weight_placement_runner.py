@@ -135,6 +135,8 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "seqax_physical_execution.py",
         package / "seqax_physical_lowering.py",
         package / "seqax_runner.py",
+        package / "seqax_weight_confirmation.py",
+        package / "seqax_weight_confirmation_runner.py",
         package / "seqax_weight_placement.py",
         package / "seqax_weight_placement_runner.py",
         package / "dialects" / "distributed_tensor.py",

@@ -196,6 +196,8 @@ def test_isolated_memory_probe_reports_child_failure(
 def test_weight_placement_source_manifest_binds_runtime_authority() -> None:
     paths = {value.path for value in _source_manifest()}
     assert "tpu_cake/cli.py" in paths
+    assert "tpu_cake/seqax_weight_confirmation.py" in paths
+    assert "tpu_cake/seqax_weight_confirmation_runner.py" in paths
     assert "tpu_cake/seqax_weight_placement.py" in paths
     assert "tpu_cake/seqax_weight_placement_runner.py" in paths
     assert "tpu_cake/seqax_pallas_search.py" in paths
