@@ -127,6 +127,33 @@ def _save_array(path: Path, value: np.ndarray) -> None:
     np.save(path, value, allow_pickle=False)
 
 
+def _save_primitive_input(path: Path, value: np.ndarray, dtype_name: str) -> None:
+    if dtype_name == "bf16":
+        if value.dtype != np.dtype(jnp.bfloat16):
+            raise ValueError(f"SEQAX_PALLAS_SEARCH_PRIMITIVE_STORAGE_DTYPE dtype={value.dtype}")
+        _save_array(path, value.view(np.uint16))
+        return
+    if dtype_name == "f32":
+        if value.dtype != np.dtype(np.float32):
+            raise ValueError(f"SEQAX_PALLAS_SEARCH_PRIMITIVE_STORAGE_DTYPE dtype={value.dtype}")
+        _save_array(path, value)
+        return
+    raise ValueError(f"SEQAX_PALLAS_SEARCH_PRIMITIVE_STORAGE_UNSUPPORTED dtype={dtype_name}")
+
+
+def _load_primitive_input(path: Path, dtype_name: str) -> np.ndarray:
+    stored = _load_array(path)
+    if dtype_name == "bf16":
+        if stored.dtype != np.dtype(np.uint16):
+            raise ValueError(f"SEQAX_PALLAS_SEARCH_PRIMITIVE_STORAGE_DTYPE dtype={stored.dtype}")
+        return stored.view(np.dtype(jnp.bfloat16))
+    if dtype_name == "f32":
+        if stored.dtype != np.dtype(np.float32):
+            raise ValueError(f"SEQAX_PALLAS_SEARCH_PRIMITIVE_STORAGE_DTYPE dtype={stored.dtype}")
+        return stored
+    raise ValueError(f"SEQAX_PALLAS_SEARCH_PRIMITIVE_STORAGE_UNSUPPORTED dtype={dtype_name}")
+
+
 def _close_ledger(path: Path) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -399,8 +426,16 @@ def _primitive_observations(
                 )
             )
             case_root = root / f"shape-{shape_index:02d}" / str(seed)
-            _save_array(case_root / "lhs.npy", np.asarray(lhs_device))
-            _save_array(case_root / "rhs.npy", np.asarray(rhs_device))
+            _save_primitive_input(
+                case_root / "lhs.npy",
+                np.asarray(lhs_device),
+                dtype_name,
+            )
+            _save_primitive_input(
+                case_root / "rhs.npy",
+                np.asarray(rhs_device),
+                dtype_name,
+            )
             _save_array(case_root / "actual.npy", actual)
             _save_array(case_root / "reference.npy", reference)
             observations.append(
@@ -1003,15 +1038,15 @@ def _validate_primitive_replay(
         if not all(isinstance(value, BufferType) for value in (lhs_type, rhs_type, output_type)):
             raise TypeError("Seqax Pallas primitive requires physical buffer operands")
         case_root = root / f"shape-{observation.shape_index:02d}" / str(observation.seed)
-        lhs = _load_array(case_root / "lhs.npy")
-        rhs = _load_array(case_root / "rhs.npy")
+        _input_dtype, expected_dtype = _primitive_dtype(operation)
+        lhs = _load_primitive_input(case_root / "lhs.npy", expected_dtype)
+        rhs = _load_primitive_input(case_root / "rhs.npy", expected_dtype)
         actual = _load_array(case_root / "actual.npy")
         reference = _load_array(case_root / "reference.npy")
         expected_lhs, expected_rhs = _regenerate_primitive_operands(
             operation,
             observation.seed,
         )
-        _input_dtype, expected_dtype = _primitive_dtype(operation)
         expected_reference = _numpy_einsum(operation, lhs, rhs)
         expected_tiles = (
             operation.tile_m.data,

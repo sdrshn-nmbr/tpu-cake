@@ -16,7 +16,9 @@ from tpu_cake.seqax_pallas_search import (
 )
 from tpu_cake.seqax_pallas_search_runner import (
     _compiler_tile_metadata,
+    _load_primitive_input,
     _regenerate_primitive_operands,
+    _save_primitive_input,
     _validate_output_abi,
     prepare_seqax_pallas_candidates,
 )
@@ -154,6 +156,28 @@ def test_seqax_pallas_primitive_operands_are_seeded_and_typed() -> None:
     assert str(rhs.dtype) == "bfloat16"
     assert np.array_equal(lhs, repeated_lhs)
     assert np.array_equal(rhs, repeated_rhs)
+
+
+def test_seqax_pallas_primitive_bf16_storage_round_trips_exactly(tmp_path: Path) -> None:
+    contract = default_seqax_pallas_search_contract(_runtime())
+    _distributed, prepared = prepare_seqax_pallas_candidates(contract)
+    operation = next(
+        value for value in prepared[-1].physical.walk() if isinstance(value, MxuEinsumOp)
+    )
+    value, _rhs = _regenerate_primitive_operands(operation, contract.correctness_seeds[0])
+    path = tmp_path / "input.npy"
+
+    _save_primitive_input(path, value, "bf16")
+
+    stored = np.load(path, allow_pickle=False)
+    restored = _load_primitive_input(path, "bf16")
+    assert stored.dtype == np.dtype(np.uint16)
+    assert restored.dtype == value.dtype
+    assert np.array_equal(restored, value)
+
+    np.save(path, value.astype(np.float32), allow_pickle=False)
+    with pytest.raises(ValueError, match="PRIMITIVE_STORAGE_DTYPE"):
+        _load_primitive_input(path, "bf16")
 
 
 def test_seqax_pallas_output_must_match_the_plan_abi() -> None:
