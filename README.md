@@ -77,6 +77,19 @@ uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
 
 uv run tpu-cake run-seqax-surface --output-dir SURFACE_RUN_ROOT
 uv run tpu-cake verify-seqax-surface SURFACE_RUN_ROOT
+uv run tpu-cake run-seqax-surface-profile \
+  --output-dir SEQAX_SURFACE_PROFILE_ROOT/SCENARIO/MODE \
+  --surface-root SURFACE_RUN_ROOT --scenario SCENARIO --mode MODE
+uv run tpu-cake finalize-seqax-surface-profile SEQAX_SURFACE_PROFILE_ROOT \
+  --surface-root SURFACE_RUN_ROOT
+uv run tpu-cake verify-seqax-surface-profile SEQAX_SURFACE_PROFILE_ROOT
+
+uv run tpu-cake calibrate-seqax-cost SEQAX_SURFACE_PROFILE_ROOT \
+  --contract contracts/seqax-cost-calibration-v1.json \
+  --output COST_CALIBRATION_REPORT.json
+uv run tpu-cake verify-seqax-cost-calibration COST_CALIBRATION_REPORT.json \
+  --profile-root SEQAX_SURFACE_PROFILE_ROOT \
+  --contract contracts/seqax-cost-calibration-v1.json
 
 uv run tpu-cake run-seqax-physical-pallas \
   --output-dir SEQAX_PALLAS_RUN_ROOT/timing --mode timing
@@ -95,6 +108,8 @@ The distributed matmul path is complete through verified TPU execution and bound
 This full-forward path now lowers declared contraction tiles into Pallas grids and block indexing. A bounded TPU7x search over global split-K, split-N, and split-KN policies retained the full-tile incumbent for the fixed model-256, one-layer, one-token surface; it did not find a useful improvement. Vector operations, collectives, DMA annotations, and resource schedules remain implemented or selected by JAX/XLA rather than owned Mosaic kernels. The result is therefore a verified physical-contraction baseline and a narrow negative search result, not a claim that the complete physical schedule is optimal.
 
 The Seqax workload-surface experiment compares the unwrapped `shard_map` control with the canonical whole-program JIT across three forward shapes. Inputs are placed on their declared TPU shards before timing. Each scenario is resampled independently, and promotion requires a confidence interval above the declared practical threshold without a material regression in any scenario. Saved HLO is runner-captured integrity evidence with exact hashes and structural replay checks; it is not independently signed compiler attestation.
+
+The first Seqax cost calibration replays the accepted three-shape trace and counter bundle, then fits a fixed residual-overhead term plus a layer-count-associated residual term on top of the IR-derived idealized resource floor. It describes that exact profiler-instrumented surface within a declared residual bound, but has no held-out predictive validation. It therefore quantifies an overhead-dominated gap in the advertised-rate floor; neither coefficient has causal attribution, and the fit has no sampling-uncertainty or coefficient-confidence-interval estimate. It is not a production latency model, a calibrated model-size or sequence-length scaling law, or a calibration of MXU, HBM, or ICI rates.
 
 Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution, bounded block-size search, separate timing/trace/counter captures, and a search-bound receipt. It delegates execution to the pinned upstream RPA Pallas wrapper and covers one fixed decode-only local-shard fixture. It does not yet represent the wrapper's internal Pallas schedule, own the outer multi-device `shard_map`, prove full Inkling serving, or establish a global block-size optimum.
 

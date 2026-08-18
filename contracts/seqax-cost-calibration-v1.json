@@ -1,0 +1,35 @@
+{
+  "schema_version": "seqax-cost-calibration-v1",
+  "surface_id": "2c80e1856a985e674b14b1e94ff3cf50102ac8b246aeac17f5a01ad0acb3a1de",
+  "surface_profile_receipt_sha256": "2b52109637c779b104b895f935652edab50a1de697477cba3b40ea225e3de636",
+  "surface_receipt_sha256": "61ca1f2b52975b384759fd9c1b68b5bda6bbd3be0e700a59486d596f4360c2c8",
+  "scenarios": [
+    "tiny",
+    "wider",
+    "deeper"
+  ],
+  "primary_mode": "trace",
+  "replication_mode": "counters",
+  "response_metric": "median_compiled_forward_duration",
+  "baseline_metric": "seqax_idealized_time_floor",
+  "materialization_metric": "seqax_materialized_hbm_time",
+  "predictor": "declared_layer_count",
+  "fit_formula": "measured_median_ns=idealized_floor_ns+fixed_residual_ns+layers*per_layer_residual_ns",
+  "maximum_in_surface_relative_error": "0.02",
+  "maximum_cross_mode_relative_difference": "0.10",
+  "decimal_places": 12,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "measured_iterations": 50,
+  "input_placement": "resident-named-sharding-before-warmup",
+  "execution_scope": "multi-device-local-shards",
+  "measurement_scope": "profiled-device-module-self-time",
+  "acceptance_scope": "descriptive-in-surface-fit-only"
+}

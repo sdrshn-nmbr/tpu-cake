@@ -33,6 +33,12 @@ from tpu_cake.seqax_bundle import (
     build_seqax_forward_receipt,
     validate_seqax_forward_receipt,
 )
+from tpu_cake.seqax_cost_calibration import (
+    SeqaxCostCalibrationContract,
+    SeqaxCostCalibrationReport,
+    validate_seqax_cost_calibration,
+    write_seqax_cost_calibration,
+)
 from tpu_cake.seqax_numerical import SeqaxBf16ValidationContract
 from tpu_cake.seqax_numerical_runner import (
     run_seqax_bf16_validation,
@@ -262,6 +268,16 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_seqax_surface_profile = commands.add_parser("verify-seqax-surface-profile")
     verify_seqax_surface_profile.add_argument("run_root", type=Path)
+
+    calibrate_seqax_cost = commands.add_parser("calibrate-seqax-cost")
+    calibrate_seqax_cost.add_argument("profile_root", type=Path)
+    calibrate_seqax_cost.add_argument("--contract", required=True, type=Path)
+    calibrate_seqax_cost.add_argument("--output", required=True, type=Path)
+
+    verify_seqax_cost = commands.add_parser("verify-seqax-cost-calibration")
+    verify_seqax_cost.add_argument("report", type=Path)
+    verify_seqax_cost.add_argument("--profile-root", required=True, type=Path)
+    verify_seqax_cost.add_argument("--contract", required=True, type=Path)
 
     search = commands.add_parser("search-matmul")
     search.add_argument("contract", type=Path)
@@ -619,6 +635,35 @@ def main() -> None:
             f"scenarios={len(receipt.results) // 2} "
             f"captures={len(receipt.results)} artifacts={len(receipt.artifacts)} "
             f"metrics={len(receipt.metrics)}"
+        )
+        code = 0
+    elif args.command == "calibrate-seqax-cost":
+        contract = SeqaxCostCalibrationContract.model_validate_json(args.contract.read_text())
+        report = write_seqax_cost_calibration(
+            args.output,
+            profile_root=args.profile_root,
+            contract=contract,
+        )
+        print(
+            "SEQAX_COST_CALIBRATION_DERIVED "
+            f"status={report.status} points={len(report.points)} "
+            f"fit_error={report.maximum_in_surface_relative_error} "
+            f"predictive_validation={report.predictive_validation}"
+        )
+        code = 0
+    elif args.command == "verify-seqax-cost-calibration":
+        contract = SeqaxCostCalibrationContract.model_validate_json(args.contract.read_text())
+        report = SeqaxCostCalibrationReport.model_validate_json(args.report.read_text())
+        validate_seqax_cost_calibration(
+            report,
+            profile_root=args.profile_root,
+            contract=contract,
+        )
+        print(
+            "SEQAX_COST_CALIBRATION_REPLAYED "
+            f"status={report.status} points={len(report.points)} "
+            f"fit_error={report.maximum_in_surface_relative_error} "
+            f"predictive_validation={report.predictive_validation}"
         )
         code = 0
     elif args.command == "search-matmul":
