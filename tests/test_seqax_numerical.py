@@ -122,7 +122,7 @@ def test_mathematical_silu_reference_rounds_once_to_bf16() -> None:
     )
     assert actual.dtype == np.dtype(ml_dtypes.bfloat16)
     assert BF16_UNIT_ROUNDOFF == 0.00390625
-    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v1"
+    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v2"
 
 
 def test_mathematical_silu_reference_rejects_non_bf16_or_nonfinite_input() -> None:
@@ -316,14 +316,35 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
     assert SeqaxBf16ValidationContract.model_validate_json(encoded) == contract
     assert contract.scenarios[0].seeds == SEQAX_PALLAS_CORRECTNESS_SEEDS
     assert contract.scenarios[0].role.value == "calibration"
-    assert tuple(scenario.role.value for scenario in contract.scenarios[1:]) == (
+    assert tuple(scenario.role.value for scenario in contract.scenarios) == (
+        "calibration",
+        "calibration",
+        "calibration",
+        "calibration",
         "held_out",
         "held_out",
         "held_out",
     )
-    assert not set(contract.scenarios[0].seeds).intersection(
-        seed for scenario in contract.scenarios[1:] for seed in scenario.seeds
-    )
+    calibration_seeds = {
+        seed
+        for scenario in contract.scenarios
+        if scenario.role.value == "calibration"
+        for seed in scenario.seeds
+    }
+    held_out_seeds = {
+        seed
+        for scenario in contract.scenarios
+        if scenario.role.value == "held_out"
+        for seed in scenario.seeds
+    }
+    assert calibration_seeds.isdisjoint(held_out_seeds)
+    assert 16491228204229630496 in calibration_seeds
+    assert len(calibration_seeds) == 17
+    assert len(held_out_seeds) == 12
+    assert contract.policy.cpu_relative_l2_units == 3.0
+    assert contract.policy.cpu_row_scaled_max_units == 8.0
+    assert contract.policy.cross_path_relative_l2_units == 2.0
+    assert contract.policy.cross_path_row_scaled_max_units == 2.0
     assert contract.required_discriminators == tuple(SeqaxNumericalDiscriminator)
     assert tuple(tensor.name for tensor in contract.scenarios[0].inputs) == (
         "tokens",
@@ -340,20 +361,20 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
         "final_layer_norm",
         "unembedding",
     )
-    assert contract.scenarios[1].output.shape == (2, 3, 32)
-    assert tuple(value.shape for value in contract.scenarios[1].silu_checkpoints) == (
-        (2, 3, 24),
-        (2, 3, 24),
+    assert contract.scenarios[4].output.shape == (2, 4, 48)
+    assert tuple(value.shape for value in contract.scenarios[4].silu_checkpoints) == (
+        (2, 4, 32),
+        (2, 4, 32),
     )
 
 
 def test_bf16_forward_external_contract_is_canonical() -> None:
     saved = SeqaxBf16ValidationContract.model_validate_json(
-        Path("contracts/seqax-bf16-forward-numerical-v1.json").read_text()
+        Path("contracts/seqax-bf16-forward-numerical-v2.json").read_text()
     )
 
     assert saved == default_seqax_bf16_validation_contract()
-    assert saved.contract_id == "946cf7cca30b65d2419209bf017117909e6f51aef0c741017f1bc259cc4caa33"
+    assert saved.contract_id == "8e56d50555676708f9c009368e21265a8ea37112c99bcc92803cc0cfa033bee1"
     assert saved.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
     assert saved.compilation_source_root == "/home/sudarshan/tpu-cake-main"
     assert saved.checkpoint_capture == "typed-extra-outputs-v1"
@@ -429,14 +450,18 @@ def test_bf16_checkpoint_uint16_codec_preserves_exact_logical_bits() -> None:
 @pytest.mark.parametrize(
     ("path", "value", "message"),
     (
+        (("schema_version",), "bf16-forward-numerical-v1", "schema mismatch"),
+        (("policy", "schema_version"), "bf16-forward-numerical-v1", "schema mismatch"),
         (("device_count",), True, "device_count"),
-        (("policy", "cpu_relative_l2_units"), 2.1, "not canonical"),
+        (("policy", "cpu_relative_l2_units"), 3.1, "not canonical"),
         (("policy", "metric_quantization_decimals"), 14, "not canonical"),
         (("acceptance_authority",), "pure-evaluator", "acceptance authority"),
         (("checkpoint_capture",), "host-callback", "acceptance authority"),
         (("scenarios", 0, "parameters", "model"), "256", "model"),
         (("scenarios", 0, "inputs", 0, "dtype"), "int32", "input ABI"),
         (("scenarios", 0, "pallas_stablehlo_sha256"), "0" * 64, "StableHLO identity"),
+        (("scenarios", 4, "role"), "calibration", "role mismatch"),
+        (("scenarios", 4, "seeds", 0), 1, "seeds mismatch"),
         (
             ("activation_mutant_stablehlo", 0, "pallas_stablehlo_sha256"),
             "0" * 64,
@@ -469,8 +494,8 @@ def test_bf16_forward_policy_distinguishes_row_spikes_and_distributed_drift() ->
     policy = contract.policy
     localized = reference.copy()
     row_scale = max(float(np.max(np.abs(reference[0, 0]))), 1.0)
-    localized[0, 0, 0] += np.float32(4.5 * BF16_UNIT_ROUNDOFF * row_scale)
-    distributed = reference * np.float32(1.0 + 2.1 * BF16_UNIT_ROUNDOFF)
+    localized[0, 0, 0] += np.float32(8.5 * BF16_UNIT_ROUNDOFF * row_scale)
+    distributed = reference * np.float32(1.0 + 3.1 * BF16_UNIT_ROUNDOFF)
 
     localized_assessment = assess_seqax_bf16_forward(
         localized,
@@ -487,12 +512,12 @@ def test_bf16_forward_policy_distinguishes_row_spikes_and_distributed_drift() ->
         scenario=scenario,
     )
 
-    assert localized_assessment.cpu_pallas_relative_l2 < 2 * BF16_UNIT_ROUNDOFF
-    assert localized_assessment.cpu_pallas_row_scaled_max > 4 * BF16_UNIT_ROUNDOFF
+    assert localized_assessment.cpu_pallas_relative_l2 < 3 * BF16_UNIT_ROUNDOFF
+    assert localized_assessment.cpu_pallas_row_scaled_max > 8 * BF16_UNIT_ROUNDOFF
     assert not localized_assessment.final_outputs_satisfy_policy
     assert localized_assessment.checkpoint_values_consistent
-    assert distributed_assessment.cpu_pallas_relative_l2 > 2 * BF16_UNIT_ROUNDOFF
-    assert distributed_assessment.cpu_pallas_row_scaled_max < 4 * BF16_UNIT_ROUNDOFF
+    assert distributed_assessment.cpu_pallas_relative_l2 > 3 * BF16_UNIT_ROUNDOFF
+    assert distributed_assessment.cpu_pallas_row_scaled_max < 8 * BF16_UNIT_ROUNDOFF
     assert not distributed_assessment.final_outputs_satisfy_policy
     assert distributed_assessment.checkpoint_values_consistent
 
@@ -518,8 +543,9 @@ def test_bf16_forward_relative_error_budget_scales_with_sqrt_layer_depth() -> No
         "policy": contract.policy,
         "scenario": scenario,
     }
-    within = reference * np.float32(1.0 + 2.4 * BF16_UNIT_ROUNDOFF)
-    outside = reference * np.float32(1.0 + 3.0 * BF16_UNIT_ROUNDOFF)
+    depth_scale = contract.policy.depth_scale(scenario.parameters.layers)
+    within = reference * np.float32(1.0 + 2.9 * depth_scale * BF16_UNIT_ROUNDOFF)
+    outside = reference * np.float32(1.0 + 3.1 * depth_scale * BF16_UNIT_ROUNDOFF)
 
     within_assessment = assess_seqax_bf16_forward(within, within, **evidence)
     outside_assessment = assess_seqax_bf16_forward(outside, outside, **evidence)

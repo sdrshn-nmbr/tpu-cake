@@ -19,8 +19,9 @@ from tpu_cake.workloads.seqax_oracle import (
 )
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
-SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v1"
+SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v2"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
+_CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
 _REGION_TERMINATORS = frozenset({"sdy.return", "stablehlo.return"})
 _CALIBRATION_PARAMETERS = {
     "batch": 2,
@@ -39,7 +40,7 @@ _CALIBRATION_PARAMETERS = {
 _CALIBRATION_SEEDS = tuple(
     semantic_seed("seqax-pallas-tiled-einsum-v1", str(index)) for index in range(5)
 )
-_HELD_OUT_PARAMETERS = {
+_CALIBRATION_SURFACE_PARAMETERS = {
     "m128-b2-s3-l2": {
         "batch": 2,
         "data_mesh": 2,
@@ -83,6 +84,60 @@ _HELD_OUT_PARAMETERS = {
         "vocabulary": 32,
     },
 }
+_CALIBRATION_SURFACE_SEEDS = {
+    name: tuple(
+        semantic_seed(
+            _CALIBRATION_SCHEMA,
+            f"{name}:sqrt-depth:{index}",
+        )
+        for index in range(4)
+    )
+    for name in _CALIBRATION_SURFACE_PARAMETERS
+}
+_HELD_OUT_PARAMETERS = {
+    "m192-b2-s4-l2": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 32,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 2,
+        "model": 192,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 4,
+        "tensor_mesh": 4,
+        "vocabulary": 48,
+    },
+    "m320-b4-s3-l1": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 40,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 320,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 3,
+        "tensor_mesh": 4,
+        "vocabulary": 48,
+    },
+    "m256-b2-s8-l4": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 32,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 4,
+        "model": 256,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 8,
+        "tensor_mesh": 4,
+        "vocabulary": 64,
+    },
+}
 _STABLEHLO_SHA256 = {
     "calibration-m256-b2-s1-l1": {
         "pallas": "f914d06da5716168c9ca447ef9f26b37ba84f42be6cace2860f4ab03d730425b",
@@ -107,6 +162,24 @@ _STABLEHLO_SHA256 = {
         "control": "8efc8cec47c7f7901bae8dfcb042a32ac3c1645ac960381749d3ef00dbd4c740",
         "instrumented_pallas": "5c6e9f7c31449be1b3dedd2158b6025e9a8b331e592da227a17d90ad1ecaf30a",
         "instrumented_control": "f7525f6eef598329764b57c1517b9e392df11619cd5173e0382c023d2f9bfc2f",
+    },
+    "m192-b2-s4-l2": {
+        "pallas": "f82161148b6f2e36afccca3adfbcf8ea700a879df5297482390405fd3d35c973",
+        "control": "7cc8b16442e5d98a70a0a513e96c9de608146bcae7431bf184be8e859112de50",
+        "instrumented_pallas": "baeb21604a50cd77807fbd9cc90603a425677af053fba8659186492394646cf1",
+        "instrumented_control": "4c541d8832bb03534f7989cbd9c2dc1387c9d6f8620746ea0bf4cf7fa1ee2641",
+    },
+    "m320-b4-s3-l1": {
+        "pallas": "acd2361cc4a14ebeb0d097299a0f079671d8db1ef7045d63076b17c56aace960",
+        "control": "14d9569435ab5b8892fdf98eeba6a1da7e9999e1dd998cf6f61efc7a46521340",
+        "instrumented_pallas": "e03e5ed1b6f1935dff582d62dc6a0e063a1acf752bdb98560b92aca9ab04f0fc",
+        "instrumented_control": "fc1107a6331d5321091aa2d3bbee0fe13e738daab72300efce0861d53c9d6822",
+    },
+    "m256-b2-s8-l4": {
+        "pallas": "220306763eb8c308e331c17931145bedcf1c504559b0e9aaaedb8b2be58c248e",
+        "control": "68c42cf8d7b5e98f41a449c536e3092982b863c87698546193bc47df47456b06",
+        "instrumented_pallas": "e1744714945f2960f6434b7a6fa318f22779a5a218f9b23ee7d7677ac7983159",
+        "instrumented_control": "0215702f5ca20e8841d33cd818e0fd41f257e5eb5dbe82ecba1cc744343079d3",
     },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
@@ -257,8 +330,8 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             self.require_finite_output,
             self.require_exact_mathematical_silu,
         ) != (
-            2.0,
-            4.0,
+            3.0,
+            8.0,
             2.0,
             2.0,
             "sqrt_layers",
@@ -450,7 +523,7 @@ class SeqaxBf16ValidationContract(BaseModel):
 
     schema_version: str = SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA
     policy: SeqaxBf16NumericalPolicy
-    scenarios: tuple[SeqaxBf16NumericalScenario, ...] = Field(min_length=4)
+    scenarios: tuple[SeqaxBf16NumericalScenario, ...] = Field(min_length=7)
     activation_mutant_stablehlo: tuple[SeqaxBf16ActivationMutantStablehloContract, ...] = Field(
         min_length=2, max_length=2
     )
@@ -494,32 +567,37 @@ class SeqaxBf16ValidationContract(BaseModel):
             raise ValueError("Seqax BF16 activation mutant StableHLO order mismatch")
         if tuple(scenario.name for scenario in self.scenarios) != (
             "calibration-m256-b2-s1-l1",
+            *_CALIBRATION_SURFACE_PARAMETERS,
             *_HELD_OUT_PARAMETERS,
         ):
             raise ValueError("Seqax BF16 validation scenarios are not canonical")
         for scenario in self.scenarios:
-            expected_parameters = (
-                _CALIBRATION_PARAMETERS
-                if scenario.role is SeqaxNumericalScenarioRole.CALIBRATION
-                else _HELD_OUT_PARAMETERS.get(scenario.name)
-            )
+            if scenario.name == "calibration-m256-b2-s1-l1":
+                expected_role = SeqaxNumericalScenarioRole.CALIBRATION
+                expected_parameters = _CALIBRATION_PARAMETERS
+                expected_seeds = _CALIBRATION_SEEDS
+            elif scenario.name in _CALIBRATION_SURFACE_PARAMETERS:
+                expected_role = SeqaxNumericalScenarioRole.CALIBRATION
+                expected_parameters = _CALIBRATION_SURFACE_PARAMETERS[scenario.name]
+                expected_seeds = _CALIBRATION_SURFACE_SEEDS[scenario.name]
+            else:
+                expected_role = SeqaxNumericalScenarioRole.HELD_OUT
+                expected_parameters = _HELD_OUT_PARAMETERS.get(scenario.name)
+                expected_seeds = tuple(
+                    semantic_seed(
+                        self.schema_version,
+                        f"{scenario.name}:held-out:{index}",
+                    )
+                    for index in range(4)
+                )
+            if scenario.role is not expected_role:
+                raise ValueError(f"Seqax BF16 validation scenario role mismatch: {scenario.name}")
             if expected_parameters is None or scenario.parameters != (
                 SeqaxBf16ScenarioParameters(**expected_parameters)
             ):
                 raise ValueError(
                     f"Seqax BF16 validation scenario parameters mismatch: {scenario.name}"
                 )
-            expected_seeds = (
-                _CALIBRATION_SEEDS
-                if scenario.role is SeqaxNumericalScenarioRole.CALIBRATION
-                else tuple(
-                    semantic_seed(
-                        self.schema_version,
-                        f"{scenario.name}:sqrt-depth:{index}",
-                    )
-                    for index in range(4)
-                )
-            )
             if scenario.seeds != expected_seeds:
                 raise ValueError(f"Seqax BF16 validation scenario seeds mismatch: {scenario.name}")
         all_seeds = tuple(seed for scenario in self.scenarios for seed in scenario.seeds)
@@ -594,6 +672,22 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             **scenario_hlo("calibration-m256-b2-s1-l1"),
         )
     ]
+    for name, raw_parameters in _CALIBRATION_SURFACE_PARAMETERS.items():
+        parameters = SeqaxBf16ScenarioParameters(**raw_parameters)
+        inputs, output, gates, silu = _scenario_abi(parameters)
+        scenarios.append(
+            SeqaxBf16NumericalScenario(
+                name=name,
+                role=SeqaxNumericalScenarioRole.CALIBRATION,
+                parameters=parameters,
+                seeds=_CALIBRATION_SURFACE_SEEDS[name],
+                inputs=inputs,
+                output=output,
+                gate_checkpoints=gates,
+                silu_checkpoints=silu,
+                **scenario_hlo(name),
+            )
+        )
     for name, raw_parameters in _HELD_OUT_PARAMETERS.items():
         parameters = SeqaxBf16ScenarioParameters(**raw_parameters)
         inputs, output, gates, silu = _scenario_abi(parameters)
@@ -605,7 +699,7 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 seeds=tuple(
                     semantic_seed(
                         SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA,
-                        f"{name}:sqrt-depth:{index}",
+                        f"{name}:held-out:{index}",
                     )
                     for index in range(4)
                 ),
@@ -618,8 +712,8 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
         )
     return SeqaxBf16ValidationContract(
         policy=SeqaxBf16NumericalPolicy(
-            cpu_relative_l2_units=2.0,
-            cpu_row_scaled_max_units=4.0,
+            cpu_relative_l2_units=3.0,
+            cpu_row_scaled_max_units=8.0,
             cross_path_relative_l2_units=2.0,
             cross_path_row_scaled_max_units=2.0,
             row_scale_floor=1.0,

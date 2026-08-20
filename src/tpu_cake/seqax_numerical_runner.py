@@ -64,7 +64,7 @@ from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import seqax_forward_canonical_reference, seqax_forward_inputs
 
-SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v1"
+SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v2"
 
 
 class SeqaxBf16Device(BaseModel):
@@ -86,7 +86,7 @@ class SeqaxBf16Runtime(BaseModel):
 class SeqaxBf16RunIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v1$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v2$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -161,15 +161,15 @@ class SeqaxBf16DiscriminatorObservation(BaseModel):
 class SeqaxBf16ValidationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v1$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v2$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime: SeqaxBf16Runtime
     devices: tuple[SeqaxBf16Device, ...] = Field(min_length=8, max_length=8)
     source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
-    plans: tuple[SeqaxBf16PlanRecord, ...] = Field(min_length=4, max_length=4)
-    observations: tuple[SeqaxBf16SeedObservation, ...] = Field(min_length=17, max_length=17)
+    plans: tuple[SeqaxBf16PlanRecord, ...] = Field(min_length=7, max_length=7)
+    observations: tuple[SeqaxBf16SeedObservation, ...] = Field(min_length=29, max_length=29)
     discriminators: tuple[SeqaxBf16DiscriminatorObservation, ...] = Field(min_length=14)
     passed: bool
     claim_scope: str = Field(pattern=r"^declared-surface-bf16-numerical-correctness$")
@@ -178,7 +178,7 @@ class SeqaxBf16ValidationResult(BaseModel):
 class SeqaxBf16ValidationReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v1$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v2$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: str = Field(pattern=r"^passed$")
@@ -1480,7 +1480,7 @@ def _build_receipt(
     if path.exists():
         raise ValueError("SEQAX_BF16_RECEIPT_EXISTS")
     receipt = SeqaxBf16ValidationReceipt(
-        schema_version="seqax-bf16-forward-validation-receipt-v1",
+        schema_version="seqax-bf16-forward-validation-receipt-v2",
         contract_id=contract.contract_id,
         run_id=run_id,
         status="passed",

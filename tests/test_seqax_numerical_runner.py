@@ -62,6 +62,18 @@ _STRICT_HLO = """module {
 }"""
 
 
+def test_runner_rejects_the_retired_v1_lifecycle_schema() -> None:
+    contract = default_seqax_bf16_validation_contract()
+
+    with pytest.raises(ValueError, match="schema_version"):
+        SeqaxBf16RunIdentity(
+            schema_version="seqax-bf16-forward-validation-run-v1",
+            contract_id=contract.contract_id,
+            run_id="1" * 64,
+            source_commit="2" * 40,
+        )
+
+
 def test_runner_hlo_discriminators_mutate_the_real_strict_chain() -> None:
     expected_sha256 = seqax_stablehlo_sha256(_STRICT_HLO)
     validate_strict_silu_stablehlo(
@@ -343,7 +355,7 @@ def test_runner_rejects_protected_output_roots() -> None:
 def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v1",
+        schema_version="seqax-bf16-forward-validation-run-v2",
         contract_id=contract.contract_id,
         run_id="1" * 64,
         source_commit="2" * 40,
@@ -432,7 +444,7 @@ def test_runner_resumes_active_owned_root_and_archives_rejected_root(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v1",
+        schema_version="seqax-bf16-forward-validation-run-v2",
         contract_id=contract.contract_id,
         run_id="8" * 64,
         source_commit="9" * 40,
@@ -505,7 +517,7 @@ def test_runner_reuses_same_root_after_uncaught_active_run_crash(
                 ledger.create(
                     run_id,
                     {
-                        "schema": "seqax-bf16-forward-validation-run-v1",
+                        "schema": "seqax-bf16-forward-validation-run-v2",
                         "contract_id": active_contract.contract_id,
                         "source_commit": source_commit,
                     },
@@ -549,12 +561,12 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         text=True,
     ).stdout.strip()
     run_id = numerical_runner.semantic_sha256(
-        "seqax-bf16-forward-validation-run-v1",
+        "seqax-bf16-forward-validation-run-v2",
         contract.contract_id,
         source_commit,
     )
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v1",
+        schema_version="seqax-bf16-forward-validation-run-v2",
         contract_id=contract.contract_id,
         run_id=run_id,
         source_commit=source_commit,
@@ -564,7 +576,7 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         ledger.create(
             run_id,
             {
-                "schema": "seqax-bf16-forward-validation-run-v1",
+                "schema": "seqax-bf16-forward-validation-run-v2",
                 "contract_id": contract.contract_id,
                 "source_commit": source_commit,
             },
@@ -619,7 +631,7 @@ def test_atomic_run_markers_do_not_publish_truncated_targets(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v1",
+        schema_version="seqax-bf16-forward-validation-run-v2",
         contract_id=contract.contract_id,
         run_id="5" * 64,
         source_commit="6" * 40,
@@ -923,7 +935,7 @@ temporary = Path(tempfile.mkdtemp(prefix="seqax-bf16-lifecycle-"))
 try:
     root = temporary / "run"
     result = runner.run_seqax_bf16_validation(root, contract)
-    assert len(result.observations) == 17
+    assert len(result.observations) == 29
     assert len(result.discriminators) == 14
     assert runner.run_seqax_bf16_validation(root, contract) == result
     relocated = temporary / "relocated"
@@ -933,7 +945,7 @@ try:
     contract_mutant = temporary / "contract-mutant"
     shutil.copytree(root, contract_mutant)
     payload = json.loads((contract_mutant / "contract.json").read_text())
-    payload["policy"]["cpu_relative_l2_units"] = 3.0
+    payload["policy"]["cpu_relative_l2_units"] = 3.1
     (contract_mutant / "contract.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n"
     )
