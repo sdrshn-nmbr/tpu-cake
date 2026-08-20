@@ -498,7 +498,7 @@ class SeqaxPallasPlan:
             if checkpoints is None:
                 return outputs
             if len(checkpoints) != strict_mlp_layers or any(
-                len(checkpoint) != 9 for checkpoint in checkpoints
+                len(checkpoint) != 13 for checkpoint in checkpoints
             ):
                 raise ValueError(
                     f"strict MLP expected {strict_mlp_layers} complete checkpoints, "
@@ -508,8 +508,8 @@ class SeqaxPallasPlan:
 
         output_specs = tuple(contract.partition_spec() for contract in self.output_contracts)
         if strict_mlp_layers:
-            if checkpoint_specs is None or len(checkpoint_specs) != 9:
-                raise ValueError("strict MLP needs exactly nine checkpoint shardings")
+            if checkpoint_specs is None or len(checkpoint_specs) != 13:
+                raise ValueError("strict MLP needs exactly thirteen checkpoint shardings")
             output_specs += checkpoint_specs * strict_mlp_layers
 
         mapped = jax.shard_map(

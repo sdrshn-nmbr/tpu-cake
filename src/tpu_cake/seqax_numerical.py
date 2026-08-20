@@ -20,8 +20,8 @@ from tpu_cake.workloads.seqax_oracle import (
 )
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
-SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v3"
-SEQAX_BF16_HLO_IDENTITY_STATUS = "pinned"
+SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v4"
+SEQAX_BF16_HLO_IDENTITY_STATUS = "pending"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
 _V2_CALIBRATION_SCHEMA = "bf16-forward-numerical-v2"
@@ -287,7 +287,12 @@ class SeqaxNumericalDiscriminator(StrEnum):
     REMOVE_HIDDEN_BARRIER = "remove_hidden_barrier"
     IDENTITY_SILU = "identity_silu"
     RELU_SILU = "relu_silu"
-    FORGED_NORMALIZED_INPUT = "forged_normalized_input"
+    BYPASS_RMS_NORM_CHECKPOINT = "bypass_rms_norm_checkpoint"
+    WRONG_RMS_SCALE_CHECKPOINT = "wrong_rms_scale_checkpoint"
+    CORRUPT_RMS_MEAN_SQUARE_CHECKPOINT = "corrupt_rms_mean_square_checkpoint"
+    CORRUPT_RMS_INV_CHECKPOINT = "corrupt_rms_inv_checkpoint"
+    CORRUPT_NORMALIZED_FLOAT32_CHECKPOINT = "corrupt_normalized_float32_checkpoint"
+    CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT = "corrupt_normalized_bfloat16_checkpoint"
     WRONG_GATE_WEIGHT_CHECKPOINT = "wrong_gate_weight_checkpoint"
     CORRUPT_GATE_FLOAT32_CHECKPOINT = "corrupt_gate_float32_checkpoint"
     CORRUPT_GATE_BFLOAT16_CHECKPOINT = "corrupt_gate_bfloat16_checkpoint"
@@ -309,7 +314,8 @@ class SeqaxNumericalDiscriminator(StrEnum):
 
 class SeqaxDiscriminatorClause(StrEnum):
     STRICT_HLO_STRUCTURE = "strict_hlo_structure"
-    NORMALIZED_INPUT_IDENTITY = "normalized_input_identity"
+    RMS_NORM_ORACLE = "rms_norm_oracle"
+    RMS_BFLOAT16_CONVERSION = "rms_bfloat16_conversion"
     GATE_PROJECTION_ORACLE = "gate_projection_oracle"
     GATE_BFLOAT16_CONVERSION = "gate_bfloat16_conversion"
     UP_PROJECTION_ORACLE = "up_projection_oracle"
@@ -336,8 +342,23 @@ _DISCRIMINATOR_CLAUSES = {
     ),
     SeqaxNumericalDiscriminator.IDENTITY_SILU: (SeqaxDiscriminatorClause.STRICT_HLO_STRUCTURE),
     SeqaxNumericalDiscriminator.RELU_SILU: (SeqaxDiscriminatorClause.STRICT_HLO_STRUCTURE),
-    SeqaxNumericalDiscriminator.FORGED_NORMALIZED_INPUT: (
-        SeqaxDiscriminatorClause.NORMALIZED_INPUT_IDENTITY
+    SeqaxNumericalDiscriminator.BYPASS_RMS_NORM_CHECKPOINT: (
+        SeqaxDiscriminatorClause.STRICT_HLO_STRUCTURE
+    ),
+    SeqaxNumericalDiscriminator.WRONG_RMS_SCALE_CHECKPOINT: (
+        SeqaxDiscriminatorClause.RMS_NORM_ORACLE
+    ),
+    SeqaxNumericalDiscriminator.CORRUPT_RMS_MEAN_SQUARE_CHECKPOINT: (
+        SeqaxDiscriminatorClause.RMS_NORM_ORACLE
+    ),
+    SeqaxNumericalDiscriminator.CORRUPT_RMS_INV_CHECKPOINT: (
+        SeqaxDiscriminatorClause.RMS_NORM_ORACLE
+    ),
+    SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_FLOAT32_CHECKPOINT: (
+        SeqaxDiscriminatorClause.RMS_NORM_ORACLE
+    ),
+    SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT: (
+        SeqaxDiscriminatorClause.RMS_BFLOAT16_CONVERSION
     ),
     SeqaxNumericalDiscriminator.WRONG_GATE_WEIGHT_CHECKPOINT: (
         SeqaxDiscriminatorClause.GATE_PROJECTION_ORACLE
@@ -421,6 +442,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
     require_float32_output: bool = True
     require_finite_output: bool = True
     mathematical_silu_max_ulp: int = Field(ge=0, le=1)
+    rms_inverse_relative_error_units: float = Field(gt=0)
 
     @model_validator(mode="after")
     def policy_is_canonical(self) -> SeqaxBf16NumericalPolicy:
@@ -446,6 +468,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             self.require_float32_output,
             self.require_finite_output,
             self.mathematical_silu_max_ulp,
+            self.rms_inverse_relative_error_units,
         ) != (
             3.0,
             8.0,
@@ -462,6 +485,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             True,
             True,
             1,
+            4.0,
         ):
             raise ValueError("Seqax BF16 numerical policy is not canonical")
         return self
@@ -516,6 +540,10 @@ def _scenario_abi(
     tuple[SeqaxNumericalTensorContract, ...],
     tuple[SeqaxNumericalTensorContract, ...],
     tuple[SeqaxNumericalTensorContract, ...],
+    tuple[SeqaxNumericalTensorContract, ...],
+    tuple[SeqaxNumericalTensorContract, ...],
+    tuple[SeqaxNumericalTensorContract, ...],
+    tuple[SeqaxNumericalTensorContract, ...],
 ]:
     batch = parameters.batch
     sequence = parameters.sequence
@@ -557,6 +585,38 @@ def _scenario_abi(
         tensor("unembedding", (vocabulary, model)),
     )
     output = tensor("logits", (batch, sequence, vocabulary))
+    rms_input_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_rms_input",
+            (batch, sequence, model),
+            "bfloat16",
+        )
+        for layer in range(layers)
+    )
+    rms_mean_square_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_rms_mean_square",
+            (batch, sequence, 1),
+            "float32",
+        )
+        for layer in range(layers)
+    )
+    rms_inverse_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_rms_inverse",
+            (batch, sequence, 1),
+            "float32",
+        )
+        for layer in range(layers)
+    )
+    normalized_float32_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_normalized_float32",
+            (batch, sequence, model),
+            "float32",
+        )
+        for layer in range(layers)
+    )
     normalized_input_checkpoints = tuple(
         tensor(
             f"layer_{layer:02d}_normalized_input",
@@ -632,6 +692,10 @@ def _scenario_abi(
     return (
         inputs,
         output,
+        rms_input_checkpoints,
+        rms_mean_square_checkpoints,
+        rms_inverse_checkpoints,
+        normalized_float32_checkpoints,
         normalized_input_checkpoints,
         gate_float32_checkpoints,
         gate_checkpoints,
@@ -653,6 +717,10 @@ class SeqaxBf16NumericalScenario(BaseModel):
     seeds: tuple[int, ...] = Field(min_length=4)
     inputs: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=13, max_length=13)
     output: SeqaxNumericalTensorContract
+    rms_input_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    rms_mean_square_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    rms_inverse_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    normalized_float32_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
     normalized_input_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
     gate_float32_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
     gate_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
@@ -674,6 +742,10 @@ class SeqaxBf16NumericalScenario(BaseModel):
         (
             expected_inputs,
             expected_output,
+            expected_rms_inputs,
+            expected_rms_mean_square,
+            expected_rms_inverse,
+            expected_normalized_float32,
             expected_normalized_inputs,
             expected_gate_float32,
             expected_gates,
@@ -688,6 +760,16 @@ class SeqaxBf16NumericalScenario(BaseModel):
             raise ValueError("Seqax BF16 numerical scenario input ABI mismatch")
         if self.output != expected_output:
             raise ValueError("Seqax BF16 numerical scenario output ABI mismatch")
+        if self.rms_input_checkpoints != expected_rms_inputs:
+            raise ValueError("Seqax BF16 numerical scenario RMS-input checkpoint ABI mismatch")
+        if self.rms_mean_square_checkpoints != expected_rms_mean_square:
+            raise ValueError("Seqax BF16 numerical scenario RMS-statistic checkpoint ABI mismatch")
+        if self.rms_inverse_checkpoints != expected_rms_inverse:
+            raise ValueError("Seqax BF16 numerical scenario RMS-inverse checkpoint ABI mismatch")
+        if self.normalized_float32_checkpoints != expected_normalized_float32:
+            raise ValueError(
+                "Seqax BF16 numerical scenario normalized-float32 checkpoint ABI mismatch"
+            )
         if self.normalized_input_checkpoints != expected_normalized_inputs:
             raise ValueError(
                 "Seqax BF16 numerical scenario normalized-input checkpoint ABI mismatch"
@@ -759,7 +841,7 @@ class SeqaxBf16ValidationContract(BaseModel):
     device_kind: str
     device_count: int = Field(gt=0)
     acceptance_authority: str = "authenticated-runner-and-relocated-public-replay"
-    checkpoint_capture: str = "typed-strict-mlp-extra-outputs-v3"
+    checkpoint_capture: str = "typed-strict-rms-mlp-extra-outputs-v4"
     require_normal_output_policy: bool = True
     require_instrumented_output_policy: bool = True
     require_discriminator_artifact_replay: bool = True
@@ -780,7 +862,7 @@ class SeqaxBf16ValidationContract(BaseModel):
             self.require_discriminator_artifact_replay,
         ) != (
             "authenticated-runner-and-relocated-public-replay",
-            "typed-strict-mlp-extra-outputs-v3",
+            "typed-strict-rms-mlp-extra-outputs-v4",
             True,
             True,
             True,
@@ -862,7 +944,22 @@ class SeqaxBf16OutputAssessment(BaseModel):
 
 
 class SeqaxBf16NumericalAssessment(SeqaxBf16OutputAssessment):
-    normalized_input_cross_path_exact: bool
+    rms_input_cross_path_max_ulp: int = Field(ge=0)
+    pallas_rms_mean_square_max_bound_ratio: float = Field(ge=0)
+    control_rms_mean_square_max_bound_ratio: float = Field(ge=0)
+    pallas_rms_mean_square_within_bound: bool
+    control_rms_mean_square_within_bound: bool
+    pallas_rms_inverse_relative_error_units: float = Field(ge=0)
+    control_rms_inverse_relative_error_units: float = Field(ge=0)
+    pallas_rms_inverse_within_bound: bool
+    control_rms_inverse_within_bound: bool
+    pallas_normalized_float32_max_bound_ratio: float = Field(ge=0)
+    control_normalized_float32_max_bound_ratio: float = Field(ge=0)
+    pallas_normalized_float32_within_bound: bool
+    control_normalized_float32_within_bound: bool
+    pallas_normalized_bfloat16_matches_float32: bool
+    control_normalized_bfloat16_matches_float32: bool
+    normalized_input_cross_path_max_ulp: int = Field(ge=0)
     pallas_gate_float32_max_bound_ratio: float = Field(ge=0)
     control_gate_float32_max_bound_ratio: float = Field(ge=0)
     pallas_gate_float32_within_bound: bool
@@ -919,6 +1016,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
     (
         calibration_inputs,
         calibration_output,
+        calibration_rms_inputs,
+        calibration_rms_mean_square,
+        calibration_rms_inverse,
+        calibration_normalized_float32,
         calibration_normalized_inputs,
         calibration_gate_float32,
         calibration_gates,
@@ -937,6 +1038,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             seeds=_CALIBRATION_SEEDS,
             inputs=calibration_inputs,
             output=calibration_output,
+            rms_input_checkpoints=calibration_rms_inputs,
+            rms_mean_square_checkpoints=calibration_rms_mean_square,
+            rms_inverse_checkpoints=calibration_rms_inverse,
+            normalized_float32_checkpoints=calibration_normalized_float32,
             normalized_input_checkpoints=calibration_normalized_inputs,
             gate_float32_checkpoints=calibration_gate_float32,
             gate_checkpoints=calibration_gates,
@@ -954,6 +1059,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
         (
             inputs,
             output,
+            rms_inputs,
+            rms_mean_square,
+            rms_inverse,
+            normalized_float32,
             normalized_inputs,
             gate_float32,
             gates,
@@ -972,6 +1081,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 seeds=_CALIBRATION_SURFACE_SEEDS[name],
                 inputs=inputs,
                 output=output,
+                rms_input_checkpoints=rms_inputs,
+                rms_mean_square_checkpoints=rms_mean_square,
+                rms_inverse_checkpoints=rms_inverse,
+                normalized_float32_checkpoints=normalized_float32,
                 normalized_input_checkpoints=normalized_inputs,
                 gate_float32_checkpoints=gate_float32,
                 gate_checkpoints=gates,
@@ -989,6 +1102,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
         (
             inputs,
             output,
+            rms_inputs,
+            rms_mean_square,
+            rms_inverse,
+            normalized_float32,
             normalized_inputs,
             gate_float32,
             gates,
@@ -1007,6 +1124,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 seeds=_V2_CALIBRATION_SEEDS[name],
                 inputs=inputs,
                 output=output,
+                rms_input_checkpoints=rms_inputs,
+                rms_mean_square_checkpoints=rms_mean_square,
+                rms_inverse_checkpoints=rms_inverse,
+                normalized_float32_checkpoints=normalized_float32,
                 normalized_input_checkpoints=normalized_inputs,
                 gate_float32_checkpoints=gate_float32,
                 gate_checkpoints=gates,
@@ -1024,6 +1145,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
         (
             inputs,
             output,
+            rms_inputs,
+            rms_mean_square,
+            rms_inverse,
+            normalized_float32,
             normalized_inputs,
             gate_float32,
             gates,
@@ -1048,6 +1173,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 ),
                 inputs=inputs,
                 output=output,
+                rms_input_checkpoints=rms_inputs,
+                rms_mean_square_checkpoints=rms_mean_square,
+                rms_inverse_checkpoints=rms_inverse,
+                normalized_float32_checkpoints=normalized_float32,
                 normalized_input_checkpoints=normalized_inputs,
                 gate_float32_checkpoints=gate_float32,
                 gate_checkpoints=gates,
@@ -1069,6 +1198,7 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             row_scale_floor=1.0,
             metric_quantization_decimals=15,
             mathematical_silu_max_ulp=1,
+            rms_inverse_relative_error_units=4.0,
         ),
         scenarios=tuple(scenarios),
         activation_mutant_stablehlo=tuple(
@@ -1184,6 +1314,60 @@ def _down_projection_reference_components(
         reference[batch, sequence, model] = math.fsum(products)
         absolute_sum[batch, sequence, model] = math.fsum(abs(value) for value in products)
     return reference, absolute_sum
+
+
+def _rms_mean_square_reference_components(value: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    value64 = value.astype(np.float64)
+    output_shape = (*value.shape[:-1], 1)
+    reference = np.empty(output_shape, dtype=np.float64)
+    absolute_sum = np.empty(output_shape, dtype=np.float64)
+    for batch, sequence in np.ndindex(value.shape[:-1]):
+        squares = tuple(float(element) * float(element) for element in value64[batch, sequence])
+        total = math.fsum(squares)
+        reference[batch, sequence, 0] = total / value.shape[-1]
+        absolute_sum[batch, sequence, 0] = total
+    return reference, absolute_sum
+
+
+def _rms_mean_square_bound_ratio(actual: np.ndarray, value: np.ndarray) -> float:
+    reference, absolute_sum = _rms_mean_square_reference_components(value)
+    rounded_operations = 2 * value.shape[-1]
+    float32_unit_roundoff = 2.0**-24
+    gamma = (
+        rounded_operations
+        * float32_unit_roundoff
+        / (1.0 - rounded_operations * float32_unit_roundoff)
+    )
+    bound = gamma * (absolute_sum / value.shape[-1]) + np.finfo(np.float32).tiny
+    return float(np.max(np.abs(actual.astype(np.float64) - reference) / bound))
+
+
+def _rms_inverse_relative_error_units(
+    actual: np.ndarray,
+    mean_square: np.ndarray,
+    *,
+    epsilon: float = 0.000001,
+) -> float:
+    reference = 1.0 / np.sqrt(mean_square.astype(np.float64) + epsilon)
+    scale = np.maximum(np.abs(reference), np.finfo(np.float64).tiny)
+    return float(np.max(np.abs(actual.astype(np.float64) - reference) / scale) / (2.0**-24))
+
+
+def _rms_normalized_bound_ratio(
+    actual: np.ndarray,
+    value: np.ndarray,
+    inverse: np.ndarray,
+    scale: np.ndarray,
+) -> float:
+    reference = (
+        value.astype(np.float64)
+        * inverse.astype(np.float64)
+        * scale.astype(np.float64).reshape((1, 1, -1))
+    )
+    float32_unit_roundoff = 2.0**-24
+    gamma = 2 * float32_unit_roundoff / (1.0 - 2 * float32_unit_roundoff)
+    bound = gamma * np.abs(reference) + np.finfo(np.float32).tiny
+    return float(np.max(np.abs(actual.astype(np.float64) - reference) / bound))
 
 
 def _mlp_projection_reference_components(
@@ -1434,6 +1618,14 @@ def assess_seqax_bf16_forward(
     *,
     seed: int,
     inputs: tuple[np.ndarray, ...],
+    pallas_rms_input_checkpoints: tuple[np.ndarray, ...],
+    control_rms_input_checkpoints: tuple[np.ndarray, ...],
+    pallas_rms_mean_square_checkpoints: tuple[np.ndarray, ...],
+    control_rms_mean_square_checkpoints: tuple[np.ndarray, ...],
+    pallas_rms_inverse_checkpoints: tuple[np.ndarray, ...],
+    control_rms_inverse_checkpoints: tuple[np.ndarray, ...],
+    pallas_normalized_float32_checkpoints: tuple[np.ndarray, ...],
+    control_normalized_float32_checkpoints: tuple[np.ndarray, ...],
     pallas_normalized_input_checkpoints: tuple[np.ndarray, ...],
     control_normalized_input_checkpoints: tuple[np.ndarray, ...],
     pallas_gate_float32_checkpoints: tuple[np.ndarray, ...],
@@ -1462,6 +1654,46 @@ def assess_seqax_bf16_forward(
         inputs=inputs,
         policy=policy,
         scenario=scenario,
+    )
+    pallas_rms_inputs = _validate_bf16_checkpoints(
+        pallas_rms_input_checkpoints,
+        scenario.rms_input_checkpoints,
+        label="RMS input",
+    )
+    control_rms_inputs = _validate_bf16_checkpoints(
+        control_rms_input_checkpoints,
+        scenario.rms_input_checkpoints,
+        label="RMS input",
+    )
+    pallas_rms_mean_square = _validate_float32_checkpoints(
+        pallas_rms_mean_square_checkpoints,
+        scenario.rms_mean_square_checkpoints,
+        label="RMS mean square",
+    )
+    control_rms_mean_square = _validate_float32_checkpoints(
+        control_rms_mean_square_checkpoints,
+        scenario.rms_mean_square_checkpoints,
+        label="RMS mean square",
+    )
+    pallas_rms_inverse = _validate_float32_checkpoints(
+        pallas_rms_inverse_checkpoints,
+        scenario.rms_inverse_checkpoints,
+        label="RMS inverse",
+    )
+    control_rms_inverse = _validate_float32_checkpoints(
+        control_rms_inverse_checkpoints,
+        scenario.rms_inverse_checkpoints,
+        label="RMS inverse",
+    )
+    pallas_normalized_float32 = _validate_float32_checkpoints(
+        pallas_normalized_float32_checkpoints,
+        scenario.normalized_float32_checkpoints,
+        label="normalized float32",
+    )
+    control_normalized_float32 = _validate_float32_checkpoints(
+        control_normalized_float32_checkpoints,
+        scenario.normalized_float32_checkpoints,
+        label="normalized float32",
     )
     pallas_normalized_inputs = _validate_bf16_checkpoints(
         pallas_normalized_input_checkpoints,
@@ -1555,8 +1787,67 @@ def assess_seqax_bf16_forward(
     )
     pallas_mathematical = tuple(rounded_mathematical_silu_bf16(value) for value in pallas_gates)
     control_mathematical = tuple(rounded_mathematical_silu_bf16(value) for value in control_gates)
-    normalized_input_cross_path_exact = all(
-        np.array_equal(pallas_value, control_value)
+    rms_input_cross_path_max_ulp = max(
+        _bf16_max_ulp_distance(pallas_value, control_value)
+        for pallas_value, control_value in zip(pallas_rms_inputs, control_rms_inputs, strict=True)
+    )
+    rms_mean_square_pallas_ratios = tuple(
+        _rms_mean_square_bound_ratio(actual, value)
+        for actual, value in zip(pallas_rms_mean_square, pallas_rms_inputs, strict=True)
+    )
+    rms_mean_square_control_ratios = tuple(
+        _rms_mean_square_bound_ratio(actual, value)
+        for actual, value in zip(control_rms_mean_square, control_rms_inputs, strict=True)
+    )
+    pallas_rms_mean_square_ratio = max(rms_mean_square_pallas_ratios)
+    control_rms_mean_square_ratio = max(rms_mean_square_control_ratios)
+    pallas_rms_inverse_units = max(
+        _rms_inverse_relative_error_units(actual, mean_square)
+        for actual, mean_square in zip(pallas_rms_inverse, pallas_rms_mean_square, strict=True)
+    )
+    control_rms_inverse_units = max(
+        _rms_inverse_relative_error_units(actual, mean_square)
+        for actual, mean_square in zip(control_rms_inverse, control_rms_mean_square, strict=True)
+    )
+    rms_scales = expected_inputs[4]
+    pallas_normalized_ratios = tuple(
+        _rms_normalized_bound_ratio(actual, value, inverse, rms_scales[layer])
+        for layer, (actual, value, inverse) in enumerate(
+            zip(
+                pallas_normalized_float32,
+                pallas_rms_inputs,
+                pallas_rms_inverse,
+                strict=True,
+            )
+        )
+    )
+    control_normalized_ratios = tuple(
+        _rms_normalized_bound_ratio(actual, value, inverse, rms_scales[layer])
+        for layer, (actual, value, inverse) in enumerate(
+            zip(
+                control_normalized_float32,
+                control_rms_inputs,
+                control_rms_inverse,
+                strict=True,
+            )
+        )
+    )
+    pallas_normalized_ratio = max(pallas_normalized_ratios)
+    control_normalized_ratio = max(control_normalized_ratios)
+    pallas_normalized_bfloat16_matches = all(
+        np.array_equal(actual, expected.astype(ml_dtypes.bfloat16))
+        for actual, expected in zip(
+            pallas_normalized_inputs, pallas_normalized_float32, strict=True
+        )
+    )
+    control_normalized_bfloat16_matches = all(
+        np.array_equal(actual, expected.astype(ml_dtypes.bfloat16))
+        for actual, expected in zip(
+            control_normalized_inputs, control_normalized_float32, strict=True
+        )
+    )
+    normalized_input_cross_path_max_ulp = max(
+        _bf16_max_ulp_distance(pallas_value, control_value)
         for pallas_value, control_value in zip(
             pallas_normalized_inputs, control_normalized_inputs, strict=True
         )
@@ -1691,7 +1982,14 @@ def assess_seqax_bf16_forward(
         )
     )
     checkpoint_values_consistent = (
-        normalized_input_cross_path_exact
+        pallas_rms_mean_square_ratio <= 1.0
+        and control_rms_mean_square_ratio <= 1.0
+        and pallas_rms_inverse_units <= policy.rms_inverse_relative_error_units
+        and control_rms_inverse_units <= policy.rms_inverse_relative_error_units
+        and pallas_normalized_ratio <= 1.0
+        and control_normalized_ratio <= 1.0
+        and pallas_normalized_bfloat16_matches
+        and control_normalized_bfloat16_matches
         and pallas_gate_ratio <= 1.0
         and control_gate_ratio <= 1.0
         and pallas_gate_bfloat16_matches
@@ -1711,7 +2009,38 @@ def assess_seqax_bf16_forward(
     )
     return SeqaxBf16NumericalAssessment(
         **output_assessment.model_dump(),
-        normalized_input_cross_path_exact=normalized_input_cross_path_exact,
+        rms_input_cross_path_max_ulp=rms_input_cross_path_max_ulp,
+        pallas_rms_mean_square_max_bound_ratio=round(
+            pallas_rms_mean_square_ratio, policy.metric_quantization_decimals
+        ),
+        control_rms_mean_square_max_bound_ratio=round(
+            control_rms_mean_square_ratio, policy.metric_quantization_decimals
+        ),
+        pallas_rms_mean_square_within_bound=pallas_rms_mean_square_ratio <= 1.0,
+        control_rms_mean_square_within_bound=control_rms_mean_square_ratio <= 1.0,
+        pallas_rms_inverse_relative_error_units=round(
+            pallas_rms_inverse_units, policy.metric_quantization_decimals
+        ),
+        control_rms_inverse_relative_error_units=round(
+            control_rms_inverse_units, policy.metric_quantization_decimals
+        ),
+        pallas_rms_inverse_within_bound=(
+            pallas_rms_inverse_units <= policy.rms_inverse_relative_error_units
+        ),
+        control_rms_inverse_within_bound=(
+            control_rms_inverse_units <= policy.rms_inverse_relative_error_units
+        ),
+        pallas_normalized_float32_max_bound_ratio=round(
+            pallas_normalized_ratio, policy.metric_quantization_decimals
+        ),
+        control_normalized_float32_max_bound_ratio=round(
+            control_normalized_ratio, policy.metric_quantization_decimals
+        ),
+        pallas_normalized_float32_within_bound=pallas_normalized_ratio <= 1.0,
+        control_normalized_float32_within_bound=control_normalized_ratio <= 1.0,
+        pallas_normalized_bfloat16_matches_float32=pallas_normalized_bfloat16_matches,
+        control_normalized_bfloat16_matches_float32=control_normalized_bfloat16_matches,
+        normalized_input_cross_path_max_ulp=normalized_input_cross_path_max_ulp,
         pallas_gate_float32_max_bound_ratio=round(
             pallas_gate_ratio, policy.metric_quantization_decimals
         ),
@@ -1982,6 +2311,288 @@ def _require_f32_one(operation: ir.Operation) -> ir.Value:
     return result
 
 
+def _require_f32_scalar_constant(value: ir.Value, expected: float, *, label: str) -> None:
+    operation = _as_operation(value.owner)
+    if operation is None or operation.name != "stablehlo.constant":
+        raise ValueError(f"strict RMSNorm {label} must be a float32 scalar constant")
+    _require_attribute_names(operation, frozenset({"value"}))
+    if (
+        len(operation.results) != 1
+        or operation.results[0] != value
+        or not _is_f32_tensor(value)
+        or ir.RankedTensorType(value.type).rank != 0
+    ):
+        raise ValueError(f"strict RMSNorm {label} must be a float32 scalar constant")
+    dense = ir.DenseElementsAttr(operation.attributes["value"])
+    if not dense.is_splat or float(ir.FloatAttr(dense.get_splat_value()).value) != float(
+        np.float32(expected)
+    ):
+        raise ValueError(f"strict RMSNorm {label} has an invalid value")
+
+
+def _require_broadcast_dimensions(
+    operation: ir.Operation,
+    expected: tuple[int, ...],
+    *,
+    label: str,
+) -> None:
+    _require_attribute_names(operation, frozenset({"broadcast_dimensions"}))
+    encoded = "array<i64>" if not expected else f"array<i64: {', '.join(map(str, expected))}>"
+    if str(operation.attributes["broadcast_dimensions"]) != encoded:
+        raise ValueError(f"strict RMSNorm {label} has invalid broadcast dimensions")
+
+
+def _require_rms_scale_source(value: ir.Value, *, manual_argument_number: int) -> None:
+    current = value
+    while True:
+        operation = _as_operation(current.owner)
+        if operation is None:
+            break
+        if operation.name == "stablehlo.reshape":
+            _require_attribute_names(operation, frozenset())
+            if len(operation.operands) != 1:
+                raise ValueError("strict RMSNorm scale reshape is invalid")
+            current = operation.operands[0]
+        elif operation.name == "stablehlo.broadcast_in_dim":
+            if len(operation.operands) != 1:
+                raise ValueError("strict RMSNorm scale broadcast is invalid")
+            result_rank = ir.RankedTensorType(operation.results[0].type).rank
+            input_rank = ir.RankedTensorType(operation.operands[0].type).rank
+            expected = tuple(range(result_rank - input_rank, result_rank))
+            _require_broadcast_dimensions(operation, expected, label="scale")
+            current = operation.operands[0]
+        elif operation.name == "stablehlo.all_gather":
+            if len(operation.operands) != 1:
+                raise ValueError("strict RMSNorm scale all-gather is invalid")
+            current = operation.operands[0]
+        elif operation.name == "func.call":
+            if len(operation.operands) < 1 or not str(
+                operation.attributes.get("callee", "")
+            ).startswith("@_take"):
+                raise ValueError("strict RMSNorm scale must come from layer_norm_2")
+            current = operation.operands[0]
+        else:
+            raise ValueError("strict RMSNorm scale must come from layer_norm_2")
+
+    block = current.owner
+    owner = _as_operation(getattr(block, "owner", None))
+    argument_number = getattr(current, "arg_number", None)
+    if owner is None or argument_number is None:
+        raise ValueError("strict RMSNorm scale must come from layer_norm_2")
+    if owner.name == "sdy.manual_computation":
+        expected_argument = manual_argument_number
+    elif owner.name == "func.func":
+        expected_argument = 1
+    else:
+        raise ValueError("strict RMSNorm scale must come from layer_norm_2")
+    if argument_number != expected_argument:
+        raise ValueError("strict RMSNorm scale must come from layer_norm_2")
+
+
+def _validate_rms_reducer(operation: ir.Operation) -> None:
+    if len(operation.regions) != 1 or len(operation.regions[0].blocks) != 1:
+        raise ValueError("strict RMSNorm reduction must have one addition body")
+    block = operation.regions[0].blocks[0]
+    if len(block.arguments) != 2 or not all(_is_f32_tensor(arg) for arg in block.arguments):
+        raise ValueError("strict RMSNorm reduction must have float32 scalar arguments")
+    if any(ir.RankedTensorType(arg.type).rank != 0 for arg in block.arguments):
+        raise ValueError("strict RMSNorm reduction must have float32 scalar arguments")
+    operations = tuple(child.operation for child in block.operations)
+    if tuple(child.name for child in operations) != ("stablehlo.add", "stablehlo.return"):
+        raise ValueError("strict RMSNorm reduction must use exact float32 addition")
+    add, result = operations
+    _require_attribute_names(add, frozenset())
+    _require_operands(add, tuple(block.arguments))
+    added = _require_single_result(add, block.arguments[0].type)
+    _require_attribute_names(result, frozenset())
+    _require_operands(result, (added,))
+
+
+def _validate_rmsnorm_dataflow(
+    normalized_float32: ir.Value,
+    normalized_multiply: ir.Operation,
+    *,
+    manual_scale_argument: int,
+) -> tuple[ir.Value, ir.Value, ir.Value]:
+    normalized_type = ir.RankedTensorType(normalized_float32.type)
+    normalized_shape = tuple(normalized_type.shape)
+    rank = normalized_type.rank
+    if rank < 1:
+        raise ValueError("strict RMSNorm normalized value must be ranked")
+
+    scaled_candidates = tuple(
+        operand
+        for operand in normalized_multiply.operands
+        if _as_operation(operand.owner) is not None
+        and _as_operation(operand.owner).name == "stablehlo.multiply"
+    )
+    if len(scaled_candidates) != 1:
+        raise ValueError("strict RMSNorm must have one input-times-inverse product")
+    scaled_input = scaled_candidates[0]
+    scale_candidates = tuple(
+        operand for operand in normalized_multiply.operands if operand != scaled_input
+    )
+    if len(scale_candidates) != 1 or not _is_f32_tensor(scale_candidates[0]):
+        raise ValueError("strict RMSNorm normalized value must use layer_norm_2 scale")
+    _require_rms_scale_source(scale_candidates[0], manual_argument_number=manual_scale_argument)
+
+    scaled_multiply = _as_operation(scaled_input.owner)
+    assert scaled_multiply is not None
+    _require_attribute_names(scaled_multiply, frozenset())
+    rms_input_converts = tuple(
+        operand
+        for operand in scaled_multiply.operands
+        if _as_operation(operand.owner) is not None
+        and _as_operation(operand.owner).name == "stablehlo.convert"
+        and len(_as_operation(operand.owner).operands) == 1
+        and _is_bf16_tensor(_as_operation(operand.owner).operands[0])
+    )
+    inverse_broadcasts = tuple(
+        operand
+        for operand in scaled_multiply.operands
+        if _as_operation(operand.owner) is not None
+        and _as_operation(operand.owner).name == "stablehlo.broadcast_in_dim"
+    )
+    if len(rms_input_converts) != 1 or len(inverse_broadcasts) != 1:
+        raise ValueError("strict RMSNorm must multiply its BF16 input by its inverse RMS")
+    rms_input_convert = _as_operation(rms_input_converts[0].owner)
+    inverse_broadcast = _as_operation(inverse_broadcasts[0].owner)
+    assert rms_input_convert is not None and inverse_broadcast is not None
+    _require_attribute_names(rms_input_convert, frozenset())
+    rms_input = rms_input_convert.operands[0]
+    if tuple(ir.RankedTensorType(rms_input.type).shape) != normalized_shape:
+        raise ValueError("strict RMSNorm input and normalized shapes must match")
+
+    square_uses: list[ir.Operation] = []
+    for use in rms_input.uses:
+        conversion = _as_operation(use.owner)
+        if (
+            conversion is None
+            or conversion.name != "stablehlo.convert"
+            or len(conversion.operands) != 1
+            or len(conversion.results) != 1
+            or conversion.operands[0] != rms_input
+        ):
+            continue
+        _require_attribute_names(conversion, frozenset())
+        square_uses.extend(
+            square
+            for result_use in conversion.results[0].uses
+            if (square := _as_operation(result_use.owner)) is not None
+            and square.name == "chlo.square"
+        )
+    if len(square_uses) != 1:
+        raise ValueError("strict RMSNorm must square the same BF16 input exactly once")
+    square = square_uses[0]
+    _require_attribute_names(square, frozenset())
+    if len(square.operands) != 1 or len(square.results) != 1:
+        raise ValueError("strict RMSNorm square is invalid")
+    square_input = _as_operation(square.operands[0].owner)
+    if (
+        square_input is None
+        or square_input.name != "stablehlo.convert"
+        or tuple(square_input.operands) != (rms_input,)
+        or square.results[0].type != normalized_float32.type
+    ):
+        raise ValueError("strict RMSNorm square must consume the same BF16 input")
+    square_result_uses = tuple(square.results[0].uses)
+    if len(square_result_uses) != 1:
+        raise ValueError("strict RMSNorm square must feed one reduction")
+    reduction = _as_operation(square_result_uses[0].owner)
+    if reduction is None or reduction.name != "stablehlo.reduce":
+        raise ValueError("strict RMSNorm square must feed one reduction")
+    _require_attribute_names(reduction, frozenset({"dimensions"}))
+    if str(reduction.attributes["dimensions"]) != f"array<i64: {rank - 1}>":
+        raise ValueError("strict RMSNorm reduction must use the model axis")
+    if len(reduction.operands) != 2 or reduction.operands[0] != square.results[0]:
+        raise ValueError("strict RMSNorm reduction operands are invalid")
+    _require_f32_scalar_constant(reduction.operands[1], 0.0, label="reduction zero")
+    _validate_rms_reducer(reduction)
+    if (
+        len(reduction.results) != 1
+        or tuple(ir.RankedTensorType(reduction.results[0].type).shape) != normalized_shape[:-1]
+    ):
+        raise ValueError("strict RMSNorm reduction has an invalid result shape")
+
+    reduction_uses = tuple(reduction.results[0].uses)
+    if len(reduction_uses) != 1:
+        raise ValueError("strict RMSNorm sum must feed one singleton broadcast")
+    sum_broadcast = _as_operation(reduction_uses[0].owner)
+    if sum_broadcast is None or sum_broadcast.name != "stablehlo.broadcast_in_dim":
+        raise ValueError("strict RMSNorm sum must feed one singleton broadcast")
+    _require_broadcast_dimensions(sum_broadcast, tuple(range(rank - 1)), label="sum")
+    if (
+        len(sum_broadcast.operands) != 1
+        or len(sum_broadcast.results) != 1
+        or sum_broadcast.operands[0] != reduction.results[0]
+        or tuple(ir.RankedTensorType(sum_broadcast.results[0].type).shape)
+        != (*normalized_shape[:-1], 1)
+    ):
+        raise ValueError("strict RMSNorm sum broadcast has an invalid shape")
+
+    if len(inverse_broadcast.operands) != 1:
+        raise ValueError("strict RMSNorm inverse broadcast is invalid")
+    _require_broadcast_dimensions(inverse_broadcast, tuple(range(rank)), label="inverse")
+    rms_inverse = inverse_broadcast.operands[0]
+    inverse_operation = _as_operation(rms_inverse.owner)
+    if (
+        inverse_operation is None
+        or inverse_operation.name != "stablehlo.rsqrt"
+        or len(inverse_operation.operands) != 1
+        or len(inverse_operation.results) != 1
+        or inverse_operation.results[0] != rms_inverse
+    ):
+        raise ValueError("strict RMSNorm inverse checkpoint must come from rsqrt")
+    _require_attribute_names(inverse_operation, frozenset())
+    epsilon_add = _as_operation(inverse_operation.operands[0].owner)
+    if epsilon_add is None or epsilon_add.name != "stablehlo.add":
+        raise ValueError("strict RMSNorm rsqrt must consume mean-square plus epsilon")
+    _require_attribute_names(epsilon_add, frozenset())
+    if len(epsilon_add.operands) != 2:
+        raise ValueError("strict RMSNorm rsqrt must consume mean-square plus epsilon")
+
+    mean_square_candidates = tuple(
+        operand
+        for operand in epsilon_add.operands
+        if _as_operation(operand.owner) is not None
+        and _as_operation(operand.owner).name == "stablehlo.divide"
+    )
+    epsilon_candidates = tuple(
+        operand
+        for operand in epsilon_add.operands
+        if _as_operation(operand.owner) is not None
+        and _as_operation(operand.owner).name == "stablehlo.broadcast_in_dim"
+    )
+    if len(mean_square_candidates) != 1 or len(epsilon_candidates) != 1:
+        raise ValueError("strict RMSNorm mean-square and epsilon dataflow is invalid")
+    rms_mean_square = mean_square_candidates[0]
+    mean_square_operation = _as_operation(rms_mean_square.owner)
+    epsilon_broadcast = _as_operation(epsilon_candidates[0].owner)
+    assert mean_square_operation is not None and epsilon_broadcast is not None
+    _require_attribute_names(mean_square_operation, frozenset())
+    if (
+        len(mean_square_operation.operands) != 2
+        or mean_square_operation.operands[0] != sum_broadcast.results[0]
+    ):
+        raise ValueError("strict RMSNorm mean-square must divide the exact squared sum")
+    divisor_broadcast = _as_operation(mean_square_operation.operands[1].owner)
+    if (
+        divisor_broadcast is None
+        or divisor_broadcast.name != "stablehlo.broadcast_in_dim"
+        or len(divisor_broadcast.operands) != 1
+    ):
+        raise ValueError("strict RMSNorm divisor broadcast is invalid")
+    _require_broadcast_dimensions(divisor_broadcast, (), label="divisor")
+    _require_f32_scalar_constant(
+        divisor_broadcast.operands[0], normalized_shape[-1], label="model divisor"
+    )
+    _require_broadcast_dimensions(epsilon_broadcast, (), label="epsilon")
+    if len(epsilon_broadcast.operands) != 1:
+        raise ValueError("strict RMSNorm epsilon broadcast is invalid")
+    _require_f32_scalar_constant(epsilon_broadcast.operands[0], 1.0e-6, label="epsilon")
+    return rms_input, rms_mean_square, rms_inverse
+
+
 def _validate_silu_function(function: ir.Operation) -> None:
     _require_attribute_names(
         function,
@@ -2102,7 +2713,7 @@ def _validate_strict_silu_stablehlo(
             )
             if instrumented and (
                 len(entry_returns) != 1
-                or len(entry_returns[0].operands) != leading_result_count + 1 + 9 * expected_count
+                or len(entry_returns[0].operands) != leading_result_count + 1 + 13 * expected_count
             ):
                 raise ValueError("instrumented strict SiLU has an invalid function result ABI")
             for function in functions:
@@ -2177,7 +2788,7 @@ def _validate_strict_silu_stablehlo(
                         and _as_operation(use.owner).name in _REGION_TERMINATORS
                     )
                     if instrumented:
-                        gate_float32_position = leading_result_count + 2 + 9 * layer
+                        gate_float32_position = leading_result_count + 6 + 13 * layer
                         if (
                             len(gate_float32_uses) != 2
                             or len(gate_float32_checkpoints) != 1
@@ -2239,19 +2850,24 @@ def _validate_strict_silu_stablehlo(
                         or len(checkpoint_uses) != 1
                         or _as_operation(checkpoint_uses[0].owner) is None
                         or _as_operation(checkpoint_uses[0].owner).name not in _REGION_TERMINATORS
-                        or checkpoint_uses[0].operand_number != leading_result_count + 3 + 9 * layer
+                        or checkpoint_uses[0].operand_number
+                        != leading_result_count + 7 + 13 * layer
                     ):
                         raise ValueError(
                             "instrumented strict SiLU must return the real gate checkpoint"
                         )
                     _require_checkpoint_function_result(
                         checkpoint_uses[0],
-                        leading_result_count + 3 + 9 * layer,
+                        leading_result_count + 7 + 13 * layer,
                     )
                     checkpoint_return = _as_operation(checkpoint_uses[0].owner)
                 elif source_consumers != (input_convert,):
                     raise ValueError("strict SiLU input barrier must feed only its promotion")
-                normalized_position = leading_result_count + 1 + 9 * layer
+                rms_input_position = leading_result_count + 1 + 13 * layer
+                rms_mean_square_position = leading_result_count + 2 + 13 * layer
+                rms_inverse_position = leading_result_count + 3 + 13 * layer
+                normalized_float32_position = leading_result_count + 4 + 13 * layer
+                normalized_position = leading_result_count + 5 + 13 * layer
                 gate_normalized_input = None
                 if require_hidden_down:
                     assert gate_projection is not None
@@ -2324,14 +2940,15 @@ def _validate_strict_silu_stablehlo(
                         len(barrier_uses) != 2
                         or len(checkpoint_uses) != 1
                         or _as_operation(checkpoint_uses[0].owner) != checkpoint_return
-                        or checkpoint_uses[0].operand_number != leading_result_count + 4 + 9 * layer
+                        or checkpoint_uses[0].operand_number
+                        != leading_result_count + 8 + 13 * layer
                     ):
                         raise ValueError(
                             "instrumented strict SiLU must return the real SiLU checkpoint"
                         )
                     _require_checkpoint_function_result(
                         checkpoint_uses[0],
-                        leading_result_count + 4 + 9 * layer,
+                        leading_result_count + 8 + 13 * layer,
                     )
                 elif len(barrier_uses) != 1:
                     raise ValueError(
@@ -2413,7 +3030,7 @@ def _validate_strict_silu_stablehlo(
                         and _as_operation(use.owner).name in _REGION_TERMINATORS
                     )
                     if instrumented:
-                        up_float32_position = leading_result_count + 5 + 9 * layer
+                        up_float32_position = leading_result_count + 9 + 13 * layer
                         if (
                             len(up_float32_uses) != 2
                             or len(up_float32_checkpoints) != 1
@@ -2479,6 +3096,57 @@ def _validate_strict_silu_stablehlo(
                         raise ValueError(
                             "strict MLP gate and up projections must consume the same normalized input"
                         )
+                    normalized_convert = _as_operation(normalized_input.owner)
+                    if (
+                        normalized_convert is None
+                        or normalized_convert.name != "stablehlo.convert"
+                        or len(normalized_convert.operands) != 1
+                        or not _is_f32_tensor(normalized_convert.operands[0])
+                    ):
+                        raise ValueError(
+                            "strict RMSNorm normalized BF16 checkpoint must come from float32"
+                        )
+                    _require_attribute_names(normalized_convert, frozenset())
+                    normalized_float32 = normalized_convert.operands[0]
+                    normalized_multiply = _as_operation(normalized_float32.owner)
+                    if (
+                        normalized_multiply is None
+                        or normalized_multiply.name != "stablehlo.multiply"
+                        or len(normalized_multiply.operands) != 2
+                    ):
+                        raise ValueError(
+                            "strict RMSNorm normalized float32 checkpoint must apply its scale"
+                        )
+                    rms_input, rms_mean_square, rms_inverse = _validate_rmsnorm_dataflow(
+                        normalized_float32,
+                        normalized_multiply,
+                        manual_scale_argument=4 + leading_result_count,
+                    )
+                    if instrumented:
+                        for value, position, label in (
+                            (rms_input, rms_input_position, "input"),
+                            (rms_mean_square, rms_mean_square_position, "mean-square"),
+                            (rms_inverse, rms_inverse_position, "inverse"),
+                            (
+                                normalized_float32,
+                                normalized_float32_position,
+                                "normalized float32",
+                            ),
+                        ):
+                            checkpoint_uses = tuple(
+                                use
+                                for use in value.uses
+                                if _as_operation(use.owner) is not None
+                                and _as_operation(use.owner).name in _REGION_TERMINATORS
+                            )
+                            if (
+                                len(checkpoint_uses) != 1
+                                or checkpoint_uses[0].operand_number != position
+                            ):
+                                raise ValueError(
+                                    f"instrumented strict RMSNorm must return its real {label} checkpoint"
+                                )
+                            _require_checkpoint_function_result(checkpoint_uses[0], position)
                     normalized_checkpoint_uses = tuple(
                         use
                         for use in normalized_input.uses
@@ -2508,7 +3176,7 @@ def _validate_strict_silu_stablehlo(
                         and _as_operation(use.owner).name in _REGION_TERMINATORS
                     )
                     if instrumented:
-                        up_position = leading_result_count + 6 + 9 * layer
+                        up_position = leading_result_count + 10 + 13 * layer
                         if (
                             len(up_uses) != 2
                             or len(up_checkpoint_uses) != 1
@@ -2551,7 +3219,7 @@ def _validate_strict_silu_stablehlo(
                     and _as_operation(use.owner).name in _REGION_TERMINATORS
                 )
                 if instrumented:
-                    hidden_position = leading_result_count + 7 + 9 * layer
+                    hidden_position = leading_result_count + 11 + 13 * layer
                     if (
                         len(hidden_checkpoint_uses) != 1
                         or hidden_checkpoint_uses[0].operand_number != hidden_position
@@ -2635,7 +3303,7 @@ def _validate_strict_silu_stablehlo(
                 if len(down_converts) != 1:
                     raise ValueError("strict MLP float32 down result must have one BF16 cast")
                 if instrumented:
-                    down_float32_position = leading_result_count + 8 + 9 * layer
+                    down_float32_position = leading_result_count + 12 + 13 * layer
                     if (
                         len(down_float32_uses) != 2
                         or len(down_float32_checkpoints) != 1
@@ -2671,7 +3339,7 @@ def _validate_strict_silu_stablehlo(
                 if len(residual_uses) != 1:
                     raise ValueError("strict MLP BF16 down result must feed one residual add")
                 if instrumented:
-                    down_bfloat16_position = leading_result_count + 9 + 9 * layer
+                    down_bfloat16_position = leading_result_count + 13 + 13 * layer
                     if (
                         len(down_bfloat16_uses) != 2
                         or len(down_bfloat16_checkpoints) != 1

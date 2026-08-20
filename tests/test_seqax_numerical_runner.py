@@ -22,6 +22,7 @@ from tpu_cake.seqax_numerical import (
 from tpu_cake.seqax_numerical_runner import (
     SeqaxBf16DiscriminatorObservation,
     SeqaxBf16RunIdentity,
+    _checkpoint_mutants,
     _drop_reduction_collective,
     _mutation_failure,
     _prepare_output_root,
@@ -174,6 +175,8 @@ checkpoint_return = next(
 )
 match = re.search(
     r"sdy.return (?P<output>%[A-Za-z0-9_]+), "
+    r"(?P<rms_input>%[A-Za-z0-9_]+), (?P<rms_mean_square>%[A-Za-z0-9_]+), "
+    r"(?P<rms_inverse>%[A-Za-z0-9_]+), (?P<normalized_float32>%[A-Za-z0-9_]+), "
     r"(?P<normalized>%[A-Za-z0-9_]+), (?P<gate_float32>%[A-Za-z0-9_]+), "
     r"(?P<gate>%[A-Za-z0-9_]+), "
     r"(?P<silu>%[A-Za-z0-9_]+), (?P<up_float32>%[A-Za-z0-9_]+), "
@@ -182,6 +185,23 @@ match = re.search(
     checkpoint_return,
 )
 assert match is not None
+rms_input_mutant_return = checkpoint_return.replace(
+    f", {match.group('rms_input')}, {match.group('rms_mean_square')},",
+    f", {match.group('normalized')}, {match.group('rms_mean_square')},",
+)
+rms_input_mutant = compiled.stablehlo.replace(
+    checkpoint_return, rms_input_mutant_return
+)
+try:
+    _validate_strict_silu_stablehlo(
+        rms_input_mutant,
+        expected_count=parameters["layers"],
+        instrumented=True,
+    )
+except ValueError:
+    pass
+else:
+    raise AssertionError("instrumented executable accepted a forged RMS input output")
 normalized_mutant_return = checkpoint_return.replace(
     f", {match.group('normalized')}, {match.group('gate_float32')},",
     f", {match.group('gate')}, {match.group('gate_float32')},",
@@ -284,7 +304,7 @@ else:
     raise AssertionError("instrumented executable accepted a hidden barrier bypass")
 outer_return = next(
     line for line in compiled.stablehlo.splitlines()
-    if "return " + ", ".join(f"%0#{index}" for index in range(19)) in line
+    if "return " + ", ".join(f"%0#{index}" for index in range(27)) in line
 )
 mutant = compiled.stablehlo.replace(
     outer_return,
@@ -306,6 +326,10 @@ actual_shapes = tuple(value.shape for value in outputs)
 assert actual_shapes == (
     (2, 3, 32),
     (2, 3, 128),
+    (2, 3, 1),
+    (2, 3, 1),
+    (2, 3, 128),
+    (2, 3, 128),
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
@@ -313,6 +337,10 @@ assert actual_shapes == (
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 128),
+    (2, 3, 128),
+    (2, 3, 128),
+    (2, 3, 1),
+    (2, 3, 1),
     (2, 3, 128),
     (2, 3, 128),
     (2, 3, 24),
@@ -388,10 +416,14 @@ resident = _resident_inputs(inputs, plan, compiled.mesh)
 outputs = _execute_outputs(compiled.executable, resident)
 actual_outputs = tuple((value.shape, str(value.dtype)) for value in outputs)
 assert actual_outputs == (
-        ((2, 1, 16), "float32"),
-        ((2, 1, 256), "bfloat16"),
-        ((2, 1, 16), "float32"),
-        ((2, 1, 16), "bfloat16"),
+    ((2, 1, 16), "float32"),
+    ((2, 1, 256), "bfloat16"),
+    ((2, 1, 1), "float32"),
+    ((2, 1, 1), "float32"),
+    ((2, 1, 256), "float32"),
+    ((2, 1, 256), "bfloat16"),
+    ((2, 1, 16), "float32"),
+    ((2, 1, 16), "bfloat16"),
     ((2, 1, 16), "bfloat16"),
     ((2, 1, 16), "float32"),
     ((2, 1, 16), "bfloat16"),
@@ -434,6 +466,16 @@ def test_runner_numerical_discriminators_target_the_named_clause() -> None:
     normalized_input = np.zeros(
         scenario.normalized_input_checkpoints[0].shape, dtype=ml_dtypes.bfloat16
     )
+    rms_input = np.zeros(scenario.rms_input_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
+    rms_mean_square = np.zeros(scenario.rms_mean_square_checkpoints[0].shape, dtype=np.float32)
+    rms_inverse = np.full(
+        scenario.rms_inverse_checkpoints[0].shape,
+        np.float32(1.0) / np.sqrt(np.float32(1e-6)),
+        dtype=np.float32,
+    )
+    normalized_float32 = np.zeros(
+        scenario.normalized_float32_checkpoints[0].shape, dtype=np.float32
+    )
     silu = gate.copy()
     up_float32 = np.zeros(scenario.up_float32_checkpoints[0].shape, dtype=np.float32)
     up = gate.copy()
@@ -450,6 +492,10 @@ def test_runner_numerical_discriminators_target_the_named_clause() -> None:
         scenario=scenario,
         seed=seed,
         inputs=inputs,
+        rms_inputs=(rms_input,),
+        rms_mean_square=(rms_mean_square,),
+        rms_inverse=(rms_inverse,),
+        normalized_float32=(normalized_float32,),
         normalized_inputs=(normalized_input,),
         gate_float32=(gate_float32,),
         gates=(gate,),
@@ -462,6 +508,47 @@ def test_runner_numerical_discriminators_target_the_named_clause() -> None:
     )
 
     assert failure.startswith("row_scaled_maximum: rejected")
+
+
+def test_checkpoint_mutants_build_the_wrong_rms_scale_case() -> None:
+    contract = default_seqax_bf16_validation_contract()
+    scenario = contract.scenarios[0]
+    inputs = tuple(
+        np.asarray(value)
+        for value in seqax_forward_inputs(
+            seed=scenario.seeds[0],
+            **scenario.parameters.model_dump(),
+        )
+    )
+    rms_input = np.ones(scenario.rms_input_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
+    rms_mean_square = np.ones(scenario.rms_mean_square_checkpoints[0].shape, dtype=np.float32)
+    rms_inverse = np.ones(scenario.rms_inverse_checkpoints[0].shape, dtype=np.float32)
+    normalized_float32 = np.ones(
+        scenario.normalized_float32_checkpoints[0].shape,
+        dtype=np.float32,
+    )
+    normalized = normalized_float32.astype(ml_dtypes.bfloat16)
+    feed_forward_shape = scenario.gate_float32_checkpoints[0].shape
+    gate_float32 = np.zeros(feed_forward_shape, dtype=np.float32)
+    gate = gate_float32.astype(ml_dtypes.bfloat16)
+
+    mutants = _checkpoint_mutants(
+        inputs,
+        (rms_input,),
+        (rms_mean_square,),
+        (rms_inverse,),
+        (normalized_float32,),
+        (normalized,),
+        (gate_float32,),
+        (gate,),
+        (gate_float32.copy(),),
+        (gate.copy(),),
+    )
+
+    wrong_scale = mutants[SeqaxNumericalDiscriminator.WRONG_RMS_SCALE_CHECKPOINT]
+    assert len(wrong_scale) == 1
+    assert wrong_scale[0].shape == scenario.normalized_float32_checkpoints[0].shape
+    assert not np.array_equal(wrong_scale[0], normalized_float32)
 
 
 def test_collective_discriminator_removes_exactly_one_reduce_scatter() -> None:
@@ -503,7 +590,7 @@ def test_runner_rejects_protected_output_roots() -> None:
 def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v3",
+        schema_version="seqax-bf16-forward-validation-run-v4",
         contract_id=contract.contract_id,
         run_id="1" * 64,
         source_commit="2" * 40,
@@ -592,7 +679,7 @@ def test_runner_resumes_active_owned_root_and_archives_rejected_root(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v3",
+        schema_version="seqax-bf16-forward-validation-run-v4",
         contract_id=contract.contract_id,
         run_id="8" * 64,
         source_commit="9" * 40,
@@ -665,7 +752,7 @@ def test_runner_reuses_same_root_after_uncaught_active_run_crash(
                 ledger.create(
                     run_id,
                     {
-                        "schema": "seqax-bf16-forward-validation-run-v3",
+                        "schema": "seqax-bf16-forward-validation-run-v4",
                         "contract_id": active_contract.contract_id,
                         "source_commit": source_commit,
                     },
@@ -709,12 +796,12 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         text=True,
     ).stdout.strip()
     run_id = numerical_runner.semantic_sha256(
-        "seqax-bf16-forward-validation-run-v3",
+        "seqax-bf16-forward-validation-run-v4",
         contract.contract_id,
         source_commit,
     )
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v3",
+        schema_version="seqax-bf16-forward-validation-run-v4",
         contract_id=contract.contract_id,
         run_id=run_id,
         source_commit=source_commit,
@@ -724,7 +811,7 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         ledger.create(
             run_id,
             {
-                "schema": "seqax-bf16-forward-validation-run-v3",
+                "schema": "seqax-bf16-forward-validation-run-v4",
                 "contract_id": contract.contract_id,
                 "source_commit": source_commit,
             },
@@ -779,7 +866,7 @@ def test_atomic_run_markers_do_not_publish_truncated_targets(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v3",
+        schema_version="seqax-bf16-forward-validation-run-v4",
         contract_id=contract.contract_id,
         run_id="5" * 64,
         source_commit="6" * 40,
@@ -918,11 +1005,11 @@ def test_runner_refuses_pending_hlo_identities_before_writes(
     assert not root.exists()
 
 
-def test_runner_rejects_a_caller_demoted_pinned_contract_before_writes(
+def test_runner_rejects_a_caller_promoted_pending_contract_before_writes(
     tmp_path: Path,
 ) -> None:
     contract = default_seqax_bf16_validation_contract().model_copy(
-        update={"hlo_identity_status": "pending"}
+        update={"hlo_identity_status": "pinned"}
     )
     root = tmp_path / "run"
 
@@ -1045,14 +1132,14 @@ def execute_outputs(executable, inputs):
     outputs = list(original_execute_outputs(executable, inputs))
     if len(outputs) > 1:
         outputs[0] = outputs[0] + np.float32(1e-5)
-        for checkpoint_index in range(1, len(outputs), 9):
-            outputs[checkpoint_index + 3] = rounded_mathematical_silu_bf16(
-                outputs[checkpoint_index + 2]
+        for checkpoint_index in range(1, len(outputs), 13):
+            outputs[checkpoint_index + 7] = rounded_mathematical_silu_bf16(
+                outputs[checkpoint_index + 6]
             )
-            outputs[checkpoint_index + 6] = np.asarray(
-                outputs[checkpoint_index + 3].astype(np.float32)
-                * outputs[checkpoint_index + 5].astype(np.float32),
-                dtype=outputs[checkpoint_index + 6].dtype,
+            outputs[checkpoint_index + 10] = np.asarray(
+                outputs[checkpoint_index + 7].astype(np.float32)
+                * outputs[checkpoint_index + 9].astype(np.float32),
+                dtype=outputs[checkpoint_index + 10].dtype,
             )
     return tuple(outputs)
 
@@ -1151,7 +1238,7 @@ try:
     root = temporary / "run"
     result = runner.run_seqax_bf16_validation(root, contract)
     assert len(result.observations) == 41
-    assert len(result.discriminators) == 23
+    assert len(result.discriminators) == len(tuple(numerical.SeqaxNumericalDiscriminator))
     assert not any(value.instrumentation_difference.exact for value in result.observations)
     assert runner.run_seqax_bf16_validation(root, contract) == result
     relocated = temporary / "relocated"

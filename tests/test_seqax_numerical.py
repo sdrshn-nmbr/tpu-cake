@@ -80,6 +80,26 @@ def _synthetic_checkpoint_evidence(
     scenario: SeqaxBf16NumericalScenario,
     inputs: tuple[np.ndarray, ...],
 ) -> dict[str, object]:
+    rms_inputs = tuple(
+        np.zeros(checkpoint.shape, dtype=ml_dtypes.bfloat16)
+        for checkpoint in scenario.rms_input_checkpoints
+    )
+    rms_mean_square = tuple(
+        np.zeros(checkpoint.shape, dtype=np.float32)
+        for checkpoint in scenario.rms_mean_square_checkpoints
+    )
+    rms_inverse = tuple(
+        np.full(
+            checkpoint.shape,
+            np.float32(1.0) / np.sqrt(np.float32(1e-6)),
+            dtype=np.float32,
+        )
+        for checkpoint in scenario.rms_inverse_checkpoints
+    )
+    normalized_float32 = tuple(
+        np.zeros(checkpoint.shape, dtype=np.float32)
+        for checkpoint in scenario.normalized_float32_checkpoints
+    )
     normalized_inputs = tuple(
         np.zeros(checkpoint.shape, dtype=ml_dtypes.bfloat16)
         for checkpoint in scenario.normalized_input_checkpoints
@@ -108,6 +128,16 @@ def _synthetic_checkpoint_evidence(
     )
     down_bfloat16 = tuple(value.astype(ml_dtypes.bfloat16) for value in down_float32)
     return {
+        "pallas_rms_input_checkpoints": rms_inputs,
+        "control_rms_input_checkpoints": tuple(value.copy() for value in rms_inputs),
+        "pallas_rms_mean_square_checkpoints": rms_mean_square,
+        "control_rms_mean_square_checkpoints": tuple(value.copy() for value in rms_mean_square),
+        "pallas_rms_inverse_checkpoints": rms_inverse,
+        "control_rms_inverse_checkpoints": tuple(value.copy() for value in rms_inverse),
+        "pallas_normalized_float32_checkpoints": normalized_float32,
+        "control_normalized_float32_checkpoints": tuple(
+            value.copy() for value in normalized_float32
+        ),
         "pallas_normalized_input_checkpoints": normalized_inputs,
         "control_normalized_input_checkpoints": tuple(value.copy() for value in normalized_inputs),
         "pallas_gate_float32_checkpoints": gate_float32,
@@ -177,7 +207,7 @@ def test_mathematical_silu_reference_rounds_once_to_bf16() -> None:
     )
     assert actual.dtype == np.dtype(ml_dtypes.bfloat16)
     assert BF16_UNIT_ROUNDOFF == 0.00390625
-    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v3"
+    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v4"
 
 
 def test_mathematical_silu_reference_rejects_non_bf16_or_nonfinite_input() -> None:
@@ -355,10 +385,28 @@ def test_strict_hidden_path_allows_only_shape_preserving_pallas_reshapes() -> No
     stablehlo = f"""module {{
       {_SILU_FUNCTION}
       func.func public @main(
-        %normalized: tensor<1x4xbf16>, %gate_weight: tensor<4x4xbf16>,
+        %rms_input: tensor<1x4xbf16>, %scale: tensor<4xf32>,
+        %gate_weight: tensor<4x4xbf16>,
         %up_weight: tensor<4x4xbf16>,
         %down_weight: tensor<2x4xbf16>, %residual: tensor<1x8xbf16>
       ) -> tensor<1x8xbf16> {{
+        %rms_float32 = stablehlo.convert %rms_input : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+        %square = chlo.square %rms_float32 : tensor<1x4xf32> -> tensor<1x4xf32>
+        %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+        %rms_sum = stablehlo.reduce(%square init: %zero) applies stablehlo.add across dimensions = [1] : (tensor<1x4xf32>, tensor<f32>) -> tensor<1xf32>
+        %sum_reshaped = stablehlo.broadcast_in_dim %rms_sum, dims = [0] : (tensor<1xf32>) -> tensor<1x1xf32>
+        %four = stablehlo.constant dense<4.000000e+00> : tensor<f32>
+        %four_broadcast = stablehlo.broadcast_in_dim %four, dims = [] : (tensor<f32>) -> tensor<1x1xf32>
+        %mean_square = stablehlo.divide %sum_reshaped, %four_broadcast : tensor<1x1xf32>
+        %epsilon = stablehlo.constant dense<9.99999997E-7> : tensor<f32>
+        %epsilon_broadcast = stablehlo.broadcast_in_dim %epsilon, dims = [] : (tensor<f32>) -> tensor<1x1xf32>
+        %mean_epsilon = stablehlo.add %mean_square, %epsilon_broadcast : tensor<1x1xf32>
+        %inverse = stablehlo.rsqrt %mean_epsilon : tensor<1x1xf32>
+        %inverse_broadcast = stablehlo.broadcast_in_dim %inverse, dims = [0, 1] : (tensor<1x1xf32>) -> tensor<1x4xf32>
+        %scaled_input = stablehlo.multiply %rms_float32, %inverse_broadcast : tensor<1x4xf32>
+        %scale_broadcast = stablehlo.broadcast_in_dim %scale, dims = [1] : (tensor<4xf32>) -> tensor<1x4xf32>
+        %normalized_float32 = stablehlo.multiply %scaled_input, %scale_broadcast : tensor<1x4xf32>
+        %normalized = stablehlo.convert %normalized_float32 : (tensor<1x4xf32>) -> tensor<1x4xbf16>
         %gate_float32 = stablehlo.dot_general %normalized, %gate_weight,
           contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT]
           : (tensor<1x4xbf16>, tensor<4x4xbf16>) -> tensor<1x4xf32>
@@ -403,6 +451,36 @@ def test_strict_hidden_path_allows_only_shape_preserving_pallas_reshapes() -> No
         instrumented=False,
         require_hidden_down=True,
     )
+    rms_mutants = (
+        stablehlo.replace(
+            "%normalized_float32 = stablehlo.multiply %scaled_input, %scale_broadcast",
+            "%normalized_float32 = stablehlo.multiply %scaled_input, %rms_float32",
+        ),
+        stablehlo.replace(
+            "%mean_square = stablehlo.divide %sum_reshaped, %four_broadcast",
+            "%mean_square = stablehlo.divide %four_broadcast, %four_broadcast",
+        ),
+        stablehlo.replace(
+            "%four = stablehlo.constant dense<4.000000e+00>",
+            "%four = stablehlo.constant dense<8.000000e+00>",
+        ),
+        stablehlo.replace(
+            "%epsilon = stablehlo.constant dense<9.99999997E-7>",
+            "%epsilon = stablehlo.constant dense<1.99999999E-6>",
+        ),
+        stablehlo.replace(
+            "applies stablehlo.add across dimensions = [1]",
+            "applies stablehlo.add across dimensions = [0]",
+        ),
+    )
+    for mutant in rms_mutants:
+        with pytest.raises(ValueError):
+            _validate_strict_silu_stablehlo(
+                mutant,
+                expected_count=1,
+                instrumented=False,
+                require_hidden_down=True,
+            )
     with pytest.raises(ValueError, match="down projection lhs"):
         _validate_strict_silu_stablehlo(
             stablehlo.replace(
@@ -504,13 +582,13 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
     )
 
 
-def test_bf16_forward_contract_pins_fresh_hlo_identities() -> None:
+def test_bf16_forward_contract_requires_fresh_hlo_identities() -> None:
     contract = default_seqax_bf16_validation_contract()
 
-    assert contract.hlo_identity_status == "pinned"
+    assert contract.hlo_identity_status == "pending"
     assert contract.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
     assert contract.compilation_source_root == "/home/sudarshan/tpu-cake-main"
-    assert contract.checkpoint_capture == "typed-strict-mlp-extra-outputs-v3"
+    assert contract.checkpoint_capture == "typed-strict-rms-mlp-extra-outputs-v4"
     assert contract.require_normal_output_policy
     assert contract.require_instrumented_output_policy
     assert contract.require_discriminator_artifact_replay
@@ -518,11 +596,11 @@ def test_bf16_forward_contract_pins_fresh_hlo_identities() -> None:
 
 def test_tracked_bf16_forward_contract_matches_the_canonical_factory() -> None:
     contract = default_seqax_bf16_validation_contract()
-    path = Path("contracts/seqax-bf16-forward-numerical-v3.json")
+    path = Path("contracts/seqax-bf16-forward-numerical-v4.json")
 
     assert SeqaxBf16ValidationContract.model_validate_json(path.read_text()) == contract
     assert (
-        contract.contract_id == "0455ed3262824f94d686717179a47fbce88472463b66e208d788d13d64ecbcf0"
+        contract.contract_id == "8d96686ca039a7d3d85df920a8a62a09cac6fa44b88604a55071fa76c6cb74d8"
     )
 
 
@@ -1035,7 +1113,7 @@ def test_bf16_projection_checkpoints_use_fixed_order_oracles() -> None:
         scenario=scenario,
     )
 
-    assert exact.normalized_input_cross_path_exact
+    assert exact.normalized_input_cross_path_max_ulp == 0
     assert exact.pallas_gate_float32_within_bound
     assert exact.control_gate_float32_within_bound
     assert exact.pallas_gate_bfloat16_matches_float32
@@ -1048,7 +1126,6 @@ def test_bf16_projection_checkpoints_use_fixed_order_oracles() -> None:
     assert exact.control_down_float32_within_bound
     assert exact.pallas_down_bfloat16_matches_float32
     assert exact.down_bfloat16_cross_path_max_ulp == 0
-    assert exact.checkpoint_values_consistent
 
     corrupted_gate_float32 = gate_float32.copy()
     corrupted_gate_float32.reshape(-1)[0] += np.float32(1e-3)
@@ -1108,6 +1185,114 @@ def test_bf16_projection_checkpoints_use_fixed_order_oracles() -> None:
         seqax_up_projection_reference_float32(normalized.astype(np.float32), inputs[9][0])
     with pytest.raises(ValueError, match="contraction shape mismatch"):
         seqax_up_projection_reference_float32(normalized[..., :-1], inputs[9][0])
+
+
+def test_rmsnorm_checkpoints_use_independent_oracles_and_report_cross_path_ulp() -> None:
+    contract, scenario, inputs, reference, evidence = _calibration_evidence()
+    checkpoints = {key: value for key, value in evidence.items() if "checkpoint" in key}
+
+    control_normalized_float32 = checkpoints["control_normalized_float32_checkpoints"][0].copy()
+    control_normalized_float32.reshape(-1)[0] = np.float32(-0.0)
+    control_normalized_bfloat16 = checkpoints["control_normalized_input_checkpoints"][0].copy()
+    control_normalized_bfloat16.reshape(-1)[0] = np.asarray(-0.0, dtype=ml_dtypes.bfloat16)
+    reporting_only = assess_seqax_bf16_forward(
+        reference,
+        reference,
+        seed=scenario.seeds[0],
+        inputs=inputs,
+        **(
+            checkpoints
+            | {
+                "control_normalized_float32_checkpoints": (control_normalized_float32,),
+                "control_normalized_input_checkpoints": (control_normalized_bfloat16,),
+            }
+        ),
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    assert reporting_only.normalized_input_cross_path_max_ulp == 1
+    assert reporting_only.checkpoint_values_consistent
+
+    corrupt_mean_square = checkpoints["pallas_rms_mean_square_checkpoints"][0].copy()
+    corrupt_mean_square.reshape(-1)[0] += np.float32(0.25)
+    corrupt_inverse = checkpoints["pallas_rms_inverse_checkpoints"][0].copy()
+    corrupt_inverse.reshape(-1)[0] *= np.float32(1.25)
+    corrupt_normalized_float32 = checkpoints["pallas_normalized_float32_checkpoints"][0].copy()
+    corrupt_normalized_float32.reshape(-1)[0] += np.float32(0.25)
+    corrupt_normalized_bfloat16 = checkpoints["pallas_normalized_input_checkpoints"][0].copy()
+    corrupt_normalized_bfloat16.view(np.uint16).reshape(-1)[0] ^= np.uint16(1)
+
+    mutations = (
+        ("pallas_rms_mean_square_checkpoints", corrupt_mean_square),
+        ("pallas_rms_inverse_checkpoints", corrupt_inverse),
+        ("pallas_normalized_float32_checkpoints", corrupt_normalized_float32),
+        ("pallas_normalized_input_checkpoints", corrupt_normalized_bfloat16),
+    )
+    for key, mutant in mutations:
+        assessment = assess_seqax_bf16_forward(
+            reference,
+            reference,
+            seed=scenario.seeds[0],
+            inputs=inputs,
+            **(checkpoints | {key: (mutant,)}),
+            policy=contract.policy,
+            scenario=scenario,
+        )
+        assert not assessment.checkpoint_values_consistent
+
+
+def test_rmsnorm_oracle_rejects_coordinated_wrong_checkpoints_in_both_paths() -> None:
+    contract, scenario, inputs, reference, evidence = _calibration_evidence()
+    checkpoints = {key: value for key, value in evidence.items() if "checkpoint" in key}
+    rms_input = tuple(np.ones_like(value) for value in checkpoints["pallas_rms_input_checkpoints"])
+    rms_mean_square = tuple(
+        np.ones_like(value) for value in checkpoints["pallas_rms_mean_square_checkpoints"]
+    )
+    rms_inverse = tuple(
+        np.full_like(value, np.float32(1.0) / np.sqrt(np.float32(1.0 + 1e-6)))
+        for value in checkpoints["pallas_rms_inverse_checkpoints"]
+    )
+    replacements: dict[str, tuple[np.ndarray, ...]] = {
+        "pallas_rms_input_checkpoints": rms_input,
+        "control_rms_input_checkpoints": tuple(value.copy() for value in rms_input),
+        "pallas_rms_mean_square_checkpoints": rms_mean_square,
+        "control_rms_mean_square_checkpoints": tuple(value.copy() for value in rms_mean_square),
+        "pallas_rms_inverse_checkpoints": rms_inverse,
+        "control_rms_inverse_checkpoints": tuple(value.copy() for value in rms_inverse),
+    }
+    for name in (
+        "normalized_float32",
+        "normalized_input",
+        "gate_float32",
+        "gate",
+        "silu",
+        "up_float32",
+        "up",
+        "hidden",
+        "down_float32",
+        "down_bfloat16",
+    ):
+        pallas_key = f"pallas_{name}_checkpoints"
+        control_key = f"control_{name}_checkpoints"
+        zeros = tuple(np.zeros_like(value) for value in checkpoints[pallas_key])
+        replacements[pallas_key] = zeros
+        replacements[control_key] = tuple(value.copy() for value in zeros)
+
+    assessment = assess_seqax_bf16_forward(
+        reference,
+        reference,
+        seed=scenario.seeds[0],
+        inputs=inputs,
+        **(checkpoints | replacements),
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert assessment.final_outputs_satisfy_policy
+    assert assessment.normalized_input_cross_path_max_ulp == 0
+    assert not assessment.pallas_normalized_float32_within_bound
+    assert not assessment.control_normalized_float32_within_bound
+    assert not assessment.checkpoint_values_consistent
 
 
 def test_projection_acceptance_uses_the_unrounded_bound_ratio(

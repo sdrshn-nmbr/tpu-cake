@@ -70,8 +70,12 @@ from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import seqax_forward_canonical_reference, seqax_forward_inputs
 
-SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v3"
+SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v4"
 _STRICT_MLP_CHECKPOINT_SPECS = (
+    PartitionSpec("d", None, None),
+    PartitionSpec("d", None, None),
+    PartitionSpec("d", None, None),
+    PartitionSpec("d", None, None),
     PartitionSpec("d", None, None),
     PartitionSpec("d", None, "t"),
     PartitionSpec("d", None, "t"),
@@ -103,7 +107,7 @@ class SeqaxBf16Runtime(BaseModel):
 class SeqaxBf16RunIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v3$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v4$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -158,6 +162,14 @@ class SeqaxBf16SeedObservation(BaseModel):
     control_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     instrumented_pallas_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     instrumented_control_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_rms_input_sha256: tuple[str, ...] = Field(min_length=1)
+    control_rms_input_sha256: tuple[str, ...] = Field(min_length=1)
+    pallas_rms_mean_square_sha256: tuple[str, ...] = Field(min_length=1)
+    control_rms_mean_square_sha256: tuple[str, ...] = Field(min_length=1)
+    pallas_rms_inverse_sha256: tuple[str, ...] = Field(min_length=1)
+    control_rms_inverse_sha256: tuple[str, ...] = Field(min_length=1)
+    pallas_normalized_float32_sha256: tuple[str, ...] = Field(min_length=1)
+    control_normalized_float32_sha256: tuple[str, ...] = Field(min_length=1)
     pallas_normalized_input_sha256: tuple[str, ...] = Field(min_length=1)
     control_normalized_input_sha256: tuple[str, ...] = Field(min_length=1)
     pallas_gate_float32_sha256: tuple[str, ...] = Field(min_length=1)
@@ -209,7 +221,7 @@ class SeqaxBf16DiscriminatorObservation(BaseModel):
 class SeqaxBf16ValidationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v3$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v4$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime: SeqaxBf16Runtime
@@ -226,7 +238,7 @@ class SeqaxBf16ValidationResult(BaseModel):
 class SeqaxBf16ValidationReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v3$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v4$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: str = Field(pattern=r"^passed$")
@@ -725,8 +737,12 @@ def _split_instrumented_outputs(
     tuple[np.ndarray, ...],
     tuple[np.ndarray, ...],
     tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
 ]:
-    expected_count = 1 + 9 * scenario.parameters.layers
+    expected_count = 1 + 13 * scenario.parameters.layers
     if len(outputs) != expected_count:
         raise ValueError(
             "SEQAX_BF16_INSTRUMENTED_OUTPUT_COUNT_MISMATCH "
@@ -735,15 +751,19 @@ def _split_instrumented_outputs(
     checkpoints = outputs[1:]
     return (
         outputs[0],
-        checkpoints[0::9],
-        checkpoints[1::9],
-        checkpoints[2::9],
-        checkpoints[3::9],
-        checkpoints[4::9],
-        checkpoints[5::9],
-        checkpoints[6::9],
-        checkpoints[7::9],
-        checkpoints[8::9],
+        checkpoints[0::13],
+        checkpoints[1::13],
+        checkpoints[2::13],
+        checkpoints[3::13],
+        checkpoints[4::13],
+        checkpoints[5::13],
+        checkpoints[6::13],
+        checkpoints[7::13],
+        checkpoints[8::13],
+        checkpoints[9::13],
+        checkpoints[10::13],
+        checkpoints[11::13],
+        checkpoints[12::13],
     )
 
 
@@ -885,6 +905,10 @@ def _checkpoint_hashes(values: tuple[np.ndarray, ...]) -> tuple[str, ...]:
 def _save_checkpoints(
     root: Path,
     prefix: str,
+    rms_inputs: tuple[np.ndarray, ...],
+    rms_mean_square: tuple[np.ndarray, ...],
+    rms_inverse: tuple[np.ndarray, ...],
+    normalized_float32: tuple[np.ndarray, ...],
     normalized_inputs: tuple[np.ndarray, ...],
     gate_float32: tuple[np.ndarray, ...],
     gates: tuple[np.ndarray, ...],
@@ -897,6 +921,10 @@ def _save_checkpoints(
     scenario: SeqaxBf16NumericalScenario,
 ) -> None:
     for layer, (
+        rms_input,
+        rms_mean_square_value,
+        rms_inverse_value,
+        normalized_float32_value,
         normalized_input,
         gate_float32_value,
         gate,
@@ -906,6 +934,10 @@ def _save_checkpoints(
         hidden_value,
         down_float32_value,
         down_bfloat16_value,
+        rms_input_contract,
+        rms_mean_square_contract,
+        rms_inverse_contract,
+        normalized_float32_contract,
         normalized_input_contract,
         gate_float32_contract,
         gate_contract,
@@ -917,6 +949,10 @@ def _save_checkpoints(
         down_bfloat16_contract,
     ) in enumerate(
         zip(
+            rms_inputs,
+            rms_mean_square,
+            rms_inverse,
+            normalized_float32,
             normalized_inputs,
             gate_float32,
             gates,
@@ -926,6 +962,10 @@ def _save_checkpoints(
             hidden,
             down_float32,
             down_bfloat16,
+            scenario.rms_input_checkpoints,
+            scenario.rms_mean_square_checkpoints,
+            scenario.rms_inverse_checkpoints,
+            scenario.normalized_float32_checkpoints,
             scenario.normalized_input_checkpoints,
             scenario.gate_float32_checkpoints,
             scenario.gate_checkpoints,
@@ -938,6 +978,29 @@ def _save_checkpoints(
             strict=True,
         )
     ):
+        _save_array(
+            root / "checkpoints" / f"{prefix}_rms_input_{layer:02d}.npy",
+            encode_seqax_bf16_checkpoint(rms_input, rms_input_contract),
+        )
+        for label, value, contract in (
+            ("RMS_MEAN_SQUARE", rms_mean_square_value, rms_mean_square_contract),
+            ("RMS_INVERSE", rms_inverse_value, rms_inverse_contract),
+            ("NORMALIZED_FLOAT32", normalized_float32_value, normalized_float32_contract),
+        ):
+            if value.dtype != np.float32 or value.shape != contract.shape:
+                raise ValueError(f"SEQAX_BF16_{label}_CHECKPOINT_ABI_MISMATCH")
+        _save_array(
+            root / "checkpoints" / f"{prefix}_rms_mean_square_{layer:02d}.npy",
+            rms_mean_square_value,
+        )
+        _save_array(
+            root / "checkpoints" / f"{prefix}_rms_inverse_{layer:02d}.npy",
+            rms_inverse_value,
+        )
+        _save_array(
+            root / "checkpoints" / f"{prefix}_normalized_float32_{layer:02d}.npy",
+            normalized_float32_value,
+        )
         _save_array(
             root / "checkpoints" / f"{prefix}_normalized_input_{layer:02d}.npy",
             encode_seqax_bf16_checkpoint(normalized_input, normalized_input_contract),
@@ -1066,6 +1129,10 @@ def _run_seed(
     )
     (
         instrumented_pallas_output,
+        pallas_rms_inputs,
+        pallas_rms_mean_square,
+        pallas_rms_inverse,
+        pallas_normalized_float32,
         pallas_normalized_inputs,
         pallas_gate_float32,
         pallas_gates,
@@ -1087,6 +1154,10 @@ def _run_seed(
     )
     (
         instrumented_control_output,
+        control_rms_inputs,
+        control_rms_mean_square,
+        control_rms_inverse,
+        control_normalized_float32,
         control_normalized_inputs,
         control_gate_float32,
         control_gates,
@@ -1102,6 +1173,10 @@ def _run_seed(
     _save_checkpoints(
         seed_root,
         "pallas",
+        pallas_rms_inputs,
+        pallas_rms_mean_square,
+        pallas_rms_inverse,
+        pallas_normalized_float32,
         pallas_normalized_inputs,
         pallas_gate_float32,
         pallas_gates,
@@ -1116,6 +1191,10 @@ def _run_seed(
     _save_checkpoints(
         seed_root,
         "control",
+        control_rms_inputs,
+        control_rms_mean_square,
+        control_rms_inverse,
+        control_normalized_float32,
         control_normalized_inputs,
         control_gate_float32,
         control_gates,
@@ -1138,6 +1217,14 @@ def _run_seed(
     evidence = {
         "seed": seed,
         "inputs": host_inputs,
+        "pallas_rms_input_checkpoints": pallas_rms_inputs,
+        "control_rms_input_checkpoints": control_rms_inputs,
+        "pallas_rms_mean_square_checkpoints": pallas_rms_mean_square,
+        "control_rms_mean_square_checkpoints": control_rms_mean_square,
+        "pallas_rms_inverse_checkpoints": pallas_rms_inverse,
+        "control_rms_inverse_checkpoints": control_rms_inverse,
+        "pallas_normalized_float32_checkpoints": pallas_normalized_float32,
+        "control_normalized_float32_checkpoints": control_normalized_float32,
         "pallas_normalized_input_checkpoints": pallas_normalized_inputs,
         "control_normalized_input_checkpoints": control_normalized_inputs,
         "pallas_gate_float32_checkpoints": pallas_gate_float32,
@@ -1191,6 +1278,14 @@ def _run_seed(
         control_output_sha256=array_sha256(control_output),
         instrumented_pallas_output_sha256=array_sha256(instrumented_pallas_output),
         instrumented_control_output_sha256=array_sha256(instrumented_control_output),
+        pallas_rms_input_sha256=_checkpoint_hashes(pallas_rms_inputs),
+        control_rms_input_sha256=_checkpoint_hashes(control_rms_inputs),
+        pallas_rms_mean_square_sha256=_checkpoint_hashes(pallas_rms_mean_square),
+        control_rms_mean_square_sha256=_checkpoint_hashes(control_rms_mean_square),
+        pallas_rms_inverse_sha256=_checkpoint_hashes(pallas_rms_inverse),
+        control_rms_inverse_sha256=_checkpoint_hashes(control_rms_inverse),
+        pallas_normalized_float32_sha256=_checkpoint_hashes(pallas_normalized_float32),
+        control_normalized_float32_sha256=_checkpoint_hashes(control_normalized_float32),
         pallas_normalized_input_sha256=_checkpoint_hashes(pallas_normalized_inputs),
         control_normalized_input_sha256=_checkpoint_hashes(control_normalized_inputs),
         pallas_gate_float32_sha256=_checkpoint_hashes(pallas_gate_float32),
@@ -1373,6 +1468,22 @@ def _remove_hidden_barrier(stablehlo: str) -> str:
     return re.sub(rf"{re.escape(barrier_result)}\b", multiply_result, "\n".join(lines)) + "\n"
 
 
+def _bypass_rms_norm_checkpoint(stablehlo: str) -> str:
+    lines = stablehlo.splitlines()
+    for index, line in enumerate(lines):
+        if "sdy.return " not in line:
+            continue
+        prefix, result_types = line.split(" : ", maxsplit=1)
+        indentation, operands_text = prefix.split("sdy.return ", maxsplit=1)
+        operands = operands_text.split(", ")
+        if len(operands) < 14:
+            continue
+        operands[1] = operands[5]
+        lines[index] = f"{indentation}sdy.return {', '.join(operands)} : {result_types}"
+        return "\n".join(lines) + "\n"
+    raise ValueError("SEQAX_BF16_DISCRIMINATOR_RMS_RETURN_MISSING")
+
+
 def _drop_reduction_collective(physical: str) -> str:
     removed = False
     lines = []
@@ -1400,7 +1511,30 @@ def _load_saved_checkpoints(
     tuple[np.ndarray, ...],
     tuple[np.ndarray, ...],
     tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
+    tuple[np.ndarray, ...],
 ]:
+    rms_inputs = tuple(
+        decode_seqax_bf16_checkpoint(
+            _load_array(seed_root / "checkpoints" / f"{prefix}_rms_input_{layer:02d}.npy"),
+            contract,
+        )
+        for layer, contract in enumerate(scenario.rms_input_checkpoints)
+    )
+    rms_mean_square = tuple(
+        _load_array(seed_root / "checkpoints" / f"{prefix}_rms_mean_square_{layer:02d}.npy")
+        for layer in range(scenario.parameters.layers)
+    )
+    rms_inverse = tuple(
+        _load_array(seed_root / "checkpoints" / f"{prefix}_rms_inverse_{layer:02d}.npy")
+        for layer in range(scenario.parameters.layers)
+    )
+    normalized_float32 = tuple(
+        _load_array(seed_root / "checkpoints" / f"{prefix}_normalized_float32_{layer:02d}.npy")
+        for layer in range(scenario.parameters.layers)
+    )
     normalized_inputs = tuple(
         decode_seqax_bf16_checkpoint(
             _load_array(seed_root / "checkpoints" / f"{prefix}_normalized_input_{layer:02d}.npy"),
@@ -1456,6 +1590,10 @@ def _load_saved_checkpoints(
         for layer, contract in enumerate(scenario.down_bfloat16_checkpoints)
     )
     return (
+        rms_inputs,
+        rms_mean_square,
+        rms_inverse,
+        normalized_float32,
         normalized_inputs,
         gate_float32,
         gates,
@@ -1476,6 +1614,10 @@ def _mutation_failure(
     scenario: SeqaxBf16NumericalScenario,
     seed: int,
     inputs: tuple[np.ndarray, ...],
+    rms_inputs: tuple[np.ndarray, ...],
+    rms_mean_square: tuple[np.ndarray, ...],
+    rms_inverse: tuple[np.ndarray, ...],
+    normalized_float32: tuple[np.ndarray, ...],
     normalized_inputs: tuple[np.ndarray, ...],
     gate_float32: tuple[np.ndarray, ...],
     gates: tuple[np.ndarray, ...],
@@ -1492,6 +1634,14 @@ def _mutation_failure(
             output,
             seed=seed,
             inputs=inputs,
+            pallas_rms_input_checkpoints=rms_inputs,
+            control_rms_input_checkpoints=rms_inputs,
+            pallas_rms_mean_square_checkpoints=rms_mean_square,
+            control_rms_mean_square_checkpoints=rms_mean_square,
+            pallas_rms_inverse_checkpoints=rms_inverse,
+            control_rms_inverse_checkpoints=rms_inverse,
+            pallas_normalized_float32_checkpoints=normalized_float32,
+            control_normalized_float32_checkpoints=normalized_float32,
             pallas_normalized_input_checkpoints=normalized_inputs,
             control_normalized_input_checkpoints=normalized_inputs,
             pallas_gate_float32_checkpoints=gate_float32,
@@ -1553,6 +1703,10 @@ def _assess_checkpoint_mutation(
     scenario: SeqaxBf16NumericalScenario,
     seed: int,
     inputs: tuple[np.ndarray, ...],
+    rms_inputs: tuple[np.ndarray, ...],
+    rms_mean_square: tuple[np.ndarray, ...],
+    rms_inverse: tuple[np.ndarray, ...],
+    normalized_float32: tuple[np.ndarray, ...],
     normalized_inputs: tuple[np.ndarray, ...],
     gate_float32: tuple[np.ndarray, ...],
     gates: tuple[np.ndarray, ...],
@@ -1562,6 +1716,10 @@ def _assess_checkpoint_mutation(
     hidden: tuple[np.ndarray, ...],
     down_float32: tuple[np.ndarray, ...],
     down_bfloat16: tuple[np.ndarray, ...],
+    mutated_rms_inputs: tuple[np.ndarray, ...] | None = None,
+    mutated_rms_mean_square: tuple[np.ndarray, ...] | None = None,
+    mutated_rms_inverse: tuple[np.ndarray, ...] | None = None,
+    mutated_normalized_float32: tuple[np.ndarray, ...] | None = None,
     mutated_normalized_inputs: tuple[np.ndarray, ...] | None = None,
     mutated_gate_float32: tuple[np.ndarray, ...] | None = None,
     mutated_gate: tuple[np.ndarray, ...] | None = None,
@@ -1574,6 +1732,22 @@ def _assess_checkpoint_mutation(
         baseline,
         seed=seed,
         inputs=inputs,
+        pallas_rms_input_checkpoints=(
+            rms_inputs if mutated_rms_inputs is None else mutated_rms_inputs
+        ),
+        control_rms_input_checkpoints=rms_inputs,
+        pallas_rms_mean_square_checkpoints=(
+            rms_mean_square if mutated_rms_mean_square is None else mutated_rms_mean_square
+        ),
+        control_rms_mean_square_checkpoints=rms_mean_square,
+        pallas_rms_inverse_checkpoints=(
+            rms_inverse if mutated_rms_inverse is None else mutated_rms_inverse
+        ),
+        control_rms_inverse_checkpoints=rms_inverse,
+        pallas_normalized_float32_checkpoints=(
+            normalized_float32 if mutated_normalized_float32 is None else mutated_normalized_float32
+        ),
+        control_normalized_float32_checkpoints=normalized_float32,
         pallas_normalized_input_checkpoints=(
             normalized_inputs if mutated_normalized_inputs is None else mutated_normalized_inputs
         ),
@@ -1607,14 +1781,33 @@ def _assess_checkpoint_mutation(
 
 def _checkpoint_mutants(
     inputs: tuple[np.ndarray, ...],
+    rms_inputs: tuple[np.ndarray, ...],
+    rms_mean_square: tuple[np.ndarray, ...],
+    rms_inverse: tuple[np.ndarray, ...],
+    normalized_float32: tuple[np.ndarray, ...],
     normalized_inputs: tuple[np.ndarray, ...],
     gate_float32: tuple[np.ndarray, ...],
     gates: tuple[np.ndarray, ...],
     up_float32: tuple[np.ndarray, ...],
     up: tuple[np.ndarray, ...],
 ) -> dict[SeqaxNumericalDiscriminator, tuple[np.ndarray, ...]]:
-    forged_normalized = tuple(value.copy() for value in normalized_inputs)
-    forged_normalized[0].view(np.uint16).reshape(-1)[0] ^= np.uint16(1)
+    wrong_scale = (
+        np.asarray(
+            rms_inputs[0].astype(np.float32)
+            * rms_inverse[0]
+            * inputs[4][0].astype(np.float32)[::-1],
+            dtype=np.float32,
+        ),
+        *(value.copy() for value in normalized_float32[1:]),
+    )
+    corrupt_mean_square = tuple(value.copy() for value in rms_mean_square)
+    corrupt_mean_square[0].reshape(-1)[0] += np.float32(0.25)
+    corrupt_inverse = tuple(value.copy() for value in rms_inverse)
+    corrupt_inverse[0].reshape(-1)[0] *= np.float32(1.25)
+    corrupt_normalized_float32 = tuple(value.copy() for value in normalized_float32)
+    corrupt_normalized_float32[0].reshape(-1)[0] += np.float32(0.25)
+    corrupt_normalized_bfloat16 = tuple(value.copy() for value in normalized_inputs)
+    corrupt_normalized_bfloat16[0].view(np.uint16).reshape(-1)[0] ^= np.uint16(1)
     wrong_gate_weight = (
         seqax_gate_projection_reference_float32(normalized_inputs[0], inputs[9][0]),
         *gate_float32[1:],
@@ -1632,7 +1825,15 @@ def _checkpoint_mutants(
     corrupt_bfloat16 = tuple(value.copy() for value in up)
     corrupt_bfloat16[0].view(np.uint16).reshape(-1)[0] ^= np.uint16(1)
     return {
-        SeqaxNumericalDiscriminator.FORGED_NORMALIZED_INPUT: forged_normalized,
+        SeqaxNumericalDiscriminator.WRONG_RMS_SCALE_CHECKPOINT: wrong_scale,
+        SeqaxNumericalDiscriminator.CORRUPT_RMS_MEAN_SQUARE_CHECKPOINT: corrupt_mean_square,
+        SeqaxNumericalDiscriminator.CORRUPT_RMS_INV_CHECKPOINT: corrupt_inverse,
+        SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_FLOAT32_CHECKPOINT: (
+            corrupt_normalized_float32
+        ),
+        SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT: (
+            corrupt_normalized_bfloat16
+        ),
         SeqaxNumericalDiscriminator.WRONG_GATE_WEIGHT_CHECKPOINT: wrong_gate_weight,
         SeqaxNumericalDiscriminator.CORRUPT_GATE_FLOAT32_CHECKPOINT: corrupt_gate_float32,
         SeqaxNumericalDiscriminator.CORRUPT_GATE_BFLOAT16_CHECKPOINT: corrupt_gate_bfloat16,
@@ -1647,8 +1848,20 @@ def _checkpoint_mutation_rejected(
     assessment: SeqaxBf16NumericalAssessment,
 ) -> bool:
     return {
-        SeqaxNumericalDiscriminator.FORGED_NORMALIZED_INPUT: (
-            not assessment.normalized_input_cross_path_exact
+        SeqaxNumericalDiscriminator.WRONG_RMS_SCALE_CHECKPOINT: (
+            not assessment.pallas_normalized_float32_within_bound
+        ),
+        SeqaxNumericalDiscriminator.CORRUPT_RMS_MEAN_SQUARE_CHECKPOINT: (
+            not assessment.pallas_rms_mean_square_within_bound
+        ),
+        SeqaxNumericalDiscriminator.CORRUPT_RMS_INV_CHECKPOINT: (
+            not assessment.pallas_rms_inverse_within_bound
+        ),
+        SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_FLOAT32_CHECKPOINT: (
+            not assessment.pallas_normalized_float32_within_bound
+        ),
+        SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT: (
+            not assessment.pallas_normalized_bfloat16_matches_float32
         ),
         SeqaxNumericalDiscriminator.WRONG_GATE_WEIGHT_CHECKPOINT: (
             not assessment.pallas_gate_float32_within_bound
@@ -1675,7 +1888,15 @@ def _checkpoint_mutation_arguments(
     discriminator: SeqaxNumericalDiscriminator,
     mutant: tuple[np.ndarray, ...],
 ) -> dict[str, tuple[np.ndarray, ...]]:
-    if discriminator is SeqaxNumericalDiscriminator.FORGED_NORMALIZED_INPUT:
+    if discriminator is SeqaxNumericalDiscriminator.WRONG_RMS_SCALE_CHECKPOINT:
+        return {"mutated_normalized_float32": mutant}
+    if discriminator is SeqaxNumericalDiscriminator.CORRUPT_RMS_MEAN_SQUARE_CHECKPOINT:
+        return {"mutated_rms_mean_square": mutant}
+    if discriminator is SeqaxNumericalDiscriminator.CORRUPT_RMS_INV_CHECKPOINT:
+        return {"mutated_rms_inverse": mutant}
+    if discriminator is SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_FLOAT32_CHECKPOINT:
+        return {"mutated_normalized_float32": mutant}
+    if discriminator is SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT:
         return {"mutated_normalized_inputs": mutant}
     if discriminator in {
         SeqaxNumericalDiscriminator.WRONG_GATE_WEIGHT_CHECKPOINT,
@@ -1699,7 +1920,7 @@ def _checkpoint_mutant_storage(
     mutant: np.ndarray,
     scenario: SeqaxBf16NumericalScenario,
 ) -> np.ndarray:
-    if discriminator is SeqaxNumericalDiscriminator.FORGED_NORMALIZED_INPUT:
+    if discriminator is SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT:
         return encode_seqax_bf16_checkpoint(mutant, scenario.normalized_input_checkpoints[0])
     if discriminator is SeqaxNumericalDiscriminator.CORRUPT_GATE_BFLOAT16_CHECKPOINT:
         return encode_seqax_bf16_checkpoint(mutant, scenario.gate_checkpoints[0])
@@ -1713,7 +1934,7 @@ def _decode_checkpoint_mutant(
     storage: np.ndarray,
     scenario: SeqaxBf16NumericalScenario,
 ) -> np.ndarray:
-    if discriminator is SeqaxNumericalDiscriminator.FORGED_NORMALIZED_INPUT:
+    if discriminator is SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT:
         return decode_seqax_bf16_checkpoint(storage, scenario.normalized_input_checkpoints[0])
     if discriminator is SeqaxNumericalDiscriminator.CORRUPT_GATE_BFLOAT16_CHECKPOINT:
         return decode_seqax_bf16_checkpoint(storage, scenario.gate_checkpoints[0])
@@ -1796,6 +2017,10 @@ def _run_discriminators(
     )
     baseline = _load_array(seed_root / "pallas_output.npy")
     (
+        rms_inputs,
+        rms_mean_square,
+        rms_inverse,
+        normalized_float32,
         normalized_inputs,
         gate_float32,
         gates,
@@ -1891,6 +2116,10 @@ def _run_discriminators(
                     scenario=scenario,
                     seed=seed,
                     inputs=host_inputs,
+                    rms_inputs=rms_inputs,
+                    rms_mean_square=rms_mean_square,
+                    rms_inverse=rms_inverse,
+                    normalized_float32=normalized_float32,
                     normalized_inputs=normalized_inputs,
                     gate_float32=gate_float32,
                     gates=gates,
@@ -1909,8 +2138,35 @@ def _run_discriminators(
                 paths.extend((runtime_hlo_path, runtime_output_path))
         record(discriminator, tuple(paths), failure)
 
+    rms_bypass_discriminator = SeqaxNumericalDiscriminator.BYPASS_RMS_NORM_CHECKPOINT
+    rms_bypass = canonical_seqax_stablehlo(
+        _bypass_rms_norm_checkpoint(compiled.instrumented_pallas.stablehlo)
+    )
+    rms_bypass_path = root / "discriminators" / rms_bypass_discriminator / "mutant_stablehlo.txt"
+    _write_text(rms_bypass_path, rms_bypass)
+    try:
+        _validate_strict_silu_stablehlo(
+            rms_bypass,
+            expected_count=scenario.parameters.layers,
+            instrumented=True,
+        )
+    except ValueError as error:
+        rms_bypass_failure = f"{type(error).__name__}: {error}"
+    else:
+        raise ValueError(f"SEQAX_BF16_HLO_DISCRIMINATOR_ACCEPTED name={rms_bypass_discriminator}")
+    record(rms_bypass_discriminator, (rms_bypass_path,), rms_bypass_failure)
+
     for discriminator, mutant in _checkpoint_mutants(
-        host_inputs, normalized_inputs, gate_float32, gates, up_float32, up
+        host_inputs,
+        rms_inputs,
+        rms_mean_square,
+        rms_inverse,
+        normalized_float32,
+        normalized_inputs,
+        gate_float32,
+        gates,
+        up_float32,
+        up,
     ).items():
         path = root / "discriminators" / discriminator / "mutant_checkpoint.npy"
         _save_array(path, _checkpoint_mutant_storage(discriminator, mutant[0], scenario))
@@ -1920,6 +2176,10 @@ def _run_discriminators(
             scenario=scenario,
             seed=seed,
             inputs=host_inputs,
+            rms_inputs=rms_inputs,
+            rms_mean_square=rms_mean_square,
+            rms_inverse=rms_inverse,
+            normalized_float32=normalized_float32,
             normalized_inputs=normalized_inputs,
             gate_float32=gate_float32,
             gates=gates,
@@ -1954,6 +2214,14 @@ def _run_discriminators(
         baseline,
         seed=seed,
         inputs=host_inputs,
+        pallas_rms_input_checkpoints=rms_inputs,
+        control_rms_input_checkpoints=rms_inputs,
+        pallas_rms_mean_square_checkpoints=rms_mean_square,
+        control_rms_mean_square_checkpoints=rms_mean_square,
+        pallas_rms_inverse_checkpoints=rms_inverse,
+        control_rms_inverse_checkpoints=rms_inverse,
+        pallas_normalized_float32_checkpoints=normalized_float32,
+        control_normalized_float32_checkpoints=normalized_float32,
         pallas_normalized_input_checkpoints=normalized_inputs,
         control_normalized_input_checkpoints=normalized_inputs,
         pallas_gate_float32_checkpoints=gate_float32,
@@ -2030,6 +2298,10 @@ def _run_discriminators(
             scenario=scenario,
             seed=seed,
             inputs=host_inputs,
+            rms_inputs=rms_inputs,
+            rms_mean_square=rms_mean_square,
+            rms_inverse=rms_inverse,
+            normalized_float32=normalized_float32,
             normalized_inputs=normalized_inputs,
             gate_float32=gate_float32,
             gates=gates,
@@ -2062,6 +2334,10 @@ def _run_discriminators(
             scenario=scenario,
             seed=seed,
             inputs=host_inputs,
+            rms_inputs=rms_inputs,
+            rms_mean_square=rms_mean_square,
+            rms_inverse=rms_inverse,
+            normalized_float32=normalized_float32,
             normalized_inputs=normalized_inputs,
             gate_float32=gate_float32,
             gates=gates,
@@ -2159,7 +2435,7 @@ def _build_receipt(
     if path.exists():
         raise ValueError("SEQAX_BF16_RECEIPT_EXISTS")
     receipt = SeqaxBf16ValidationReceipt(
-        schema_version="seqax-bf16-forward-validation-receipt-v3",
+        schema_version="seqax-bf16-forward-validation-receipt-v4",
         contract_id=contract.contract_id,
         run_id=run_id,
         status="passed",
@@ -2442,6 +2718,10 @@ def _expected_files(
                     seed_root / "checkpoints" / f"{path}_{kind}_{layer:02d}.npy"
                     for path in ("pallas", "control")
                     for kind in (
+                        "rms_input",
+                        "rms_mean_square",
+                        "rms_inverse",
+                        "normalized_float32",
                         "normalized_input",
                         "gate_float32",
                         "gate",
@@ -2459,6 +2739,7 @@ def _expected_files(
             SeqaxNumericalDiscriminator.REMOVE_INPUT_BARRIER,
             SeqaxNumericalDiscriminator.REMOVE_OUTPUT_BARRIER,
             SeqaxNumericalDiscriminator.REMOVE_HIDDEN_BARRIER,
+            SeqaxNumericalDiscriminator.BYPASS_RMS_NORM_CHECKPOINT,
         }:
             expected.add(discriminator_root / "mutant_stablehlo.txt")
         elif discriminator in {
@@ -2478,7 +2759,11 @@ def _expected_files(
         elif discriminator is SeqaxNumericalDiscriminator.CORRUPT_DOWN_CHECKPOINT:
             expected.add(discriminator_root / "mutant_down_float32.npy")
         elif discriminator in {
-            SeqaxNumericalDiscriminator.FORGED_NORMALIZED_INPUT,
+            SeqaxNumericalDiscriminator.WRONG_RMS_SCALE_CHECKPOINT,
+            SeqaxNumericalDiscriminator.CORRUPT_RMS_MEAN_SQUARE_CHECKPOINT,
+            SeqaxNumericalDiscriminator.CORRUPT_RMS_INV_CHECKPOINT,
+            SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_FLOAT32_CHECKPOINT,
+            SeqaxNumericalDiscriminator.CORRUPT_NORMALIZED_BFLOAT16_CHECKPOINT,
             SeqaxNumericalDiscriminator.WRONG_GATE_WEIGHT_CHECKPOINT,
             SeqaxNumericalDiscriminator.CORRUPT_GATE_FLOAT32_CHECKPOINT,
             SeqaxNumericalDiscriminator.CORRUPT_GATE_BFLOAT16_CHECKPOINT,
@@ -2677,6 +2962,10 @@ def _validate_seed(
     instrumented_pallas = _load_array(seed_root / "instrumented_pallas_output.npy")
     instrumented_control = _load_array(seed_root / "instrumented_control_output.npy")
     (
+        pallas_rms_inputs,
+        pallas_rms_mean_square,
+        pallas_rms_inverse,
+        pallas_normalized_float32,
         pallas_normalized_inputs,
         pallas_gate_float32,
         pallas_gates,
@@ -2688,6 +2977,10 @@ def _validate_seed(
         pallas_down_bfloat16,
     ) = _load_saved_checkpoints(seed_root, scenario, "pallas")
     (
+        control_rms_inputs,
+        control_rms_mean_square,
+        control_rms_inverse,
+        control_normalized_float32,
         control_normalized_inputs,
         control_gate_float32,
         control_gates,
@@ -2701,6 +2994,14 @@ def _validate_seed(
     evidence = {
         "seed": seed,
         "inputs": saved_inputs,
+        "pallas_rms_input_checkpoints": pallas_rms_inputs,
+        "control_rms_input_checkpoints": control_rms_inputs,
+        "pallas_rms_mean_square_checkpoints": pallas_rms_mean_square,
+        "control_rms_mean_square_checkpoints": control_rms_mean_square,
+        "pallas_rms_inverse_checkpoints": pallas_rms_inverse,
+        "control_rms_inverse_checkpoints": control_rms_inverse,
+        "pallas_normalized_float32_checkpoints": pallas_normalized_float32,
+        "control_normalized_float32_checkpoints": control_normalized_float32,
         "pallas_normalized_input_checkpoints": pallas_normalized_inputs,
         "control_normalized_input_checkpoints": control_normalized_inputs,
         "pallas_gate_float32_checkpoints": pallas_gate_float32,
@@ -2744,6 +3045,14 @@ def _validate_seed(
         control_output_sha256=array_sha256(control),
         instrumented_pallas_output_sha256=array_sha256(instrumented_pallas),
         instrumented_control_output_sha256=array_sha256(instrumented_control),
+        pallas_rms_input_sha256=_checkpoint_hashes(pallas_rms_inputs),
+        control_rms_input_sha256=_checkpoint_hashes(control_rms_inputs),
+        pallas_rms_mean_square_sha256=_checkpoint_hashes(pallas_rms_mean_square),
+        control_rms_mean_square_sha256=_checkpoint_hashes(control_rms_mean_square),
+        pallas_rms_inverse_sha256=_checkpoint_hashes(pallas_rms_inverse),
+        control_rms_inverse_sha256=_checkpoint_hashes(control_rms_inverse),
+        pallas_normalized_float32_sha256=_checkpoint_hashes(pallas_normalized_float32),
+        control_normalized_float32_sha256=_checkpoint_hashes(control_normalized_float32),
         pallas_normalized_input_sha256=_checkpoint_hashes(pallas_normalized_inputs),
         control_normalized_input_sha256=_checkpoint_hashes(control_normalized_inputs),
         pallas_gate_float32_sha256=_checkpoint_hashes(pallas_gate_float32),
@@ -2817,6 +3126,10 @@ def _validate_discriminators(
     )
     baseline = _load_array(seed_root / "pallas_output.npy")
     (
+        rms_inputs,
+        rms_mean_square,
+        rms_inverse,
+        normalized_float32,
         normalized_inputs,
         gate_float32,
         gates,
@@ -2888,6 +3201,10 @@ def _validate_discriminators(
                     scenario=scenario,
                     seed=seed,
                     inputs=host_inputs,
+                    rms_inputs=rms_inputs,
+                    rms_mean_square=rms_mean_square,
+                    rms_inverse=rms_inverse,
+                    normalized_float32=normalized_float32,
                     normalized_inputs=normalized_inputs,
                     gate_float32=gate_float32,
                     gates=gates,
@@ -2906,8 +3223,44 @@ def _validate_discriminators(
                 paths.extend((runtime_hlo_path, runtime_output_path))
         expected.append(_discriminator_observation(root, discriminator, tuple(paths), failure))
 
+    rms_bypass_discriminator = SeqaxNumericalDiscriminator.BYPASS_RMS_NORM_CHECKPOINT
+    instrumented_pallas_hlo = canonical_seqax_stablehlo(
+        (_plan_root(root, scenario) / "instrumented_pallas_stablehlo.txt").read_text()
+    )
+    rms_bypass = canonical_seqax_stablehlo(_bypass_rms_norm_checkpoint(instrumented_pallas_hlo))
+    rms_bypass_path = root / "discriminators" / rms_bypass_discriminator / "mutant_stablehlo.txt"
+    if rms_bypass_path.read_text() != rms_bypass:
+        raise ValueError(f"SEQAX_BF16_HLO_MUTANT_REPLAY_MISMATCH name={rms_bypass_discriminator}")
+    try:
+        _validate_strict_silu_stablehlo(
+            rms_bypass,
+            expected_count=scenario.parameters.layers,
+            instrumented=True,
+        )
+    except ValueError as error:
+        rms_bypass_failure = f"{type(error).__name__}: {error}"
+    else:
+        raise ValueError(f"SEQAX_BF16_HLO_DISCRIMINATOR_ACCEPTED name={rms_bypass_discriminator}")
+    expected.append(
+        _discriminator_observation(
+            root,
+            rms_bypass_discriminator,
+            (rms_bypass_path,),
+            rms_bypass_failure,
+        )
+    )
+
     for discriminator, mutant in _checkpoint_mutants(
-        host_inputs, normalized_inputs, gate_float32, gates, up_float32, up
+        host_inputs,
+        rms_inputs,
+        rms_mean_square,
+        rms_inverse,
+        normalized_float32,
+        normalized_inputs,
+        gate_float32,
+        gates,
+        up_float32,
+        up,
     ).items():
         path = root / "discriminators" / discriminator / "mutant_checkpoint.npy"
         saved_storage = _load_array(path)
@@ -2928,6 +3281,10 @@ def _validate_discriminators(
             scenario=scenario,
             seed=seed,
             inputs=host_inputs,
+            rms_inputs=rms_inputs,
+            rms_mean_square=rms_mean_square,
+            rms_inverse=rms_inverse,
+            normalized_float32=normalized_float32,
             normalized_inputs=normalized_inputs,
             gate_float32=gate_float32,
             gates=gates,
@@ -2963,6 +3320,14 @@ def _validate_discriminators(
         baseline,
         seed=seed,
         inputs=host_inputs,
+        pallas_rms_input_checkpoints=rms_inputs,
+        control_rms_input_checkpoints=rms_inputs,
+        pallas_rms_mean_square_checkpoints=rms_mean_square,
+        control_rms_mean_square_checkpoints=rms_mean_square,
+        pallas_rms_inverse_checkpoints=rms_inverse,
+        control_rms_inverse_checkpoints=rms_inverse,
+        pallas_normalized_float32_checkpoints=normalized_float32,
+        control_normalized_float32_checkpoints=normalized_float32,
         pallas_normalized_input_checkpoints=normalized_inputs,
         control_normalized_input_checkpoints=normalized_inputs,
         pallas_gate_float32_checkpoints=gate_float32,
@@ -3049,6 +3414,10 @@ def _validate_discriminators(
             scenario=scenario,
             seed=seed,
             inputs=host_inputs,
+            rms_inputs=rms_inputs,
+            rms_mean_square=rms_mean_square,
+            rms_inverse=rms_inverse,
+            normalized_float32=normalized_float32,
             normalized_inputs=normalized_inputs,
             gate_float32=gate_float32,
             gates=gates,
@@ -3090,6 +3459,10 @@ def _validate_discriminators(
             scenario=scenario,
             seed=seed,
             inputs=host_inputs,
+            rms_inputs=rms_inputs,
+            rms_mean_square=rms_mean_square,
+            rms_inverse=rms_inverse,
+            normalized_float32=normalized_float32,
             normalized_inputs=normalized_inputs,
             gate_float32=gate_float32,
             gates=gates,

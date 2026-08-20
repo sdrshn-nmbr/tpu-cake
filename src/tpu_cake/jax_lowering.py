@@ -457,8 +457,8 @@ class JaxDistributedMeshPlan:
     ):
         if expected_layers <= 0:
             raise ValueError("strict MLP checkpoint count must be positive")
-        if len(checkpoint_specs) != 9:
-            raise ValueError("strict MLP needs exactly nine checkpoint shardings")
+        if len(checkpoint_specs) != 13:
+            raise ValueError("strict MLP needs exactly thirteen checkpoint shardings")
         selected_devices = tuple(devices or jax.devices())
         if len(selected_devices) != self.device_count:
             raise ValueError(
@@ -480,7 +480,7 @@ class JaxDistributedMeshPlan:
                 module, inputs
             )
             if len(checkpoints) != expected_layers or any(
-                len(checkpoint) != 9 for checkpoint in checkpoints
+                len(checkpoint) != 13 for checkpoint in checkpoints
             ):
                 raise ValueError(
                     f"strict MLP expected {expected_layers} complete checkpoints, "

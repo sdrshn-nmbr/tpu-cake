@@ -96,11 +96,13 @@ def _vector_compute(
     mesh: dict[str, int],
     strict_mlp_checkpoints: list[list[jax.Array]] | None = None,
     strict_normalized_input: jax.Array | None = None,
+    strict_rms_checkpoint: tuple[jax.Array, ...] | None = None,
     strict_gate_float32: jax.Array | None = None,
     strict_up_index: int | None = None,
     strict_up_float32: jax.Array | None = None,
     pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
     | None = None,
+    rms_norm_checkpoints: dict[SSAValue, tuple[jax.Array, ...]] | None = None,
 ) -> jax.Array:
     function = operation.function.data
     configuration = _configuration(operation)
@@ -128,8 +130,9 @@ def _vector_compute(
             axis=axis,
             keepdims=True,
         )
-        normalized = value * jax.lax.rsqrt(mean_square + float(configuration["epsilon"]))
-        result = normalized * aligned_scale
+        inverse = jax.lax.rsqrt(mean_square + float(configuration["epsilon"]))
+        normalized_float32 = value * inverse * aligned_scale
+        result = normalized_float32
     elif function == "rotary_embedding":
         value = values[0]
         names = _names(typed_inputs[0])
@@ -230,21 +233,33 @@ def _vector_compute(
             f"unsupported physical vector function {function!r}"
         )
     result = jnp.asarray(result, dtype=_dtype(output_type))
+    if function == "rms_norm" and rms_norm_checkpoints is not None:
+        rms_norm_checkpoints[operation.output] = (
+            values[0],
+            mean_square,
+            inverse,
+            normalized_float32,
+            result,
+        )
     if strict_materialization:
         result = jax.lax.optimization_barrier(result)
     if strict_materialization and strict_mlp_checkpoints is not None:
         if function == "silu":
-            if strict_normalized_input is None or strict_gate_float32 is None:
+            if (
+                strict_normalized_input is None
+                or strict_rms_checkpoint is None
+                or strict_gate_float32 is None
+            ):
                 raise UnsupportedPhysicalExecutionError(
-                    "strict SiLU must bind its normalized input and float32 gate projection"
+                    "strict SiLU must bind RMSNorm and float32 gate projection checkpoints"
                 )
             strict_mlp_checkpoints.append(
-                [strict_normalized_input, strict_gate_float32, values[0], result]
+                [*strict_rms_checkpoint, strict_gate_float32, values[0], result]
             )
         elif function == "multiply":
             if (
                 not strict_mlp_checkpoints
-                or len(strict_mlp_checkpoints[-1]) != 4
+                or len(strict_mlp_checkpoints[-1]) != 8
                 or strict_up_index not in {0, 1}
                 or strict_up_float32 is None
             ):
@@ -328,6 +343,7 @@ def execute_seqax_physical_program_jax(
     strict_silu_buffer: SSAValue | None = None
     strict_down_partial_buffer: SSAValue | None = None
     strict_down_reduced_buffer: SSAValue | None = None
+    rms_norm_checkpoints: dict[SSAValue, tuple[jax.Array, ...]] = {}
 
     for operation in block.ops:
         if isinstance(operation, (AllocOp, SemaphoreAllocOp)):
@@ -347,6 +363,7 @@ def execute_seqax_physical_program_jax(
         if isinstance(operation, VectorComputeOp):
             values = tuple(environment[value] for value in operation.inputs)
             strict_normalized_input = None
+            strict_rms_checkpoint = None
             strict_gate_float32 = None
             strict_up_index = None
             strict_up_float32 = None
@@ -370,10 +387,15 @@ def execute_seqax_physical_program_jax(
                         "strict SiLU gate must come from an MXU projection"
                     )
                 strict_normalized_input = environment[gate_projection.lhs]
+                strict_rms_checkpoint = rms_norm_checkpoints.get(gate_projection.lhs)
+                if strict_rms_checkpoint is None:
+                    raise UnsupportedPhysicalExecutionError(
+                        "strict SiLU normalized input must come from RMSNorm"
+                    )
                 strict_gate_float32 = environment[gate_cast.inputs[0]]
             if (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 4
+                and len(strict_mlp_checkpoints[-1]) == 8
                 and operation.function.data == "multiply"
                 and operation.materialization is not None
             ):
@@ -404,30 +426,32 @@ def execute_seqax_physical_program_jax(
                 mesh,
                 strict_mlp_checkpoints,
                 strict_normalized_input,
+                strict_rms_checkpoint,
                 strict_gate_float32,
                 strict_up_index,
                 strict_up_float32,
                 pallas_silu_multiply,
+                rms_norm_checkpoints,
             )
             environment[operation.output] = result
             buffer_writers[operation.output] = operation
             if (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 4
+                and len(strict_mlp_checkpoints[-1]) == 8
                 and operation.function.data == "silu"
                 and operation.materialization is not None
             ):
                 strict_silu_buffer = operation.output
             elif (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 7
+                and len(strict_mlp_checkpoints[-1]) == 11
                 and operation.function.data == "multiply"
                 and operation.materialization is not None
             ):
                 strict_hidden_buffer = operation.output
             elif (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 8
+                and len(strict_mlp_checkpoints[-1]) == 12
                 and strict_down_reduced_buffer is not None
                 and tuple(operation.inputs) == (strict_down_reduced_buffer,)
                 and operation.function.data == "cast"
@@ -486,7 +510,7 @@ def execute_seqax_physical_program_jax(
             buffer_writers[operation.destination] = operation
             if (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 7
+                and len(strict_mlp_checkpoints[-1]) == 11
                 and operation.kind.data is CollectiveKind.REDUCE_SCATTER
                 and strict_down_partial_buffer is not None
                 and operation.source == strict_down_partial_buffer
