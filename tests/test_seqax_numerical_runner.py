@@ -990,6 +990,7 @@ def activation_mutant(
 def execute_outputs(executable, inputs):
     outputs = list(original_execute_outputs(executable, inputs))
     if len(outputs) > 1:
+        outputs[0] = outputs[0] + np.float32(1e-5)
         for gate_index in range(1, len(outputs), 6):
             outputs[gate_index + 1] = rounded_mathematical_silu_bf16(outputs[gate_index])
             outputs[gate_index + 3] = np.asarray(
@@ -1095,6 +1096,7 @@ try:
     result = runner.run_seqax_bf16_validation(root, contract)
     assert len(result.observations) == 41
     assert len(result.discriminators) == 16
+    assert not any(value.instrumentation_difference.exact for value in result.observations)
     assert runner.run_seqax_bf16_validation(root, contract) == result
     relocated = temporary / "relocated"
     shutil.copytree(root, relocated)

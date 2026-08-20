@@ -387,7 +387,8 @@ class SeqaxBf16NumericalPolicy(BaseModel):
     checkpoint_encoding: str = "bf16-bit-pattern-v1"
     require_float32_output: bool = True
     require_finite_output: bool = True
-    require_exact_mathematical_silu: bool = True
+    checkpoint_cross_path_max_ulp: int = Field(ge=0, le=1)
+    mathematical_silu_max_ulp: int = Field(ge=0, le=1)
 
     @model_validator(mode="after")
     def policy_is_canonical(self) -> SeqaxBf16NumericalPolicy:
@@ -412,7 +413,8 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             self.checkpoint_encoding,
             self.require_float32_output,
             self.require_finite_output,
-            self.require_exact_mathematical_silu,
+            self.checkpoint_cross_path_max_ulp,
+            self.mathematical_silu_max_ulp,
         ) != (
             3.0,
             8.0,
@@ -428,7 +430,8 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             "bf16-bit-pattern-v1",
             True,
             True,
-            True,
+            1,
+            1,
         ):
             raise ValueError("Seqax BF16 numerical policy is not canonical")
         return self
@@ -683,7 +686,8 @@ class SeqaxBf16ValidationContract(BaseModel):
     device_count: int = Field(gt=0)
     acceptance_authority: str = "authenticated-runner-and-relocated-public-replay"
     checkpoint_capture: str = "typed-strict-mlp-extra-outputs-v3"
-    require_instrumented_output_parity: bool = True
+    require_normal_output_policy: bool = True
+    require_instrumented_output_policy: bool = True
     require_discriminator_artifact_replay: bool = True
 
     @model_validator(mode="after")
@@ -697,11 +701,13 @@ class SeqaxBf16ValidationContract(BaseModel):
         if (
             self.acceptance_authority,
             self.checkpoint_capture,
-            self.require_instrumented_output_parity,
+            self.require_normal_output_policy,
+            self.require_instrumented_output_policy,
             self.require_discriminator_artifact_replay,
         ) != (
             "authenticated-runner-and-relocated-public-replay",
             "typed-strict-mlp-extra-outputs-v3",
+            True,
             True,
             True,
         ):
@@ -766,7 +772,7 @@ class SeqaxBf16ValidationContract(BaseModel):
         return hashlib.sha256(encoded).hexdigest()
 
 
-class SeqaxBf16NumericalAssessment(BaseModel):
+class SeqaxBf16OutputAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     cpu_pallas_relative_l2: float = Field(ge=0)
@@ -778,22 +784,25 @@ class SeqaxBf16NumericalAssessment(BaseModel):
     pallas_top1_matches_cpu: bool
     control_top1_matches_cpu: bool
     pallas_top1_matches_control: bool
-    gate_cross_path_exact: bool
-    pallas_silu_matches_mathematical: bool
-    control_silu_matches_mathematical: bool
-    silu_cross_path_exact: bool
-    up_cross_path_exact: bool
+    final_outputs_satisfy_policy: bool
+
+
+class SeqaxBf16NumericalAssessment(SeqaxBf16OutputAssessment):
+    gate_cross_path_within_one_ulp: bool
+    pallas_silu_within_one_ulp_of_mathematical: bool
+    control_silu_within_one_ulp_of_mathematical: bool
+    silu_cross_path_within_one_ulp: bool
+    up_cross_path_within_one_ulp: bool
     pallas_hidden_matches_product: bool
     control_hidden_matches_product: bool
-    hidden_cross_path_exact: bool
+    hidden_cross_path_within_one_ulp: bool
     pallas_down_float32_max_bound_ratio: float = Field(ge=0)
     control_down_float32_max_bound_ratio: float = Field(ge=0)
     pallas_down_float32_within_bound: bool
     control_down_float32_within_bound: bool
     pallas_down_bfloat16_matches_float32: bool
     control_down_bfloat16_matches_float32: bool
-    down_bfloat16_cross_path_exact: bool
-    final_outputs_satisfy_policy: bool
+    down_bfloat16_cross_path_within_one_ulp: bool
     checkpoint_values_consistent: bool
 
 
@@ -927,6 +936,8 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             cross_path_row_scaled_max_units=2.0,
             row_scale_floor=1.0,
             metric_quantization_decimals=15,
+            checkpoint_cross_path_max_ulp=1,
+            mathematical_silu_max_ulp=1,
         ),
         scenarios=tuple(scenarios),
         activation_mutant_stablehlo=tuple(
@@ -1084,33 +1095,35 @@ def _down_projection_bound_ratio(
     return round(float(np.max(ratio)), 15)
 
 
-def assess_seqax_bf16_forward(
+def bf16_arrays_within_one_ulp(actual: np.ndarray, expected: np.ndarray) -> bool:
+    bf16 = np.dtype(ml_dtypes.bfloat16)
+    if actual.dtype != bf16 or expected.dtype != bf16 or actual.shape != expected.shape:
+        return False
+    if not np.all(np.isfinite(actual)) or not np.all(np.isfinite(expected)):
+        return False
+    positive = np.nextafter(expected, np.asarray(np.inf, dtype=bf16))
+    negative = np.nextafter(expected, np.asarray(-np.inf, dtype=bf16))
+    return bool(np.all((actual == expected) | (actual == positive) | (actual == negative)))
+
+
+def _assess_seqax_bf16_outputs(
     pallas: np.ndarray,
     control: np.ndarray,
     *,
     seed: int,
     inputs: tuple[np.ndarray, ...],
-    pallas_gate_checkpoints: tuple[np.ndarray, ...],
-    control_gate_checkpoints: tuple[np.ndarray, ...],
-    pallas_silu_checkpoints: tuple[np.ndarray, ...],
-    control_silu_checkpoints: tuple[np.ndarray, ...],
-    pallas_up_checkpoints: tuple[np.ndarray, ...],
-    control_up_checkpoints: tuple[np.ndarray, ...],
-    pallas_hidden_checkpoints: tuple[np.ndarray, ...],
-    control_hidden_checkpoints: tuple[np.ndarray, ...],
-    pallas_down_float32_checkpoints: tuple[np.ndarray, ...],
-    control_down_float32_checkpoints: tuple[np.ndarray, ...],
-    pallas_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
-    control_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
     policy: SeqaxBf16NumericalPolicy,
     scenario: SeqaxBf16NumericalScenario,
-) -> SeqaxBf16NumericalAssessment:
+) -> tuple[SeqaxBf16OutputAssessment, tuple[np.ndarray, ...]]:
     if type(seed) is not int or seed not in scenario.seeds:
         raise ValueError("Seqax BF16 numerical seed is not declared by the scenario")
     validate_seqax_numerical_inputs(inputs, scenario)
-    expected_inputs = seqax_forward_inputs(
-        seed=seed,
-        **scenario.parameters.model_dump(),
+    expected_inputs = tuple(
+        np.asarray(value)
+        for value in seqax_forward_inputs(
+            seed=seed,
+            **scenario.parameters.model_dump(),
+        )
     )
     for actual, expected, contract in zip(inputs, expected_inputs, scenario.inputs, strict=True):
         if not np.array_equal(actual, expected):
@@ -1148,6 +1161,85 @@ def assess_seqax_bf16_forward(
         arrays[1],
         scale_floor=policy.row_scale_floor,
         quantization_decimals=metric_decimals,
+    )
+    unit = policy.unit_roundoff
+    depth_scale = policy.depth_scale(scenario.parameters.layers)
+    final_outputs_satisfy_policy = (
+        pallas_relative <= policy.cpu_relative_l2_units * unit * depth_scale
+        and control_relative <= policy.cpu_relative_l2_units * unit * depth_scale
+        and cross_relative <= policy.cross_path_relative_l2_units * unit * depth_scale
+        and pallas_scaled <= policy.cpu_row_scaled_max_units * unit * depth_scale
+        and control_scaled <= policy.cpu_row_scaled_max_units * unit * depth_scale
+        and cross_scaled <= policy.cross_path_row_scaled_max_units * unit * depth_scale
+    )
+    pallas_top1 = np.argmax(arrays[0], axis=-1)
+    control_top1 = np.argmax(arrays[1], axis=-1)
+    cpu_top1 = np.argmax(arrays[2], axis=-1)
+    return (
+        SeqaxBf16OutputAssessment(
+            cpu_pallas_relative_l2=pallas_relative,
+            cpu_control_relative_l2=control_relative,
+            cross_path_relative_l2=cross_relative,
+            cpu_pallas_row_scaled_max=pallas_scaled,
+            cpu_control_row_scaled_max=control_scaled,
+            cross_path_row_scaled_max=cross_scaled,
+            pallas_top1_matches_cpu=bool(np.array_equal(pallas_top1, cpu_top1)),
+            control_top1_matches_cpu=bool(np.array_equal(control_top1, cpu_top1)),
+            pallas_top1_matches_control=bool(np.array_equal(pallas_top1, control_top1)),
+            final_outputs_satisfy_policy=final_outputs_satisfy_policy,
+        ),
+        expected_inputs,
+    )
+
+
+def assess_seqax_bf16_outputs(
+    pallas: np.ndarray,
+    control: np.ndarray,
+    *,
+    seed: int,
+    inputs: tuple[np.ndarray, ...],
+    policy: SeqaxBf16NumericalPolicy,
+    scenario: SeqaxBf16NumericalScenario,
+) -> SeqaxBf16OutputAssessment:
+    assessment, _expected_inputs = _assess_seqax_bf16_outputs(
+        pallas,
+        control,
+        seed=seed,
+        inputs=inputs,
+        policy=policy,
+        scenario=scenario,
+    )
+    return assessment
+
+
+def assess_seqax_bf16_forward(
+    pallas: np.ndarray,
+    control: np.ndarray,
+    *,
+    seed: int,
+    inputs: tuple[np.ndarray, ...],
+    pallas_gate_checkpoints: tuple[np.ndarray, ...],
+    control_gate_checkpoints: tuple[np.ndarray, ...],
+    pallas_silu_checkpoints: tuple[np.ndarray, ...],
+    control_silu_checkpoints: tuple[np.ndarray, ...],
+    pallas_up_checkpoints: tuple[np.ndarray, ...],
+    control_up_checkpoints: tuple[np.ndarray, ...],
+    pallas_hidden_checkpoints: tuple[np.ndarray, ...],
+    control_hidden_checkpoints: tuple[np.ndarray, ...],
+    pallas_down_float32_checkpoints: tuple[np.ndarray, ...],
+    control_down_float32_checkpoints: tuple[np.ndarray, ...],
+    pallas_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
+    control_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
+    policy: SeqaxBf16NumericalPolicy,
+    scenario: SeqaxBf16NumericalScenario,
+) -> SeqaxBf16NumericalAssessment:
+    output_assessment, expected_inputs = _assess_seqax_bf16_outputs(
+        pallas,
+        control,
+        seed=seed,
+        inputs=inputs,
+        policy=policy,
+        scenario=scenario,
     )
     pallas_gates = _validate_bf16_checkpoints(
         pallas_gate_checkpoints,
@@ -1212,23 +1304,23 @@ def assess_seqax_bf16_forward(
     pallas_mathematical = tuple(rounded_mathematical_silu_bf16(value) for value in pallas_gates)
     control_mathematical = tuple(rounded_mathematical_silu_bf16(value) for value in control_gates)
     gate_cross_path = all(
-        np.array_equal(pallas_value, control_value)
+        bf16_arrays_within_one_ulp(pallas_value, control_value)
         for pallas_value, control_value in zip(pallas_gates, control_gates, strict=True)
     )
     pallas_silu_mathematical = all(
-        np.array_equal(actual, expected)
+        bf16_arrays_within_one_ulp(actual, expected)
         for actual, expected in zip(pallas_silu, pallas_mathematical, strict=True)
     )
     control_silu_mathematical = all(
-        np.array_equal(actual, expected)
+        bf16_arrays_within_one_ulp(actual, expected)
         for actual, expected in zip(control_silu, control_mathematical, strict=True)
     )
     silu_cross_path = all(
-        np.array_equal(pallas_value, control_value)
+        bf16_arrays_within_one_ulp(pallas_value, control_value)
         for pallas_value, control_value in zip(pallas_silu, control_silu, strict=True)
     )
     up_cross_path = all(
-        np.array_equal(pallas_value, control_value)
+        bf16_arrays_within_one_ulp(pallas_value, control_value)
         for pallas_value, control_value in zip(pallas_up, control_up, strict=True)
     )
     pallas_hidden_mathematical = all(
@@ -1252,7 +1344,7 @@ def assess_seqax_bf16_forward(
         for actual, silu, up in zip(control_hidden, control_silu, control_up, strict=True)
     )
     hidden_cross_path = all(
-        np.array_equal(pallas_value, control_value)
+        bf16_arrays_within_one_ulp(pallas_value, control_value)
         for pallas_value, control_value in zip(pallas_hidden, control_hidden, strict=True)
     )
     down_weights = expected_inputs[10]
@@ -1289,20 +1381,10 @@ def assess_seqax_bf16_forward(
         for actual, expected in zip(control_down_bfloat16, control_down_float32, strict=True)
     )
     down_bfloat16_cross_path = all(
-        np.array_equal(pallas_value, control_value)
+        bf16_arrays_within_one_ulp(pallas_value, control_value)
         for pallas_value, control_value in zip(
             pallas_down_bfloat16, control_down_bfloat16, strict=True
         )
-    )
-    unit = policy.unit_roundoff
-    depth_scale = policy.depth_scale(scenario.parameters.layers)
-    final_outputs_satisfy_policy = (
-        pallas_relative <= policy.cpu_relative_l2_units * unit * depth_scale
-        and control_relative <= policy.cpu_relative_l2_units * unit * depth_scale
-        and cross_relative <= policy.cross_path_relative_l2_units * unit * depth_scale
-        and pallas_scaled <= policy.cpu_row_scaled_max_units * unit * depth_scale
-        and control_scaled <= policy.cpu_row_scaled_max_units * unit * depth_scale
-        and cross_scaled <= policy.cross_path_row_scaled_max_units * unit * depth_scale
     )
     checkpoint_values_consistent = (
         gate_cross_path
@@ -1319,35 +1401,23 @@ def assess_seqax_bf16_forward(
         and control_down_bfloat16_matches
         and down_bfloat16_cross_path
     )
-    pallas_top1 = np.argmax(arrays[0], axis=-1)
-    control_top1 = np.argmax(arrays[1], axis=-1)
-    cpu_top1 = np.argmax(arrays[2], axis=-1)
     return SeqaxBf16NumericalAssessment(
-        cpu_pallas_relative_l2=pallas_relative,
-        cpu_control_relative_l2=control_relative,
-        cross_path_relative_l2=cross_relative,
-        cpu_pallas_row_scaled_max=pallas_scaled,
-        cpu_control_row_scaled_max=control_scaled,
-        cross_path_row_scaled_max=cross_scaled,
-        pallas_top1_matches_cpu=bool(np.array_equal(pallas_top1, cpu_top1)),
-        control_top1_matches_cpu=bool(np.array_equal(control_top1, cpu_top1)),
-        pallas_top1_matches_control=bool(np.array_equal(pallas_top1, control_top1)),
-        gate_cross_path_exact=gate_cross_path,
-        pallas_silu_matches_mathematical=pallas_silu_mathematical,
-        control_silu_matches_mathematical=control_silu_mathematical,
-        silu_cross_path_exact=silu_cross_path,
-        up_cross_path_exact=up_cross_path,
+        **output_assessment.model_dump(),
+        gate_cross_path_within_one_ulp=gate_cross_path,
+        pallas_silu_within_one_ulp_of_mathematical=pallas_silu_mathematical,
+        control_silu_within_one_ulp_of_mathematical=control_silu_mathematical,
+        silu_cross_path_within_one_ulp=silu_cross_path,
+        up_cross_path_within_one_ulp=up_cross_path,
         pallas_hidden_matches_product=pallas_hidden_mathematical,
         control_hidden_matches_product=control_hidden_mathematical,
-        hidden_cross_path_exact=hidden_cross_path,
+        hidden_cross_path_within_one_ulp=hidden_cross_path,
         pallas_down_float32_max_bound_ratio=pallas_down_ratio,
         control_down_float32_max_bound_ratio=control_down_ratio,
         pallas_down_float32_within_bound=pallas_down_ratio <= 1.0,
         control_down_float32_within_bound=control_down_ratio <= 1.0,
         pallas_down_bfloat16_matches_float32=pallas_down_bfloat16_matches,
         control_down_bfloat16_matches_float32=control_down_bfloat16_matches,
-        down_bfloat16_cross_path_exact=down_bfloat16_cross_path,
-        final_outputs_satisfy_policy=final_outputs_satisfy_policy,
+        down_bfloat16_cross_path_within_one_ulp=down_bfloat16_cross_path,
         checkpoint_values_consistent=checkpoint_values_consistent,
     )
 

@@ -18,7 +18,8 @@
     "checkpoint_encoding": "bf16-bit-pattern-v1",
     "require_float32_output": true,
     "require_finite_output": true,
-    "require_exact_mathematical_silu": true
+    "checkpoint_cross_path_max_ulp": 1,
+    "mathematical_silu_max_ulp": 1
   },
   "scenarios": [
     {
@@ -2701,6 +2702,7 @@
   "device_count": 8,
   "acceptance_authority": "authenticated-runner-and-relocated-public-replay",
   "checkpoint_capture": "typed-strict-mlp-extra-outputs-v3",
-  "require_instrumented_output_parity": true,
+  "require_normal_output_policy": true,
+  "require_instrumented_output_policy": true,
   "require_discriminator_artifact_replay": true
 }

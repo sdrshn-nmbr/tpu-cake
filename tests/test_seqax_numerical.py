@@ -17,6 +17,8 @@ from tpu_cake.seqax_numerical import (
     SeqaxNumericalDiscriminator,
     _validate_strict_silu_stablehlo,
     assess_seqax_bf16_forward,
+    assess_seqax_bf16_outputs,
+    bf16_arrays_within_one_ulp,
     decode_seqax_bf16_checkpoint,
     default_seqax_bf16_validation_contract,
     encode_seqax_bf16_checkpoint,
@@ -482,7 +484,8 @@ def test_bf16_forward_contract_binds_pinned_hlo_identities() -> None:
     assert contract.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
     assert contract.compilation_source_root == "/home/sudarshan/tpu-cake-main"
     assert contract.checkpoint_capture == "typed-strict-mlp-extra-outputs-v3"
-    assert contract.require_instrumented_output_parity
+    assert contract.require_normal_output_policy
+    assert contract.require_instrumented_output_policy
     assert contract.require_discriminator_artifact_replay
 
 
@@ -492,7 +495,7 @@ def test_tracked_bf16_forward_contract_matches_the_canonical_factory() -> None:
 
     assert SeqaxBf16ValidationContract.model_validate_json(path.read_text()) == contract
     assert (
-        contract.contract_id == "d8b4348f4eafad97baac377817dd2fcd7dcc7393818c49a746213883297301e4"
+        contract.contract_id == "893fe10e9872957c1bda0d8e10dd3b5ebebe0ec04b786589ce48483d667e0d9e"
     )
 
 
@@ -561,6 +564,19 @@ def test_bf16_checkpoint_uint16_codec_preserves_exact_logical_bits() -> None:
         decode_seqax_bf16_checkpoint(nonfinite.view(np.uint16), checkpoint_contract)
 
 
+def test_bf16_checkpoint_comparison_accepts_one_ulp_and_rejects_two() -> None:
+    expected = np.asarray([5.90625, -1.0, 0.0], dtype=ml_dtypes.bfloat16)
+    positive = np.nextafter(expected, np.asarray(np.inf, dtype=ml_dtypes.bfloat16))
+    two_positive = np.nextafter(positive, np.asarray(np.inf, dtype=ml_dtypes.bfloat16))
+
+    assert bf16_arrays_within_one_ulp(expected, expected)
+    assert bf16_arrays_within_one_ulp(positive, expected)
+    assert not bf16_arrays_within_one_ulp(two_positive, expected)
+    nonfinite = expected.copy()
+    nonfinite[0] = np.asarray(np.nan, dtype=ml_dtypes.bfloat16)
+    assert not bf16_arrays_within_one_ulp(nonfinite, expected)
+
+
 @pytest.mark.parametrize(
     ("path", "value", "message"),
     (
@@ -569,6 +585,8 @@ def test_bf16_checkpoint_uint16_codec_preserves_exact_logical_bits() -> None:
         (("device_count",), True, "device_count"),
         (("policy", "cpu_relative_l2_units"), 3.1, "not canonical"),
         (("policy", "metric_quantization_decimals"), 14, "not canonical"),
+        (("policy", "checkpoint_cross_path_max_ulp"), 0, "not canonical"),
+        (("policy", "mathematical_silu_max_ulp"), 0, "not canonical"),
         (("acceptance_authority",), "pure-evaluator", "acceptance authority"),
         (("checkpoint_capture",), "host-callback", "acceptance authority"),
         (("scenarios", 0, "parameters", "model"), "256", "model"),
@@ -739,6 +757,22 @@ def test_bf16_forward_policy_reports_top1_without_using_it_as_the_oracle() -> No
     assert assessment.pallas_top1_matches_control
 
 
+def test_bf16_output_assessment_does_not_claim_checkpoint_provenance() -> None:
+    contract, scenario, inputs, reference, _evidence = _calibration_evidence()
+
+    assessment = assess_seqax_bf16_outputs(
+        reference,
+        reference,
+        seed=scenario.seeds[0],
+        inputs=inputs,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert assessment.final_outputs_satisfy_policy
+    assert "checkpoint_values_consistent" not in type(assessment).model_fields
+
+
 @pytest.mark.parametrize("mutation", tuple(SeqaxInputMutation))
 def test_bf16_forward_semantic_input_mutations_fail_the_policy(
     mutation: SeqaxInputMutation,
@@ -787,8 +821,8 @@ def test_bf16_forward_evaluator_regenerates_oracles_and_rejects_forged_evidence(
     )
 
     assert assessment.cpu_pallas_relative_l2 > 2 * BF16_UNIT_ROUNDOFF
-    assert not assessment.pallas_silu_matches_mathematical
-    assert not assessment.control_silu_matches_mathematical
+    assert not assessment.pallas_silu_within_one_ulp_of_mathematical
+    assert not assessment.control_silu_within_one_ulp_of_mathematical
     assert not assessment.final_outputs_satisfy_policy
     assert not assessment.checkpoint_values_consistent
 
@@ -869,9 +903,9 @@ def test_bf16_forward_policy_rejects_dtype_shape_and_checkpoint_failures() -> No
         policy=policy,
         scenario=scenario,
     )
-    assert not checkpoint_failure.pallas_silu_matches_mathematical
-    assert checkpoint_failure.control_silu_matches_mathematical
-    assert not checkpoint_failure.silu_cross_path_exact
+    assert not checkpoint_failure.pallas_silu_within_one_ulp_of_mathematical
+    assert checkpoint_failure.control_silu_within_one_ulp_of_mathematical
+    assert not checkpoint_failure.silu_cross_path_within_one_ulp
     assert checkpoint_failure.final_outputs_satisfy_policy
     assert not checkpoint_failure.checkpoint_values_consistent
     with pytest.raises(TypeError, match="must use bfloat16"):
@@ -961,7 +995,7 @@ def test_bf16_down_projection_checkpoint_uses_a_fixed_order_oracle() -> None:
     assert exact.pallas_down_float32_within_bound
     assert exact.control_down_float32_within_bound
     assert exact.pallas_down_bfloat16_matches_float32
-    assert exact.down_bfloat16_cross_path_exact
+    assert exact.down_bfloat16_cross_path_within_one_ulp
     assert exact.checkpoint_values_consistent
 
     corrupted_down = down_float32.copy()

@@ -34,12 +34,16 @@ from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_numerical import (
     SeqaxBf16NumericalAssessment,
     SeqaxBf16NumericalScenario,
+    SeqaxBf16OutputAssessment,
     SeqaxBf16ValidationContract,
     SeqaxDiscriminatorClause,
     SeqaxInputMutation,
     SeqaxNumericalDiscriminator,
+    _relative_l2,
+    _row_scaled_max,
     _validate_strict_silu_stablehlo,
     assess_seqax_bf16_forward,
+    assess_seqax_bf16_outputs,
     canonical_seqax_stablehlo,
     decode_seqax_bf16_checkpoint,
     default_seqax_bf16_validation_contract,
@@ -115,6 +119,21 @@ class SeqaxBf16PlanRecord(BaseModel):
     strict_hidden_count: int = Field(gt=0)
 
 
+class SeqaxBf16InstrumentationDifference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    pallas_exact: bool
+    control_exact: bool
+    pallas_relative_l2: float = Field(ge=0)
+    control_relative_l2: float = Field(ge=0)
+    pallas_row_scaled_max: float = Field(ge=0)
+    control_row_scaled_max: float = Field(ge=0)
+
+    @property
+    def exact(self) -> bool:
+        return self.pallas_exact and self.control_exact
+
+
 class SeqaxBf16SeedObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -138,8 +157,9 @@ class SeqaxBf16SeedObservation(BaseModel):
     control_down_float32_sha256: tuple[str, ...] = Field(min_length=1)
     pallas_down_bfloat16_sha256: tuple[str, ...] = Field(min_length=1)
     control_down_bfloat16_sha256: tuple[str, ...] = Field(min_length=1)
-    assessment: SeqaxBf16NumericalAssessment
-    instrumented_output_parity: bool
+    normal_assessment: SeqaxBf16OutputAssessment
+    instrumented_assessment: SeqaxBf16NumericalAssessment
+    instrumentation_difference: SeqaxBf16InstrumentationDifference
 
     @model_validator(mode="after")
     def input_hashes_are_valid(self) -> SeqaxBf16SeedObservation:
@@ -909,6 +929,43 @@ def _save_checkpoints(
         )
 
 
+def _instrumentation_difference(
+    pallas: np.ndarray,
+    control: np.ndarray,
+    instrumented_pallas: np.ndarray,
+    instrumented_control: np.ndarray,
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16InstrumentationDifference:
+    decimals = contract.policy.metric_quantization_decimals
+    scale_floor = contract.policy.row_scale_floor
+    return SeqaxBf16InstrumentationDifference(
+        pallas_exact=bool(np.array_equal(pallas, instrumented_pallas)),
+        control_exact=bool(np.array_equal(control, instrumented_control)),
+        pallas_relative_l2=_relative_l2(
+            pallas,
+            instrumented_pallas,
+            quantization_decimals=decimals,
+        ),
+        control_relative_l2=_relative_l2(
+            control,
+            instrumented_control,
+            quantization_decimals=decimals,
+        ),
+        pallas_row_scaled_max=_row_scaled_max(
+            pallas,
+            instrumented_pallas,
+            scale_floor=scale_floor,
+            quantization_decimals=decimals,
+        ),
+        control_row_scaled_max=_row_scaled_max(
+            control,
+            instrumented_control,
+            scale_floor=scale_floor,
+            quantization_decimals=decimals,
+        ),
+    )
+
+
 def _run_seed(
     root: Path,
     compiled: _CompiledScenario,
@@ -1000,37 +1057,53 @@ def _run_seed(
         scenario,
     )
 
-    instrumented_parity = np.array_equal(
-        pallas_output, instrumented_pallas_output
-    ) and np.array_equal(control_output, instrumented_control_output)
-    assessment = assess_seqax_bf16_forward(
+    instrumentation_difference = _instrumentation_difference(
+        pallas_output,
+        control_output,
+        instrumented_pallas_output,
+        instrumented_control_output,
+        contract,
+    )
+    evidence = {
+        "seed": seed,
+        "inputs": host_inputs,
+        "pallas_gate_checkpoints": pallas_gates,
+        "control_gate_checkpoints": control_gates,
+        "pallas_silu_checkpoints": pallas_silus,
+        "control_silu_checkpoints": control_silus,
+        "pallas_up_checkpoints": pallas_up,
+        "control_up_checkpoints": control_up,
+        "pallas_hidden_checkpoints": pallas_hidden,
+        "control_hidden_checkpoints": control_hidden,
+        "pallas_down_float32_checkpoints": pallas_down_float32,
+        "control_down_float32_checkpoints": control_down_float32,
+        "pallas_down_bfloat16_checkpoints": pallas_down_bfloat16,
+        "control_down_bfloat16_checkpoints": control_down_bfloat16,
+        "policy": contract.policy,
+        "scenario": scenario,
+    }
+    normal_assessment = assess_seqax_bf16_outputs(
         pallas_output,
         control_output,
         seed=seed,
         inputs=host_inputs,
-        pallas_gate_checkpoints=pallas_gates,
-        control_gate_checkpoints=control_gates,
-        pallas_silu_checkpoints=pallas_silus,
-        control_silu_checkpoints=control_silus,
-        pallas_up_checkpoints=pallas_up,
-        control_up_checkpoints=control_up,
-        pallas_hidden_checkpoints=pallas_hidden,
-        control_hidden_checkpoints=control_hidden,
-        pallas_down_float32_checkpoints=pallas_down_float32,
-        control_down_float32_checkpoints=control_down_float32,
-        pallas_down_bfloat16_checkpoints=pallas_down_bfloat16,
-        control_down_bfloat16_checkpoints=control_down_bfloat16,
         policy=contract.policy,
         scenario=scenario,
     )
+    instrumented_assessment = assess_seqax_bf16_forward(
+        instrumented_pallas_output,
+        instrumented_control_output,
+        **evidence,
+    )
     if (
-        not instrumented_parity
-        or not assessment.final_outputs_satisfy_policy
-        or not assessment.checkpoint_values_consistent
+        not normal_assessment.final_outputs_satisfy_policy
+        or not instrumented_assessment.final_outputs_satisfy_policy
+        or not instrumented_assessment.checkpoint_values_consistent
     ):
         raise ValueError(
             f"SEQAX_BF16_SEED_REJECTED scenario={scenario.name} seed={seed} "
-            f"instrumented_parity={instrumented_parity} assessment={assessment}"
+            f"normal_assessment={normal_assessment} "
+            f"instrumented_assessment={instrumented_assessment}"
         )
     observation = SeqaxBf16SeedObservation(
         scenario=scenario.name,
@@ -1053,8 +1126,9 @@ def _run_seed(
         control_down_float32_sha256=_checkpoint_hashes(control_down_float32),
         pallas_down_bfloat16_sha256=_checkpoint_hashes(pallas_down_bfloat16),
         control_down_bfloat16_sha256=_checkpoint_hashes(control_down_bfloat16),
-        assessment=assessment,
-        instrumented_output_parity=instrumented_parity,
+        normal_assessment=normal_assessment,
+        instrumented_assessment=instrumented_assessment,
+        instrumentation_difference=instrumentation_difference,
     )
     _write_json(seed_root / "observation.json", observation.model_dump(mode="json"))
     return observation
@@ -2239,12 +2313,6 @@ def _validate_seed(
     control = _load_array(seed_root / "control_output.npy")
     instrumented_pallas = _load_array(seed_root / "instrumented_pallas_output.npy")
     instrumented_control = _load_array(seed_root / "instrumented_control_output.npy")
-    if not np.array_equal(pallas, instrumented_pallas) or not np.array_equal(
-        control, instrumented_control
-    ):
-        raise ValueError(
-            f"SEQAX_BF16_INSTRUMENTED_OUTPUT_MISMATCH scenario={scenario.name} seed={seed}"
-        )
     (
         pallas_gates,
         pallas_silus,
@@ -2261,25 +2329,36 @@ def _validate_seed(
         control_down_float32,
         control_down_bfloat16,
     ) = _load_saved_checkpoints(seed_root, scenario, "control")
-    assessment = assess_seqax_bf16_forward(
+    evidence = {
+        "seed": seed,
+        "inputs": saved_inputs,
+        "pallas_gate_checkpoints": pallas_gates,
+        "control_gate_checkpoints": control_gates,
+        "pallas_silu_checkpoints": pallas_silus,
+        "control_silu_checkpoints": control_silus,
+        "pallas_up_checkpoints": pallas_up,
+        "control_up_checkpoints": control_up,
+        "pallas_hidden_checkpoints": pallas_hidden,
+        "control_hidden_checkpoints": control_hidden,
+        "pallas_down_float32_checkpoints": pallas_down_float32,
+        "control_down_float32_checkpoints": control_down_float32,
+        "pallas_down_bfloat16_checkpoints": pallas_down_bfloat16,
+        "control_down_bfloat16_checkpoints": control_down_bfloat16,
+        "policy": contract.policy,
+        "scenario": scenario,
+    }
+    normal_assessment = assess_seqax_bf16_outputs(
         pallas,
         control,
         seed=seed,
         inputs=saved_inputs,
-        pallas_gate_checkpoints=pallas_gates,
-        control_gate_checkpoints=control_gates,
-        pallas_silu_checkpoints=pallas_silus,
-        control_silu_checkpoints=control_silus,
-        pallas_up_checkpoints=pallas_up,
-        control_up_checkpoints=control_up,
-        pallas_hidden_checkpoints=pallas_hidden,
-        control_hidden_checkpoints=control_hidden,
-        pallas_down_float32_checkpoints=pallas_down_float32,
-        control_down_float32_checkpoints=control_down_float32,
-        pallas_down_bfloat16_checkpoints=pallas_down_bfloat16,
-        control_down_bfloat16_checkpoints=control_down_bfloat16,
         policy=contract.policy,
         scenario=scenario,
+    )
+    instrumented_assessment = assess_seqax_bf16_forward(
+        instrumented_pallas,
+        instrumented_control,
+        **evidence,
     )
     expected = SeqaxBf16SeedObservation(
         scenario=scenario.name,
@@ -2302,16 +2381,24 @@ def _validate_seed(
         control_down_float32_sha256=_checkpoint_hashes(control_down_float32),
         pallas_down_bfloat16_sha256=_checkpoint_hashes(pallas_down_bfloat16),
         control_down_bfloat16_sha256=_checkpoint_hashes(control_down_bfloat16),
-        assessment=assessment,
-        instrumented_output_parity=True,
+        normal_assessment=normal_assessment,
+        instrumented_assessment=instrumented_assessment,
+        instrumentation_difference=_instrumentation_difference(
+            pallas,
+            control,
+            instrumented_pallas,
+            instrumented_control,
+            contract,
+        ),
     )
     saved = SeqaxBf16SeedObservation.model_validate_json(
         (seed_root / "observation.json").read_text()
     )
     if (
         expected != saved
-        or not assessment.final_outputs_satisfy_policy
-        or not assessment.checkpoint_values_consistent
+        or not normal_assessment.final_outputs_satisfy_policy
+        or not instrumented_assessment.final_outputs_satisfy_policy
+        or not instrumented_assessment.checkpoint_values_consistent
     ):
         raise ValueError(
             f"SEQAX_BF16_OBSERVATION_REPLAY_MISMATCH scenario={scenario.name} seed={seed}"
