@@ -703,6 +703,7 @@ def _prepare_scenario(
         pallas.stablehlo,
         pallas.compiler_hlo,
         pallas_region_count=pallas_plan.pallas_region_count,
+        pallas_vector_region_count=pallas_plan.pallas_vector_region_count,
         all_gather_count=all_gathers,
         reduce_scatter_count=reduce_scatters,
     )
@@ -1794,6 +1795,7 @@ def _validate_plan(
         pallas_stablehlo,
         pallas_compiler_hlo,
         pallas_region_count=pallas_plan.pallas_region_count,
+        pallas_vector_region_count=pallas_plan.pallas_vector_region_count,
         all_gather_count=all_gathers,
         reduce_scatter_count=reduce_scatters,
     )

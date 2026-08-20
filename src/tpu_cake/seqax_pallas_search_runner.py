@@ -253,6 +253,7 @@ def _compile_candidate(
         stablehlo,
         compiler_hlo,
         pallas_region_count=value.plan.pallas_region_count,
+        pallas_vector_region_count=value.plan.pallas_vector_region_count,
         all_gather_count=all_gather_count,
         reduce_scatter_count=reduce_scatter_count,
     )
@@ -1332,6 +1333,7 @@ def _validate_seqax_pallas_search(
             stablehlo,
             compiler_hlo,
             pallas_region_count=expected.plan.pallas_region_count,
+            pallas_vector_region_count=expected.plan.pallas_vector_region_count,
             all_gather_count=all_gather_count,
             reduce_scatter_count=reduce_scatter_count,
         )

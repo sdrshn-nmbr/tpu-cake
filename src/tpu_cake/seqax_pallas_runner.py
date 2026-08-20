@@ -4,13 +4,16 @@ import re
 import statistics
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax._src.interpreters import mlir
 from jax.sharding import NamedSharding
+from jaxlib.mlir import ir
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tpu_cake.canonical import canonical_text
@@ -245,43 +248,193 @@ def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:
     return float(absolute.max()), float((absolute / denominator).max())
 
 
+def _as_mlir_operation(value: object) -> ir.Operation | None:
+    if isinstance(value, ir.Operation):
+        return value
+    operation = getattr(value, "operation", None)
+    return operation if isinstance(operation, ir.Operation) else None
+
+
+def _mlir_operations(operation: ir.Operation) -> tuple[ir.Operation, ...]:
+    operations: list[ir.Operation] = []
+
+    def visit(current: ir.Operation) -> None:
+        operations.append(current)
+        for region in current.regions:
+            for block in region.blocks:
+                for child in block.operations:
+                    visit(child.operation)
+
+    visit(operation)
+    return tuple(operations)
+
+
+def _mlir_result_reaches_function_return(result: ir.Value) -> bool:
+    pending = deque([result])
+    visited: set[ir.Value] = set()
+    while pending:
+        value = pending.popleft()
+        if value in visited:
+            continue
+        visited.add(value)
+        for use in value.uses:
+            consumer = _as_mlir_operation(use.owner)
+            if consumer is None:
+                raise ValueError("SEQAX_PALLAS_STABLEHLO_INVALID_USE")
+            if consumer.name == "func.return":
+                return True
+            if consumer.name in {"sdy.return", "stablehlo.return"}:
+                parent = _as_mlir_operation(consumer.parent)
+                if parent is not None and use.operand_number < len(parent.results):
+                    pending.append(parent.results[use.operand_number])
+            pending.extend(consumer.results)
+    return False
+
+
+def _stablehlo_pallas_region_counts(stablehlo: str) -> tuple[int, int]:
+    try:
+        with mlir.make_ir_context():
+            module = ir.Module.parse(stablehlo)
+            module.operation.verify()
+            functions = tuple(
+                operation.operation
+                for operation in module.body
+                if operation.operation.name == "func.func"
+            )
+            entries = tuple(
+                function
+                for function in functions
+                if str(function.attributes["sym_name"]) == '"main"'
+                and str(function.attributes.get("sym_visibility")) == '"public"'
+            )
+            if len(entries) != 1:
+                raise ValueError("SEQAX_PALLAS_STABLEHLO_MAIN_MISSING")
+            entry = entries[0]
+            kernel_names = {
+                '"seqax_named_einsum"': "einsum",
+                '"seqax_silu_multiply"': "vector",
+            }
+            counts = {"einsum": 0, "vector": 0}
+            for function in functions:
+                for operation in _mlir_operations(function):
+                    if operation.name != "stablehlo.custom_call":
+                        continue
+                    if str(operation.attributes.get("call_target_name")) != '"tpu_custom_call"':
+                        continue
+                    kernel_name = str(operation.attributes.get("kernel_name"))
+                    if function != entry:
+                        if kernel_name in kernel_names:
+                            raise ValueError("SEQAX_PALLAS_STABLEHLO_PALLAS_OUTSIDE_MAIN")
+                        continue
+                    kind = kernel_names.get(kernel_name)
+                    if kind is None:
+                        raise ValueError(
+                            "SEQAX_PALLAS_STABLEHLO_UNKNOWN_TPU_CUSTOM_CALL "
+                            f"kernel_name={kernel_name}"
+                        )
+                    if len(operation.results) != 1 or not _mlir_result_reaches_function_return(
+                        operation.results[0]
+                    ):
+                        raise ValueError("SEQAX_PALLAS_STABLEHLO_PALLAS_NOT_LIVE")
+                    counts[kind] += 1
+            return counts["einsum"], counts["vector"]
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("SEQAX_PALLAS_STABLEHLO_INVALID") from error
+
+
+def _compiler_hlo_reachable_computations(compiler_hlo: str) -> str:
+    lines = compiler_hlo.splitlines()
+    headers = tuple(
+        (index, match.group("name"), match.group("entry") is not None)
+        for index, line in enumerate(lines)
+        if (
+            match := re.fullmatch(
+                r"\s*(?P<entry>ENTRY\s+)?(?P<name>[A-Za-z0-9_.$-]+)\s*\{\s*",
+                line,
+            )
+        )
+    )
+    entries = tuple(name for _, name, is_entry in headers if is_entry)
+    if len(entries) != 1:
+        raise ValueError("SEQAX_PALLAS_COMPILER_HLO_ENTRY_MISSING")
+    computations: dict[str, str] = {}
+    for start, name, _ in headers:
+        for end in range(start + 1, len(lines)):
+            if re.fullmatch(r"\s*}\s*", lines[end]):
+                computations[name] = "\n".join(lines[start : end + 1])
+                break
+        else:
+            raise ValueError("SEQAX_PALLAS_COMPILER_HLO_COMPUTATION_INVALID")
+
+    reachable: list[str] = []
+    pending = deque(entries)
+    visited: set[str] = set()
+    reference_attributes = (
+        "to_apply",
+        "calls",
+        "condition",
+        "body",
+        "fused_computation",
+    )
+    while pending:
+        name = pending.popleft()
+        if name in visited:
+            continue
+        computation = computations.get(name)
+        if computation is None:
+            raise ValueError(
+                f"SEQAX_PALLAS_COMPILER_HLO_REFERENCED_COMPUTATION_MISSING name={name}"
+            )
+        visited.add(name)
+        reachable.append(computation)
+        for attribute in reference_attributes:
+            pending.extend(
+                re.findall(
+                    rf"\b{attribute}=([A-Za-z0-9_.$-]+)",
+                    computation,
+                )
+            )
+        for attribute in ("branch_computations", "called_computations"):
+            for values in re.findall(rf"\b{attribute}=\{{([^}}]*)\}}", computation):
+                pending.extend(re.findall(r"[A-Za-z0-9_.$-]+", values))
+    return "\n".join(reachable)
+
+
 def _validate_compiled_program(
     stablehlo: str,
     compiler_hlo: str,
     *,
     pallas_region_count: int,
+    pallas_vector_region_count: int,
     all_gather_count: int,
     reduce_scatter_count: int,
 ) -> None:
-    if re.search(r"(?m)^\s*module\s+@[A-Za-z0-9_.$-]+\b[^\n]*\{\s*$", stablehlo) is None:
-        raise ValueError("SEQAX_PALLAS_STABLEHLO_MODULE_MISSING")
-    if re.search(r"(?m)^\s*func\.func\s+public\s+@main\(", stablehlo) is None:
-        raise ValueError("SEQAX_PALLAS_STABLEHLO_MAIN_MISSING")
-    stable_regions = len(
-        re.findall(
-            r"(?m)^\s*%[A-Za-z0-9_.$-]+\s*=\s*stablehlo\.custom_call\s+"
-            r"@tpu_custom_call\([^\n]*\)\s*\{[^\n]*"
-            r'kernel_name\s*=\s*"seqax_named_einsum"',
-            stablehlo,
-        )
-    )
+    stable_einsum_regions, stable_vector_regions = _stablehlo_pallas_region_counts(stablehlo)
     if re.search(r"(?m)^HloModule\s+\S+", compiler_hlo) is None:
         raise ValueError("SEQAX_PALLAS_COMPILER_HLO_MODULE_MISSING")
-    if re.search(r"(?m)^\s*ENTRY\s+[A-Za-z0-9_.$-]+\s*\{", compiler_hlo) is None:
-        raise ValueError("SEQAX_PALLAS_COMPILER_HLO_ENTRY_MISSING")
+    compiler_reachable = _compiler_hlo_reachable_computations(compiler_hlo)
     compiler_regions = len(
         re.findall(
             r"(?m)^\s*(?:ROOT\s+)?[A-Za-z0-9_.$-]+\s*=\s*"
             r"[^=\n]+?\s+custom-call\([^\n]*\),"
             r'[^\n]*\bcustom_call_target="tpu_custom_call"',
-            compiler_hlo,
+            compiler_reachable,
         )
     )
-    if stable_regions != pallas_region_count or compiler_regions != pallas_region_count:
+    expected_compiler_regions = pallas_region_count + pallas_vector_region_count
+    if (
+        stable_einsum_regions != pallas_region_count
+        or stable_vector_regions != pallas_vector_region_count
+        or compiler_regions != expected_compiler_regions
+    ):
         raise ValueError(
             "SEQAX_PALLAS_COMPILED_REGION_COUNT_MISMATCH "
-            f"expected={pallas_region_count} stablehlo={stable_regions} "
-            f"compiler_hlo={compiler_regions}"
+            f"expected_einsum={pallas_region_count} stablehlo_einsum={stable_einsum_regions} "
+            f"expected_vector={pallas_vector_region_count} "
+            f"stablehlo_vector={stable_vector_regions} "
+            f"expected_total={expected_compiler_regions} compiler_hlo={compiler_regions}"
         )
     expected_collectives = {
         "all-gather": all_gather_count,
@@ -292,7 +445,7 @@ def _validate_compiled_program(
             re.findall(
                 rf"(?m)^\s*(?:ROOT\s+)?[A-Za-z0-9_.$-]+\s*=\s*"
                 rf"[^=\n]+?\s+{opcode}\(",
-                compiler_hlo,
+                compiler_reachable,
             )
         )
         if observed_count != expected_count:
@@ -479,6 +632,7 @@ def run_seqax_physical_pallas(
         stablehlo,
         compiler_hlo,
         pallas_region_count=plan.pallas_region_count,
+        pallas_vector_region_count=plan.pallas_vector_region_count,
         all_gather_count=_physical_collective_counts(physical)[0],
         reduce_scatter_count=_physical_collective_counts(physical)[1],
     )

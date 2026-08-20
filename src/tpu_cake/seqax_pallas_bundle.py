@@ -395,6 +395,7 @@ def _validate_phase(
         artifacts["stablehlo.txt"].read_text(),
         artifacts["compiler_hlo.txt"].read_text(),
         pallas_region_count=plan.pallas_region_count,
+        pallas_vector_region_count=plan.pallas_vector_region_count,
         all_gather_count=_physical_collective_counts(physical)[0],
         reduce_scatter_count=_physical_collective_counts(physical)[1],
     )

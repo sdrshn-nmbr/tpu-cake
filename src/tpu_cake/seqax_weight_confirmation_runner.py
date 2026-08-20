@@ -423,6 +423,7 @@ def _validate_plans(
             stablehlo,
             compiler_hlo,
             pallas_region_count=expected.plan.pallas_region_count,
+            pallas_vector_region_count=expected.plan.pallas_vector_region_count,
             all_gather_count=all_gathers,
             reduce_scatter_count=reduce_scatters,
         )

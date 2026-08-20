@@ -32,6 +32,74 @@ def _plan():
     return lower_seqax_physical_to_pallas(distributed, physical)
 
 
+def _stablehlo_pallas_chain(
+    *,
+    einsum_count: int,
+    vector_count: int,
+    vectors_in_dead_function: bool = False,
+) -> str:
+    def chain(
+        *,
+        start: int,
+        count: int,
+        kernel_name: str,
+        input_value: str | None,
+    ) -> tuple[list[str], str | None]:
+        lines: list[str] = []
+        previous = input_value
+        for index in range(start, start + count):
+            operands = "" if previous is None else previous
+            operand_type = "" if previous is None else "tensor<f32>"
+            lines.append(
+                f"    %{index} = stablehlo.custom_call @tpu_custom_call({operands}) "
+                f'{{kernel_name = "{kernel_name}"}} : ({operand_type}) -> tensor<f32>'
+            )
+            previous = f"%{index}"
+        return lines, previous
+
+    main_einsums, main_result = chain(
+        start=0,
+        count=einsum_count,
+        kernel_name="seqax_named_einsum",
+        input_value=None,
+    )
+    main_vectors: list[str] = []
+    if not vectors_in_dead_function:
+        main_vectors, main_result = chain(
+            start=einsum_count,
+            count=vector_count,
+            kernel_name="seqax_silu_multiply",
+            input_value=main_result,
+        )
+    assert main_result is not None
+    functions = [
+        "module @jit_physical_call {",
+        "  func.func public @main() -> tensor<f32> {",
+        *main_einsums,
+        *main_vectors,
+        f"    return {main_result} : tensor<f32>",
+        "  }",
+    ]
+    if vectors_in_dead_function:
+        dead_vectors, dead_result = chain(
+            start=einsum_count,
+            count=vector_count,
+            kernel_name="seqax_silu_multiply",
+            input_value=None,
+        )
+        assert dead_result is not None
+        functions.extend(
+            (
+                "  func.func private @dead() -> tensor<f32> {",
+                *dead_vectors,
+                f"    return {dead_result} : tensor<f32>",
+                "  }",
+            )
+        )
+    functions.append("}")
+    return "\n".join(functions)
+
+
 def test_seqax_pallas_invocation_binds_both_ir_levels_and_source() -> None:
     plan = _plan()
     invocation = SeqaxPallasInvocation(
@@ -120,19 +188,7 @@ def test_seqax_pallas_runner_is_available_through_the_cli() -> None:
 
 
 def test_seqax_pallas_compiled_program_requires_exact_regions_and_collectives() -> None:
-    stablehlo = "\n".join(
-        (
-            "module @jit_physical_call {",
-            "  func.func public @main() {",
-            *(
-                f"    %{index} = stablehlo.custom_call @tpu_custom_call() "
-                '{kernel_name = "seqax_named_einsum"} : () -> tensor<f32>'
-                for index in range(17)
-            ),
-            "  }",
-            "}",
-        )
-    )
+    stablehlo = _stablehlo_pallas_chain(einsum_count=17, vector_count=0)
     compiler_hlo = "\n".join(
         (
             "HloModule jit_physical_call",
@@ -151,6 +207,7 @@ def test_seqax_pallas_compiled_program_requires_exact_regions_and_collectives() 
         stablehlo,
         compiler_hlo,
         pallas_region_count=17,
+        pallas_vector_region_count=0,
         all_gather_count=1,
         reduce_scatter_count=1,
     )
@@ -163,6 +220,7 @@ def test_seqax_pallas_compiled_program_requires_exact_regions_and_collectives() 
                 "pallas_call.0 = f32[] add()",
             ),
             pallas_region_count=17,
+            pallas_vector_region_count=0,
             all_gather_count=1,
             reduce_scatter_count=1,
         )
@@ -172,6 +230,88 @@ def test_seqax_pallas_compiled_program_requires_exact_regions_and_collectives() 
             stablehlo,
             compiler_hlo.replace("reduce-scatter", "reduce_scatter"),
             pallas_region_count=17,
+            pallas_vector_region_count=0,
+            all_gather_count=1,
+            reduce_scatter_count=1,
+        )
+
+
+def test_seqax_pallas_compiled_program_binds_owned_vector_regions() -> None:
+    stablehlo = _stablehlo_pallas_chain(einsum_count=17, vector_count=2)
+    compiler_hlo = "\n".join(
+        (
+            "HloModule jit_physical_call",
+            "ENTRY main.1 {",
+            *(
+                f'pallas_call.{index} = f32[] custom-call(), custom_call_target="tpu_custom_call"'
+                for index in range(19)
+            ),
+            "all_gather.0 = f32[] all-gather(pallas_call.0)",
+            "ROOT reduce_scatter.0 = f32[] reduce-scatter(all_gather.0)",
+            "}",
+        )
+    )
+
+    _validate_compiled_program(
+        stablehlo,
+        compiler_hlo,
+        pallas_region_count=17,
+        pallas_vector_region_count=2,
+        all_gather_count=1,
+        reduce_scatter_count=1,
+    )
+
+    with pytest.raises(ValueError, match="STABLEHLO_UNKNOWN_TPU_CUSTOM_CALL"):
+        _validate_compiled_program(
+            stablehlo.replace(
+                'kernel_name = "seqax_silu_multiply"',
+                'kernel_name = "decoy_silu_multiply"',
+                1,
+            ),
+            compiler_hlo,
+            pallas_region_count=17,
+            pallas_vector_region_count=2,
+            all_gather_count=1,
+            reduce_scatter_count=1,
+        )
+
+    with pytest.raises(ValueError, match="STABLEHLO_PALLAS_OUTSIDE_MAIN"):
+        _validate_compiled_program(
+            _stablehlo_pallas_chain(
+                einsum_count=17,
+                vector_count=2,
+                vectors_in_dead_function=True,
+            ),
+            compiler_hlo,
+            pallas_region_count=17,
+            pallas_vector_region_count=2,
+            all_gather_count=1,
+            reduce_scatter_count=1,
+        )
+
+    compiler_with_dead_calls = "\n".join(
+        (
+            "HloModule jit_physical_call",
+            "dead.0 {",
+            'pallas_call.17 = f32[] custom-call(), custom_call_target="tpu_custom_call"',
+            'ROOT pallas_call.18 = f32[] custom-call(), custom_call_target="tpu_custom_call"',
+            "}",
+            "ENTRY main.1 {",
+            *(
+                f'pallas_call.{index} = f32[] custom-call(), custom_call_target="tpu_custom_call"'
+                for index in range(17)
+            ),
+            "all_gather.0 = f32[] all-gather(pallas_call.0)",
+            "ROOT reduce_scatter.0 = f32[] reduce-scatter(all_gather.0)",
+            "}",
+        )
+    )
+    with pytest.raises(ValueError, match="COMPILED_REGION_COUNT_MISMATCH"):
+        _validate_compiled_program(
+            stablehlo,
+            compiler_with_dead_calls,
+            pallas_region_count=17,
+            pallas_vector_region_count=2,
             all_gather_count=1,
             reduce_scatter_count=1,
         )
@@ -198,11 +338,12 @@ def test_seqax_pallas_compiled_program_rejects_marker_decoys() -> None:
         )
     )
 
-    with pytest.raises(ValueError, match="COMPILED_REGION_COUNT_MISMATCH"):
+    with pytest.raises(ValueError, match="STABLEHLO_INVALID"):
         _validate_compiled_program(
             stablehlo,
             compiler_hlo,
             pallas_region_count=17,
+            pallas_vector_region_count=0,
             all_gather_count=1,
             reduce_scatter_count=1,
         )

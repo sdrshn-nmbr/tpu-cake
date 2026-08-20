@@ -285,6 +285,7 @@ def _compile(
         stablehlo,
         compiler_hlo,
         pallas_region_count=prepared.plan.pallas_region_count,
+        pallas_vector_region_count=prepared.plan.pallas_vector_region_count,
         all_gather_count=all_gathers,
         reduce_scatter_count=reduce_scatters,
     )
@@ -1036,6 +1037,7 @@ def _validate(
             stablehlo,
             compiler_hlo,
             pallas_region_count=expected.plan.pallas_region_count,
+            pallas_vector_region_count=expected.plan.pallas_vector_region_count,
             all_gather_count=all_gathers,
             reduce_scatter_count=reduce_scatters,
         )

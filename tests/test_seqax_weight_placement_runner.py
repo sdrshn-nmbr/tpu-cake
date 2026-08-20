@@ -328,17 +328,27 @@ def _synthetic_hlo(prepared) -> tuple[str, str]:
         for operation in prepared.physical.walk()
         if operation.name == "tpu_schedule.mxu_einsum"
     )
-    stablehlo = "module @fixture {\n  func.func public @main() {\n"
-    stablehlo += "".join(
-        f"    %p{index} = stablehlo.custom_call @tpu_custom_call() "
-        '{kernel_name = "seqax_named_einsum"}\n'
-        for index in range(9)
+    stablehlo = "module @fixture {\n  func.func public @main() -> tensor<1xf32> {\n"
+    stablehlo += (
+        "    %p0 = stablehlo.custom_call @tpu_custom_call() "
+        '{kernel_name = "seqax_named_einsum"} : () -> tensor<1xf32>\n'
     )
     stablehlo += "".join(
-        f"    %g{index} = stablehlo.all_gather %p0\n"
+        f"    %p{index} = stablehlo.custom_call @tpu_custom_call(%p{index - 1}) "
+        '{kernel_name = "seqax_named_einsum"} : (tensor<1xf32>) -> tensor<1xf32>\n'
+        for index in range(1, 9)
+    )
+    stablehlo += "".join(
+        f'    %g{index} = "stablehlo.all_gather"('
+        f"%{'p8' if index == 0 else f'g{index - 1}'}) "
+        "<{all_gather_dim = 0 : i64, "
+        "replica_groups = dense<[[0]]> : tensor<1x1xi64>, "
+        "channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>, "
+        "use_global_device_ids}> : (tensor<1xf32>) -> tensor<1xf32>\n"
         for index in range(prepared.candidate.expected_stablehlo_all_gathers)
     )
-    stablehlo += "  }\n}\n"
+    last_value = f"%g{prepared.candidate.expected_stablehlo_all_gathers - 1}"
+    stablehlo += f"    return {last_value} : tensor<1xf32>\n  }}\n}}\n"
     compiler_lines = ["HloModule fixture", "ENTRY main {"]
     for index, (tile_m, tile_k, tile_n) in enumerate(tiles):
         compiler_lines.extend(
