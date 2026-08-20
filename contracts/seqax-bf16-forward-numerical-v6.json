@@ -4339,10 +4339,10 @@
           "dtype": "bfloat16"
         }
       ],
-      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "instrumented_pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "instrumented_control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "pallas_stablehlo_sha256": "b91e50aeb909400e4b0d51e831a8cf031139aef22bee894999ef40021cf31fb7",
+      "control_stablehlo_sha256": "a608446abb9c8f327a10d06faba1a0783069c13b3b4534a2eb6050e96eabb2e2",
+      "instrumented_pallas_stablehlo_sha256": "a57a638b18aee171a50ffb2c2b8b3e33a7e2afa6bd4fec03c8aa66dc21a09198",
+      "instrumented_control_stablehlo_sha256": "d0fd0892a0e09c8960926b4a553dcdac53309bfb2e615b8be52f8474fae55795"
     },
     {
       "name": "m448-b4-s5-l1",
@@ -4636,10 +4636,10 @@
           "dtype": "bfloat16"
         }
       ],
-      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "instrumented_pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "instrumented_control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "pallas_stablehlo_sha256": "c526b18d3f23cb4ce2e71003335b7cb3f826ae27297694b700e5e030fea32087",
+      "control_stablehlo_sha256": "3b83a0e1db519dc1832712f720ff57961d37f13d7c39c9d6db2cf002540901b2",
+      "instrumented_pallas_stablehlo_sha256": "937bb589f7f804370eca49a74e4e9ebee6bc67d9057dfa587947ae23e54221c8",
+      "instrumented_control_stablehlo_sha256": "ffda88b93ddfc879b1db38012650840be41d31853200b11893b68890aa31bea7"
     },
     {
       "name": "m336-b2-s11-l3",
@@ -5167,10 +5167,10 @@
           "dtype": "bfloat16"
         }
       ],
-      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "instrumented_pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "instrumented_control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "pallas_stablehlo_sha256": "16dbaf288d965f9dd040316392eccb209bd9cf461d4efedd85c3d47822c22ba3",
+      "control_stablehlo_sha256": "44a480d64c44671ad1e62a1b1709f9d390ead09179dac1635ab2293dda48f76b",
+      "instrumented_pallas_stablehlo_sha256": "a6e919b994c5f654a6f6a365451d2bc6abd4c574b1d33114c9b33c19903e0290",
+      "instrumented_control_stablehlo_sha256": "98d7fb172a03fe9e360198ded56c342fbdd4fdc67ee32b5b00728a53cbca52b5"
     }
   ],
   "activation_mutant_stablehlo": [
@@ -5235,7 +5235,7 @@
     "max_total_uncompressed_bytes": 4294967296
   },
   "compilation_source_root": "/home/sudarshan/tpu-cake-main",
-  "hlo_identity_status": "pending",
+  "hlo_identity_status": "pinned",
   "backend": "tpu",
   "device_kind": "TPU7x",
   "device_count": 8,

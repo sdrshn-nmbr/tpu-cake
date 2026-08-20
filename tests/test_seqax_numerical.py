@@ -599,7 +599,7 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
 def test_bf16_forward_contract_binds_fresh_hlo_identities() -> None:
     contract = default_seqax_bf16_validation_contract()
 
-    assert contract.hlo_identity_status == "pending"
+    assert contract.hlo_identity_status == "pinned"
     assert (
         contract.acceptance_authority == "authenticated-producer-receipt-and-relocation-attestation"
     )
@@ -625,7 +625,7 @@ def test_tracked_bf16_forward_contract_matches_the_canonical_factory() -> None:
 
     assert SeqaxBf16ValidationContract.model_validate_json(path.read_text()) == contract
     assert (
-        contract.contract_id == "cc4b189eb249116a2ecc220ef9cd1e1074e1491f251b75d095d08cc1f132ef6b"
+        contract.contract_id == "861cc164be5ed7a322cca351902cfc1400a49c4cebd3ab8bcf09c2a10ee6e905"
     )
 
 

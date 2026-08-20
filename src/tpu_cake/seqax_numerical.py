@@ -21,7 +21,7 @@ from tpu_cake.workloads.seqax_oracle import (
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
 SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v6"
-SEQAX_BF16_HLO_IDENTITY_STATUS = "pending"
+SEQAX_BF16_HLO_IDENTITY_STATUS = "pinned"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
 _V2_CALIBRATION_SCHEMA = "bf16-forward-numerical-v2"
@@ -311,22 +311,22 @@ _STABLEHLO_SHA256 = {
         "instrumented_control": "83ef4a7000b7a54833409a19242a0ec30f485df1b734e05d0076ba4820bd0c8d",
     },
     "m304-b2-s5-l2": {
-        "pallas": "0" * 64,
-        "control": "0" * 64,
-        "instrumented_pallas": "0" * 64,
-        "instrumented_control": "0" * 64,
+        "pallas": "b91e50aeb909400e4b0d51e831a8cf031139aef22bee894999ef40021cf31fb7",
+        "control": "a608446abb9c8f327a10d06faba1a0783069c13b3b4534a2eb6050e96eabb2e2",
+        "instrumented_pallas": "a57a638b18aee171a50ffb2c2b8b3e33a7e2afa6bd4fec03c8aa66dc21a09198",
+        "instrumented_control": "d0fd0892a0e09c8960926b4a553dcdac53309bfb2e615b8be52f8474fae55795",
     },
     "m448-b4-s5-l1": {
-        "pallas": "0" * 64,
-        "control": "0" * 64,
-        "instrumented_pallas": "0" * 64,
-        "instrumented_control": "0" * 64,
+        "pallas": "c526b18d3f23cb4ce2e71003335b7cb3f826ae27297694b700e5e030fea32087",
+        "control": "3b83a0e1db519dc1832712f720ff57961d37f13d7c39c9d6db2cf002540901b2",
+        "instrumented_pallas": "937bb589f7f804370eca49a74e4e9ebee6bc67d9057dfa587947ae23e54221c8",
+        "instrumented_control": "ffda88b93ddfc879b1db38012650840be41d31853200b11893b68890aa31bea7",
     },
     "m336-b2-s11-l3": {
-        "pallas": "0" * 64,
-        "control": "0" * 64,
-        "instrumented_pallas": "0" * 64,
-        "instrumented_control": "0" * 64,
+        "pallas": "16dbaf288d965f9dd040316392eccb209bd9cf461d4efedd85c3d47822c22ba3",
+        "control": "44a480d64c44671ad1e62a1b1709f9d390ead09179dac1635ab2293dda48f76b",
+        "instrumented_pallas": "a6e919b994c5f654a6f6a365451d2bc6abd4c574b1d33114c9b33c19903e0290",
+        "instrumented_control": "98d7fb172a03fe9e360198ded56c342fbdd4fdc67ee32b5b00728a53cbca52b5",
     },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
