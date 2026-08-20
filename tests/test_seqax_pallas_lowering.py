@@ -477,6 +477,7 @@ _validate_strict_silu_stablehlo(
     expected_count=parameters["layers"],
     instrumented=False,
     allow_callbacks=True,
+    require_hidden_down=False,
 )
 (actual,) = executable(*arrays)
 (control_actual,) = control(*arrays)

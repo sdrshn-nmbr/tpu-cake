@@ -14,6 +14,7 @@ from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.seqax_numerical import (
     SeqaxDiscriminatorClause,
     SeqaxNumericalDiscriminator,
+    _validate_strict_silu_stablehlo,
     default_seqax_bf16_validation_contract,
     seqax_stablehlo_sha256,
     validate_strict_silu_stablehlo,
@@ -62,6 +63,18 @@ _STRICT_HLO = """module {
 }"""
 
 
+def _pinned_test_contract(monkeypatch: pytest.MonkeyPatch):
+    contract = default_seqax_bf16_validation_contract().model_copy(
+        update={"hlo_identity_status": "pinned"}
+    )
+    monkeypatch.setattr(
+        numerical_runner,
+        "default_seqax_bf16_validation_contract",
+        lambda: contract,
+    )
+    return contract
+
+
 def test_runner_rejects_the_retired_v1_lifecycle_schema() -> None:
     contract = default_seqax_bf16_validation_contract()
 
@@ -76,10 +89,11 @@ def test_runner_rejects_the_retired_v1_lifecycle_schema() -> None:
 
 def test_runner_hlo_discriminators_mutate_the_real_strict_chain() -> None:
     expected_sha256 = seqax_stablehlo_sha256(_STRICT_HLO)
-    validate_strict_silu_stablehlo(
+    _validate_strict_silu_stablehlo(
         _STRICT_HLO,
         expected_count=1,
-        expected_sha256=expected_sha256,
+        instrumented=False,
+        require_hidden_down=False,
     )
     mutants = (
         _remove_strict_barrier(_STRICT_HLO, input_barrier=True),
@@ -109,6 +123,7 @@ from pathlib import Path
 
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
 from tpu_cake.seqax_numerical import (
+    _validate_strict_silu_stablehlo,
     canonical_seqax_stablehlo,
     default_seqax_bf16_validation_contract,
     seqax_stablehlo_sha256,
@@ -126,7 +141,7 @@ scenario = default_seqax_bf16_validation_contract().scenarios[1]
 parameters = scenario.parameters.model_dump()
 distributed = seqax_forward_schedule(
     **parameters,
-    numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+    numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
 )
 plan = lower_distributed_program_to_jax_mesh(distributed)
 devices = tuple(jax.devices("cpu"))
@@ -148,13 +163,19 @@ with tempfile.TemporaryDirectory() as temporary:
         expected_count=parameters["layers"],
         expected_sha256=seqax_stablehlo_sha256(compiled.stablehlo),
     )
+    _validate_strict_silu_stablehlo(
+        replayed_stablehlo,
+        expected_count=parameters["layers"],
+        instrumented=True,
+    )
 checkpoint_return = next(
     line for line in compiled.stablehlo.splitlines()
-    if "sdy.return" in line and line.count("xbf16") == 4
+    if "sdy.return" in line and line.count("xbf16") == 10
 )
 match = re.search(
     r"sdy.return (?P<output>%[A-Za-z0-9_]+), (?P<gate>%[A-Za-z0-9_]+), "
-    r"(?P<silu>%[A-Za-z0-9_]+),",
+    r"(?P<silu>%[A-Za-z0-9_]+), (?P<up>%[A-Za-z0-9_]+), "
+    r"(?P<hidden>%[A-Za-z0-9_]+),",
     checkpoint_return,
 )
 assert match is not None
@@ -173,9 +194,62 @@ except ValueError:
     pass
 else:
     raise AssertionError("instrumented executable accepted a forged gate output")
+hidden_mutant_return = checkpoint_return.replace(
+    f", {match.group('up')}, {match.group('hidden')},",
+    f", {match.group('up')}, {match.group('silu')},",
+)
+hidden_mutant = compiled.stablehlo.replace(checkpoint_return, hidden_mutant_return)
+try:
+    _validate_strict_silu_stablehlo(
+        hidden_mutant,
+        expected_count=parameters["layers"],
+        instrumented=True,
+    )
+except ValueError:
+    pass
+else:
+    raise AssertionError("instrumented executable accepted a forged hidden output")
+hidden_barrier = None
+hidden_match = None
+for line in compiled.stablehlo.splitlines():
+    candidate = re.search(
+        r"(?P<result>%[A-Za-z0-9_]+) = stablehlo\.optimization_barrier "
+        r"(?P<input>%[A-Za-z0-9_]+) : tensor<1x3x6xbf16>",
+        line,
+    )
+    if candidate is None:
+        continue
+    if any(
+        "stablehlo.dot_general" in consumer
+        and "contracting_dims = [2] x [1]" in consumer
+        and candidate.group("result") in consumer
+        for consumer in compiled.stablehlo.splitlines()
+    ):
+        hidden_barrier = line
+        hidden_match = candidate
+        break
+assert hidden_barrier is not None and hidden_match is not None
+down_projection = next(
+    line for line in compiled.stablehlo.splitlines()
+    if "stablehlo.dot_general" in line and hidden_match.group("result") in line
+)
+bypass = compiled.stablehlo.replace(
+    down_projection,
+    down_projection.replace(hidden_match.group("result"), hidden_match.group("input")),
+)
+try:
+    _validate_strict_silu_stablehlo(
+        bypass,
+        expected_count=parameters["layers"],
+        instrumented=True,
+    )
+except ValueError:
+    pass
+else:
+    raise AssertionError("instrumented executable accepted a hidden barrier bypass")
 outer_return = next(
     line for line in compiled.stablehlo.splitlines()
-    if "return %0#0, %0#1, %0#2, %0#3, %0#4" in line
+    if "return %0#0, %0#1, %0#2, %0#3, %0#4, %0#5, %0#6, %0#7, %0#8, %0#9, %0#10, %0#11, %0#12" in line
 )
 mutant = compiled.stablehlo.replace(
     outer_return,
@@ -199,6 +273,14 @@ assert tuple(value.shape for value in outputs) == (
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
+    (2, 3, 128),
+    (2, 3, 128),
+    (2, 3, 24),
+    (2, 3, 24),
+    (2, 3, 24),
+    (2, 3, 24),
+    (2, 3, 128),
+    (2, 3, 128),
 )
 """
     environment = os.environ.copy()
@@ -238,7 +320,7 @@ scenario = default_seqax_bf16_validation_contract().scenarios[0]
 parameters = scenario.parameters.model_dump()
 distributed = seqax_forward_schedule(
     **parameters,
-    numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+    numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
 )
 physical = lower_seqax_forward_to_physical(distributed).module
 plan = lower_seqax_physical_to_pallas(distributed, physical)
@@ -266,6 +348,10 @@ assert tuple((value.shape, str(value.dtype)) for value in outputs) == (
     ((2, 1, 16), "float32"),
     ((2, 1, 16), "bfloat16"),
     ((2, 1, 16), "bfloat16"),
+    ((2, 1, 16), "bfloat16"),
+    ((2, 1, 16), "bfloat16"),
+    ((2, 1, 256), "float32"),
+    ((2, 1, 256), "bfloat16"),
 )
 """
     environment = os.environ.copy()
@@ -299,6 +385,10 @@ def test_runner_numerical_discriminators_target_the_named_clause() -> None:
     )
     gate = np.zeros(scenario.gate_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
     silu = gate.copy()
+    up = gate.copy()
+    hidden = np.zeros(scenario.hidden_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
+    down_float32 = np.zeros(scenario.down_float32_checkpoints[0].shape, dtype=np.float32)
+    down_bfloat16 = np.zeros(scenario.down_bfloat16_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
     spike = reference.copy()
     spike.reshape(-1)[0] += 1
 
@@ -311,6 +401,10 @@ def test_runner_numerical_discriminators_target_the_named_clause() -> None:
         inputs=inputs,
         gates=(gate,),
         silus=(silu,),
+        up=(up,),
+        hidden=(hidden,),
+        down_float32=(down_float32,),
+        down_bfloat16=(down_bfloat16,),
     )
 
     assert failure.startswith("row_scaled_maximum: rejected")
@@ -355,7 +449,7 @@ def test_runner_rejects_protected_output_roots() -> None:
 def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v2",
+        schema_version="seqax-bf16-forward-validation-run-v3",
         contract_id=contract.contract_id,
         run_id="1" * 64,
         source_commit="2" * 40,
@@ -444,7 +538,7 @@ def test_runner_resumes_active_owned_root_and_archives_rejected_root(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v2",
+        schema_version="seqax-bf16-forward-validation-run-v3",
         contract_id=contract.contract_id,
         run_id="8" * 64,
         source_commit="9" * 40,
@@ -498,7 +592,7 @@ def test_runner_reuses_same_root_after_uncaught_active_run_crash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = default_seqax_bf16_validation_contract()
+    contract = _pinned_test_contract(monkeypatch)
     root = tmp_path / "run"
     calls = 0
 
@@ -517,7 +611,7 @@ def test_runner_reuses_same_root_after_uncaught_active_run_crash(
                 ledger.create(
                     run_id,
                     {
-                        "schema": "seqax-bf16-forward-validation-run-v2",
+                        "schema": "seqax-bf16-forward-validation-run-v3",
                         "contract_id": active_contract.contract_id,
                         "source_commit": source_commit,
                     },
@@ -561,12 +655,12 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         text=True,
     ).stdout.strip()
     run_id = numerical_runner.semantic_sha256(
-        "seqax-bf16-forward-validation-run-v2",
+        "seqax-bf16-forward-validation-run-v3",
         contract.contract_id,
         source_commit,
     )
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v2",
+        schema_version="seqax-bf16-forward-validation-run-v3",
         contract_id=contract.contract_id,
         run_id=run_id,
         source_commit=source_commit,
@@ -576,7 +670,7 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         ledger.create(
             run_id,
             {
-                "schema": "seqax-bf16-forward-validation-run-v2",
+                "schema": "seqax-bf16-forward-validation-run-v3",
                 "contract_id": contract.contract_id,
                 "source_commit": source_commit,
             },
@@ -631,7 +725,7 @@ def test_atomic_run_markers_do_not_publish_truncated_targets(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v2",
+        schema_version="seqax-bf16-forward-validation-run-v3",
         contract_id=contract.contract_id,
         run_id="5" * 64,
         source_commit="6" * 40,
@@ -667,7 +761,7 @@ def test_runner_retries_after_identity_publication_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    contract = default_seqax_bf16_validation_contract()
+    contract = _pinned_test_contract(monkeypatch)
     root = tmp_path / "run"
     original_write = numerical_runner._write_json_atomic
     attempts = 0
@@ -739,6 +833,39 @@ def test_runner_rejects_a_wrong_compilation_root_before_writes(
     monkeypatch.setattr(numerical_runner, "_require_clean_repository", lambda _root: None)
 
     with pytest.raises(ValueError, match="SEQAX_BF16_COMPILATION_SOURCE_ROOT_MISMATCH"):
+        numerical_runner.run_seqax_bf16_validation(root, contract)
+
+    assert not root.exists()
+
+
+def test_runner_refuses_pending_hlo_identities_before_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    root = tmp_path / "run"
+    monkeypatch.setattr(numerical_runner, "_require_clean_repository", lambda _root: None)
+    monkeypatch.setattr(
+        numerical_runner,
+        "_require_compilation_source_root",
+        lambda _root, _contract: None,
+    )
+
+    with pytest.raises(ValueError, match="SEQAX_BF16_HLO_IDENTITIES_PENDING"):
+        numerical_runner.run_seqax_bf16_validation(root, contract)
+
+    assert not root.exists()
+
+
+def test_runner_rejects_a_caller_promoted_pending_contract_before_writes(
+    tmp_path: Path,
+) -> None:
+    contract = default_seqax_bf16_validation_contract().model_copy(
+        update={"hlo_identity_status": "pinned"}
+    )
+    root = tmp_path / "run"
+
+    with pytest.raises(ValueError, match="SEQAX_BF16_EXTERNAL_CONTRACT_MISMATCH"):
         numerical_runner.run_seqax_bf16_validation(root, contract)
 
     assert not root.exists()
@@ -826,7 +953,7 @@ def activation_mutant(
     relu,
     interpret_pallas=False,
 ):
-    return original_activation_mutant(
+    stablehlo, output = original_activation_mutant(
         path,
         inputs,
         devices,
@@ -834,13 +961,35 @@ def activation_mutant(
         relu=relu,
         interpret_pallas=pallas,
     )
+    if not pallas:
+        return stablehlo, output
+    structural_path = runner._CompiledPath(
+        plan=control_plan(path.plan),
+        executable=path.executable,
+        mesh=path.mesh,
+        stablehlo=path.stablehlo,
+        compiler_hlo=path.compiler_hlo,
+    )
+    structural_hlo, _ = original_activation_mutant(
+        structural_path,
+        inputs,
+        devices,
+        pallas=False,
+        relu=relu,
+    )
+    return structural_hlo, output
 
 
 def execute_outputs(executable, inputs):
     outputs = list(original_execute_outputs(executable, inputs))
     if len(outputs) > 1:
-        for gate_index in range(1, len(outputs), 2):
+        for gate_index in range(1, len(outputs), 6):
             outputs[gate_index + 1] = rounded_mathematical_silu_bf16(outputs[gate_index])
+            outputs[gate_index + 3] = np.asarray(
+                outputs[gate_index + 1].astype(np.float32)
+                * outputs[gate_index + 2].astype(np.float32),
+                dtype=outputs[gate_index + 3].dtype,
+            )
     return tuple(outputs)
 
 
@@ -931,12 +1080,14 @@ runner._validate_compiled_program = lambda *args, **kwargs: None
 numerical._require_stablehlo_identity = lambda *args, **kwargs: None
 
 contract = runner.default_seqax_bf16_validation_contract()
+contract = contract.model_copy(update={"hlo_identity_status": "pinned"})
+runner.default_seqax_bf16_validation_contract = lambda: contract
 temporary = Path(tempfile.mkdtemp(prefix="seqax-bf16-lifecycle-"))
 try:
     root = temporary / "run"
     result = runner.run_seqax_bf16_validation(root, contract)
-    assert len(result.observations) == 29
-    assert len(result.discriminators) == 14
+    assert len(result.observations) == 41
+    assert len(result.discriminators) == 16
     assert runner.run_seqax_bf16_validation(root, contract) == result
     relocated = temporary / "relocated"
     shutil.copytree(root, relocated)

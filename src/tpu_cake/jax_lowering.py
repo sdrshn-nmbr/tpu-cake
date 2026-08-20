@@ -49,7 +49,7 @@ from tpu_cake.dialects.distributed_tensor import (
 from tpu_cake.dtensor_interpreter import (
     execute_distributed_program_jax,
     execute_distributed_program_jax_sharded,
-    execute_distributed_program_jax_sharded_with_strict_silu,
+    execute_distributed_program_jax_sharded_with_strict_mlp,
 )
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 
@@ -448,7 +448,7 @@ class JaxDistributedMeshPlan:
         mapped, mesh = self.build_mapped(devices=devices)
         return jax.jit(mapped), mesh
 
-    def build_with_strict_silu_checkpoints(
+    def build_with_strict_mlp_checkpoints(
         self,
         *,
         expected_layers: int,
@@ -456,7 +456,7 @@ class JaxDistributedMeshPlan:
         devices=None,
     ):
         if expected_layers <= 0:
-            raise ValueError("strict SiLU checkpoint count must be positive")
+            raise ValueError("strict MLP checkpoint count must be positive")
         selected_devices = tuple(devices or jax.devices())
         if len(selected_devices) != self.device_count:
             raise ValueError(
@@ -474,16 +474,19 @@ class JaxDistributedMeshPlan:
         mesh = Mesh(np.asarray(selected_devices, dtype=object).reshape(axis_shape), axis_names)
 
         def execute(*inputs):
-            outputs, checkpoints = execute_distributed_program_jax_sharded_with_strict_silu(
+            outputs, checkpoints = execute_distributed_program_jax_sharded_with_strict_mlp(
                 module, inputs
             )
-            if len(checkpoints) != expected_layers:
+            if len(checkpoints) != expected_layers or any(
+                len(checkpoint) != 6 for checkpoint in checkpoints
+            ):
                 raise ValueError(
-                    f"strict SiLU expected {expected_layers} checkpoints, found {len(checkpoints)}"
+                    f"strict MLP expected {expected_layers} complete checkpoints, "
+                    f"found {[len(checkpoint) for checkpoint in checkpoints]}"
                 )
             return (*outputs, *(value for checkpoint in checkpoints for value in checkpoint))
 
-        checkpoint_specs = (checkpoint_spec,) * (2 * expected_layers)
+        checkpoint_specs = (checkpoint_spec,) * (6 * expected_layers)
         mapped = jax.shard_map(
             execute,
             mesh=mesh,

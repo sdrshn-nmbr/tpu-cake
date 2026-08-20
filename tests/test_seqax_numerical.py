@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 import ml_dtypes
 import numpy as np
@@ -23,6 +22,7 @@ from tpu_cake.seqax_numerical import (
     mutate_seqax_forward_inputs,
     rounded_mathematical_silu_bf16,
     seqax_discriminator_clause,
+    seqax_down_projection_reference_float32,
     seqax_stablehlo_sha256,
     validate_activation_mutant_stablehlo,
     validate_seqax_numerical_inputs,
@@ -66,7 +66,46 @@ def validate_strict_silu_stablehlo(stablehlo: str, *, expected_count: int) -> No
         stablehlo,
         expected_count=expected_count,
         instrumented=False,
+        require_hidden_down=False,
     )
+
+
+def _synthetic_checkpoint_evidence(
+    scenario: SeqaxBf16NumericalScenario,
+    inputs: tuple[np.ndarray, ...],
+) -> dict[str, object]:
+    gates = tuple(
+        np.full(checkpoint.shape, 0.625, dtype=ml_dtypes.bfloat16)
+        for checkpoint in scenario.gate_checkpoints
+    )
+    silus = tuple(rounded_mathematical_silu_bf16(gate) for gate in gates)
+    up = tuple(
+        np.zeros(checkpoint.shape, dtype=ml_dtypes.bfloat16)
+        for checkpoint in scenario.up_checkpoints
+    )
+    hidden = tuple(
+        np.zeros(checkpoint.shape, dtype=ml_dtypes.bfloat16)
+        for checkpoint in scenario.hidden_checkpoints
+    )
+    down_float32 = tuple(
+        seqax_down_projection_reference_float32(value, inputs[10][layer])
+        for layer, value in enumerate(hidden)
+    )
+    down_bfloat16 = tuple(value.astype(ml_dtypes.bfloat16) for value in down_float32)
+    return {
+        "pallas_gate_checkpoints": gates,
+        "control_gate_checkpoints": tuple(value.copy() for value in gates),
+        "pallas_silu_checkpoints": silus,
+        "control_silu_checkpoints": tuple(value.copy() for value in silus),
+        "pallas_up_checkpoints": up,
+        "control_up_checkpoints": tuple(value.copy() for value in up),
+        "pallas_hidden_checkpoints": hidden,
+        "control_hidden_checkpoints": tuple(value.copy() for value in hidden),
+        "pallas_down_float32_checkpoints": down_float32,
+        "control_down_float32_checkpoints": tuple(value.copy() for value in down_float32),
+        "pallas_down_bfloat16_checkpoints": down_bfloat16,
+        "control_down_bfloat16_checkpoints": tuple(value.copy() for value in down_bfloat16),
+    }
 
 
 def _calibration_evidence(
@@ -83,15 +122,10 @@ def _calibration_evidence(
     seed = scenario.seeds[seed_index]
     inputs = seqax_forward_inputs(seed=seed, **scenario.parameters.model_dump())
     reference = seqax_forward_canonical_reference(inputs, **scenario.parameters.model_dump())
-    gate = np.full(scenario.gate_checkpoints[0].shape, 0.625, dtype=ml_dtypes.bfloat16)
-    silu = rounded_mathematical_silu_bf16(gate)
     evidence: dict[str, object] = {
         "seed": seed,
         "inputs": inputs,
-        "pallas_gate_checkpoints": (gate,),
-        "control_gate_checkpoints": (gate.copy(),),
-        "pallas_silu_checkpoints": (silu,),
-        "control_silu_checkpoints": (silu.copy(),),
+        **_synthetic_checkpoint_evidence(scenario, inputs),
     }
     return contract, scenario, inputs, reference, evidence
 
@@ -122,7 +156,7 @@ def test_mathematical_silu_reference_rounds_once_to_bf16() -> None:
     )
     assert actual.dtype == np.dtype(ml_dtypes.bfloat16)
     assert BF16_UNIT_ROUNDOFF == 0.00390625
-    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v2"
+    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v3"
 
 
 def test_mathematical_silu_reference_rejects_non_bf16_or_nonfinite_input() -> None:
@@ -163,7 +197,7 @@ def test_strict_silu_stablehlo_requires_barrier_dataflow_into_multiply() -> None
             stablehlo.replace("optimization_barrier %rounded", "optimization_barrier %arg0"),
             expected_count=1,
         )
-    with pytest.raises(ValueError, match="must feed exactly one"):
+    with pytest.raises(ValueError, match="multiply dataflow"):
         validate_strict_silu_stablehlo(
             stablehlo.replace("multiply %other, %3", "multiply %other, %arg0"),
             expected_count=1,
@@ -206,11 +240,6 @@ def test_trusted_stablehlo_identity_rejects_a_live_bypass_path() -> None:
       }}
     }}"""
     expected_sha256 = seqax_stablehlo_sha256(stablehlo)
-    validate_trusted_strict_silu_stablehlo(
-        stablehlo,
-        expected_count=1,
-        expected_sha256=expected_sha256,
-    )
     bypass = stablehlo.replace(
         "return %4 : tensor<1x4xbf16>",
         "%bad = stablehlo.negate %arg0 : tensor<1x4xbf16>\n"
@@ -249,15 +278,33 @@ def test_trusted_activation_mutant_identity_rejects_a_live_bypass_path(
     stablehlo = f"""module {{
       {activation}
       func.func public @main(
-        %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
+        %arg0: tensor<1x4xbf16>, %up: tensor<1x4xbf16>,
+        %down_weight: tensor<4x4xbf16>, %residual: tensor<1x4xbf16>
       ) -> tensor<1x4xbf16> {{
         %barrier = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
         %promoted = stablehlo.convert %barrier : (tensor<1x4xbf16>) -> tensor<1x4xf32>
         {activation_op}
         %rounded = stablehlo.convert {activation_result} : (tensor<1x4xf32>) -> tensor<1x4xbf16>
         %result = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
-        %hidden = stablehlo.multiply %other, %result : tensor<1x4xbf16>
-        return %hidden : tensor<1x4xbf16>
+        %multiply_input = stablehlo.optimization_barrier %result : tensor<1x4xbf16>
+        %hidden = stablehlo.multiply %up, %multiply_input : tensor<1x4xbf16>
+        %materialized = stablehlo.optimization_barrier %hidden : tensor<1x4xbf16>
+        %down = stablehlo.dot_general %materialized, %down_weight,
+          contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT]
+          : (tensor<1x4xbf16>, tensor<4x4xbf16>) -> tensor<1x4xf32>
+        %reduced = "stablehlo.reduce_scatter"(%down) <{{
+          channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>,
+          replica_groups = dense<[[0]]> : tensor<1x1xi64>,
+          scatter_dimension = 1 : i64,
+          use_global_device_ids
+        }}> ({{
+        ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+          %sum = stablehlo.add %lhs, %rhs : tensor<f32>
+          stablehlo.return %sum : tensor<f32>
+        }}) : (tensor<1x4xf32>) -> tensor<1x4xf32>
+        %down_bf16 = stablehlo.convert %reduced : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+        %output = stablehlo.add %residual, %down_bf16 : tensor<1x4xbf16>
+        return %output : tensor<1x4xbf16>
       }}
     }}"""
     expected_sha256 = seqax_stablehlo_sha256(stablehlo)
@@ -268,9 +315,9 @@ def test_trusted_activation_mutant_identity_rejects_a_live_bypass_path(
         relu=relu,
     )
     bypass = stablehlo.replace(
-        "return %hidden : tensor<1x4xbf16>",
+        "return %output : tensor<1x4xbf16>",
         "%bad = stablehlo.negate %arg0 : tensor<1x4xbf16>\n"
-        "        %out = stablehlo.add %hidden, %bad : tensor<1x4xbf16>\n"
+        "        %out = stablehlo.add %output, %bad : tensor<1x4xbf16>\n"
         "        return %out : tensor<1x4xbf16>",
     )
 
@@ -321,6 +368,9 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
         "calibration",
         "calibration",
         "calibration",
+        "calibration",
+        "calibration",
+        "calibration",
         "held_out",
         "held_out",
         "held_out",
@@ -339,7 +389,7 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
     }
     assert calibration_seeds.isdisjoint(held_out_seeds)
     assert 16491228204229630496 in calibration_seeds
-    assert len(calibration_seeds) == 17
+    assert len(calibration_seeds) == 29
     assert len(held_out_seeds) == 12
     assert contract.policy.cpu_relative_l2_units == 3.0
     assert contract.policy.cpu_row_scaled_max_units == 8.0
@@ -368,25 +418,22 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
     )
 
 
-def test_bf16_forward_external_contract_is_canonical() -> None:
-    saved = SeqaxBf16ValidationContract.model_validate_json(
-        Path("contracts/seqax-bf16-forward-numerical-v2.json").read_text()
-    )
+def test_bf16_forward_contract_refuses_execution_until_hlo_identities_are_pinned() -> None:
+    contract = default_seqax_bf16_validation_contract()
 
-    assert saved == default_seqax_bf16_validation_contract()
-    assert saved.contract_id == "8e56d50555676708f9c009368e21265a8ea37112c99bcc92803cc0cfa033bee1"
-    assert saved.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
-    assert saved.compilation_source_root == "/home/sudarshan/tpu-cake-main"
-    assert saved.checkpoint_capture == "typed-extra-outputs-v1"
-    assert saved.require_instrumented_output_parity
-    assert saved.require_discriminator_artifact_replay
+    assert contract.hlo_identity_status == "pending"
+    assert contract.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
+    assert contract.compilation_source_root == "/home/sudarshan/tpu-cake-main"
+    assert contract.checkpoint_capture == "typed-strict-mlp-extra-outputs-v3"
+    assert contract.require_instrumented_output_parity
+    assert contract.require_discriminator_artifact_replay
 
 
 def test_bf16_forward_scenario_abis_match_strict_physical_plans() -> None:
     for scenario in default_seqax_bf16_validation_contract().scenarios:
         distributed = seqax_forward_schedule(
             **scenario.parameters.model_dump(),
-            numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+            numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
         )
         physical = lower_seqax_forward_to_physical(distributed).module
         plan = lower_seqax_physical_to_pallas(distributed, physical)
@@ -460,8 +507,8 @@ def test_bf16_checkpoint_uint16_codec_preserves_exact_logical_bits() -> None:
         (("scenarios", 0, "parameters", "model"), "256", "model"),
         (("scenarios", 0, "inputs", 0, "dtype"), "int32", "input ABI"),
         (("scenarios", 0, "pallas_stablehlo_sha256"), "0" * 64, "StableHLO identity"),
-        (("scenarios", 4, "role"), "calibration", "role mismatch"),
-        (("scenarios", 4, "seeds", 0), 1, "seeds mismatch"),
+        (("scenarios", 7, "role"), "calibration", "role mismatch"),
+        (("scenarios", 7, "seeds", 0), 1, "seeds mismatch"),
         (
             ("activation_mutant_stablehlo", 0, "pallas_stablehlo_sha256"),
             "0" * 64,
@@ -528,18 +575,10 @@ def test_bf16_forward_relative_error_budget_scales_with_sqrt_layer_depth() -> No
     seed = scenario.seeds[0]
     inputs = seqax_forward_inputs(seed=seed, **scenario.parameters.model_dump())
     reference = seqax_forward_canonical_reference(inputs, **scenario.parameters.model_dump())
-    gates = tuple(
-        np.full(checkpoint.shape, 0.625, dtype=ml_dtypes.bfloat16)
-        for checkpoint in scenario.gate_checkpoints
-    )
-    silus = tuple(rounded_mathematical_silu_bf16(gate) for gate in gates)
     evidence = {
         "seed": seed,
         "inputs": inputs,
-        "pallas_gate_checkpoints": gates,
-        "control_gate_checkpoints": gates,
-        "pallas_silu_checkpoints": silus,
-        "control_silu_checkpoints": silus,
+        **_synthetic_checkpoint_evidence(scenario, inputs),
         "policy": contract.policy,
         "scenario": scenario,
     }
@@ -662,16 +701,20 @@ def test_bf16_forward_evaluator_regenerates_oracles_and_rejects_forged_evidence(
     fake_output = np.full(scenario.output.shape, 42.0, dtype=np.float32)
     fake_gate = np.full(scenario.gate_checkpoints[0].shape, 0.625, dtype=ml_dtypes.bfloat16)
     fake_silu = np.full_like(fake_gate, 7.0)
+    fake_checkpoints = {key: value for key, value in evidence.items() if "checkpoint" in key}
+    fake_checkpoints.update(
+        pallas_gate_checkpoints=(fake_gate,),
+        control_gate_checkpoints=(fake_gate,),
+        pallas_silu_checkpoints=(fake_silu,),
+        control_silu_checkpoints=(fake_silu,),
+    )
 
     assessment = assess_seqax_bf16_forward(
         fake_output,
         fake_output,
         seed=evidence["seed"],  # type: ignore[arg-type]
         inputs=evidence["inputs"],  # type: ignore[arg-type]
-        pallas_gate_checkpoints=(fake_gate,),
-        control_gate_checkpoints=(fake_gate,),
-        pallas_silu_checkpoints=(fake_silu,),
-        control_silu_checkpoints=(fake_silu,),
+        **fake_checkpoints,
         policy=contract.policy,
         scenario=scenario,
     )
@@ -691,10 +734,7 @@ def test_bf16_forward_evaluator_regenerates_oracles_and_rejects_forged_evidence(
             fake_output,
             seed=evidence["seed"],  # type: ignore[arg-type]
             inputs=tuple(corrupted_inputs),
-            pallas_gate_checkpoints=(fake_gate,),
-            control_gate_checkpoints=(fake_gate,),
-            pallas_silu_checkpoints=(fake_silu,),
-            control_silu_checkpoints=(fake_silu,),
+            **fake_checkpoints,
             policy=contract.policy,
             scenario=scenario,
         )
@@ -744,15 +784,21 @@ def test_bf16_forward_policy_rejects_dtype_shape_and_checkpoint_failures() -> No
     gate = evidence["pallas_gate_checkpoints"][0]  # type: ignore[index]
     mathematical = evidence["pallas_silu_checkpoints"][0]  # type: ignore[index]
     wrong = np.zeros_like(mathematical)
+    checkpoint_evidence = {key: value for key, value in evidence.items() if "checkpoint" in key}
     checkpoint_failure = assess_seqax_bf16_forward(
         reference,
         reference,
         seed=evidence["seed"],  # type: ignore[arg-type]
         inputs=evidence["inputs"],  # type: ignore[arg-type]
-        pallas_gate_checkpoints=(gate,),
-        control_gate_checkpoints=(gate,),
-        pallas_silu_checkpoints=(wrong,),
-        control_silu_checkpoints=(mathematical,),
+        **(
+            checkpoint_evidence
+            | {
+                "pallas_gate_checkpoints": (gate,),
+                "control_gate_checkpoints": (gate,),
+                "pallas_silu_checkpoints": (wrong,),
+                "control_silu_checkpoints": (mathematical,),
+            }
+        ),
         policy=policy,
         scenario=scenario,
     )
@@ -767,10 +813,15 @@ def test_bf16_forward_policy_rejects_dtype_shape_and_checkpoint_failures() -> No
             reference,
             seed=evidence["seed"],  # type: ignore[arg-type]
             inputs=evidence["inputs"],  # type: ignore[arg-type]
-            pallas_gate_checkpoints=(gate,),
-            control_gate_checkpoints=(gate,),
-            pallas_silu_checkpoints=(mathematical.astype(np.float32),),
-            control_silu_checkpoints=(mathematical,),
+            **(
+                checkpoint_evidence
+                | {
+                    "pallas_gate_checkpoints": (gate,),
+                    "control_gate_checkpoints": (gate,),
+                    "pallas_silu_checkpoints": (mathematical.astype(np.float32),),
+                    "control_silu_checkpoints": (mathematical,),
+                }
+            ),
             policy=policy,
             scenario=scenario,
         )
@@ -780,10 +831,15 @@ def test_bf16_forward_policy_rejects_dtype_shape_and_checkpoint_failures() -> No
             reference,
             seed=evidence["seed"],  # type: ignore[arg-type]
             inputs=evidence["inputs"],  # type: ignore[arg-type]
-            pallas_gate_checkpoints=(gate,),
-            control_gate_checkpoints=(gate,),
-            pallas_silu_checkpoints=(mathematical[:, :0],),
-            control_silu_checkpoints=(mathematical,),
+            **(
+                checkpoint_evidence
+                | {
+                    "pallas_gate_checkpoints": (gate,),
+                    "control_gate_checkpoints": (gate,),
+                    "pallas_silu_checkpoints": (mathematical[:, :0],),
+                    "control_silu_checkpoints": (mathematical,),
+                }
+            ),
             policy=policy,
             scenario=scenario,
         )
@@ -793,13 +849,111 @@ def test_bf16_forward_policy_rejects_dtype_shape_and_checkpoint_failures() -> No
             reference,
             seed=evidence["seed"],  # type: ignore[arg-type]
             inputs=evidence["inputs"],  # type: ignore[arg-type]
-            pallas_gate_checkpoints=(gate[:, :0],),
-            control_gate_checkpoints=(gate,),
-            pallas_silu_checkpoints=(mathematical,),
-            control_silu_checkpoints=(mathematical,),
+            **(
+                checkpoint_evidence
+                | {
+                    "pallas_gate_checkpoints": (gate[:, :0],),
+                    "control_gate_checkpoints": (gate,),
+                    "pallas_silu_checkpoints": (mathematical,),
+                    "control_silu_checkpoints": (mathematical,),
+                }
+            ),
             policy=policy,
             scenario=scenario,
         )
+
+
+def test_bf16_down_projection_checkpoint_uses_a_fixed_order_oracle() -> None:
+    contract, scenario, inputs, reference, evidence = _calibration_evidence()
+    silu = evidence["pallas_silu_checkpoints"][0]  # type: ignore[index]
+    up = np.ones(scenario.up_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
+    hidden = np.asarray(silu.astype(np.float32) * up.astype(np.float32), dtype=ml_dtypes.bfloat16)
+    down_float32 = seqax_down_projection_reference_float32(hidden, inputs[10][0])
+    down_bfloat16 = down_float32.astype(ml_dtypes.bfloat16)
+    checkpoint_evidence = {key: value for key, value in evidence.items() if "checkpoint" in key} | {
+        "pallas_hidden_checkpoints": (hidden,),
+        "control_hidden_checkpoints": (hidden.copy(),),
+        "pallas_up_checkpoints": (up,),
+        "control_up_checkpoints": (up.copy(),),
+        "pallas_down_float32_checkpoints": (down_float32,),
+        "control_down_float32_checkpoints": (down_float32.copy(),),
+        "pallas_down_bfloat16_checkpoints": (down_bfloat16,),
+        "control_down_bfloat16_checkpoints": (down_bfloat16.copy(),),
+    }
+
+    exact = assess_seqax_bf16_forward(
+        reference,
+        reference,
+        seed=scenario.seeds[0],
+        inputs=inputs,
+        **checkpoint_evidence,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert exact.pallas_down_float32_within_bound
+    assert exact.control_down_float32_within_bound
+    assert exact.pallas_down_bfloat16_matches_float32
+    assert exact.down_bfloat16_cross_path_exact
+    assert exact.checkpoint_values_consistent
+
+    corrupted_down = down_float32.copy()
+    corrupted_down.reshape(-1)[0] += np.float32(1e-3)
+    corrupted = assess_seqax_bf16_forward(
+        reference,
+        reference,
+        seed=scenario.seeds[0],
+        inputs=inputs,
+        **(checkpoint_evidence | {"pallas_down_float32_checkpoints": (corrupted_down,)}),
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert not corrupted.pallas_down_float32_within_bound
+    assert corrupted.pallas_down_float32_max_bound_ratio > 1.0
+    assert not corrupted.checkpoint_values_consistent
+
+    with pytest.raises(TypeError, match="requires BF16 hidden"):
+        seqax_down_projection_reference_float32(hidden.astype(np.float32), inputs[10][0])
+    with pytest.raises(ValueError, match="contraction shape mismatch"):
+        seqax_down_projection_reference_float32(hidden[..., :-1], inputs[10][0])
+
+
+def test_bf16_hidden_checkpoint_must_equal_the_captured_silu_up_product() -> None:
+    contract, scenario, inputs, reference, evidence = _calibration_evidence()
+    hidden = evidence["pallas_hidden_checkpoints"][0].copy()  # type: ignore[index]
+    hidden.reshape(-1)[0] = np.asarray(
+        hidden.reshape(-1)[0].astype(np.float32) + np.float32(0.25),
+        dtype=ml_dtypes.bfloat16,
+    )
+    down_float32 = seqax_down_projection_reference_float32(hidden, inputs[10][0])
+    down_bfloat16 = down_float32.astype(ml_dtypes.bfloat16)
+    checkpoints = {key: value for key, value in evidence.items() if "checkpoint" in key}
+    corrupted = assess_seqax_bf16_forward(
+        reference,
+        reference,
+        seed=scenario.seeds[0],
+        inputs=inputs,
+        **(
+            checkpoints
+            | {
+                "pallas_hidden_checkpoints": (hidden,),
+                "control_hidden_checkpoints": (hidden.copy(),),
+                "pallas_down_float32_checkpoints": (down_float32,),
+                "control_down_float32_checkpoints": (down_float32.copy(),),
+                "pallas_down_bfloat16_checkpoints": (down_bfloat16,),
+                "control_down_bfloat16_checkpoints": (down_bfloat16.copy(),),
+            }
+        ),
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert corrupted.pallas_down_float32_within_bound
+    assert corrupted.control_down_float32_within_bound
+    assert not corrupted.pallas_hidden_matches_product
+    assert not corrupted.control_hidden_matches_product
+    assert not corrupted.checkpoint_values_consistent
 
 
 def test_strict_silu_stablehlo_rejects_identity_and_relu_substitutions() -> None:
@@ -903,8 +1057,18 @@ def test_bf16_forward_discriminator_clause_inventory_is_complete_and_typed() -> 
     )
 
     assert len(clauses) == len(contract.required_discriminators)
-    assert clauses[0].value == "strict_hlo_structure"
-    assert clauses[4].value == "physical_schedule_verification"
+    assert (
+        seqax_discriminator_clause(SeqaxNumericalDiscriminator.REMOVE_HIDDEN_BARRIER).value
+        == "strict_hlo_structure"
+    )
+    assert (
+        seqax_discriminator_clause(SeqaxNumericalDiscriminator.CORRUPT_DOWN_CHECKPOINT).value
+        == "down_projection_oracle"
+    )
+    assert (
+        seqax_discriminator_clause(SeqaxNumericalDiscriminator.DROP_REDUCTION_COLLECTIVE).value
+        == "physical_schedule_verification"
+    )
     assert clauses[-1].value == "output_shape"
     with pytest.raises(TypeError, match="must be typed"):
         seqax_discriminator_clause("localized_spike")  # type: ignore[arg-type]

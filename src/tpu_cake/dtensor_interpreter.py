@@ -189,7 +189,7 @@ def _execute_block(
     block: Block,
     environment: dict[SSAValue, jax.Array],
     semantics: _ExecutionSemantics = _LOGICAL_SEMANTICS,
-    strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
+    strict_mlp_checkpoints: list[list[jax.Array]] | None = None,
 ) -> tuple[jax.Array, ...] | None:
     for operation in block.ops:
         if isinstance(operation, (ReturnOp, ScanYieldOp)):
@@ -244,10 +244,26 @@ def _execute_block(
                     scatter_dimension=scatter_dimension,
                     tiled=True,
                 )
+            if strict_mlp_checkpoints and len(strict_mlp_checkpoints[-1]) == 4:
+                producer = operation.value.owner
+                if isinstance(producer, (EinsumOp, EinsumLocalOp)):
+                    hidden = producer.lhs.owner
+                    if (
+                        isinstance(hidden, ElementwiseOp)
+                        and hidden.function.data == "multiply"
+                        and hidden.materialization is not None
+                    ):
+                        strict_mlp_checkpoints[-1].append(result)
         elif isinstance(operation, CastOp):
             result_type = operation.result.type
             assert isinstance(result_type, DTensorType)
             result = _cast(environment[operation.value], result_type)
+            if (
+                strict_mlp_checkpoints
+                and len(strict_mlp_checkpoints[-1]) == 5
+                and isinstance(operation.value.owner, ReduceScatterOp)
+            ):
+                strict_mlp_checkpoints[-1].append(result)
         elif isinstance(operation, RmsNormOp):
             value = environment[operation.value]
             scale = environment[operation.scale]
@@ -377,12 +393,27 @@ def _execute_block(
             result = _cast(result, result_type)
             if strict_materialization:
                 result = jax.lax.optimization_barrier(result)
-            if (
-                strict_materialization
-                and function == "silu"
-                and strict_silu_checkpoints is not None
-            ):
-                strict_silu_checkpoints.append((values[0], result))
+            if strict_materialization and strict_mlp_checkpoints is not None:
+                if function == "silu":
+                    strict_mlp_checkpoints.append([values[0], result])
+                elif function == "multiply":
+                    if not strict_mlp_checkpoints or len(strict_mlp_checkpoints[-1]) != 2:
+                        raise UnsupportedInterpretationError(
+                            "strict hidden multiply must follow its strict SiLU"
+                        )
+                    silu_indices = tuple(
+                        index
+                        for index, operand in enumerate(operation.values)
+                        if isinstance(operand.owner, ElementwiseOp)
+                        and operand.owner.function.data == "silu"
+                        and operand.owner.materialization is not None
+                    )
+                    if len(silu_indices) != 1:
+                        raise UnsupportedInterpretationError(
+                            "strict hidden multiply must consume one strict SiLU"
+                        )
+                    up_index = 1 - silu_indices[0]
+                    strict_mlp_checkpoints[-1].extend((values[up_index], result))
         elif isinstance(operation, LayerScanOp):
             captures = tuple(environment[value] for value in operation.captures)
             carries = captures[: operation.carry_count.data]
@@ -408,7 +439,7 @@ def _execute_block(
                     operation.body.block,
                     nested_environment,
                     semantics,
-                    strict_silu_checkpoints,
+                    strict_mlp_checkpoints,
                 )
                 if yielded is None:
                     raise UnsupportedInterpretationError("layer scan body did not yield")
@@ -516,10 +547,10 @@ def execute_distributed_program_jax_sharded(
     return outputs
 
 
-def execute_distributed_program_jax_sharded_with_strict_silu(
+def execute_distributed_program_jax_sharded_with_strict_mlp(
     module: ModuleOp,
     inputs: Sequence[jax.Array],
-) -> tuple[tuple[jax.Array, ...], tuple[tuple[jax.Array, jax.Array], ...]]:
+) -> tuple[tuple[jax.Array, ...], tuple[tuple[jax.Array, ...], ...]]:
     module.verify()
     programs = tuple(
         operation for operation in module.body.block.ops if isinstance(operation, ProgramOp)
@@ -548,7 +579,7 @@ def execute_distributed_program_jax_sharded_with_strict_silu(
                 f"{semantics.shape(value_type)}"
             )
         environment[argument] = value
-    checkpoints: list[tuple[jax.Array, jax.Array]] = []
+    checkpoints: list[list[jax.Array]] = []
     outputs = _execute_block(
         program.body.block,
         environment,
@@ -557,7 +588,9 @@ def execute_distributed_program_jax_sharded_with_strict_silu(
     )
     if outputs is None:
         raise UnsupportedInterpretationError("distributed program did not return")
-    return outputs, tuple(checkpoints)
+    if any(len(checkpoint) != 6 for checkpoint in checkpoints):
+        raise UnsupportedInterpretationError("strict MLP checkpoint set is incomplete")
+    return outputs, tuple(tuple(checkpoint) for checkpoint in checkpoints)
 
 
 def interpret_distributed_program(

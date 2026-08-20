@@ -389,7 +389,7 @@ class SeqaxPallasPlan:
         *,
         interpret: bool,
         devices,
-        strict_silu_layers: int,
+        strict_mlp_layers: int,
         checkpoint_spec: PartitionSpec | None,
     ):
         _distributed, physical = self._validated_modules()
@@ -426,9 +426,7 @@ class SeqaxPallasPlan:
         def physical_call(*inputs):
             einsum_index = 0
             vector_index = 0
-            checkpoints: list[tuple[jax.Array, jax.Array]] | None = (
-                [] if strict_silu_layers else None
-            )
+            checkpoints: list[list[jax.Array]] | None = [] if strict_mlp_layers else None
 
             def einsum(
                 physical_operation: MxuEinsumOp,
@@ -486,7 +484,7 @@ class SeqaxPallasPlan:
                 physical,
                 inputs,
                 einsum=einsum,
-                strict_silu_checkpoints=checkpoints,
+                strict_mlp_checkpoints=checkpoints,
                 pallas_silu_multiply=silu_multiply if physical_vectors else None,
             )
             if einsum_index != len(physical_einsums):
@@ -499,18 +497,20 @@ class SeqaxPallasPlan:
                 )
             if checkpoints is None:
                 return outputs
-            if len(checkpoints) != strict_silu_layers:
+            if len(checkpoints) != strict_mlp_layers or any(
+                len(checkpoint) != 6 for checkpoint in checkpoints
+            ):
                 raise ValueError(
-                    f"strict SiLU expected {strict_silu_layers} checkpoints, "
-                    f"found {len(checkpoints)}"
+                    f"strict MLP expected {strict_mlp_layers} complete checkpoints, "
+                    f"found {[len(checkpoint) for checkpoint in checkpoints]}"
                 )
             return (*outputs, *(value for checkpoint in checkpoints for value in checkpoint))
 
         output_specs = tuple(contract.partition_spec() for contract in self.output_contracts)
-        if strict_silu_layers:
+        if strict_mlp_layers:
             if checkpoint_spec is None:
-                raise ValueError("strict SiLU checkpoint sharding must be explicit")
-            output_specs += (checkpoint_spec,) * (2 * strict_silu_layers)
+                raise ValueError("strict MLP checkpoint sharding must be explicit")
+            output_specs += (checkpoint_spec,) * (6 * strict_mlp_layers)
 
         mapped = jax.shard_map(
             physical_call,
@@ -525,7 +525,7 @@ class SeqaxPallasPlan:
         return self._build_mapped(
             interpret=interpret,
             devices=devices,
-            strict_silu_layers=0,
+            strict_mlp_layers=0,
             checkpoint_spec=None,
         )
 
@@ -533,7 +533,7 @@ class SeqaxPallasPlan:
         mapped, mesh = self.build_mapped(interpret=interpret, devices=devices)
         return jax.jit(mapped), mesh
 
-    def build_with_strict_silu_checkpoints(
+    def build_with_strict_mlp_checkpoints(
         self,
         *,
         expected_layers: int,
@@ -542,11 +542,11 @@ class SeqaxPallasPlan:
         devices=None,
     ):
         if expected_layers <= 0:
-            raise ValueError("strict SiLU checkpoint count must be positive")
+            raise ValueError("strict MLP checkpoint count must be positive")
         mapped, mesh = self._build_mapped(
             interpret=interpret,
             devices=devices,
-            strict_silu_layers=expected_layers,
+            strict_mlp_layers=expected_layers,
             checkpoint_spec=checkpoint_spec,
         )
         return jax.jit(mapped), mesh

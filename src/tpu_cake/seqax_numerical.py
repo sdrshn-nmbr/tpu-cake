@@ -19,9 +19,11 @@ from tpu_cake.workloads.seqax_oracle import (
 )
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
-SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v2"
+SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v3"
+SEQAX_BF16_HLO_IDENTITY_STATUS = "pending"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
+_V2_CALIBRATION_SCHEMA = "bf16-forward-numerical-v2"
 _REGION_TERMINATORS = frozenset({"sdy.return", "stablehlo.return"})
 _CALIBRATION_PARAMETERS = {
     "batch": 2,
@@ -94,7 +96,7 @@ _CALIBRATION_SURFACE_SEEDS = {
     )
     for name in _CALIBRATION_SURFACE_PARAMETERS
 }
-_HELD_OUT_PARAMETERS = {
+_V2_CALIBRATION_PARAMETERS = {
     "m192-b2-s4-l2": {
         "batch": 2,
         "data_mesh": 2,
@@ -134,6 +136,60 @@ _HELD_OUT_PARAMETERS = {
         "query_groups": 2,
         "rope_max_timescale": 256,
         "sequence": 8,
+        "tensor_mesh": 4,
+        "vocabulary": 64,
+    },
+}
+_V2_CALIBRATION_SEEDS = {
+    name: tuple(
+        semantic_seed(
+            _V2_CALIBRATION_SCHEMA,
+            f"{name}:held-out:{index}",
+        )
+        for index in range(4)
+    )
+    for name in _V2_CALIBRATION_PARAMETERS
+}
+_HELD_OUT_PARAMETERS = {
+    "m224-b4-s5-l2": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 56,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 2,
+        "model": 224,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 5,
+        "tensor_mesh": 4,
+        "vocabulary": 64,
+    },
+    "m352-b2-s6-l1": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 44,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 352,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 6,
+        "tensor_mesh": 4,
+        "vocabulary": 64,
+    },
+    "m288-b4-s4-l3": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 48,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 3,
+        "model": 288,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 4,
         "tensor_mesh": 4,
         "vocabulary": 64,
     },
@@ -181,6 +237,24 @@ _STABLEHLO_SHA256 = {
         "instrumented_pallas": "e1744714945f2960f6434b7a6fa318f22779a5a218f9b23ee7d7677ac7983159",
         "instrumented_control": "0215702f5ca20e8841d33cd818e0fd41f257e5eb5dbe82ecba1cc744343079d3",
     },
+    "m224-b4-s5-l2": {
+        "pallas": "1aa604c425d158797cc5e95ab4e27ba73fe7e4cffe8b76631208caf36e37be2c",
+        "control": "5b5c87f00b189ad942fe6da3b4c62b00dd3cd7fea75ea7e65250e6db8f1ab285",
+        "instrumented_pallas": "06b51213587d4ed05289631bc093ef5d847bbe52a3a165f3cc82230343e0d13b",
+        "instrumented_control": "41395212f0b09255f015184bf595224c33c660a2bafe2d784b005c482cc22c44",
+    },
+    "m352-b2-s6-l1": {
+        "pallas": "b92905ad6c3b031f3db23958a5e1a4d721d761cc5418e3ffe9de84d180fe7a69",
+        "control": "580e88491762c2907e3ac853486c8cd2c3207762e07f0d869cba42dc1bdd9062",
+        "instrumented_pallas": "6ebb99f3c9d73faba3a8b19e2d49f56694d0a828f7825fd48fbc0cf4091f97f7",
+        "instrumented_control": "617d65edb907f42e1885b848576aa1402324aa422f97461bd25874417e776271",
+    },
+    "m288-b4-s4-l3": {
+        "pallas": "8b5c8e95eee7a2f9b7a73c72a9e596b1ff3b2a10f2bdd8419b5aa1cbe7572e88",
+        "control": "5a32f34548ddbab5998586d3d6f489e45581eca8a88b9c7fd1798f500f533e54",
+        "instrumented_pallas": "1f174e03cc3c95ffe99f0f71a648be9854ce6e1b5b2a7f1065314c1272236070",
+        "instrumented_control": "df32c73e17a9912ef72b372c98aa3714dc808d0b3a80106c1b37d71ed208e6d9",
+    },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
     "identity_silu": {
@@ -209,8 +283,10 @@ class SeqaxInputMutation(StrEnum):
 class SeqaxNumericalDiscriminator(StrEnum):
     REMOVE_INPUT_BARRIER = "remove_input_barrier"
     REMOVE_OUTPUT_BARRIER = "remove_output_barrier"
+    REMOVE_HIDDEN_BARRIER = "remove_hidden_barrier"
     IDENTITY_SILU = "identity_silu"
     RELU_SILU = "relu_silu"
+    CORRUPT_DOWN_CHECKPOINT = "corrupt_down_checkpoint"
     DROP_REDUCTION_COLLECTIVE = "drop_reduction_collective"
     DROP_EMBEDDING_SHARD = "drop_embedding_shard"
     ROLL_MODEL_SHARD = "roll_model_shard"
@@ -225,6 +301,7 @@ class SeqaxNumericalDiscriminator(StrEnum):
 
 class SeqaxDiscriminatorClause(StrEnum):
     STRICT_HLO_STRUCTURE = "strict_hlo_structure"
+    DOWN_PROJECTION_ORACLE = "down_projection_oracle"
     PHYSICAL_SCHEDULE_VERIFICATION = "physical_schedule_verification"
     FORWARD_NUMERICAL_POLICY = "forward_numerical_policy"
     ROW_SCALED_MAXIMUM = "row_scaled_maximum"
@@ -241,8 +318,14 @@ _DISCRIMINATOR_CLAUSES = {
     SeqaxNumericalDiscriminator.REMOVE_OUTPUT_BARRIER: (
         SeqaxDiscriminatorClause.STRICT_HLO_STRUCTURE
     ),
+    SeqaxNumericalDiscriminator.REMOVE_HIDDEN_BARRIER: (
+        SeqaxDiscriminatorClause.STRICT_HLO_STRUCTURE
+    ),
     SeqaxNumericalDiscriminator.IDENTITY_SILU: (SeqaxDiscriminatorClause.STRICT_HLO_STRUCTURE),
     SeqaxNumericalDiscriminator.RELU_SILU: (SeqaxDiscriminatorClause.STRICT_HLO_STRUCTURE),
+    SeqaxNumericalDiscriminator.CORRUPT_DOWN_CHECKPOINT: (
+        SeqaxDiscriminatorClause.DOWN_PROJECTION_ORACLE
+    ),
     SeqaxNumericalDiscriminator.DROP_REDUCTION_COLLECTIVE: (
         SeqaxDiscriminatorClause.PHYSICAL_SCHEDULE_VERIFICATION
     ),
@@ -287,7 +370,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: str = SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA
-    numerical_semantics: str = "typed_bf16_v1"
+    numerical_semantics: str = "typed_bf16_hidden_v2"
     unit_roundoff: float = BF16_UNIT_ROUNDOFF
     cpu_relative_l2_units: float = Field(gt=0)
     cpu_row_scaled_max_units: float = Field(gt=0)
@@ -309,7 +392,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
     def policy_is_canonical(self) -> SeqaxBf16NumericalPolicy:
         if self.schema_version != SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA:
             raise ValueError("Seqax BF16 numerical policy schema mismatch")
-        if self.numerical_semantics != "typed_bf16_v1":
+        if self.numerical_semantics != "typed_bf16_hidden_v2":
             raise ValueError("Seqax BF16 numerical policy requires typed BF16 semantics")
         if self.unit_roundoff != BF16_UNIT_ROUNDOFF:
             raise ValueError("Seqax BF16 numerical policy unit roundoff mismatch")
@@ -393,6 +476,9 @@ def _scenario_abi(
     SeqaxNumericalTensorContract,
     tuple[SeqaxNumericalTensorContract, ...],
     tuple[SeqaxNumericalTensorContract, ...],
+    tuple[SeqaxNumericalTensorContract, ...],
+    tuple[SeqaxNumericalTensorContract, ...],
+    tuple[SeqaxNumericalTensorContract, ...],
 ]:
     batch = parameters.batch
     sequence = parameters.sequence
@@ -450,7 +536,48 @@ def _scenario_abi(
         )
         for layer in range(layers)
     )
-    return inputs, output, gate_checkpoints, silu_checkpoints
+    up_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_up",
+            (batch, sequence, feed_forward),
+            "bfloat16",
+        )
+        for layer in range(layers)
+    )
+    hidden_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_hidden",
+            (batch, sequence, feed_forward),
+            "bfloat16",
+        )
+        for layer in range(layers)
+    )
+    down_float32_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_down_float32",
+            (batch, sequence, model),
+            "float32",
+        )
+        for layer in range(layers)
+    )
+    down_bfloat16_checkpoints = tuple(
+        tensor(
+            f"layer_{layer:02d}_down_bfloat16",
+            (batch, sequence, model),
+            "bfloat16",
+        )
+        for layer in range(layers)
+    )
+    return (
+        inputs,
+        output,
+        gate_checkpoints,
+        silu_checkpoints,
+        up_checkpoints,
+        hidden_checkpoints,
+        down_float32_checkpoints,
+        down_bfloat16_checkpoints,
+    )
 
 
 class SeqaxBf16NumericalScenario(BaseModel):
@@ -464,6 +591,10 @@ class SeqaxBf16NumericalScenario(BaseModel):
     output: SeqaxNumericalTensorContract
     gate_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
     silu_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    up_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    hidden_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    down_float32_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    down_bfloat16_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
     pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     instrumented_pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -473,9 +604,16 @@ class SeqaxBf16NumericalScenario(BaseModel):
     def parameter_schema_is_complete(self) -> SeqaxBf16NumericalScenario:
         if len(self.seeds) != len(set(self.seeds)):
             raise ValueError("Seqax BF16 numerical scenario seeds must be unique")
-        expected_inputs, expected_output, expected_gates, expected_silu = _scenario_abi(
-            self.parameters
-        )
+        (
+            expected_inputs,
+            expected_output,
+            expected_gates,
+            expected_silu,
+            expected_up,
+            expected_hidden,
+            expected_down_float32,
+            expected_down_bfloat16,
+        ) = _scenario_abi(self.parameters)
         if self.inputs != expected_inputs:
             raise ValueError("Seqax BF16 numerical scenario input ABI mismatch")
         if self.output != expected_output:
@@ -484,6 +622,14 @@ class SeqaxBf16NumericalScenario(BaseModel):
             raise ValueError("Seqax BF16 numerical scenario gate checkpoint ABI mismatch")
         if self.silu_checkpoints != expected_silu:
             raise ValueError("Seqax BF16 numerical scenario SiLU checkpoint ABI mismatch")
+        if self.up_checkpoints != expected_up:
+            raise ValueError("Seqax BF16 numerical scenario up checkpoint ABI mismatch")
+        if self.hidden_checkpoints != expected_hidden:
+            raise ValueError("Seqax BF16 numerical scenario hidden checkpoint ABI mismatch")
+        if self.down_float32_checkpoints != expected_down_float32:
+            raise ValueError("Seqax BF16 numerical scenario float32 down checkpoint ABI mismatch")
+        if self.down_bfloat16_checkpoints != expected_down_bfloat16:
+            raise ValueError("Seqax BF16 numerical scenario BF16 down checkpoint ABI mismatch")
         expected_hlo = _STABLEHLO_SHA256.get(self.name)
         if expected_hlo is None or (
             self.pallas_stablehlo_sha256,
@@ -523,18 +669,19 @@ class SeqaxBf16ValidationContract(BaseModel):
 
     schema_version: str = SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA
     policy: SeqaxBf16NumericalPolicy
-    scenarios: tuple[SeqaxBf16NumericalScenario, ...] = Field(min_length=7)
+    scenarios: tuple[SeqaxBf16NumericalScenario, ...] = Field(min_length=10, max_length=10)
     activation_mutant_stablehlo: tuple[SeqaxBf16ActivationMutantStablehloContract, ...] = Field(
         min_length=2, max_length=2
     )
     required_discriminators: tuple[SeqaxNumericalDiscriminator, ...]
     runtime: SeqaxBf16RuntimeContract
     compilation_source_root: str
+    hlo_identity_status: str = Field(pattern=r"^(pending|pinned)$")
     backend: str
     device_kind: str
     device_count: int = Field(gt=0)
     acceptance_authority: str = "authenticated-runner-and-relocated-public-replay"
-    checkpoint_capture: str = "typed-extra-outputs-v1"
+    checkpoint_capture: str = "typed-strict-mlp-extra-outputs-v3"
     require_instrumented_output_parity: bool = True
     require_discriminator_artifact_replay: bool = True
 
@@ -553,7 +700,7 @@ class SeqaxBf16ValidationContract(BaseModel):
             self.require_discriminator_artifact_replay,
         ) != (
             "authenticated-runner-and-relocated-public-replay",
-            "typed-extra-outputs-v1",
+            "typed-strict-mlp-extra-outputs-v3",
             True,
             True,
         ):
@@ -568,6 +715,7 @@ class SeqaxBf16ValidationContract(BaseModel):
         if tuple(scenario.name for scenario in self.scenarios) != (
             "calibration-m256-b2-s1-l1",
             *_CALIBRATION_SURFACE_PARAMETERS,
+            *_V2_CALIBRATION_PARAMETERS,
             *_HELD_OUT_PARAMETERS,
         ):
             raise ValueError("Seqax BF16 validation scenarios are not canonical")
@@ -580,6 +728,10 @@ class SeqaxBf16ValidationContract(BaseModel):
                 expected_role = SeqaxNumericalScenarioRole.CALIBRATION
                 expected_parameters = _CALIBRATION_SURFACE_PARAMETERS[scenario.name]
                 expected_seeds = _CALIBRATION_SURFACE_SEEDS[scenario.name]
+            elif scenario.name in _V2_CALIBRATION_PARAMETERS:
+                expected_role = SeqaxNumericalScenarioRole.CALIBRATION
+                expected_parameters = _V2_CALIBRATION_PARAMETERS[scenario.name]
+                expected_seeds = _V2_CALIBRATION_SEEDS[scenario.name]
             else:
                 expected_role = SeqaxNumericalScenarioRole.HELD_OUT
                 expected_parameters = _HELD_OUT_PARAMETERS.get(scenario.name)
@@ -629,6 +781,17 @@ class SeqaxBf16NumericalAssessment(BaseModel):
     pallas_silu_matches_mathematical: bool
     control_silu_matches_mathematical: bool
     silu_cross_path_exact: bool
+    up_cross_path_exact: bool
+    pallas_hidden_matches_product: bool
+    control_hidden_matches_product: bool
+    hidden_cross_path_exact: bool
+    pallas_down_float32_max_bound_ratio: float = Field(ge=0)
+    control_down_float32_max_bound_ratio: float = Field(ge=0)
+    pallas_down_float32_within_bound: bool
+    control_down_float32_within_bound: bool
+    pallas_down_bfloat16_matches_float32: bool
+    control_down_bfloat16_matches_float32: bool
+    down_bfloat16_cross_path_exact: bool
     final_outputs_satisfy_policy: bool
     checkpoint_values_consistent: bool
 
@@ -656,9 +819,16 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
         }
 
     calibration_parameters = SeqaxBf16ScenarioParameters(**_CALIBRATION_PARAMETERS)
-    calibration_inputs, calibration_output, calibration_gates, calibration_silu = _scenario_abi(
-        calibration_parameters
-    )
+    (
+        calibration_inputs,
+        calibration_output,
+        calibration_gates,
+        calibration_silu,
+        calibration_up,
+        calibration_hidden,
+        calibration_down_float32,
+        calibration_down_bfloat16,
+    ) = _scenario_abi(calibration_parameters)
     scenarios = [
         SeqaxBf16NumericalScenario(
             name="calibration-m256-b2-s1-l1",
@@ -669,12 +839,18 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             output=calibration_output,
             gate_checkpoints=calibration_gates,
             silu_checkpoints=calibration_silu,
+            up_checkpoints=calibration_up,
+            hidden_checkpoints=calibration_hidden,
+            down_float32_checkpoints=calibration_down_float32,
+            down_bfloat16_checkpoints=calibration_down_bfloat16,
             **scenario_hlo("calibration-m256-b2-s1-l1"),
         )
     ]
     for name, raw_parameters in _CALIBRATION_SURFACE_PARAMETERS.items():
         parameters = SeqaxBf16ScenarioParameters(**raw_parameters)
-        inputs, output, gates, silu = _scenario_abi(parameters)
+        inputs, output, gates, silu, up, hidden, down_float32, down_bfloat16 = _scenario_abi(
+            parameters
+        )
         scenarios.append(
             SeqaxBf16NumericalScenario(
                 name=name,
@@ -685,12 +861,40 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 output=output,
                 gate_checkpoints=gates,
                 silu_checkpoints=silu,
+                up_checkpoints=up,
+                hidden_checkpoints=hidden,
+                down_float32_checkpoints=down_float32,
+                down_bfloat16_checkpoints=down_bfloat16,
+                **scenario_hlo(name),
+            )
+        )
+    for name, raw_parameters in _V2_CALIBRATION_PARAMETERS.items():
+        parameters = SeqaxBf16ScenarioParameters(**raw_parameters)
+        inputs, output, gates, silu, up, hidden, down_float32, down_bfloat16 = _scenario_abi(
+            parameters
+        )
+        scenarios.append(
+            SeqaxBf16NumericalScenario(
+                name=name,
+                role=SeqaxNumericalScenarioRole.CALIBRATION,
+                parameters=parameters,
+                seeds=_V2_CALIBRATION_SEEDS[name],
+                inputs=inputs,
+                output=output,
+                gate_checkpoints=gates,
+                silu_checkpoints=silu,
+                up_checkpoints=up,
+                hidden_checkpoints=hidden,
+                down_float32_checkpoints=down_float32,
+                down_bfloat16_checkpoints=down_bfloat16,
                 **scenario_hlo(name),
             )
         )
     for name, raw_parameters in _HELD_OUT_PARAMETERS.items():
         parameters = SeqaxBf16ScenarioParameters(**raw_parameters)
-        inputs, output, gates, silu = _scenario_abi(parameters)
+        inputs, output, gates, silu, up, hidden, down_float32, down_bfloat16 = _scenario_abi(
+            parameters
+        )
         scenarios.append(
             SeqaxBf16NumericalScenario(
                 name=name,
@@ -707,6 +911,10 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 output=output,
                 gate_checkpoints=gates,
                 silu_checkpoints=silu,
+                up_checkpoints=up,
+                hidden_checkpoints=hidden,
+                down_float32_checkpoints=down_float32,
+                down_bfloat16_checkpoints=down_bfloat16,
                 **scenario_hlo(name),
             )
         )
@@ -739,6 +947,7 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             uv_lock_sha256="7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b",
         ),
         compilation_source_root=SEQAX_BF16_COMPILATION_SOURCE_ROOT,
+        hlo_identity_status=SEQAX_BF16_HLO_IDENTITY_STATUS,
         backend="tpu",
         device_kind="TPU7x",
         device_count=8,
@@ -796,6 +1005,84 @@ def _validate_bf16_checkpoints(
     return arrays
 
 
+def _validate_float32_checkpoints(
+    values: tuple[np.ndarray, ...],
+    expected: tuple[SeqaxNumericalTensorContract, ...],
+    *,
+    label: str,
+) -> tuple[np.ndarray, ...]:
+    if not values or len(values) != len(expected):
+        raise ValueError(f"Seqax BF16 {label} checkpoint count does not match the contract")
+    arrays = tuple(np.asarray(value) for value in values)
+    for checkpoint, contract in zip(arrays, expected, strict=True):
+        if checkpoint.dtype != np.float32:
+            raise TypeError(f"Seqax BF16 {label} checkpoints must use float32")
+        if checkpoint.shape != contract.shape:
+            raise ValueError(f"Seqax BF16 {label} checkpoint shape does not match the contract")
+        if not np.all(np.isfinite(checkpoint)):
+            raise ValueError(f"Seqax BF16 {label} checkpoints must be finite")
+    return arrays
+
+
+def _down_projection_reference_components(
+    hidden: np.ndarray,
+    down_weight: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    hidden64 = hidden.astype(np.float64)
+    weight64 = down_weight.astype(ml_dtypes.bfloat16).astype(np.float64)
+    output_shape = (*hidden.shape[:-1], down_weight.shape[0])
+    reference = np.empty(output_shape, dtype=np.float64)
+    absolute_sum = np.empty(output_shape, dtype=np.float64)
+    for batch, sequence, model in np.ndindex(output_shape):
+        products = tuple(
+            float(hidden64[batch, sequence, feed_forward]) * float(weight64[model, feed_forward])
+            for feed_forward in range(hidden.shape[-1])
+        )
+        reference[batch, sequence, model] = math.fsum(products)
+        absolute_sum[batch, sequence, model] = math.fsum(abs(value) for value in products)
+    return reference, absolute_sum
+
+
+def seqax_down_projection_reference_float32(
+    hidden: np.ndarray,
+    down_weight: np.ndarray,
+) -> np.ndarray:
+    hidden_array = np.asarray(hidden)
+    down_weight_array = np.asarray(down_weight)
+    if hidden_array.dtype != np.dtype(ml_dtypes.bfloat16):
+        raise TypeError("Seqax down projection reference requires BF16 hidden values")
+    if down_weight_array.dtype != np.float32:
+        raise TypeError("Seqax down projection reference requires float32 down weights")
+    if hidden_array.ndim != 3 or down_weight_array.ndim != 2:
+        raise ValueError(
+            "Seqax down projection reference requires rank-3 hidden and rank-2 weights"
+        )
+    if hidden_array.shape[-1] != down_weight_array.shape[-1]:
+        raise ValueError("Seqax down projection reference contraction shape mismatch")
+    if not np.all(np.isfinite(hidden_array)) or not np.all(np.isfinite(down_weight_array)):
+        raise ValueError("Seqax down projection reference requires finite inputs")
+    reference, _absolute_sum = _down_projection_reference_components(
+        hidden_array, down_weight_array
+    )
+    return reference.astype(np.float32)
+
+
+def _down_projection_bound_ratio(
+    actual: np.ndarray,
+    hidden: np.ndarray,
+    down_weight: np.ndarray,
+    *,
+    tensor_mesh: int,
+) -> float:
+    reference, absolute_sum = _down_projection_reference_components(hidden, down_weight)
+    additions = hidden.shape[-1] + tensor_mesh
+    float32_unit_roundoff = 2.0**-24
+    gamma = additions * float32_unit_roundoff / (1.0 - additions * float32_unit_roundoff)
+    bound = gamma * absolute_sum + np.finfo(np.float32).tiny
+    ratio = np.abs(actual.astype(np.float64) - reference) / bound
+    return round(float(np.max(ratio)), 15)
+
+
 def assess_seqax_bf16_forward(
     pallas: np.ndarray,
     control: np.ndarray,
@@ -806,6 +1093,14 @@ def assess_seqax_bf16_forward(
     control_gate_checkpoints: tuple[np.ndarray, ...],
     pallas_silu_checkpoints: tuple[np.ndarray, ...],
     control_silu_checkpoints: tuple[np.ndarray, ...],
+    pallas_up_checkpoints: tuple[np.ndarray, ...],
+    control_up_checkpoints: tuple[np.ndarray, ...],
+    pallas_hidden_checkpoints: tuple[np.ndarray, ...],
+    control_hidden_checkpoints: tuple[np.ndarray, ...],
+    pallas_down_float32_checkpoints: tuple[np.ndarray, ...],
+    control_down_float32_checkpoints: tuple[np.ndarray, ...],
+    pallas_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
+    control_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
     policy: SeqaxBf16NumericalPolicy,
     scenario: SeqaxBf16NumericalScenario,
 ) -> SeqaxBf16NumericalAssessment:
@@ -873,6 +1168,46 @@ def assess_seqax_bf16_forward(
         scenario.silu_checkpoints,
         label="SiLU",
     )
+    pallas_up = _validate_bf16_checkpoints(
+        pallas_up_checkpoints,
+        scenario.up_checkpoints,
+        label="up",
+    )
+    control_up = _validate_bf16_checkpoints(
+        control_up_checkpoints,
+        scenario.up_checkpoints,
+        label="up",
+    )
+    pallas_hidden = _validate_bf16_checkpoints(
+        pallas_hidden_checkpoints,
+        scenario.hidden_checkpoints,
+        label="hidden",
+    )
+    control_hidden = _validate_bf16_checkpoints(
+        control_hidden_checkpoints,
+        scenario.hidden_checkpoints,
+        label="hidden",
+    )
+    pallas_down_float32 = _validate_float32_checkpoints(
+        pallas_down_float32_checkpoints,
+        scenario.down_float32_checkpoints,
+        label="float32 down",
+    )
+    control_down_float32 = _validate_float32_checkpoints(
+        control_down_float32_checkpoints,
+        scenario.down_float32_checkpoints,
+        label="float32 down",
+    )
+    pallas_down_bfloat16 = _validate_bf16_checkpoints(
+        pallas_down_bfloat16_checkpoints,
+        scenario.down_bfloat16_checkpoints,
+        label="BF16 down",
+    )
+    control_down_bfloat16 = _validate_bf16_checkpoints(
+        control_down_bfloat16_checkpoints,
+        scenario.down_bfloat16_checkpoints,
+        label="BF16 down",
+    )
     pallas_mathematical = tuple(rounded_mathematical_silu_bf16(value) for value in pallas_gates)
     control_mathematical = tuple(rounded_mathematical_silu_bf16(value) for value in control_gates)
     gate_cross_path = all(
@@ -891,6 +1226,73 @@ def assess_seqax_bf16_forward(
         np.array_equal(pallas_value, control_value)
         for pallas_value, control_value in zip(pallas_silu, control_silu, strict=True)
     )
+    up_cross_path = all(
+        np.array_equal(pallas_value, control_value)
+        for pallas_value, control_value in zip(pallas_up, control_up, strict=True)
+    )
+    pallas_hidden_mathematical = all(
+        np.array_equal(
+            actual,
+            np.asarray(
+                silu.astype(np.float32) * up.astype(np.float32),
+                dtype=ml_dtypes.bfloat16,
+            ),
+        )
+        for actual, silu, up in zip(pallas_hidden, pallas_silu, pallas_up, strict=True)
+    )
+    control_hidden_mathematical = all(
+        np.array_equal(
+            actual,
+            np.asarray(
+                silu.astype(np.float32) * up.astype(np.float32),
+                dtype=ml_dtypes.bfloat16,
+            ),
+        )
+        for actual, silu, up in zip(control_hidden, control_silu, control_up, strict=True)
+    )
+    hidden_cross_path = all(
+        np.array_equal(pallas_value, control_value)
+        for pallas_value, control_value in zip(pallas_hidden, control_hidden, strict=True)
+    )
+    down_weights = expected_inputs[10]
+    pallas_down_ratios = tuple(
+        _down_projection_bound_ratio(
+            actual,
+            hidden,
+            down_weights[layer],
+            tensor_mesh=scenario.parameters.tensor_mesh,
+        )
+        for layer, (actual, hidden) in enumerate(
+            zip(pallas_down_float32, pallas_hidden, strict=True)
+        )
+    )
+    control_down_ratios = tuple(
+        _down_projection_bound_ratio(
+            actual,
+            hidden,
+            down_weights[layer],
+            tensor_mesh=scenario.parameters.tensor_mesh,
+        )
+        for layer, (actual, hidden) in enumerate(
+            zip(control_down_float32, control_hidden, strict=True)
+        )
+    )
+    pallas_down_ratio = max(pallas_down_ratios)
+    control_down_ratio = max(control_down_ratios)
+    pallas_down_bfloat16_matches = all(
+        np.array_equal(actual, expected.astype(ml_dtypes.bfloat16))
+        for actual, expected in zip(pallas_down_bfloat16, pallas_down_float32, strict=True)
+    )
+    control_down_bfloat16_matches = all(
+        np.array_equal(actual, expected.astype(ml_dtypes.bfloat16))
+        for actual, expected in zip(control_down_bfloat16, control_down_float32, strict=True)
+    )
+    down_bfloat16_cross_path = all(
+        np.array_equal(pallas_value, control_value)
+        for pallas_value, control_value in zip(
+            pallas_down_bfloat16, control_down_bfloat16, strict=True
+        )
+    )
     unit = policy.unit_roundoff
     depth_scale = policy.depth_scale(scenario.parameters.layers)
     final_outputs_satisfy_policy = (
@@ -906,6 +1308,15 @@ def assess_seqax_bf16_forward(
         and pallas_silu_mathematical
         and control_silu_mathematical
         and silu_cross_path
+        and up_cross_path
+        and pallas_hidden_mathematical
+        and control_hidden_mathematical
+        and hidden_cross_path
+        and pallas_down_ratio <= 1.0
+        and control_down_ratio <= 1.0
+        and pallas_down_bfloat16_matches
+        and control_down_bfloat16_matches
+        and down_bfloat16_cross_path
     )
     pallas_top1 = np.argmax(arrays[0], axis=-1)
     control_top1 = np.argmax(arrays[1], axis=-1)
@@ -924,6 +1335,17 @@ def assess_seqax_bf16_forward(
         pallas_silu_matches_mathematical=pallas_silu_mathematical,
         control_silu_matches_mathematical=control_silu_mathematical,
         silu_cross_path_exact=silu_cross_path,
+        up_cross_path_exact=up_cross_path,
+        pallas_hidden_matches_product=pallas_hidden_mathematical,
+        control_hidden_matches_product=control_hidden_mathematical,
+        hidden_cross_path_exact=hidden_cross_path,
+        pallas_down_float32_max_bound_ratio=pallas_down_ratio,
+        control_down_float32_max_bound_ratio=control_down_ratio,
+        pallas_down_float32_within_bound=pallas_down_ratio <= 1.0,
+        control_down_float32_within_bound=control_down_ratio <= 1.0,
+        pallas_down_bfloat16_matches_float32=pallas_down_bfloat16_matches,
+        control_down_bfloat16_matches_float32=control_down_bfloat16_matches,
+        down_bfloat16_cross_path_exact=down_bfloat16_cross_path,
         final_outputs_satisfy_policy=final_outputs_satisfy_policy,
         checkpoint_values_consistent=checkpoint_values_consistent,
     )
@@ -1186,6 +1608,7 @@ def _validate_strict_silu_stablehlo(
     instrumented: bool,
     leading_result_count: int = 0,
     allow_callbacks: bool = False,
+    require_hidden_down: bool = True,
 ) -> None:
     if expected_count <= 0:
         raise ValueError("strict SiLU StableHLO expected count must be positive")
@@ -1193,6 +1616,8 @@ def _validate_strict_silu_stablehlo(
         raise ValueError("strict SiLU StableHLO result offset is invalid")
     if leading_result_count != 0 and not allow_callbacks:
         raise ValueError("strict SiLU StableHLO callback policy is invalid")
+    if instrumented and not require_hidden_down:
+        raise ValueError("instrumented strict MLP validation requires hidden/down authority")
     try:
         with mlir.make_ir_context():
             module = ir.Module.parse(stablehlo)
@@ -1227,7 +1652,7 @@ def _validate_strict_silu_stablehlo(
             )
             if instrumented and (
                 len(entry_returns) != 1
-                or len(entry_returns[0].operands) != leading_result_count + 1 + 2 * expected_count
+                or len(entry_returns[0].operands) != leading_result_count + 1 + 6 * expected_count
             ):
                 raise ValueError("instrumented strict SiLU has an invalid function result ABI")
             for function in functions:
@@ -1283,14 +1708,14 @@ def _validate_strict_silu_stablehlo(
                         or len(checkpoint_uses) != 1
                         or _as_operation(checkpoint_uses[0].owner) is None
                         or _as_operation(checkpoint_uses[0].owner).name not in _REGION_TERMINATORS
-                        or checkpoint_uses[0].operand_number != leading_result_count + 1 + 2 * layer
+                        or checkpoint_uses[0].operand_number != leading_result_count + 1 + 6 * layer
                     ):
                         raise ValueError(
                             "instrumented strict SiLU must return the real gate checkpoint"
                         )
                     _require_checkpoint_function_result(
                         checkpoint_uses[0],
-                        leading_result_count + 1 + 2 * layer,
+                        leading_result_count + 1 + 6 * layer,
                     )
                     checkpoint_return = _as_operation(checkpoint_uses[0].owner)
                 elif source_consumers != (input_convert,):
@@ -1327,16 +1752,19 @@ def _validate_strict_silu_stablehlo(
                     raise ValueError("strict SiLU StableHLO is missing its unique result barrier")
                 barrier_result = result_barrier.results[0]
                 barrier_uses = tuple(barrier_result.uses)
-                multiply_uses = tuple(
+                expected_multiply_consumer = (
+                    "stablehlo.optimization_barrier"
+                    if require_hidden_down
+                    else "stablehlo.multiply"
+                )
+                multiply_input_uses = tuple(
                     use
                     for use in barrier_uses
                     if _as_operation(use.owner) is not None
-                    and _as_operation(use.owner).name == "stablehlo.multiply"
+                    and _as_operation(use.owner).name == expected_multiply_consumer
                 )
-                if len(multiply_uses) != 1:
-                    raise ValueError(
-                        "strict SiLU result barrier must feed exactly one BF16 multiply"
-                    )
+                if len(multiply_input_uses) != 1:
+                    raise ValueError("strict SiLU result barrier has invalid multiply dataflow")
                 if instrumented:
                     checkpoint_uses = tuple(
                         use
@@ -1348,21 +1776,42 @@ def _validate_strict_silu_stablehlo(
                         len(barrier_uses) != 2
                         or len(checkpoint_uses) != 1
                         or _as_operation(checkpoint_uses[0].owner) != checkpoint_return
-                        or checkpoint_uses[0].operand_number != leading_result_count + 2 + 2 * layer
+                        or checkpoint_uses[0].operand_number != leading_result_count + 2 + 6 * layer
                     ):
                         raise ValueError(
                             "instrumented strict SiLU must return the real SiLU checkpoint"
                         )
                     _require_checkpoint_function_result(
                         checkpoint_uses[0],
-                        leading_result_count + 2 + 2 * layer,
+                        leading_result_count + 2 + 6 * layer,
                     )
                 elif len(barrier_uses) != 1:
                     raise ValueError(
-                        "strict SiLU result barrier must feed exactly one BF16 multiply"
+                        "strict SiLU result barrier must feed only the strict multiply input barrier"
                     )
-                multiply = _as_operation(multiply_uses[0].owner)
-                assert multiply is not None
+                if require_hidden_down:
+                    multiply_input_barrier = _as_operation(multiply_input_uses[0].owner)
+                    assert multiply_input_barrier is not None
+                    _require_attribute_names(multiply_input_barrier, frozenset())
+                    if len(multiply_input_barrier.results) != 1 or not _is_bf16_tensor(
+                        multiply_input_barrier.results[0]
+                    ):
+                        raise ValueError("strict multiply input barrier has an invalid result")
+                    multiply_input = multiply_input_barrier.results[0]
+                    multiply_uses = tuple(multiply_input.uses)
+                    if (
+                        len(multiply_uses) != 1
+                        or _as_operation(multiply_uses[0].owner) is None
+                        or _as_operation(multiply_uses[0].owner).name != "stablehlo.multiply"
+                    ):
+                        raise ValueError(
+                            "strict multiply input barrier must feed exactly one BF16 multiply"
+                        )
+                    multiply = _as_operation(multiply_uses[0].owner)
+                    assert multiply is not None
+                else:
+                    multiply = _as_operation(multiply_input_uses[0].owner)
+                    assert multiply is not None
                 if not all(_is_bf16_tensor(value) for value in multiply.operands):
                     raise ValueError(
                         "strict SiLU result barrier must feed exactly one BF16 multiply"
@@ -1371,8 +1820,195 @@ def _validate_strict_silu_stablehlo(
                     raise ValueError(
                         "strict SiLU result barrier must feed exactly one BF16 multiply"
                     )
-                if not _result_reaches_function_return(multiply.results[0]):
-                    raise ValueError("strict SiLU BF16 multiply must reach its function return")
+                if require_hidden_down:
+                    up_operands = tuple(
+                        operand for operand in multiply.operands if operand != multiply_input
+                    )
+                    if len(up_operands) != 1 or not _is_bf16_tensor(up_operands[0]):
+                        raise ValueError("strict hidden multiply must have one BF16 up operand")
+                    up_operand = up_operands[0]
+                    up_uses = tuple(up_operand.uses)
+                    up_checkpoint_uses = tuple(
+                        use
+                        for use in up_uses
+                        if _as_operation(use.owner) is not None
+                        and _as_operation(use.owner).name in _REGION_TERMINATORS
+                    )
+                    if instrumented:
+                        up_position = leading_result_count + 3 + 6 * layer
+                        if (
+                            len(up_uses) != 2
+                            or len(up_checkpoint_uses) != 1
+                            or up_checkpoint_uses[0].operand_number != up_position
+                        ):
+                            raise ValueError(
+                                "instrumented strict MLP must return the real up checkpoint"
+                            )
+                        _require_checkpoint_function_result(up_checkpoint_uses[0], up_position)
+                    elif len(up_uses) != 1:
+                        raise ValueError("strict hidden up operand must feed only its multiply")
+                if not require_hidden_down:
+                    if not _result_reaches_function_return(multiply.results[0]):
+                        raise ValueError("strict SiLU BF16 multiply must reach its function return")
+                    strict_chains += 1
+                    continue
+                hidden = multiply.results[0]
+                hidden_consumers = tuple(_as_operation(use.owner) for use in hidden.uses)
+                if (
+                    len(hidden_consumers) != 1
+                    or hidden_consumers[0] is None
+                    or hidden_consumers[0].name != "stablehlo.optimization_barrier"
+                ):
+                    raise ValueError(
+                        "strict hidden BF16 multiply must feed only its result barrier"
+                    )
+                hidden_barrier = hidden_consumers[0]
+                assert hidden_barrier is not None
+                _require_attribute_names(hidden_barrier, frozenset())
+                if len(hidden_barrier.results) != 1 or not _is_bf16_tensor(
+                    hidden_barrier.results[0]
+                ):
+                    raise ValueError("strict hidden materialization has an invalid result")
+                materialized_hidden = hidden_barrier.results[0]
+                hidden_uses = tuple(materialized_hidden.uses)
+                hidden_checkpoint_uses = tuple(
+                    use
+                    for use in hidden_uses
+                    if _as_operation(use.owner) is not None
+                    and _as_operation(use.owner).name in _REGION_TERMINATORS
+                )
+                if instrumented:
+                    hidden_position = leading_result_count + 4 + 6 * layer
+                    if (
+                        len(hidden_checkpoint_uses) != 1
+                        or hidden_checkpoint_uses[0].operand_number != hidden_position
+                    ):
+                        raise ValueError(
+                            "instrumented strict MLP must return the materialized hidden checkpoint"
+                        )
+                    _require_checkpoint_function_result(hidden_checkpoint_uses[0], hidden_position)
+                elif len(hidden_uses) != 1:
+                    raise ValueError(
+                        "strict hidden materialization must feed only the down projection"
+                    )
+                if allow_callbacks:
+                    if not _result_reaches_function_return(materialized_hidden):
+                        raise ValueError(
+                            "CPU interpret hidden checkpoint must reach its function return"
+                        )
+                    strict_chains += 1
+                    continue
+
+                def is_down_projection(use: ir.OpOperand) -> bool:
+                    operation = _as_operation(use.owner)
+                    if operation is None:
+                        return False
+                    if operation.name == "stablehlo.dot_general":
+                        return True
+                    return (
+                        operation.name == "stablehlo.custom_call"
+                        and str(operation.attributes.get("call_target_name")) == '"tpu_custom_call"'
+                        and str(operation.attributes.get("kernel_name")) == '"seqax_named_einsum"'
+                    )
+
+                hidden_dot_uses = tuple(use for use in hidden_uses if is_down_projection(use))
+                expected_hidden_use_count = 2 if instrumented else 1
+                if (
+                    len(hidden_uses) != expected_hidden_use_count
+                    or len(hidden_dot_uses) != 1
+                    or hidden_dot_uses[0].operand_number != 0
+                ):
+                    raise ValueError(
+                        "strict hidden materialization must feed the down projection lhs"
+                    )
+                down_dot = _as_operation(hidden_dot_uses[0].owner)
+                assert down_dot is not None
+                if len(down_dot.results) != 1 or not _is_f32_tensor(down_dot.results[0]):
+                    raise ValueError("strict MLP down projection must produce float32")
+                down_dot_uses = tuple(down_dot.results[0].uses)
+                if (
+                    len(down_dot_uses) != 1
+                    or _as_operation(down_dot_uses[0].owner) is None
+                    or _as_operation(down_dot_uses[0].owner).name != "stablehlo.reduce_scatter"
+                ):
+                    raise ValueError("strict MLP down projection must feed one reduce-scatter")
+                down_reduce_scatter = _as_operation(down_dot_uses[0].owner)
+                assert down_reduce_scatter is not None
+                if len(down_reduce_scatter.results) != 1 or not _is_f32_tensor(
+                    down_reduce_scatter.results[0]
+                ):
+                    raise ValueError("strict MLP reduce-scatter must produce float32")
+                down_float32 = down_reduce_scatter.results[0]
+                down_float32_uses = tuple(down_float32.uses)
+                down_converts = tuple(
+                    use
+                    for use in down_float32_uses
+                    if _as_operation(use.owner) is not None
+                    and _as_operation(use.owner).name == "stablehlo.convert"
+                )
+                down_float32_checkpoints = tuple(
+                    use
+                    for use in down_float32_uses
+                    if _as_operation(use.owner) is not None
+                    and _as_operation(use.owner).name in _REGION_TERMINATORS
+                )
+                if len(down_converts) != 1:
+                    raise ValueError("strict MLP float32 down result must have one BF16 cast")
+                if instrumented:
+                    down_float32_position = leading_result_count + 5 + 6 * layer
+                    if (
+                        len(down_float32_uses) != 2
+                        or len(down_float32_checkpoints) != 1
+                        or down_float32_checkpoints[0].operand_number != down_float32_position
+                    ):
+                        raise ValueError(
+                            "instrumented strict MLP must return the float32 down checkpoint"
+                        )
+                    _require_checkpoint_function_result(
+                        down_float32_checkpoints[0], down_float32_position
+                    )
+                elif len(down_float32_uses) != 1:
+                    raise ValueError("strict MLP float32 down result must feed only its BF16 cast")
+                down_convert = _as_operation(down_converts[0].owner)
+                assert down_convert is not None
+                _require_attribute_names(down_convert, frozenset())
+                if len(down_convert.results) != 1 or not _is_bf16_tensor(down_convert.results[0]):
+                    raise ValueError("strict MLP down cast must produce BF16")
+                down_bfloat16 = down_convert.results[0]
+                down_bfloat16_uses = tuple(down_bfloat16.uses)
+                residual_uses = tuple(
+                    use
+                    for use in down_bfloat16_uses
+                    if _as_operation(use.owner) is not None
+                    and _as_operation(use.owner).name == "stablehlo.add"
+                )
+                down_bfloat16_checkpoints = tuple(
+                    use
+                    for use in down_bfloat16_uses
+                    if _as_operation(use.owner) is not None
+                    and _as_operation(use.owner).name in _REGION_TERMINATORS
+                )
+                if len(residual_uses) != 1:
+                    raise ValueError("strict MLP BF16 down result must feed one residual add")
+                if instrumented:
+                    down_bfloat16_position = leading_result_count + 6 + 6 * layer
+                    if (
+                        len(down_bfloat16_uses) != 2
+                        or len(down_bfloat16_checkpoints) != 1
+                        or down_bfloat16_checkpoints[0].operand_number != down_bfloat16_position
+                    ):
+                        raise ValueError(
+                            "instrumented strict MLP must return the BF16 down checkpoint"
+                        )
+                    _require_checkpoint_function_result(
+                        down_bfloat16_checkpoints[0], down_bfloat16_position
+                    )
+                elif len(down_bfloat16_uses) != 1:
+                    raise ValueError("strict MLP BF16 down result must feed only the residual add")
+                residual = _as_operation(residual_uses[0].owner)
+                assert residual is not None
+                if not _result_reaches_function_return(residual.results[0]):
+                    raise ValueError("strict MLP residual must reach its function return")
                 strict_chains += 1
             if strict_chains != expected_count:
                 raise ValueError(
@@ -1477,17 +2113,93 @@ def _validate_mutant_chain_result(result: ir.Value) -> None:
     if len(barrier.results) != 1:
         raise ValueError("activation discriminator result barrier must have one result")
     barrier_uses = tuple(barrier.results[0].uses)
-    if len(barrier_uses) != 1 or _as_operation(barrier_uses[0].owner).name != "stablehlo.multiply":
-        raise ValueError("activation discriminator result barrier must feed one multiply")
-    multiply = _as_operation(barrier_uses[0].owner)
+    if (
+        len(barrier_uses) != 1
+        or _as_operation(barrier_uses[0].owner) is None
+        or _as_operation(barrier_uses[0].owner).name != "stablehlo.optimization_barrier"
+    ):
+        raise ValueError(
+            "activation discriminator result barrier must feed the strict multiply barrier"
+        )
+    multiply_barrier = _as_operation(barrier_uses[0].owner)
+    assert multiply_barrier is not None
+    _require_attribute_names(multiply_barrier, frozenset())
+    if len(multiply_barrier.results) != 1 or not _is_bf16_tensor(multiply_barrier.results[0]):
+        raise ValueError("activation discriminator multiply barrier is invalid")
+    multiply_uses = tuple(multiply_barrier.results[0].uses)
+    if (
+        len(multiply_uses) != 1
+        or _as_operation(multiply_uses[0].owner) is None
+        or _as_operation(multiply_uses[0].owner).name != "stablehlo.multiply"
+    ):
+        raise ValueError("activation discriminator multiply barrier must feed one multiply")
+    multiply = _as_operation(multiply_uses[0].owner)
     assert multiply is not None
     if (
         len(multiply.results) != 1
         or not all(_is_bf16_tensor(value) for value in multiply.operands)
         or not _is_bf16_tensor(multiply.results[0])
-        or not _result_reaches_function_return(multiply.results[0])
     ):
-        raise ValueError("activation discriminator multiply must reach the entrypoint return")
+        raise ValueError("activation discriminator multiply must use BF16 tensors")
+    hidden_uses = tuple(multiply.results[0].uses)
+    if (
+        len(hidden_uses) != 1
+        or _as_operation(hidden_uses[0].owner) is None
+        or _as_operation(hidden_uses[0].owner).name != "stablehlo.optimization_barrier"
+    ):
+        raise ValueError("activation discriminator hidden value must feed its result barrier")
+    hidden_barrier = _as_operation(hidden_uses[0].owner)
+    assert hidden_barrier is not None
+    _require_attribute_names(hidden_barrier, frozenset())
+    if len(hidden_barrier.results) != 1 or not _is_bf16_tensor(hidden_barrier.results[0]):
+        raise ValueError("activation discriminator hidden result barrier is invalid")
+    down_uses = tuple(hidden_barrier.results[0].uses)
+    if len(down_uses) != 1 or down_uses[0].operand_number != 0:
+        raise ValueError("activation discriminator hidden result must feed one down projection")
+    down = _as_operation(down_uses[0].owner)
+    if down is None or down.name not in {"stablehlo.dot_general", "stablehlo.custom_call"}:
+        raise ValueError("activation discriminator hidden result must feed one down projection")
+    if down.name == "stablehlo.custom_call" and not (
+        str(down.attributes.get("call_target_name")) == '"tpu_custom_call"'
+        and str(down.attributes.get("kernel_name")) == '"seqax_named_einsum"'
+    ):
+        raise ValueError("activation discriminator hidden result has an invalid down projection")
+    if len(down.results) != 1 or not _is_f32_tensor(down.results[0]):
+        raise ValueError("activation discriminator down projection must produce float32")
+    reduce_uses = tuple(down.results[0].uses)
+    if (
+        len(reduce_uses) != 1
+        or _as_operation(reduce_uses[0].owner) is None
+        or _as_operation(reduce_uses[0].owner).name != "stablehlo.reduce_scatter"
+    ):
+        raise ValueError("activation discriminator down projection must feed one reduce-scatter")
+    reduce_scatter = _as_operation(reduce_uses[0].owner)
+    assert reduce_scatter is not None
+    if len(reduce_scatter.results) != 1 or not _is_f32_tensor(reduce_scatter.results[0]):
+        raise ValueError("activation discriminator reduce-scatter must produce float32")
+    cast_uses = tuple(reduce_scatter.results[0].uses)
+    if (
+        len(cast_uses) != 1
+        or _as_operation(cast_uses[0].owner) is None
+        or _as_operation(cast_uses[0].owner).name != "stablehlo.convert"
+    ):
+        raise ValueError("activation discriminator reduce-scatter must feed one BF16 cast")
+    down_cast = _as_operation(cast_uses[0].owner)
+    assert down_cast is not None
+    _require_attribute_names(down_cast, frozenset())
+    if len(down_cast.results) != 1 or not _is_bf16_tensor(down_cast.results[0]):
+        raise ValueError("activation discriminator down cast must produce BF16")
+    residual_uses = tuple(down_cast.results[0].uses)
+    if (
+        len(residual_uses) != 1
+        or _as_operation(residual_uses[0].owner) is None
+        or _as_operation(residual_uses[0].owner).name != "stablehlo.add"
+    ):
+        raise ValueError("activation discriminator down result must feed one residual add")
+    residual = _as_operation(residual_uses[0].owner)
+    assert residual is not None
+    if len(residual.results) != 1 or not _result_reaches_function_return(residual.results[0]):
+        raise ValueError("activation discriminator residual must reach the entrypoint return")
 
 
 def _validate_activation_mutant_stablehlo(

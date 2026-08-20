@@ -94,7 +94,8 @@ def _vector_compute(
     operation: VectorComputeOp,
     values: tuple[jax.Array, ...],
     mesh: dict[str, int],
-    strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
+    strict_mlp_checkpoints: list[list[jax.Array]] | None = None,
+    strict_up_index: int | None = None,
     pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
     | None = None,
 ) -> jax.Array:
@@ -228,8 +229,19 @@ def _vector_compute(
     result = jnp.asarray(result, dtype=_dtype(output_type))
     if strict_materialization:
         result = jax.lax.optimization_barrier(result)
-    if strict_materialization and function == "silu" and strict_silu_checkpoints is not None:
-        strict_silu_checkpoints.append((values[0], result))
+    if strict_materialization and strict_mlp_checkpoints is not None:
+        if function == "silu":
+            strict_mlp_checkpoints.append([values[0], result])
+        elif function == "multiply":
+            if (
+                not strict_mlp_checkpoints
+                or len(strict_mlp_checkpoints[-1]) != 2
+                or strict_up_index not in {0, 1}
+            ):
+                raise UnsupportedPhysicalExecutionError(
+                    "strict hidden multiply must follow its strict SiLU"
+                )
+            strict_mlp_checkpoints[-1].extend((values[strict_up_index], result))
     if tuple(result.shape) != output_type.storage.get_shape():
         raise UnsupportedPhysicalExecutionError(
             f"physical {function} produced {tuple(result.shape)}, "
@@ -243,7 +255,7 @@ def execute_seqax_physical_program_jax(
     inputs: Sequence[jax.Array],
     *,
     einsum: Callable[[MxuEinsumOp, jax.Array, jax.Array], jax.Array],
-    strict_silu_checkpoints: list[tuple[jax.Array, jax.Array]] | None = None,
+    strict_mlp_checkpoints: list[list[jax.Array]] | None = None,
     pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
     | None = None,
 ) -> tuple[jax.Array, ...]:
@@ -301,6 +313,10 @@ def execute_seqax_physical_program_jax(
             strict=True,
         )
     )
+    strict_hidden_buffer: SSAValue | None = None
+    strict_silu_buffer: SSAValue | None = None
+    strict_down_partial_buffer: SSAValue | None = None
+    strict_down_reduced_buffer: SSAValue | None = None
 
     for operation in block.ops:
         if isinstance(operation, (AllocOp, SemaphoreAllocOp)):
@@ -318,14 +334,58 @@ def execute_seqax_physical_program_jax(
             continue
         if isinstance(operation, VectorComputeOp):
             values = tuple(environment[value] for value in operation.inputs)
+            strict_up_index = None
+            if (
+                strict_mlp_checkpoints
+                and len(strict_mlp_checkpoints[-1]) == 2
+                and operation.function.data == "multiply"
+                and operation.materialization is not None
+            ):
+                silu_indices = tuple(
+                    index
+                    for index, operand in enumerate(operation.inputs)
+                    if operand == strict_silu_buffer
+                )
+                if len(silu_indices) != 1:
+                    raise UnsupportedPhysicalExecutionError(
+                        "strict hidden multiply must consume one strict SiLU"
+                    )
+                strict_up_index = 1 - silu_indices[0]
             result = _vector_compute(
                 operation,
                 values,
                 mesh,
-                strict_silu_checkpoints,
+                strict_mlp_checkpoints,
+                strict_up_index,
                 pallas_silu_multiply,
             )
             environment[operation.output] = result
+            if (
+                strict_mlp_checkpoints
+                and len(strict_mlp_checkpoints[-1]) == 2
+                and operation.function.data == "silu"
+                and operation.materialization is not None
+            ):
+                strict_silu_buffer = operation.output
+            elif (
+                strict_mlp_checkpoints
+                and len(strict_mlp_checkpoints[-1]) == 4
+                and operation.function.data == "multiply"
+                and operation.materialization is not None
+            ):
+                strict_hidden_buffer = operation.output
+            elif (
+                strict_mlp_checkpoints
+                and len(strict_mlp_checkpoints[-1]) == 5
+                and strict_down_reduced_buffer is not None
+                and tuple(operation.inputs) == (strict_down_reduced_buffer,)
+                and operation.function.data == "cast"
+            ):
+                strict_mlp_checkpoints[-1].append(result)
+                strict_silu_buffer = None
+                strict_hidden_buffer = None
+                strict_down_partial_buffer = None
+                strict_down_reduced_buffer = None
             continue
         if isinstance(operation, MxuEinsumOp):
             environment[operation.accumulator] = einsum(
@@ -333,6 +393,8 @@ def execute_seqax_physical_program_jax(
                 environment[operation.lhs],
                 environment[operation.rhs],
             )
+            if strict_hidden_buffer is not None and operation.lhs == strict_hidden_buffer:
+                strict_down_partial_buffer = operation.accumulator
             continue
         if isinstance(operation, CollectiveOp):
             source = environment[operation.source]
@@ -369,6 +431,15 @@ def execute_seqax_physical_program_jax(
                     f"unsupported physical collective {operation.kind.data}"
                 )
             environment[operation.destination] = result
+            if (
+                strict_mlp_checkpoints
+                and len(strict_mlp_checkpoints[-1]) == 4
+                and operation.kind.data is CollectiveKind.REDUCE_SCATTER
+                and strict_down_partial_buffer is not None
+                and operation.source == strict_down_partial_buffer
+            ):
+                strict_mlp_checkpoints[-1].append(result)
+                strict_down_reduced_buffer = operation.destination
             continue
         if isinstance(operation, YieldOp):
             if pending_dma:
