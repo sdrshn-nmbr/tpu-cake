@@ -21,7 +21,7 @@ from tpu_cake.workloads.seqax_oracle import (
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
 SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v4"
-SEQAX_BF16_HLO_IDENTITY_STATUS = "pending"
+SEQAX_BF16_HLO_IDENTITY_STATUS = "pinned"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
 _V2_CALIBRATION_SCHEMA = "bf16-forward-numerical-v2"
@@ -199,62 +199,62 @@ _STABLEHLO_SHA256 = {
     "calibration-m256-b2-s1-l1": {
         "pallas": "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae",
         "control": "05f377de78b292c90d020b8d865285c807ed2e5d3814c0b4977da09c629cffa6",
-        "instrumented_pallas": "1b43d40a2d16ecea3af0e056a83e5e1ae85e37177cb208d85cbac05e8947a832",
-        "instrumented_control": "aa82e839ce316f881823cd6b4722f1162694b98f655f43453bbd79e469aa6243",
+        "instrumented_pallas": "82032504f755d6485035fd8142e0323177928ec7369bf7ffbf966b00f9e0b6e5",
+        "instrumented_control": "e9980b0fd41a0e1e0898fa59946b6dff911772a57e017b5596f3a5d55a97ad0a",
     },
     "m128-b2-s3-l2": {
         "pallas": "7c18eda7e1951421cefe44430f9f897d23f823210e23fa9a18c9e25425bb3ab6",
         "control": "3fd1c90846f71c80f141a2db8b5b6b15ab8e0c840444bc920c8f8115a1d70021",
-        "instrumented_pallas": "da9fae9d99cfea686b869a00c20ee5382eff64c60377330ace1f505fabc1e15a",
-        "instrumented_control": "307e6b2cf2c9654c0bf0eb8226adfc3e6801b0adfb7d153128a260896296485f",
+        "instrumented_pallas": "db270f066229731aeb5601884e659e08fca2444de66d76a399f42a60f27b95e9",
+        "instrumented_control": "7cf32ba85a08866bc731eb4cd8530fe78fbeb989d99e41672153fa7054dc54e2",
     },
     "m256-b4-s2-l1": {
         "pallas": "2e57c9234a684f3453ef5e234bd7889626bad4c31088b45a5dd17481383f3e39",
         "control": "72addb368ded5587116f727253fe983b832cafb644291cdd286dbb9156f9cc74",
-        "instrumented_pallas": "ccc4a6352b8e2651bd10236e0c4c338ad5b8b5dd098a1078192cc206f7cc6421",
-        "instrumented_control": "1012282d34fab5bd0d83ff58856d4ee720e084d10fdafb66ba86bd2451ed48c2",
+        "instrumented_pallas": "384097fb860b225e8785cde71ed26a031c5660c16cf06f5fdf2b8416f8e8ebae",
+        "instrumented_control": "7f61b8dfc0a64000a9602c47ce062fa3fcd3cc561d7c11af722561b8244c28c1",
     },
     "m384-b2-s2-l1": {
         "pallas": "44a5569e10046f01d837d7b2ee2d79751be94fe558c4434269cd439ba3528370",
         "control": "35e3b6c7e12ae821fe6edee8ee515c8da1c0109cd02c345762d66b838e2cea76",
-        "instrumented_pallas": "9ef175580ca229461b08be4a10636b8343793b213234fc580c6403dc92acc079",
-        "instrumented_control": "998ed494e6593a7305ebd99a4db6ae6c536a8a7a223aee2da8c406e4b03b0dcf",
+        "instrumented_pallas": "c959a6e7c41aefb9bec6f091c7388b2b914ff5e9a45e7fc823e7a9727c2af9fb",
+        "instrumented_control": "bccedf167f0b9bfb71151fb81895ac6c978b09941574b797d3a795253b4aa2a6",
     },
     "m192-b2-s4-l2": {
         "pallas": "6249025460ce9418ce087273072d6d96209c05e356d49f26347182db60bb2531",
         "control": "aa7a9344ee40fc5269c4fef332fa51ec02bb958c105142eb23ab31178d7d19a7",
-        "instrumented_pallas": "cc8f0aa30f3f1c8872e95e8ecafe99659b4a16b9ba79f0665d8add3aa4b6fa33",
-        "instrumented_control": "8a205db411008ffb7f779496ca566382130e1244c290ecbea9404ef819e53c68",
+        "instrumented_pallas": "39636de1e87e73f1a923bf8a274a6dae869c229906dc98e6da5e53a740f9f62f",
+        "instrumented_control": "e627cfd0d8c6a45483f10dd50f0bc62864410dc3749f18f0319a64092482bba9",
     },
     "m320-b4-s3-l1": {
         "pallas": "750804aa2a24bdabbd65da65e89b819a3487e5fb42738f285960e23b76f0d5b3",
         "control": "87ef688fd0a932c6878894da5a6e564b190236ef6768bc3e86580132de4b4676",
-        "instrumented_pallas": "8414ac190b1202f83078f3c83dbdaa0c836c162e52a1a6a16a24f7f0d3efd9c8",
-        "instrumented_control": "721889606ca9e5503fd71bf21fdd184d0a1e8b51a935d80b8d9d5f6f47904d5f",
+        "instrumented_pallas": "45cb18809686d3044276c7a9d0adf809f5323919cf8ae826a26faf18693e5358",
+        "instrumented_control": "4297f162e9acf9d5c6821f89b0a4203561b52b27274330aa6a1cd8022c1ff4a3",
     },
     "m256-b2-s8-l4": {
         "pallas": "19426e64a79ad76fdc75702daaefbf2c43abfe48b84522773244029d3e1da03d",
         "control": "0514db06552295c04707be2bcdc0d0800801ed79326a1556be916d3d31d4cff3",
-        "instrumented_pallas": "f89cace9133f93c99a0067dda8dd17bdff04921f349fc62ae41fb2659576184d",
-        "instrumented_control": "b73512fd643995451c7a9eba99e011cbbc2d9085420ee55189a28989255a3fdf",
+        "instrumented_pallas": "9e9e098b9db1c9e8685ac9a85e5c20848de78490fbaa3a01b787e7a031d8af3a",
+        "instrumented_control": "01c5c72b190f8c52ffc7eac137c182b645649ccd5bfa3472e10d1d60b6c0e7b5",
     },
     "m224-b4-s5-l2": {
         "pallas": "d4c131b07cebe39054093108625b0b318e614e758a20280bf125fd4d9e27f62e",
         "control": "61f7c4fb2033d1e838789b488150a3d887e71ea290ba898f7d71c933ff64d0ed",
-        "instrumented_pallas": "45d0f9d16f7d186a6b344a5deeb1efed23881ce6ad9b5f464a6a0598e150023b",
-        "instrumented_control": "1bd68713f0199c77362cdc8b8da8697beb3f98ed621378551fe10c353a160d82",
+        "instrumented_pallas": "29dbed80adfd10dd538f035a62f88a3180644bd1ade92cdb7384779d5495d8fe",
+        "instrumented_control": "659ddecc9b0af170335a868ecac2314ee4239e68320ec615d79a4072d44b8ab2",
     },
     "m352-b2-s6-l1": {
         "pallas": "44ddaa5e5c26fada8070f1e9689f497a53bcfa08dbca7296483f55145fee0207",
         "control": "298609f59b416647cff463c9ffa10d57e2b692965e6e77365f22186c97e5dad5",
-        "instrumented_pallas": "d68c9e155bfd554b86ce60bff7d0636fa9dcc01ee84f5adc1068cf9265807600",
-        "instrumented_control": "80ef91f8ca1d87e1c0182afee9efe617d35a39192789434862258c04e429b81b",
+        "instrumented_pallas": "0c32cc83f358c742676a1f7c948b198b8d2ce3ee012dc201f3442e1ec84255e9",
+        "instrumented_control": "7f0c3da0eeaa3bbbe5ad97fb064c6bac5f8d5c42303978668aa3469cd64aad34",
     },
     "m288-b4-s4-l3": {
         "pallas": "627531d588e67c7a9ccd30c20f3494b3b66260a0335051b52def16a0b4ac9153",
         "control": "909ab3cacc4a53c7c07769e89bc1dbbae10256eea5b7ac8ed08282dafd85b99b",
-        "instrumented_pallas": "0e53945412d607fa7e07865c31fcd2e6d4216ae057b81598c7c4710aaaa63254",
-        "instrumented_control": "fd3e989b86b804a770ab4a891eb8beedbef72c4affe0767493ea75cfc68fcc4e",
+        "instrumented_pallas": "33f7137163d7c731b22f7ff526a07f95b2d7a9ee0fa8e1d27e28a4981d683d50",
+        "instrumented_control": "11a89a52ec841090e0bc54c37e8d106eef61db900c91ba8e99721edf27bdfe65",
     },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
