@@ -1005,11 +1005,11 @@ def test_runner_refuses_pending_hlo_identities_before_writes(
     assert not root.exists()
 
 
-def test_runner_rejects_a_caller_promoted_pending_contract_before_writes(
+def test_runner_rejects_a_caller_demoted_pinned_contract_before_writes(
     tmp_path: Path,
 ) -> None:
     contract = default_seqax_bf16_validation_contract().model_copy(
-        update={"hlo_identity_status": "pinned"}
+        update={"hlo_identity_status": "pending"}
     )
     root = tmp_path / "run"
 
