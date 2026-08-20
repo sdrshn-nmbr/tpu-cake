@@ -335,6 +335,158 @@ class RmsNormOp(IRDLOperation):
 
 
 @irdl_op_definition
+class RmsNormPartialOp(IRDLOperation):
+    name = "dtensor.rms_norm_partial"
+    value = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    dimension = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        dimension: str,
+    ) -> None:
+        super().__init__(
+            operands=[value],
+            result_types=[result_type],
+            properties={"dimension": StringAttr(dimension)},
+        )
+
+    def verify_(self) -> None:
+        value, result = self.value.type, self.result.type
+        assert isinstance(value, DTensorType) and isinstance(result, DTensorType)
+        _require_fully_reduced(value)
+        if not _is_float_type(value.element_type) or not isinstance(
+            result.element_type, Float32Type
+        ):
+            raise VerifyException("RMSNorm partial requires floating input and f32 output")
+        dimension = self.dimension.data
+        indexes = _dimension_index(value)
+        if dimension not in indexes:
+            raise VerifyException("RMSNorm partial references an unknown dimension")
+        axis = indexes[dimension]
+        reduced_axes = value.sharding_axes()[axis]
+        if not reduced_axes:
+            raise VerifyException("RMSNorm partial requires a sharded normalized dimension")
+        retained = tuple(
+            (shape, sharding)
+            for shape, sharding in zip(value.logical_shape(), value.sharding_axes(), strict=True)
+            if shape[0] != dimension
+        )
+        if result.logical_shape() != tuple(shape for shape, _ in retained):
+            raise VerifyException("RMSNorm partial result has the wrong logical shape")
+        if result.sharding_axes() != tuple(sharding for _, sharding in retained):
+            raise VerifyException("RMSNorm partial result has the wrong retained sharding")
+        if result.pending_reductions() != {mesh_axis: "sum" for mesh_axis in reduced_axes}:
+            raise VerifyException("RMSNorm partial must expose normalized-dimension reductions")
+
+
+@irdl_op_definition
+class RmsNormApplyOp(IRDLOperation):
+    name = "dtensor.rms_norm_apply"
+    value = operand_def(DTensorType)
+    sum_squares = operand_def(DTensorType)
+    scale = operand_def(DTensorType)
+    result = result_def(DTensorType)
+    dimension = prop_def(StringAttr)
+    normalized_size = prop_def(IntAttr)
+    epsilon = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        value: SSAValue | IRDLOperation,
+        sum_squares: SSAValue | IRDLOperation,
+        scale: SSAValue | IRDLOperation,
+        result_type: DTensorType,
+        *,
+        dimension: str,
+        normalized_size: int,
+        epsilon: str = "0.000001",
+    ) -> None:
+        super().__init__(
+            operands=[value, sum_squares, scale],
+            result_types=[result_type],
+            properties={
+                "dimension": StringAttr(dimension),
+                "normalized_size": IntAttr(normalized_size),
+                "epsilon": StringAttr(epsilon),
+            },
+        )
+
+    def verify_(self) -> None:
+        value = self.value.type
+        sum_squares = self.sum_squares.type
+        scale = self.scale.type
+        result = self.result.type
+        assert isinstance(value, DTensorType)
+        assert isinstance(sum_squares, DTensorType)
+        assert isinstance(scale, DTensorType)
+        assert isinstance(result, DTensorType)
+        _require_fully_reduced(value, sum_squares, scale, result)
+        if not all(
+            _is_float_type(tensor.element_type) for tensor in (value, sum_squares, scale, result)
+        ):
+            raise VerifyException("RMSNorm apply requires floating-point tensors")
+        if not isinstance(sum_squares.element_type, Float32Type):
+            raise VerifyException("RMSNorm apply sum of squares must be f32")
+        if (
+            value.logical_shape() != result.logical_shape()
+            or value.sharding_axes() != result.sharding_axes()
+            or value.element_type != result.element_type
+        ):
+            raise VerifyException("RMSNorm apply must preserve its value contract")
+        dimension = self.dimension.data
+        indexes = _dimension_index(value)
+        if dimension not in indexes:
+            raise VerifyException("RMSNorm apply references an unknown dimension")
+        axis = indexes[dimension]
+        dimension_size = value.logical_shape()[axis][1]
+        if self.normalized_size.data != dimension_size:
+            raise VerifyException("RMSNorm apply normalized size must match its dimension")
+        if not value.sharding_axes()[axis]:
+            raise VerifyException("RMSNorm apply requires a sharded normalized dimension")
+        reduction = self.sum_squares.owner
+        if not isinstance(reduction, AllReduceOp):
+            raise VerifyException(
+                "RMSNorm apply statistics must come from an all-reduced RMSNorm partial"
+            )
+        partial = reduction.value.owner
+        if not isinstance(partial, RmsNormPartialOp):
+            raise VerifyException("RMSNorm apply statistics must come from an RMSNorm partial")
+        reduced_axes = value.sharding_axes()[axis]
+        if (
+            partial.value != self.value
+            or partial.dimension.data != dimension
+            or tuple(item.data for item in reduction.axes) != reduced_axes
+            or reduction.reducer.data != "sum"
+        ):
+            raise VerifyException("RMSNorm apply statistics do not match its value and dimension")
+        if scale.logical_shape() != ((dimension, dimension_size),):
+            raise VerifyException("RMSNorm apply scale has the wrong logical shape")
+        if scale.sharding_axes() != (value.sharding_axes()[axis],):
+            raise VerifyException("RMSNorm apply scale must match normalized sharding")
+        retained = tuple(
+            (shape, sharding)
+            for index, (shape, sharding) in enumerate(
+                zip(value.logical_shape(), value.sharding_axes(), strict=True)
+            )
+            if index != axis
+        )
+        if sum_squares.logical_shape() != tuple(shape for shape, _ in retained):
+            raise VerifyException("RMSNorm apply statistics have the wrong logical shape")
+        if sum_squares.sharding_axes() != tuple(sharding for _, sharding in retained):
+            raise VerifyException("RMSNorm apply statistics have the wrong sharding")
+        try:
+            epsilon = Decimal(self.epsilon.data)
+        except InvalidOperation as error:
+            raise VerifyException("RMSNorm apply epsilon must be a finite decimal") from error
+        if not epsilon.is_finite() or epsilon <= 0:
+            raise VerifyException("RMSNorm apply epsilon must be positive and finite")
+
+
+@irdl_op_definition
 class RotaryEmbeddingOp(IRDLOperation):
     name = "dtensor.rotary_embedding"
     value = operand_def(DTensorType)
@@ -1260,6 +1412,8 @@ DistributedTensor = Dialect(
         ElementwiseOp,
         CastOp,
         RmsNormOp,
+        RmsNormPartialOp,
+        RmsNormApplyOp,
         RotaryEmbeddingOp,
         SliceOp,
         RenameDimensionOp,

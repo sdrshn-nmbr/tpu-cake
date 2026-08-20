@@ -2,11 +2,14 @@ from collections import Counter
 from dataclasses import replace
 
 import pytest
+from xdsl.dialects.builtin import ArrayAttr, StringAttr
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
     BufferType,
+    CollectiveKind,
+    CollectiveOp,
     KernelOp,
     MxuEinsumOp,
     VectorComputeOp,
@@ -14,7 +17,12 @@ from tpu_cake.dialects.tpu_schedule import (
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.lowering import TPU7X_TARGET, UnsupportedLoweringError
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
-from tpu_cake.workloads.seqax_forward import SeqaxFeedForwardFusion, seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxFeedForwardFusion,
+    SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
+    seqax_forward_schedule,
+)
 
 SMALL_SEQAX = {
     "batch": 2,
@@ -53,6 +61,60 @@ def test_complete_seqax_forward_lowers_to_canonical_physical_schedule() -> None:
     assert kernel.target.data == "tpu7x"
     assert any(isinstance(operation, MxuEinsumOp) for operation in kernel.body.block.ops)
     assert any(isinstance(operation, VectorComputeOp) for operation in kernel.body.block.ops)
+
+
+def test_sharded_rms_lowers_to_exact_partial_reduce_apply_collectives() -> None:
+    distributed = seqax_forward_schedule(
+        **{**SMALL_SEQAX, "model": 256, "sequence": 1, "layers": 1},
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+        residual_norm_strategy=SeqaxResidualNormStrategy.SHARDED_RMS,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    vectors = tuple(
+        operation for operation in physical.walk() if isinstance(operation, VectorComputeOp)
+    )
+    collectives = tuple(
+        operation for operation in physical.walk() if isinstance(operation, CollectiveOp)
+    )
+
+    assert sum(operation.function.data == "rms_norm_partial" for operation in vectors) == 3
+    assert sum(operation.function.data == "rms_norm_apply" for operation in vectors) == 3
+    assert sum(operation.kind.data is CollectiveKind.ALL_REDUCE for operation in collectives) == 3
+    physical.verify()
+
+
+def test_sharded_rms_physical_schedule_rejects_wrong_reduction_axis_and_global_size() -> None:
+    parameters = {
+        **SMALL_SEQAX,
+        "model": 256,
+        "sequence": 1,
+        "layers": 1,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+        "residual_norm_strategy": SeqaxResidualNormStrategy.SHARDED_RMS,
+    }
+    wrong_axis = lower_seqax_forward_to_physical(seqax_forward_schedule(**parameters)).module
+    reduction = next(
+        operation
+        for operation in wrong_axis.walk()
+        if isinstance(operation, CollectiveOp) and operation.kind.data is CollectiveKind.ALL_REDUCE
+    )
+    reduction.properties["mesh_axis"] = StringAttr("d")
+    with pytest.raises(VerifyException):
+        wrong_axis.verify()
+
+    wrong_size = lower_seqax_forward_to_physical(seqax_forward_schedule(**parameters)).module
+    apply = next(
+        operation
+        for operation in wrong_size.walk()
+        if isinstance(operation, VectorComputeOp) and operation.function.data == "rms_norm_apply"
+    )
+    configuration = tuple(value.data for value in apply.configuration)
+    apply.properties["configuration"] = ArrayAttr(
+        StringAttr("normalized_size=128" if value.startswith("normalized_size=") else value)
+        for value in configuration
+    )
+    with pytest.raises(VerifyException, match="global dimension"):
+        wrong_size.verify()
 
 
 def test_fused_silu_multiply_changes_the_executed_physical_schedule() -> None:

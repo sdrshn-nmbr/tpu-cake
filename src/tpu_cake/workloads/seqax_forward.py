@@ -69,6 +69,11 @@ class SeqaxFeedForwardFusion(StrEnum):
     SILU_MULTIPLY = "silu_multiply"
 
 
+class SeqaxResidualNormStrategy(StrEnum):
+    STANDARD = "standard"
+    SHARDED_RMS = "sharded_rms"
+
+
 @dataclass(frozen=True)
 class SeqaxWeightDataPlacement:
     embedding: SeqaxDataAxisPlacement = SeqaxDataAxisPlacement.SHARDED
@@ -125,6 +130,7 @@ def seqax_forward_schedule(
     weight_data_placement: SeqaxWeightDataPlacement = SHARDED_WEIGHT_DATA,
     numerical_semantics: SeqaxNumericalSemantics = SeqaxNumericalSemantics.LEGACY_FUSED_V0,
     feed_forward_fusion: SeqaxFeedForwardFusion = SeqaxFeedForwardFusion.SEPARATE,
+    residual_norm_strategy: SeqaxResidualNormStrategy = SeqaxResidualNormStrategy.STANDARD,
 ) -> ModuleOp:
     if not isinstance(norm_scale_placement, SeqaxNormScalePlacement):
         raise TypeError("norm_scale_placement must be a SeqaxNormScalePlacement")
@@ -134,6 +140,13 @@ def seqax_forward_schedule(
         raise TypeError("numerical_semantics must be a SeqaxNumericalSemantics")
     if not isinstance(feed_forward_fusion, SeqaxFeedForwardFusion):
         raise TypeError("feed_forward_fusion must be a SeqaxFeedForwardFusion")
+    if not isinstance(residual_norm_strategy, SeqaxResidualNormStrategy):
+        raise TypeError("residual_norm_strategy must be a SeqaxResidualNormStrategy")
+    if (
+        residual_norm_strategy is SeqaxResidualNormStrategy.SHARDED_RMS
+        and norm_scale_placement is SeqaxNormScalePlacement.REPLICATED
+    ):
+        raise ValueError("sharded RMSNorm requires sharded normalization scales")
     if feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY and numerical_semantics in {
         SeqaxNumericalSemantics.TYPED_BF16_V1,
         SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
@@ -341,6 +354,85 @@ def seqax_forward_schedule(
         sharding={"B": ("d",), "M": ("t",)},
     )
 
+    def normalize_activation(
+        program: DistributedProgramBuilder,
+        value: SSAValue,
+        scale: SSAValue,
+        *,
+        scale_source: SourceLocation,
+        gather_source: SourceLocation,
+        norm_source: SourceLocation,
+        gather_value_first: bool = False,
+    ) -> SSAValue:
+        full_model_activation = tensor(
+            bf16,
+            (("B", batch), ("L", sequence), ("M", model)),
+            sharding={"B": ("d",)},
+        )
+        if residual_norm_strategy is SeqaxResidualNormStrategy.STANDARD:
+            if gather_value_first:
+                gathered_value = program.all_gather(
+                    value,
+                    full_model_activation,
+                    source=gather_source,
+                )
+                gathered_scale = gather_norm_scale(program, scale, source=scale_source)
+            else:
+                gathered_scale = gather_norm_scale(program, scale, source=scale_source)
+                gathered_value = program.all_gather(
+                    value,
+                    full_model_activation,
+                    source=gather_source,
+                )
+            return program.rms_norm(
+                gathered_value,
+                gathered_scale,
+                full_model_activation,
+                dimension="M",
+                source=norm_source,
+            )
+
+        local_scale = program.all_gather(
+            scale,
+            tensor(f32, (("M", model),), sharding={"M": ("t",)}),
+            source=scale_source,
+        )
+        partial_sum_squares = program.rms_norm_partial(
+            value,
+            tensor(
+                f32,
+                (("B", batch), ("L", sequence)),
+                sharding={"B": ("d",)},
+                pending_reductions={"t": "sum"},
+            ),
+            dimension="M",
+            source=gather_source,
+        )
+        sum_squares = program.all_reduce(
+            partial_sum_squares,
+            tensor(
+                f32,
+                (("B", batch), ("L", sequence)),
+                sharding={"B": ("d",)},
+            ),
+            axes=("t",),
+            source=norm_source,
+        )
+        normalized_shard = program.rms_norm_apply(
+            value,
+            sum_squares,
+            local_scale,
+            activation,
+            dimension="M",
+            normalized_size=model,
+            source=norm_source,
+        )
+        return program.all_gather(
+            normalized_shard,
+            full_model_activation,
+            source=norm_source,
+        )
+
     def layer_body(
         body: DistributedProgramBuilder,
         arguments: tuple[SSAValue, ...],
@@ -357,19 +449,13 @@ def seqax_forward_schedule(
             layer_wdown,
             mask,
         ) = arguments
-        full_model_activation = tensor(
-            bf16,
-            (("B", batch), ("L", sequence), ("M", model)),
-            sharding={"B": ("d",)},
-        )
-        gathered_ln1 = gather_norm_scale(body, layer_ln1, source=_source(159))
-        gathered_x = body.all_gather(carry, full_model_activation, source=_source(160))
-        normalized = body.rms_norm(
-            gathered_x,
-            gathered_ln1,
-            full_model_activation,
-            dimension="M",
-            source=_source(161),
+        normalized = normalize_activation(
+            body,
+            carry,
+            layer_ln1,
+            scale_source=_source(159),
+            gather_source=_source(160),
+            norm_source=_source(161),
         )
 
         layer_wq = body.cast(
@@ -675,14 +761,13 @@ def seqax_forward_schedule(
             source=_source(181),
         )
 
-        gathered_ln2 = gather_norm_scale(body, layer_ln2, source=_source(184))
-        gathered_x = body.all_gather(carry, full_model_activation, source=_source(185))
-        normalized = body.rms_norm(
-            gathered_x,
-            gathered_ln2,
-            full_model_activation,
-            dimension="M",
-            source=_source(186),
+        normalized = normalize_activation(
+            body,
+            carry,
+            layer_ln2,
+            scale_source=_source(184),
+            gather_source=_source(185),
+            norm_source=_source(186),
         )
         projected = tensor(
             f32,
@@ -832,30 +917,14 @@ def seqax_forward_schedule(
         trip_count=layers,
         source=_source(200),
     )
-    gathered_x = builder.all_gather(
-        x,
-        tensor(
-            bf16,
-            (("B", batch), ("L", sequence), ("M", model)),
-            sharding={"B": ("d",)},
-        ),
-        source=_source(203),
-    )
-    gathered_final_ln = gather_norm_scale(
+    normalized = normalize_activation(
         builder,
+        x,
         final_ln,
-        source=_source(204),
-    )
-    normalized = builder.rms_norm(
-        gathered_x,
-        gathered_final_ln,
-        tensor(
-            bf16,
-            (("B", batch), ("L", sequence), ("M", model)),
-            sharding={"B": ("d",)},
-        ),
-        dimension="M",
-        source=_source(205),
+        scale_source=_source(204),
+        gather_source=_source(203),
+        norm_source=_source(205),
+        gather_value_first=True,
     )
     unembed = builder.cast(
         unembed,

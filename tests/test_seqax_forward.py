@@ -6,11 +6,14 @@ from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.distributed_tensor import (
     AllGatherOp,
+    AllReduceOp,
     CastOp,
     ElementwiseMaterialization,
     ElementwiseOp,
     ProgramOp,
     RenameDimensionOp,
+    RmsNormApplyOp,
+    RmsNormPartialOp,
     RotaryEmbeddingOp,
 )
 from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
@@ -31,6 +34,7 @@ from tpu_cake.workloads.seqax_forward import (
     SeqaxFeedForwardFusion,
     SeqaxNormScalePlacement,
     SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
     SeqaxWeightDataPlacement,
     seqax_forward_schedule,
 )
@@ -116,6 +120,35 @@ def test_seqax_hidden_materialization_semantics_adds_only_the_mlp_multiply_bound
     assert materialized_functions(strict_silu) == ("silu",)
     assert materialized_functions(strict_hidden) == ("silu", "multiply")
     assert schedule_sha256(strict_hidden) != schedule_sha256(strict_silu)
+
+
+def test_seqax_sharded_rms_strategy_defers_activation_gathers_until_consumers() -> None:
+    parameters = {
+        **SEQAX_PALLAS_SEARCH_PARAMETERS,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    standard = seqax_forward_schedule(**parameters)
+    sharded = seqax_forward_schedule(
+        **parameters,
+        residual_norm_strategy=SeqaxResidualNormStrategy.SHARDED_RMS,
+    )
+
+    assert sum(isinstance(operation, AllGatherOp) for operation in standard.walk()) == 14
+    assert sum(isinstance(operation, AllReduceOp) for operation in standard.walk()) == 0
+    assert schedule_sha256(sharded) != schedule_sha256(standard)
+    assert sum(isinstance(operation, AllGatherOp) for operation in sharded.walk()) == 14
+    assert sum(isinstance(operation, AllReduceOp) for operation in sharded.walk()) == 3
+    assert sum(isinstance(operation, RmsNormPartialOp) for operation in sharded.walk()) == 3
+    assert sum(isinstance(operation, RmsNormApplyOp) for operation in sharded.walk()) == 3
+    sharded.verify()
+
+    with pytest.raises(TypeError, match="SeqaxResidualNormStrategy"):
+        seqax_forward_schedule(residual_norm_strategy="sharded_rms")
+    with pytest.raises(ValueError, match="requires sharded normalization scales"):
+        seqax_forward_schedule(
+            residual_norm_strategy=SeqaxResidualNormStrategy.SHARDED_RMS,
+            norm_scale_placement=SeqaxNormScalePlacement.REPLICATED,
+        )
 
 
 def test_seqax_fused_silu_multiply_is_an_explicit_canonical_operation() -> None:
@@ -350,6 +383,25 @@ def test_weight_data_groups_preserve_five_seed_incumbent_semantics() -> None:
             assert actual.dtype == expected.dtype
             assert actual.shape == expected.shape
             assert (actual == expected).all()
+
+
+def test_sharded_rms_matches_standard_semantics_in_the_logical_interpreter() -> None:
+    parameters = {
+        **SEQAX_PALLAS_SEARCH_PARAMETERS,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    standard = seqax_forward_schedule(**parameters)
+    candidate = seqax_forward_schedule(
+        **parameters,
+        residual_norm_strategy=SeqaxResidualNormStrategy.SHARDED_RMS,
+    )
+    for seed in SEQAX_PALLAS_CORRECTNESS_SEEDS:
+        inputs = seqax_forward_inputs(seed=seed, **SEQAX_PALLAS_SEARCH_PARAMETERS)
+        (expected,) = interpret_distributed_program(standard, inputs)
+        (actual,) = interpret_distributed_program(candidate, inputs)
+        assert actual.dtype == expected.dtype
+        assert actual.shape == expected.shape
+        assert (actual == expected).all()
 
 
 def test_seqax_forward_uses_configured_rope_timescale_and_source_locations() -> None:

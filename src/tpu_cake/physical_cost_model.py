@@ -379,6 +379,15 @@ def _vector_counts(operation: VectorComputeOp) -> tuple[int, int, int, int]:
         rows = elements // output.storage.get_shape()[names.index(dimension)]
         scalar = 4 * elements
         special = rows
+    elif function == "rms_norm_partial":
+        value = operation.inputs[0].type
+        assert isinstance(value, BufferType)
+        scalar = 2 * math.prod(value.storage.get_shape())
+    elif function == "rms_norm_apply":
+        statistics = operation.inputs[1].type
+        assert isinstance(statistics, BufferType)
+        scalar = 2 * elements
+        special = math.prod(statistics.storage.get_shape())
     elif function == "rotary_embedding":
         scalar = 3 * elements
         special = elements

@@ -34,7 +34,9 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceScatterOp,
     RenameDimensionOp,
     ReturnOp,
+    RmsNormApplyOp,
     RmsNormOp,
+    RmsNormPartialOp,
     RotaryEmbeddingOp,
     ScanYieldOp,
     SliceOp,
@@ -288,6 +290,34 @@ def _execute_block(
                     normalized_float32,
                     result,
                 )
+        elif isinstance(operation, RmsNormPartialOp):
+            value = environment[operation.value]
+            value_type = operation.value.type
+            assert isinstance(value_type, DTensorType)
+            axis = _names(value_type).index(operation.dimension.data)
+            result = jnp.sum(jnp.square(value.astype(jnp.float32)), axis=axis)
+        elif isinstance(operation, RmsNormApplyOp):
+            value = environment[operation.value]
+            sum_squares = environment[operation.sum_squares]
+            scale = environment[operation.scale]
+            value_type = operation.value.type
+            sum_squares_type = operation.sum_squares.type
+            scale_type = operation.scale.type
+            result_type = operation.result.type
+            assert isinstance(value_type, DTensorType)
+            assert isinstance(sum_squares_type, DTensorType)
+            assert isinstance(scale_type, DTensorType)
+            assert isinstance(result_type, DTensorType)
+            value_names = _names(value_type)
+            aligned_sum_squares = _align_named(
+                sum_squares,
+                _names(sum_squares_type),
+                value_names,
+            )
+            aligned_scale = _align_named(scale, _names(scale_type), value_names)
+            mean_square = aligned_sum_squares / operation.normalized_size.data
+            inverse = jax.lax.rsqrt(mean_square + float(operation.epsilon.data))
+            result = _cast(value * inverse * aligned_scale, result_type)
         elif isinstance(operation, RotaryEmbeddingOp):
             result_type = operation.result.type
             assert isinstance(result_type, DTensorType)

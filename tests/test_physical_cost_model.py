@@ -39,7 +39,11 @@ from tpu_cake.seqax_cost_model import estimate_seqax_forward
 from tpu_cake.seqax_pallas_lowering import _einsum_tiles
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads import inkling_rpa_schedule
-from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
+    seqax_forward_schedule,
+)
 
 SMALL_SEQAX = {
     "batch": 2,
@@ -140,6 +144,48 @@ def test_physical_counts_cross_check_the_same_distributed_program() -> None:
     )
     assert physical_report.memory.explicit_hbm_dma_write_bytes_per_device == (
         distributed_report.counts.minimum_hbm_write_bytes_per_device
+    )
+    assert (
+        sum(
+            value.total_ring_equivalent_bidirectional_bytes_per_device
+            for value in physical_report.collectives
+        )
+        == distributed_report.counts.ici_bidirectional_bytes_per_device
+    )
+
+
+def test_sharded_rms_physical_collectives_match_distributed_cost_authority() -> None:
+    parameters = {
+        **SMALL_SEQAX,
+        "model": 256,
+        "sequence": 1,
+        "layers": 1,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+        "residual_norm_strategy": SeqaxResidualNormStrategy.SHARDED_RMS,
+    }
+    distributed = seqax_forward_schedule(**parameters)
+    physical = lower_seqax_forward_to_physical(distributed).module
+    physical_report = _report(physical)
+    distributed_report = estimate_seqax_forward(
+        distributed,
+        hardware=tpu7x_tensorcore_rates(),
+        source=MetricSource(
+            artifact_sha256=schedule_sha256(distributed),
+            artifact_path="distributed.xdsl",
+            tool="tpu-cake",
+            field="canonical-distributed-schedule-xdsl",
+        ),
+    )
+
+    assert (
+        sum(value.kind is CollectiveKind.ALL_GATHER for value in physical_report.collectives) == 14
+    )
+    assert (
+        sum(value.kind is CollectiveKind.ALL_REDUCE for value in physical_report.collectives) == 3
+    )
+    assert (
+        sum(value.kind is CollectiveKind.REDUCE_SCATTER for value in physical_report.collectives)
+        == 3
     )
     assert (
         sum(

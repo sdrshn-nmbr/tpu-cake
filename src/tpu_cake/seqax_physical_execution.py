@@ -133,6 +133,24 @@ def _vector_compute(
         inverse = jax.lax.rsqrt(mean_square + float(configuration["epsilon"]))
         normalized_float32 = value * inverse * aligned_scale
         result = normalized_float32
+    elif function == "rms_norm_partial":
+        value = values[0]
+        value_type = typed_inputs[0]
+        axis = _names(value_type).index(configuration["dimension"])
+        result = jnp.sum(jnp.square(value.astype(jnp.float32)), axis=axis)
+    elif function == "rms_norm_apply":
+        value, sum_squares, scale = values
+        value_type, sum_squares_type, scale_type = typed_inputs
+        value_names = _names(value_type)
+        aligned_sum_squares = _align_named(
+            sum_squares,
+            _names(sum_squares_type),
+            value_names,
+        )
+        aligned_scale = _align_named(scale, _names(scale_type), value_names)
+        mean_square = aligned_sum_squares / int(configuration["normalized_size"])
+        inverse = jax.lax.rsqrt(mean_square + float(configuration["epsilon"]))
+        result = value * inverse * aligned_scale
     elif function == "rotary_embedding":
         value = values[0]
         names = _names(typed_inputs[0])

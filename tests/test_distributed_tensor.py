@@ -562,6 +562,164 @@ def test_rms_norm_rejects_a_sharded_normalized_dimension() -> None:
         builder.module(result)
 
 
+def test_sharded_rms_norm_reduces_statistics_before_local_apply() -> None:
+    value = tensor(
+        bf16,
+        (("B", 8), ("M", 32)),
+        sharding={"B": ("d",), "M": ("t",)},
+    )
+    scale = tensor(f32, (("M", 32),), sharding={"M": ("t",)})
+    partial = tensor(
+        f32,
+        (("B", 8),),
+        sharding={"B": ("d",)},
+        pending_reductions={"t": "sum"},
+    )
+    statistics = tensor(f32, (("B", 8),), sharding={"B": ("d",)})
+    builder = DistributedProgramBuilder(
+        "sharded_rms_norm",
+        {"d": 2, "t": 4},
+        (value, scale),
+    )
+    sum_squares = builder.rms_norm_partial(
+        builder.inputs[0],
+        partial,
+        dimension="M",
+    )
+    sum_squares = builder.all_reduce(sum_squares, statistics, axes=("t",))
+    result = builder.rms_norm_apply(
+        builder.inputs[0],
+        sum_squares,
+        builder.inputs[1],
+        value,
+        dimension="M",
+        normalized_size=32,
+    )
+
+    builder.module(result).verify()
+
+
+def test_sharded_rms_norm_requires_the_exact_pending_reduction() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"M": ("t",)})
+    wrong_partial = tensor(
+        f32,
+        (("B", 8),),
+        pending_reductions={"d": "sum"},
+    )
+    builder = DistributedProgramBuilder("bad_rms_partial", {"d": 2, "t": 4}, (value,))
+    result = builder.rms_norm_partial(builder.inputs[0], wrong_partial, dimension="M")
+
+    with pytest.raises(VerifyException, match="normalized-dimension reductions"):
+        builder.module(result)
+
+
+def test_sharded_rms_norm_rejects_unreduced_statistics() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"M": ("t",)})
+    partial = tensor(
+        f32,
+        (("B", 8),),
+        pending_reductions={"t": "sum"},
+    )
+    scale = tensor(f32, (("M", 32),), sharding={"M": ("t",)})
+    builder = DistributedProgramBuilder(
+        "bad_rms_apply",
+        {"t": 4},
+        (value, scale),
+    )
+    sum_squares = builder.rms_norm_partial(builder.inputs[0], partial, dimension="M")
+    result = builder.rms_norm_apply(
+        builder.inputs[0],
+        sum_squares,
+        builder.inputs[1],
+        value,
+        dimension="M",
+        normalized_size=32,
+    )
+
+    with pytest.raises(VerifyException, match="partially reduced"):
+        builder.module(result)
+
+
+def test_sharded_rms_norm_rejects_wrong_scale_sharding() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"M": ("t",)})
+    partial = tensor(
+        f32,
+        (("B", 8),),
+        pending_reductions={"t": "sum"},
+    )
+    statistics = tensor(f32, (("B", 8),))
+    wrong_scale = tensor(f32, (("M", 32),))
+    builder = DistributedProgramBuilder(
+        "bad_rms_scale",
+        {"t": 4},
+        (value, wrong_scale),
+    )
+    sum_squares = builder.rms_norm_partial(builder.inputs[0], partial, dimension="M")
+    sum_squares = builder.all_reduce(sum_squares, statistics, axes=("t",))
+    result = builder.rms_norm_apply(
+        builder.inputs[0],
+        sum_squares,
+        builder.inputs[1],
+        value,
+        dimension="M",
+        normalized_size=32,
+    )
+
+    with pytest.raises(VerifyException, match="match normalized sharding"):
+        builder.module(result)
+
+
+def test_sharded_rms_norm_rejects_unbound_statistics() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"M": ("t",)})
+    statistics = tensor(f32, (("B", 8),))
+    scale = tensor(f32, (("M", 32),), sharding={"M": ("t",)})
+    builder = DistributedProgramBuilder(
+        "unbound_rms_statistics",
+        {"t": 4},
+        (value, statistics, scale),
+    )
+    result = builder.rms_norm_apply(
+        builder.inputs[0],
+        builder.inputs[1],
+        builder.inputs[2],
+        value,
+        dimension="M",
+        normalized_size=32,
+    )
+
+    with pytest.raises(VerifyException, match="all-reduced RMSNorm partial"):
+        builder.module(result)
+
+
+def test_sharded_rms_norm_rejects_statistics_from_another_value() -> None:
+    value = tensor(bf16, (("B", 8), ("M", 32)), sharding={"M": ("t",)})
+    partial = tensor(
+        f32,
+        (("B", 8),),
+        pending_reductions={"t": "sum"},
+    )
+    statistics = tensor(f32, (("B", 8),))
+    scale = tensor(f32, (("M", 32),), sharding={"M": ("t",)})
+    builder = DistributedProgramBuilder(
+        "swapped_rms_statistics",
+        {"t": 4},
+        (value, value, scale),
+    )
+    sum_squares = builder.rms_norm_partial(builder.inputs[1], partial, dimension="M")
+    sum_squares = builder.all_reduce(sum_squares, statistics, axes=("t",))
+    result = builder.rms_norm_apply(
+        builder.inputs[0],
+        sum_squares,
+        builder.inputs[2],
+        value,
+        dimension="M",
+        normalized_size=32,
+    )
+
+    with pytest.raises(VerifyException, match="do not match its value"):
+        builder.module(result)
+
+
 def test_rotary_embedding_rejects_an_odd_head_dimension() -> None:
     value = tensor(bf16, (("B", 8), ("L", 16), ("D", 7)))
     builder = DistributedProgramBuilder("bad_rope", {}, (value,))

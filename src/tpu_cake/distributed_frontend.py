@@ -29,7 +29,9 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceScatterOp,
     RenameDimensionOp,
     ReturnOp,
+    RmsNormApplyOp,
     RmsNormOp,
+    RmsNormPartialOp,
     RotaryEmbeddingOp,
     ScanYieldOp,
     ShardingAttr,
@@ -210,6 +212,49 @@ class DistributedProgramBuilder:
         self.block.add_op(operation)
         return operation.result
 
+    def rms_norm_partial(
+        self,
+        value: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        dimension: str,
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            RmsNormPartialOp(value, result.to_type(), dimension=dimension), source
+        )
+        assert isinstance(operation, RmsNormPartialOp)
+        self.block.add_op(operation)
+        return operation.result
+
+    def rms_norm_apply(
+        self,
+        value: SSAValue,
+        sum_squares: SSAValue,
+        scale: SSAValue,
+        result: DistributedTensorSpec,
+        *,
+        dimension: str,
+        normalized_size: int,
+        epsilon: str = "0.000001",
+        source: SourceLocation | None = None,
+    ) -> SSAValue:
+        operation = attach_source(
+            RmsNormApplyOp(
+                value,
+                sum_squares,
+                scale,
+                result.to_type(),
+                dimension=dimension,
+                normalized_size=normalized_size,
+                epsilon=epsilon,
+            ),
+            source,
+        )
+        assert isinstance(operation, RmsNormApplyOp)
+        self.block.add_op(operation)
+        return operation.result
+
     def rotary_embedding(
         self,
         value: SSAValue,
@@ -338,9 +383,7 @@ class DistributedProgramBuilder:
         permutation: tuple[int, ...],
         source: SourceLocation | None = None,
     ) -> SSAValue:
-        operation = attach_source(
-            TransposeOp(value, result.to_type(), permutation), source
-        )
+        operation = attach_source(TransposeOp(value, result.to_type(), permutation), source)
         assert isinstance(operation, TransposeOp)
         self.block.add_op(operation)
         return operation.result

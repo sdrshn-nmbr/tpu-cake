@@ -27,7 +27,9 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceScatterOp,
     RenameDimensionOp,
     ReturnOp,
+    RmsNormApplyOp,
     RmsNormOp,
+    RmsNormPartialOp,
     RotaryEmbeddingOp,
     ScanYieldOp,
     SliceOp,
@@ -391,6 +393,16 @@ class _LoweringState:
             configuration = _configuration(
                 dimension=operation.dimension.data,
                 epsilon=operation.epsilon.data,
+            )
+        elif isinstance(operation, RmsNormPartialOp):
+            function = "rms_norm_partial"
+            configuration = _configuration(dimension=operation.dimension.data)
+        elif isinstance(operation, RmsNormApplyOp):
+            function = "rms_norm_apply"
+            configuration = _configuration(
+                dimension=operation.dimension.data,
+                epsilon=operation.epsilon.data,
+                normalized_size=operation.normalized_size.data,
             )
         elif isinstance(operation, RotaryEmbeddingOp):
             function = "rotary_embedding"

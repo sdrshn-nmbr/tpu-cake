@@ -33,7 +33,9 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceScatterOp,
     RenameDimensionOp,
     ReturnOp,
+    RmsNormApplyOp,
     RmsNormOp,
+    RmsNormPartialOp,
     RotaryEmbeddingOp,
     ScanYieldOp,
     SliceOp,
@@ -204,7 +206,9 @@ _DATA_OPERATIONS = (
     ReduceLocalOp,
     ReduceScatterOp,
     RenameDimensionOp,
+    RmsNormApplyOp,
     RmsNormOp,
+    RmsNormPartialOp,
     RotaryEmbeddingOp,
     SliceOp,
     TransposeOp,
@@ -342,6 +346,18 @@ def _operation_work(operation: Operation, mesh: dict[str, int]) -> _Work:
         work.local_special += local_rows
         if global_rows <= 0:
             raise UnsupportedSeqaxCostModelError("RMSNorm has no normalization rows")
+    elif isinstance(operation, RmsNormPartialOp):
+        input_type = _tensor_type(operation.value)
+        work.global_vector += 2 * _global_elements(input_type)
+        work.local_vector += 2 * _local_elements(input_type, mesh)
+    elif isinstance(operation, RmsNormApplyOp):
+        work.global_vector += 2 * global_elements
+        work.local_vector += 2 * local_elements
+        statistics_type = _tensor_type(operation.sum_squares)
+        local_rows = _local_elements(statistics_type, mesh)
+        if local_rows <= 0:
+            raise UnsupportedSeqaxCostModelError("RMSNorm apply has no normalization rows")
+        work.local_special += local_rows
     elif isinstance(operation, RotaryEmbeddingOp):
         work.global_vector += 3 * global_elements
         work.local_vector += 3 * local_elements
@@ -388,9 +404,7 @@ def _collective_axes(operation: Operation) -> tuple[str, ...]:
         after = _tensor_type(operation.result)
         removed: list[str] = []
         removed_dimensions = 0
-        for old_axes, new_axes in zip(
-            before.sharding_axes(), after.sharding_axes(), strict=True
-        ):
+        for old_axes, new_axes in zip(before.sharding_axes(), after.sharding_axes(), strict=True):
             if old_axes[: len(new_axes)] != new_axes:
                 raise UnsupportedSeqaxCostModelError(
                     "all-gather result does not remove a sharding suffix"
@@ -407,9 +421,7 @@ def _collective_axes(operation: Operation) -> tuple[str, ...]:
     elif isinstance(operation, (AllReduceOp, ReduceScatterOp)):
         axes = tuple(value.data for value in operation.axes)
     else:
-        raise UnsupportedSeqaxCostModelError(
-            f"cannot derive collective axes for {operation.name}"
-        )
+        raise UnsupportedSeqaxCostModelError(f"cannot derive collective axes for {operation.name}")
     if not axes or len(axes) != len(set(axes)):
         raise UnsupportedSeqaxCostModelError(
             f"collective {operation.name} needs nonempty unique mesh axes"
@@ -424,9 +436,7 @@ def _collective_traffic(
     axes = _collective_axes(operation)
     group_size = math.prod(mesh[axis] for axis in axes)
     if group_size <= 1:
-        raise UnsupportedSeqaxCostModelError(
-            f"collective {operation.name} has a one-device group"
-        )
+        raise UnsupportedSeqaxCostModelError(f"collective {operation.name} has a one-device group")
     before_bytes = _local_bytes(_tensor_type(operation.value), mesh)
     after_bytes = _local_bytes(_tensor_type(operation.result), mesh)
     if isinstance(operation, AllGatherOp):
@@ -443,9 +453,7 @@ def _collective_traffic(
         byte_count = Decimal(2 * before_bytes * (group_size - 1)) / Decimal(group_size)
     else:
         if before_bytes != after_bytes:
-            raise UnsupportedSeqaxCostModelError(
-                "all-reduce must preserve local tensor bytes"
-            )
+            raise UnsupportedSeqaxCostModelError("all-reduce must preserve local tensor bytes")
         byte_count = Decimal(4 * before_bytes * (group_size - 1)) / Decimal(group_size)
     return axes, byte_count
 
@@ -519,9 +527,7 @@ def _block_peak_live_bytes(
     peak_local = local_live
     for operation in block.ops:
         result_global = sum(_global_bytes(_tensor_type(value)) for value in operation.results)
-        result_local = sum(
-            _local_bytes(_tensor_type(value), mesh) for value in operation.results
-        )
+        result_local = sum(_local_bytes(_tensor_type(value), mesh) for value in operation.results)
         nested_global = nested_local = 0
         if isinstance(operation, LayerScanOp):
             nested_global, nested_local = _block_peak_live_bytes(
@@ -535,9 +541,7 @@ def _block_peak_live_bytes(
         local_live += result_local
         for operand in operation.operands:
             remaining[operand] -= 1
-            if remaining[operand] == 0 and (
-                operand.owner is not block or count_arguments
-            ):
+            if remaining[operand] == 0 and (operand.owner is not block or count_arguments):
                 value_type = _tensor_type(operand)
                 global_live -= _global_bytes(value_type)
                 local_live -= _local_bytes(value_type, mesh)
@@ -590,10 +594,7 @@ def estimate_seqax_forward(
         )
     program = top_level[0]
     actual_schedule_sha256 = schedule_sha256(module)
-    if (
-        expected_schedule_sha256 is not None
-        and actual_schedule_sha256 != expected_schedule_sha256
-    ):
+    if expected_schedule_sha256 is not None and actual_schedule_sha256 != expected_schedule_sha256:
         raise UnsupportedSeqaxCostModelError(
             "distributed schedule hash mismatch: "
             f"expected {expected_schedule_sha256}, got {actual_schedule_sha256}"
@@ -622,9 +623,7 @@ def estimate_seqax_forward(
     minimum_hbm_read = sum(
         _local_bytes(_tensor_type(argument), mesh) for argument in program.body.block.args
     )
-    minimum_hbm_write = sum(
-        _local_bytes(_tensor_type(value), mesh) for value in terminator.values
-    )
+    minimum_hbm_write = sum(_local_bytes(_tensor_type(value), mesh) for value in terminator.values)
     materialized_hbm = analysis.traffic.local_read + analysis.traffic.local_write
     minimum_hbm = minimum_hbm_read + minimum_hbm_write
     compute_ns = (
@@ -632,21 +631,11 @@ def estimate_seqax_forward(
         * Decimal(1_000_000_000)
         / Decimal(hardware.compute_flops_per_second)
     )
-    hbm_ns = (
-        Decimal(minimum_hbm)
-        * Decimal(1_000_000_000)
-        / Decimal(hardware.hbm_bytes_per_second)
-    )
+    hbm_ns = Decimal(minimum_hbm) * Decimal(1_000_000_000) / Decimal(hardware.hbm_bytes_per_second)
     materialized_hbm_ns = (
-        Decimal(materialized_hbm)
-        * Decimal(1_000_000_000)
-        / Decimal(hardware.hbm_bytes_per_second)
+        Decimal(materialized_hbm) * Decimal(1_000_000_000) / Decimal(hardware.hbm_bytes_per_second)
     )
-    ici_ns = (
-        analysis.traffic.ici
-        * Decimal(1_000_000_000)
-        / Decimal(hardware.ici_bytes_per_second)
-    )
+    ici_ns = analysis.traffic.ici * Decimal(1_000_000_000) / Decimal(hardware.ici_bytes_per_second)
     lower_bound_ns = max(compute_ns, hbm_ns, ici_ns)
     limiting = max(
         (("compute", compute_ns), ("hbm", hbm_ns), ("ici", ici_ns)),

@@ -1225,6 +1225,8 @@ class VectorComputeOp(IRDLOperation):
             "rename_dimension": 1,
             "slice": 1,
             "rms_norm": 2,
+            "rms_norm_partial": 1,
+            "rms_norm_apply": 3,
             "rotary_embedding": 1,
             "packed_causal_mask": 1,
             "masked_softmax": 2,
@@ -1240,6 +1242,8 @@ class VectorComputeOp(IRDLOperation):
             "rename_dimension": {"destination", "source"},
             "slice": {"dimension", "index"},
             "rms_norm": {"dimension", "epsilon"},
+            "rms_norm_partial": {"dimension"},
+            "rms_norm_apply": {"dimension", "epsilon", "normalized_size"},
             "rotary_embedding": {
                 "head_dimension",
                 "maximum_timescale",
@@ -1412,6 +1416,90 @@ class VectorComputeOp(IRDLOperation):
                 raise VerifyException("physical RMSNorm epsilon must be a decimal") from error
             if not epsilon.is_finite() or epsilon <= 0:
                 raise VerifyException("physical RMSNorm epsilon must be positive and finite")
+        if function == "rms_norm_partial":
+            value = inputs[0]
+            assert isinstance(value, BufferType)
+            if not _is_float_buffer(value) or not isinstance(
+                output.storage.element_type, Float32Type
+            ):
+                raise VerifyException(
+                    "physical RMSNorm partial requires floating input and f32 output"
+                )
+            dimension = parsed_configuration["dimension"]
+            value_shape = _named_buffer_shape(value)
+            if dimension not in value_shape:
+                raise VerifyException("physical RMSNorm partial dimension does not exist")
+            dimension_sharding = tuple(
+                filter(None, _dimension_sharding(value, dimension).split("/"))
+            )
+            if not dimension_sharding:
+                raise VerifyException(
+                    "physical RMSNorm partial requires a sharded normalized dimension"
+                )
+            expected_shape = {name: size for name, size in value_shape.items() if name != dimension}
+            if _named_buffer_shape(output) != expected_shape:
+                raise VerifyException("physical RMSNorm partial has the wrong output shape")
+            value_names = tuple(value.data for value in value.shape.dimensions)
+            value_sharding = tuple(value.sharding.axes)
+            axis = value_names.index(dimension)
+            expected_sharding = value_sharding[:axis] + value_sharding[axis + 1 :]
+            if tuple(output.sharding.axes) != expected_sharding:
+                raise VerifyException("physical RMSNorm partial has the wrong output sharding")
+            if pending_reductions != tuple(sorted(dimension_sharding)):
+                raise VerifyException(
+                    "physical RMSNorm partial reductions must match normalized sharding"
+                )
+        if function == "rms_norm_apply":
+            value, sum_squares, scale = inputs
+            assert isinstance(value, BufferType)
+            assert isinstance(sum_squares, BufferType)
+            assert isinstance(scale, BufferType)
+            if not all(_is_float_buffer(buffer) for buffer in (*inputs, output)):
+                raise VerifyException("physical RMSNorm apply requires floating-point tensors")
+            if not isinstance(sum_squares.storage.element_type, Float32Type):
+                raise VerifyException("physical RMSNorm apply statistics must be f32")
+            if not _same_physical_value_contract(value, output):
+                raise VerifyException("physical RMSNorm apply must preserve its value contract")
+            dimension = parsed_configuration["dimension"]
+            value_shape = _named_buffer_shape(value)
+            if dimension not in value_shape:
+                raise VerifyException("physical RMSNorm apply dimension does not exist")
+            dimension_sharding = _dimension_sharding(value, dimension)
+            if not dimension_sharding:
+                raise VerifyException(
+                    "physical RMSNorm apply requires a sharded normalized dimension"
+                )
+            if _named_buffer_shape(scale) != {dimension: value_shape[dimension]}:
+                raise VerifyException("physical RMSNorm apply scale has the wrong shape")
+            if _dimension_sharding(scale, dimension) != dimension_sharding:
+                raise VerifyException("physical RMSNorm apply scale must match normalized sharding")
+            expected_statistics = {
+                name: size for name, size in value_shape.items() if name != dimension
+            }
+            if _named_buffer_shape(sum_squares) != expected_statistics:
+                raise VerifyException("physical RMSNorm apply statistics have the wrong shape")
+            value_names = tuple(value.data for value in value.shape.dimensions)
+            value_sharding = tuple(value.sharding.axes)
+            axis = value_names.index(dimension)
+            expected_statistics_sharding = value_sharding[:axis] + value_sharding[axis + 1 :]
+            if tuple(sum_squares.sharding.axes) != expected_statistics_sharding:
+                raise VerifyException("physical RMSNorm apply statistics have the wrong sharding")
+            try:
+                normalized_size = int(parsed_configuration["normalized_size"])
+            except ValueError as error:
+                raise VerifyException(
+                    "physical RMSNorm apply normalized size must be an integer"
+                ) from error
+            if normalized_size <= 0 or normalized_size % value_shape[dimension]:
+                raise VerifyException(
+                    "physical RMSNorm apply normalized size is incompatible with its shard"
+                )
+            try:
+                epsilon = Decimal(parsed_configuration["epsilon"])
+            except InvalidOperation as error:
+                raise VerifyException("physical RMSNorm apply epsilon must be a decimal") from error
+            if not epsilon.is_finite() or epsilon <= 0:
+                raise VerifyException("physical RMSNorm apply epsilon must be positive and finite")
         if function == "rotary_embedding":
             value = inputs[0]
             assert isinstance(value, BufferType)
@@ -2731,6 +2819,7 @@ class KernelOp(IRDLOperation):
         mode_by_argument = {} if modes is None else dict(zip(block.args, modes, strict=True))
         written_external_outputs: set[SSAValue] = set()
         partial_reductions: dict[SSAValue, frozenset[str]] = {}
+        rms_statistics: dict[SSAValue, tuple[SSAValue, str, frozenset[str]]] = {}
         pending_dma_destinations: dict[Operation, tuple[SSAValue, TileRegionAttr]] = {}
         pending_remote_destinations: dict[Operation, tuple[SSAValue, TileRegionAttr]] = {}
         rotation_copies: list[tuple[BufferType, int]] = []
@@ -2910,6 +2999,10 @@ class KernelOp(IRDLOperation):
                 partial_reductions[destination] = partial_reductions.get(
                     root(start.source), frozenset()
                 )
+                rms_statistics.pop(destination, None)
+                source_statistics = rms_statistics.get(root(start.source))
+                if source_statistics is not None:
+                    rms_statistics[destination] = source_statistics
             if isinstance(operation, RemoteDmaWaitOp):
                 start = operation.token.owner
                 assert isinstance(start, RemoteDmaStartOp)
@@ -2920,12 +3013,16 @@ class KernelOp(IRDLOperation):
                 covered_destinations = {
                     route.destination_device.data for route in transfer_plan.routes
                 }
+                rms_statistics.pop(destination, None)
                 if covered_destinations == topology_device_ids:
                     initialized.add(destination)
                     mark_written(destination)
                     partial_reductions[destination] = partial_reductions.get(
                         root(start.source), frozenset()
                     )
+                    source_statistics = rms_statistics.get(root(start.source))
+                    if source_statistics is not None:
+                        rms_statistics[destination] = source_statistics
             if isinstance(operation, MxuMatmulOp):
                 require_initialized(operation.lhs, operation)
                 require_initialized(operation.rhs, operation)
@@ -2934,6 +3031,7 @@ class KernelOp(IRDLOperation):
                 accumulator = root(operation.accumulator)
                 initialized.add(accumulator)
                 partial_reductions.pop(accumulator, None)
+                rms_statistics.pop(accumulator, None)
             if isinstance(operation, MxuEinsumOp):
                 require_initialized(operation.lhs, operation)
                 require_initialized(operation.rhs, operation)
@@ -2944,6 +3042,7 @@ class KernelOp(IRDLOperation):
                 partial_reductions[accumulator] = frozenset(
                     value.data for value in operation.pending_reduction_axes
                 )
+                rms_statistics.pop(accumulator, None)
             if isinstance(operation, VectorComputeOp):
                 for value in operation.inputs:
                     require_initialized(value, operation)
@@ -2969,6 +3068,43 @@ class KernelOp(IRDLOperation):
                         raise VerifyException(
                             f"physical {function} must preserve pending reductions"
                         )
+                elif function == "rms_norm_partial":
+                    require_fully_reduced(operation.inputs[0], operation)
+                    if not declared_pending:
+                        raise VerifyException("physical RMSNorm partial must introduce a reduction")
+                elif function == "rms_norm_apply":
+                    for value in operation.inputs:
+                        require_fully_reduced(value, operation)
+                    if declared_pending:
+                        raise VerifyException(
+                            "physical RMSNorm apply cannot introduce pending reductions"
+                        )
+                    configuration = dict(
+                        value.data.split("=", 1) for value in operation.configuration
+                    )
+                    value_type = operation.inputs[0].type
+                    assert isinstance(value_type, BufferType)
+                    dimension = configuration["dimension"]
+                    local_size = _named_buffer_shape(value_type)[dimension]
+                    sharding_axes = tuple(
+                        filter(None, _dimension_sharding(value_type, dimension).split("/"))
+                    )
+                    expected_size = local_size * math.prod(mesh[axis] for axis in sharding_axes)
+                    if int(configuration["normalized_size"]) != expected_size:
+                        raise VerifyException(
+                            "physical RMSNorm apply normalized size must match the global dimension"
+                        )
+                    statistics = rms_statistics.get(root(operation.inputs[1]))
+                    if (
+                        statistics is None
+                        or statistics[0] != root(operation.inputs[0])
+                        or statistics[1] != dimension
+                        or statistics[2]
+                    ):
+                        raise VerifyException(
+                            "physical RMSNorm apply statistics must come from its matching "
+                            "fully reduced partial"
+                        )
                 else:
                     for value in operation.inputs:
                         require_fully_reduced(value, operation)
@@ -2979,6 +3115,16 @@ class KernelOp(IRDLOperation):
                 output = root(operation.output)
                 initialized.add(output)
                 partial_reductions[output] = declared_pending
+                rms_statistics.pop(output, None)
+                if function == "rms_norm_partial":
+                    configuration = dict(
+                        value.data.split("=", 1) for value in operation.configuration
+                    )
+                    rms_statistics[output] = (
+                        root(operation.inputs[0]),
+                        configuration["dimension"],
+                        declared_pending,
+                    )
             if _is_collective(operation):
                 assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                 require_initialized(operation.source, operation)
@@ -3009,6 +3155,22 @@ class KernelOp(IRDLOperation):
                     remaining.discard(axis)
                 initialized.add(destination)
                 partial_reductions[destination] = frozenset(remaining)
+                rms_statistics.pop(destination, None)
+                source_statistics = rms_statistics.get(root(operation.source))
+                if source_statistics is not None:
+                    if not (
+                        isinstance(operation, CollectiveOp)
+                        and operation.kind.data is CollectiveKind.ALL_REDUCE
+                        and operation.reducer.data == "sum"
+                    ):
+                        raise VerifyException(
+                            "physical RMSNorm statistics require sum all-reduce completion"
+                        )
+                    rms_statistics[destination] = (
+                        source_statistics[0],
+                        source_statistics[1],
+                        frozenset(remaining),
+                    )
             if isinstance(operation, RaggedPagedAttentionOp):
                 for value in (
                     operation.query,

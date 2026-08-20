@@ -8,6 +8,7 @@ from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
+    CollectiveKind,
     MemorySpace,
     MxuEinsumOp,
     Ownership,
@@ -384,6 +385,133 @@ def test_vector_compute_rejects_rms_norm_over_a_sharded_dimension() -> None:
 
     with pytest.raises(VerifyException, match="dimension cannot be sharded"):
         operation.verify()
+
+
+def test_kernel_rejects_rms_norm_apply_with_unbound_statistics() -> None:
+    value = _spec(
+        (2, 8),
+        ("B", "M"),
+        memory=MemorySpace.HBM,
+        sharding=("", "t"),
+    )
+    statistics = _spec((2,), ("B",), dtype=f32, memory=MemorySpace.HBM)
+    scale = _spec((8,), ("M",), dtype=f32, memory=MemorySpace.HBM, sharding=("t",))
+    output = _spec(
+        (2, 8),
+        ("B", "M"),
+        memory=MemorySpace.HBM,
+        sharding=("", "t"),
+    )
+    builder = KernelBuilder(
+        "unbound_rms_statistics",
+        "tpu7x",
+        (value, statistics, scale, output),
+        mesh={"t": 4},
+        interconnect_bandwidth_bytes_per_second={"t": 1},
+        vmem_capacity_bytes=1 << 20,
+        smem_capacity_bytes=1 << 20,
+    )
+    local_value = builder.alloc(_spec((2, 8), ("B", "M"), sharding=("", "t")), "value")
+    local_statistics = builder.alloc(_spec((2,), ("B",), dtype=f32), "statistics")
+    local_scale = builder.alloc(_spec((8,), ("M",), dtype=f32, sharding=("t",)), "scale")
+    local_output = builder.alloc(_spec((2, 8), ("B", "M"), sharding=("", "t")), "output")
+    transfers = tuple(
+        builder.dma_start(source, destination, builder.semaphore(), stage=0)
+        for source, destination in zip(
+            builder.inputs[:3],
+            (local_value, local_statistics, local_scale),
+            strict=True,
+        )
+    )
+    for transfer in transfers:
+        builder.dma_wait(transfer, stage=1)
+    builder.vector_compute(
+        (local_value, local_statistics, local_scale),
+        local_output,
+        stage=2,
+        function="rms_norm_apply",
+        configuration=("dimension=M", "epsilon=0.000001", "normalized_size=32"),
+    )
+    builder.dma(local_output, builder.inputs[3], builder.semaphore(), start_stage=3, wait_stage=4)
+
+    with pytest.raises(VerifyException, match="matching fully reduced partial"):
+        builder.module()
+
+
+def test_kernel_clears_rms_statistics_lineage_when_the_buffer_is_overwritten() -> None:
+    value = _spec(
+        (2, 8),
+        ("B", "M"),
+        memory=MemorySpace.HBM,
+        sharding=("", "t"),
+    )
+    scale = _spec((8,), ("M",), dtype=f32, memory=MemorySpace.HBM, sharding=("t",))
+    unrelated_statistics = _spec((2,), ("B",), dtype=f32, memory=MemorySpace.HBM)
+    output = _spec(
+        (2, 8),
+        ("B", "M"),
+        memory=MemorySpace.HBM,
+        sharding=("", "t"),
+    )
+    builder = KernelBuilder(
+        "overwritten_rms_statistics",
+        "tpu7x",
+        (value, scale, unrelated_statistics, output),
+        mesh={"t": 4},
+        interconnect_bandwidth_bytes_per_second={"t": 1},
+        vmem_capacity_bytes=1 << 20,
+        smem_capacity_bytes=1 << 20,
+    )
+    local_value = builder.alloc(_spec((2, 8), ("B", "M"), sharding=("", "t")), "value")
+    local_scale = builder.alloc(_spec((8,), ("M",), dtype=f32, sharding=("t",)), "scale")
+    partial = builder.alloc(_spec((2,), ("B",), dtype=f32), "partial")
+    statistics = builder.alloc(_spec((2,), ("B",), dtype=f32), "statistics")
+    local_output = builder.alloc(_spec((2, 8), ("B", "M"), sharding=("", "t")), "output")
+    initial_transfers = tuple(
+        builder.dma_start(source, destination, builder.semaphore(), stage=0)
+        for source, destination in zip(
+            builder.inputs[:2],
+            (local_value, local_scale),
+            strict=True,
+        )
+    )
+    for transfer in initial_transfers:
+        builder.dma_wait(transfer, stage=0)
+    builder.vector_compute(
+        (local_value,),
+        partial,
+        stage=1,
+        function="rms_norm_partial",
+        configuration=("dimension=M",),
+        pending_reduction_axes=("t",),
+    )
+    builder.collective(
+        partial,
+        statistics,
+        stage=2,
+        kind=CollectiveKind.ALL_REDUCE,
+        mesh_axis="t",
+        group_size=4,
+        reducer="sum",
+    )
+    overwrite = builder.dma_start(
+        builder.inputs[2],
+        statistics,
+        builder.semaphore(),
+        stage=3,
+    )
+    builder.dma_wait(overwrite, stage=3)
+    builder.vector_compute(
+        (local_value, statistics, local_scale),
+        local_output,
+        stage=4,
+        function="rms_norm_apply",
+        configuration=("dimension=M", "epsilon=0.000001", "normalized_size=32"),
+    )
+    builder.dma(local_output, builder.inputs[3], builder.semaphore(), start_stage=4, wait_stage=4)
+
+    with pytest.raises(VerifyException, match="matching fully reduced partial"):
+        builder.module()
 
 
 def test_vector_compute_rejects_softmax_over_a_sharded_dimension() -> None:

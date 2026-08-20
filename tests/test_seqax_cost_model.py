@@ -18,6 +18,8 @@ from tpu_cake.workloads.seqax_forward import (
     REPLICATED_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_WEIGHT_DATA,
     SeqaxNormScalePlacement,
+    SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
     seqax_forward_schedule,
 )
 
@@ -179,6 +181,52 @@ def test_complete_seqax_forward_expands_layer_scan_and_emits_typed_bounds() -> N
     assert report.balance.maximum_to_minimum_work_ratio == Decimal(1)
     assert report.predicted_limiting_resource in {"compute", "hbm", "ici"}
     assert any("none of its values are device measurements" in item for item in report.omissions)
+
+
+@pytest.mark.parametrize(
+    ("sequence", "expected_saving"),
+    ((1, Decimal(4572)), (128, Decimal(0)), (256, Decimal(-4608))),
+)
+def test_sharded_rms_communication_crossover_is_shape_explicit(
+    sequence: int,
+    expected_saving: Decimal,
+) -> None:
+    parameters = {
+        "batch": 2,
+        "sequence": sequence,
+        "model": 256,
+        "vocabulary": 16,
+        "feed_forward": 16,
+        "query_groups": 2,
+        "key_value_heads": 4,
+        "head": 4,
+        "layers": 1,
+        "data_mesh": 2,
+        "tensor_mesh": 4,
+        "rope_max_timescale": 256,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    standard = seqax_forward_schedule(**parameters)
+    candidate = seqax_forward_schedule(
+        **parameters,
+        residual_norm_strategy=SeqaxResidualNormStrategy.SHARDED_RMS,
+    )
+    standard_report = estimate_seqax_forward(
+        standard,
+        hardware=tpu7x_tensorcore_rates(),
+        source=_source(),
+    )
+    candidate_report = estimate_seqax_forward(
+        candidate,
+        hardware=tpu7x_tensorcore_rates(),
+        source=_source(),
+    )
+
+    assert (
+        standard_report.counts.ici_bidirectional_bytes_per_device
+        - candidate_report.counts.ici_bidirectional_bytes_per_device
+        == expected_saving
+    )
 
 
 def test_norm_scale_replication_accounts_for_memory_and_communication_tradeoff() -> None:
