@@ -19,6 +19,7 @@ from tpu_cake.seqax_numerical import (
     _validate_strict_silu_stablehlo,
     assess_seqax_bf16_forward,
     assess_seqax_bf16_outputs,
+    assess_seqax_cpu_reference_replay,
     bf16_arrays_within_one_ulp,
     decode_seqax_bf16_checkpoint,
     default_seqax_bf16_validation_contract,
@@ -207,7 +208,7 @@ def test_mathematical_silu_reference_rounds_once_to_bf16() -> None:
     )
     assert actual.dtype == np.dtype(ml_dtypes.bfloat16)
     assert BF16_UNIT_ROUNDOFF == 0.00390625
-    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v4"
+    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v5"
 
 
 def test_mathematical_silu_reference_rejects_non_bf16_or_nonfinite_input() -> None:
@@ -551,7 +552,17 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
         if scenario.role.value == "held_out"
         for seed in scenario.seeds
     }
+    v4 = json.loads(Path("contracts/seqax-bf16-forward-numerical-v4.json").read_text())
+    v4_seeds = {seed for scenario in v4["scenarios"] for seed in scenario["seeds"]}
+    v4_shapes = {tuple(sorted(scenario["parameters"].items())) for scenario in v4["scenarios"]}
+    held_out_shapes = {
+        tuple(sorted(scenario.parameters.model_dump().items()))
+        for scenario in contract.scenarios
+        if scenario.role.value == "held_out"
+    }
     assert calibration_seeds.isdisjoint(held_out_seeds)
+    assert v4_seeds.isdisjoint(held_out_seeds)
+    assert v4_shapes.isdisjoint(held_out_shapes)
     assert 16491228204229630496 in calibration_seeds
     assert len(calibration_seeds) == 29
     assert len(held_out_seeds) == 12
@@ -585,7 +596,7 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
 def test_bf16_forward_contract_requires_fresh_hlo_identities() -> None:
     contract = default_seqax_bf16_validation_contract()
 
-    assert contract.hlo_identity_status == "pinned"
+    assert contract.hlo_identity_status == "pending"
     assert contract.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
     assert contract.compilation_source_root == "/home/sudarshan/tpu-cake-main"
     assert contract.checkpoint_capture == "typed-strict-rms-mlp-extra-outputs-v4"
@@ -596,11 +607,11 @@ def test_bf16_forward_contract_requires_fresh_hlo_identities() -> None:
 
 def test_tracked_bf16_forward_contract_matches_the_canonical_factory() -> None:
     contract = default_seqax_bf16_validation_contract()
-    path = Path("contracts/seqax-bf16-forward-numerical-v4.json")
+    path = Path("contracts/seqax-bf16-forward-numerical-v5.json")
 
     assert SeqaxBf16ValidationContract.model_validate_json(path.read_text()) == contract
     assert (
-        contract.contract_id == "4142faa37c5fde77d24ed7a3081d9f3f0cd840cc62892a624dba7ed8621a0ab5"
+        contract.contract_id == "1eea9d761876e0ca75c6765fe0c51691463bb8b3bdcc26ffd49f0f0cf0cafb23"
     )
 
 
@@ -875,6 +886,84 @@ def test_bf16_output_assessment_does_not_claim_checkpoint_provenance() -> None:
 
     assert assessment.final_outputs_satisfy_policy
     assert "checkpoint_values_consistent" not in type(assessment).model_fields
+
+
+def test_cpu_reference_replay_uses_the_frozen_cross_path_bounds() -> None:
+    contract, scenario, _inputs, reference, _evidence = _calibration_evidence()
+    nearby = reference.copy()
+    nearby.flat[0] += np.float32(1e-4)
+    distant = reference.copy()
+    distant.flat[0] += np.float32(0.1)
+
+    accepted = assess_seqax_cpu_reference_replay(
+        reference,
+        nearby,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    rejected = assess_seqax_cpu_reference_replay(
+        reference,
+        distant,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert accepted.within_bounds
+    assert not rejected.within_bounds
+
+
+def test_tpu_output_must_pass_both_portable_cpu_references() -> None:
+    contract = default_seqax_bf16_validation_contract()
+    scenario = contract.scenarios[0]
+    saved = np.ones(scenario.output.shape, dtype=np.float32)
+    fresh = saved.copy()
+    fresh.flat[0] -= np.float32(0.007)
+    output = saved.copy()
+    output.flat[0] += np.float32(0.03)
+
+    portability = assess_seqax_cpu_reference_replay(
+        saved,
+        fresh,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    against_saved = numerical._assess_output_arrays(
+        output,
+        output,
+        saved,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    against_fresh = numerical._assess_output_arrays(
+        output,
+        output,
+        fresh,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert portability.within_bounds
+    assert against_saved.final_outputs_satisfy_policy
+    assert not against_fresh.final_outputs_satisfy_policy
+
+
+def test_cpu_reference_replay_rejects_wrong_dtype_and_shape() -> None:
+    contract, scenario, _inputs, reference, _evidence = _calibration_evidence()
+
+    with pytest.raises(TypeError, match="must use float32"):
+        assess_seqax_cpu_reference_replay(
+            reference,
+            reference.astype(np.float64),
+            policy=contract.policy,
+            scenario=scenario,
+        )
+    with pytest.raises(ValueError, match="shape does not match"):
+        assess_seqax_cpu_reference_replay(
+            reference,
+            reference[..., :-1],
+            policy=contract.policy,
+            scenario=scenario,
+        )
 
 
 @pytest.mark.parametrize("mutation", tuple(SeqaxInputMutation))

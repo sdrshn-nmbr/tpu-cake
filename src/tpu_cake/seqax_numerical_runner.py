@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import sqlite3
@@ -39,11 +40,13 @@ from tpu_cake.seqax_numerical import (
     SeqaxDiscriminatorClause,
     SeqaxInputMutation,
     SeqaxNumericalDiscriminator,
+    _assess_output_arrays,
     _relative_l2,
     _row_scaled_max,
     _validate_strict_silu_stablehlo,
     assess_seqax_bf16_forward,
     assess_seqax_bf16_outputs,
+    assess_seqax_cpu_reference_replay,
     canonical_seqax_stablehlo,
     decode_seqax_bf16_checkpoint,
     default_seqax_bf16_validation_contract,
@@ -70,7 +73,7 @@ from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import seqax_forward_canonical_reference, seqax_forward_inputs
 
-SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v4"
+SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v5"
 _STRICT_MLP_CHECKPOINT_SPECS = (
     PartitionSpec("d", None, None),
     PartitionSpec("d", None, None),
@@ -102,12 +105,14 @@ class SeqaxBf16Runtime(BaseModel):
 
     runtime: RuntimeIdentity
     ml_dtypes: str = Field(min_length=1)
+    cpu_machine: str = Field(min_length=1)
+    cpu_system: str = Field(min_length=1)
 
 
 class SeqaxBf16RunIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v4$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v5$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -221,7 +226,7 @@ class SeqaxBf16DiscriminatorObservation(BaseModel):
 class SeqaxBf16ValidationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v4$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v5$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime: SeqaxBf16Runtime
@@ -232,13 +237,13 @@ class SeqaxBf16ValidationResult(BaseModel):
     observations: tuple[SeqaxBf16SeedObservation, ...] = Field(min_length=41, max_length=41)
     discriminators: tuple[SeqaxBf16DiscriminatorObservation, ...] = Field(min_length=16)
     passed: bool
-    claim_scope: str = Field(pattern=r"^declared-surface-bf16-numerical-correctness$")
+    claim_scope: str = Field(pattern=r"^declared-surface-dual-jax-cpu-bf16-numerical-agreement-v1$")
 
 
 class SeqaxBf16ValidationReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v4$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v5$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: str = Field(pattern=r"^passed$")
@@ -1627,6 +1632,7 @@ def _mutation_failure(
     hidden: tuple[np.ndarray, ...],
     down_float32: tuple[np.ndarray, ...],
     down_bfloat16: tuple[np.ndarray, ...],
+    cpu_reference: np.ndarray | None = None,
 ) -> str:
     try:
         assessment = assess_seqax_bf16_forward(
@@ -1674,6 +1680,16 @@ def _mutation_failure(
                 f"SEQAX_BF16_DISCRIMINATOR_WRONG_FAILURE clause={clause} error={error}"
             ) from error
         return f"{type(error).__name__}: {error}"
+    if cpu_reference is not None:
+        assessment = assessment.model_copy(
+            update=_assess_output_arrays(
+                output,
+                output,
+                cpu_reference,
+                policy=contract.policy,
+                scenario=scenario,
+            ).model_dump()
+        )
     unit = contract.policy.unit_roundoff
     depth_scale = contract.policy.depth_scale(scenario.parameters.layers)
     clause_rejected = {
@@ -1726,8 +1742,9 @@ def _assess_checkpoint_mutation(
     mutated_up_float32: tuple[np.ndarray, ...] | None = None,
     mutated_up: tuple[np.ndarray, ...] | None = None,
     mutated_down_float32: tuple[np.ndarray, ...] | None = None,
+    cpu_reference: np.ndarray | None = None,
 ) -> SeqaxBf16NumericalAssessment:
-    return assess_seqax_bf16_forward(
+    assessment = assess_seqax_bf16_forward(
         baseline,
         baseline,
         seed=seed,
@@ -1776,6 +1793,17 @@ def _assess_checkpoint_mutation(
         control_down_bfloat16_checkpoints=down_bfloat16,
         policy=contract.policy,
         scenario=scenario,
+    )
+    if cpu_reference is None:
+        return assessment
+    return assessment.model_copy(
+        update=_assess_output_arrays(
+            baseline,
+            baseline,
+            cpu_reference,
+            policy=contract.policy,
+            scenario=scenario,
+        ).model_dump()
     )
 
 
@@ -2370,12 +2398,19 @@ def _runtime(contract: SeqaxBf16ValidationContract) -> SeqaxBf16Runtime:
         or runtime.libtpu != expected.libtpu
         or runtime.xla != expected.libtpu_init_args
         or ml_dtypes.__version__ != expected.ml_dtypes
+        or platform.machine() != expected.cpu_machine
+        or platform.system() != expected.cpu_system
     ):
         raise ValueError(
             "SEQAX_BF16_RUNTIME_MISMATCH "
             f"runtime={runtime} ml_dtypes={ml_dtypes.__version__} expected={expected}"
         )
-    return SeqaxBf16Runtime(runtime=runtime, ml_dtypes=ml_dtypes.__version__)
+    return SeqaxBf16Runtime(
+        runtime=runtime,
+        ml_dtypes=ml_dtypes.__version__,
+        cpu_machine=platform.machine(),
+        cpu_system=platform.system(),
+    )
 
 
 def _artifact_role(path: Path) -> ArtifactRole:
@@ -2435,7 +2470,7 @@ def _build_receipt(
     if path.exists():
         raise ValueError("SEQAX_BF16_RECEIPT_EXISTS")
     receipt = SeqaxBf16ValidationReceipt(
-        schema_version="seqax-bf16-forward-validation-receipt-v4",
+        schema_version="seqax-bf16-forward-validation-receipt-v5",
         contract_id=contract.contract_id,
         run_id=run_id,
         status="passed",
@@ -2540,7 +2575,7 @@ def _execute_seqax_bf16_validation(
         observations=observations,
         discriminators=discriminators,
         passed=True,
-        claim_scope="declared-surface-bf16-numerical-correctness",
+        claim_scope="declared-surface-dual-jax-cpu-bf16-numerical-agreement-v1",
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
     with ExperimentLedger(ledger_path) as ledger:
@@ -2951,11 +2986,13 @@ def _validate_seed(
         )
     )
     saved_cpu = _load_array(seed_root / "cpu_reference.npy")
-    if (
-        saved_cpu.shape != fresh_cpu.shape
-        or saved_cpu.dtype != fresh_cpu.dtype
-        or not np.array_equal(saved_cpu, fresh_cpu)
-    ):
+    cpu_replay = assess_seqax_cpu_reference_replay(
+        saved_cpu,
+        fresh_cpu,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    if not cpu_replay.within_bounds:
         raise ValueError(f"SEQAX_BF16_CPU_REPLAY_MISMATCH scenario={scenario.name} seed={seed}")
     pallas = _load_array(seed_root / "pallas_output.npy")
     control = _load_array(seed_root / "control_output.npy")
@@ -3023,7 +3060,7 @@ def _validate_seed(
         "policy": contract.policy,
         "scenario": scenario,
     }
-    normal_assessment = assess_seqax_bf16_outputs(
+    fresh_normal_assessment = assess_seqax_bf16_outputs(
         pallas,
         control,
         seed=seed,
@@ -3031,10 +3068,27 @@ def _validate_seed(
         policy=contract.policy,
         scenario=scenario,
     )
-    instrumented_assessment = assess_seqax_bf16_forward(
+    fresh_instrumented_assessment = assess_seqax_bf16_forward(
         instrumented_pallas,
         instrumented_control,
         **evidence,
+    )
+    saved_normal_assessment = _assess_output_arrays(
+        pallas,
+        control,
+        saved_cpu,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    saved_instrumented_output_assessment = _assess_output_arrays(
+        instrumented_pallas,
+        instrumented_control,
+        saved_cpu,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    saved_instrumented_assessment = fresh_instrumented_assessment.model_copy(
+        update=saved_instrumented_output_assessment.model_dump()
     )
     expected = SeqaxBf16SeedObservation(
         scenario=scenario.name,
@@ -3071,8 +3125,8 @@ def _validate_seed(
         control_down_float32_sha256=_checkpoint_hashes(control_down_float32),
         pallas_down_bfloat16_sha256=_checkpoint_hashes(pallas_down_bfloat16),
         control_down_bfloat16_sha256=_checkpoint_hashes(control_down_bfloat16),
-        normal_assessment=normal_assessment,
-        instrumented_assessment=instrumented_assessment,
+        normal_assessment=saved_normal_assessment,
+        instrumented_assessment=saved_instrumented_assessment,
         instrumentation_difference=_instrumentation_difference(
             pallas,
             control,
@@ -3086,9 +3140,12 @@ def _validate_seed(
     )
     if (
         expected != saved
-        or not normal_assessment.final_outputs_satisfy_policy
-        or not instrumented_assessment.final_outputs_satisfy_policy
-        or not instrumented_assessment.checkpoint_values_consistent
+        or not fresh_normal_assessment.final_outputs_satisfy_policy
+        or not fresh_instrumented_assessment.final_outputs_satisfy_policy
+        or not fresh_instrumented_assessment.checkpoint_values_consistent
+        or not saved_normal_assessment.final_outputs_satisfy_policy
+        or not saved_instrumented_assessment.final_outputs_satisfy_policy
+        or not saved_instrumented_assessment.checkpoint_values_consistent
     ):
         raise ValueError(
             f"SEQAX_BF16_OBSERVATION_REPLAY_MISMATCH scenario={scenario.name} seed={seed}"
@@ -3140,6 +3197,94 @@ def _validate_discriminators(
         down_float32,
         down_bfloat16,
     ) = _load_saved_checkpoints(seed_root, scenario, "pallas")
+    saved_cpu = _load_array(seed_root / "cpu_reference.npy")
+    fresh_cpu = np.asarray(
+        seqax_forward_canonical_reference(
+            host_inputs,
+            quantization_decimals=contract.policy.cpu_reference_quantization_decimals,
+            **scenario.parameters.model_dump(),
+        )
+    )
+    if not assess_seqax_cpu_reference_replay(
+        saved_cpu,
+        fresh_cpu,
+        policy=contract.policy,
+        scenario=scenario,
+    ).within_bounds:
+        raise ValueError("SEQAX_BF16_DISCRIMINATOR_CPU_REPLAY_MISMATCH")
+
+    def recorded_mutation_failure(
+        output: np.ndarray,
+        clause: SeqaxDiscriminatorClause,
+    ) -> str:
+        arguments = {
+            "clause": clause,
+            "contract": contract,
+            "scenario": scenario,
+            "seed": seed,
+            "inputs": host_inputs,
+            "rms_inputs": rms_inputs,
+            "rms_mean_square": rms_mean_square,
+            "rms_inverse": rms_inverse,
+            "normalized_float32": normalized_float32,
+            "normalized_inputs": normalized_inputs,
+            "gate_float32": gate_float32,
+            "gates": gates,
+            "silus": silus,
+            "up_float32": up_float32,
+            "up": up,
+            "hidden": hidden,
+            "down_float32": down_float32,
+            "down_bfloat16": down_bfloat16,
+        }
+        saved_failure = _mutation_failure(
+            output,
+            cpu_reference=saved_cpu,
+            **arguments,
+        )
+        _mutation_failure(
+            output,
+            cpu_reference=fresh_cpu,
+            **arguments,
+        )
+        return saved_failure
+
+    def checkpoint_mutation_assessments(
+        **mutation: tuple[np.ndarray, ...],
+    ) -> tuple[SeqaxBf16NumericalAssessment, SeqaxBf16NumericalAssessment]:
+        arguments = {
+            "contract": contract,
+            "scenario": scenario,
+            "seed": seed,
+            "inputs": host_inputs,
+            "rms_inputs": rms_inputs,
+            "rms_mean_square": rms_mean_square,
+            "rms_inverse": rms_inverse,
+            "normalized_float32": normalized_float32,
+            "normalized_inputs": normalized_inputs,
+            "gate_float32": gate_float32,
+            "gates": gates,
+            "silus": silus,
+            "up_float32": up_float32,
+            "up": up,
+            "hidden": hidden,
+            "down_float32": down_float32,
+            "down_bfloat16": down_bfloat16,
+            **mutation,
+        }
+        return (
+            _assess_checkpoint_mutation(
+                baseline,
+                cpu_reference=saved_cpu,
+                **arguments,
+            ),
+            _assess_checkpoint_mutation(
+                baseline,
+                cpu_reference=fresh_cpu,
+                **arguments,
+            ),
+        )
+
     pallas_hlo = canonical_seqax_stablehlo(
         (_plan_root(root, scenario) / "pallas_stablehlo.txt").read_text()
     )
@@ -3194,26 +3339,9 @@ def _validate_discriminators(
                     ),
                     relu=discriminator is SeqaxNumericalDiscriminator.RELU_SILU,
                 )
-                causal_failure = _mutation_failure(
+                causal_failure = recorded_mutation_failure(
                     runtime_output,
-                    clause=SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
-                    contract=contract,
-                    scenario=scenario,
-                    seed=seed,
-                    inputs=host_inputs,
-                    rms_inputs=rms_inputs,
-                    rms_mean_square=rms_mean_square,
-                    rms_inverse=rms_inverse,
-                    normalized_float32=normalized_float32,
-                    normalized_inputs=normalized_inputs,
-                    gate_float32=gate_float32,
-                    gates=gates,
-                    silus=silus,
-                    up_float32=up_float32,
-                    up=up,
-                    hidden=hidden,
-                    down_float32=down_float32,
-                    down_bfloat16=down_bfloat16,
+                    SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
                 )
                 if np.array_equal(runtime_output, baseline):
                     raise ValueError(
@@ -3275,28 +3403,13 @@ def _validate_discriminators(
             _decode_checkpoint_mutant(discriminator, saved_storage, scenario),
             *mutant[1:],
         )
-        assessment = _assess_checkpoint_mutation(
-            baseline,
-            contract=contract,
-            scenario=scenario,
-            seed=seed,
-            inputs=host_inputs,
-            rms_inputs=rms_inputs,
-            rms_mean_square=rms_mean_square,
-            rms_inverse=rms_inverse,
-            normalized_float32=normalized_float32,
-            normalized_inputs=normalized_inputs,
-            gate_float32=gate_float32,
-            gates=gates,
-            silus=silus,
-            up_float32=up_float32,
-            up=up,
-            hidden=hidden,
-            down_float32=down_float32,
-            down_bfloat16=down_bfloat16,
+        assessment, fresh_assessment = checkpoint_mutation_assessments(
             **_checkpoint_mutation_arguments(discriminator, replayed_mutant),
         )
-        if not _checkpoint_mutation_rejected(discriminator, assessment):
+        if not all(
+            _checkpoint_mutation_rejected(discriminator, value)
+            for value in (assessment, fresh_assessment)
+        ):
             raise ValueError(f"SEQAX_BF16_CHECKPOINT_DISCRIMINATOR_ACCEPTED name={discriminator}")
         failure = (
             f"{seqax_discriminator_clause(discriminator).value}: rejected "
@@ -3407,26 +3520,9 @@ def _validate_discriminators(
             raise ValueError(f"SEQAX_BF16_INPUT_MUTANT_REPLAY_MISMATCH name={discriminator}")
         output_path = mutation_root / "runtime_output.npy"
         output = _load_array(output_path)
-        failure = _mutation_failure(
+        failure = recorded_mutation_failure(
             output,
-            clause=SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
-            contract=contract,
-            scenario=scenario,
-            seed=seed,
-            inputs=host_inputs,
-            rms_inputs=rms_inputs,
-            rms_mean_square=rms_mean_square,
-            rms_inverse=rms_inverse,
-            normalized_float32=normalized_float32,
-            normalized_inputs=normalized_inputs,
-            gate_float32=gate_float32,
-            gates=gates,
-            silus=silus,
-            up_float32=up_float32,
-            up=up,
-            hidden=hidden,
-            down_float32=down_float32,
-            down_bfloat16=down_bfloat16,
+            SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY,
         )
         paths = tuple(
             [mutation_root / "inputs" / f"{index:02d}.npy" for index in range(13)] + [output_path]
@@ -3452,26 +3548,9 @@ def _validate_discriminators(
             or not np.array_equal(saved, regenerated, equal_nan=True)
         ):
             raise ValueError(f"SEQAX_BF16_OUTPUT_MUTANT_REPLAY_MISMATCH name={discriminator}")
-        failure = _mutation_failure(
+        failure = recorded_mutation_failure(
             saved,
-            clause=seqax_discriminator_clause(discriminator),
-            contract=contract,
-            scenario=scenario,
-            seed=seed,
-            inputs=host_inputs,
-            rms_inputs=rms_inputs,
-            rms_mean_square=rms_mean_square,
-            rms_inverse=rms_inverse,
-            normalized_float32=normalized_float32,
-            normalized_inputs=normalized_inputs,
-            gate_float32=gate_float32,
-            gates=gates,
-            silus=silus,
-            up_float32=up_float32,
-            up=up,
-            hidden=hidden,
-            down_float32=down_float32,
-            down_bfloat16=down_bfloat16,
+            seqax_discriminator_clause(discriminator),
         )
         expected.append(_discriminator_observation(root, discriminator, (path,), failure))
 
@@ -3606,8 +3685,10 @@ def _validate(
         or result.runtime.runtime.libtpu != expected_runtime.libtpu
         or result.runtime.runtime.xla != expected_runtime.libtpu_init_args
         or result.runtime.ml_dtypes != expected_runtime.ml_dtypes
+        or result.runtime.cpu_machine != expected_runtime.cpu_machine
+        or result.runtime.cpu_system != expected_runtime.cpu_system
         or not result.passed
-        or result.claim_scope != "declared-surface-bf16-numerical-correctness"
+        or result.claim_scope != "declared-surface-dual-jax-cpu-bf16-numerical-agreement-v1"
     ):
         raise ValueError("SEQAX_BF16_RESULT_IDENTITY_MISMATCH")
     if (

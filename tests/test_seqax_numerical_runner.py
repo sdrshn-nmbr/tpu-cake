@@ -590,7 +590,7 @@ def test_runner_rejects_protected_output_roots() -> None:
 def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v4",
+        schema_version="seqax-bf16-forward-validation-run-v5",
         contract_id=contract.contract_id,
         run_id="1" * 64,
         source_commit="2" * 40,
@@ -679,7 +679,7 @@ def test_runner_resumes_active_owned_root_and_archives_rejected_root(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v4",
+        schema_version="seqax-bf16-forward-validation-run-v5",
         contract_id=contract.contract_id,
         run_id="8" * 64,
         source_commit="9" * 40,
@@ -752,7 +752,7 @@ def test_runner_reuses_same_root_after_uncaught_active_run_crash(
                 ledger.create(
                     run_id,
                     {
-                        "schema": "seqax-bf16-forward-validation-run-v4",
+                        "schema": "seqax-bf16-forward-validation-run-v5",
                         "contract_id": active_contract.contract_id,
                         "source_commit": source_commit,
                     },
@@ -796,12 +796,12 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         text=True,
     ).stdout.strip()
     run_id = numerical_runner.semantic_sha256(
-        "seqax-bf16-forward-validation-run-v4",
+        "seqax-bf16-forward-validation-run-v5",
         contract.contract_id,
         source_commit,
     )
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v4",
+        schema_version="seqax-bf16-forward-validation-run-v5",
         contract_id=contract.contract_id,
         run_id=run_id,
         source_commit=source_commit,
@@ -811,7 +811,7 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         ledger.create(
             run_id,
             {
-                "schema": "seqax-bf16-forward-validation-run-v4",
+                "schema": "seqax-bf16-forward-validation-run-v5",
                 "contract_id": contract.contract_id,
                 "source_commit": source_commit,
             },
@@ -866,7 +866,7 @@ def test_atomic_run_markers_do_not_publish_truncated_targets(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v4",
+        schema_version="seqax-bf16-forward-validation-run-v5",
         contract_id=contract.contract_id,
         run_id="5" * 64,
         source_commit="6" * 40,
@@ -1005,11 +1005,11 @@ def test_runner_refuses_pending_hlo_identities_before_writes(
     assert not root.exists()
 
 
-def test_runner_rejects_a_caller_demoted_pinned_contract_before_writes(
+def test_runner_rejects_a_caller_promoted_pending_contract_before_writes(
     tmp_path: Path,
 ) -> None:
     contract = default_seqax_bf16_validation_contract().model_copy(
-        update={"hlo_identity_status": "pending"}
+        update={"hlo_identity_status": "pinned"}
     )
     root = tmp_path / "run"
 
@@ -1176,6 +1176,8 @@ def runtime(contract):
             xla=expected.libtpu_init_args,
         ),
         ml_dtypes=expected.ml_dtypes,
+        cpu_machine=expected.cpu_machine,
+        cpu_system=expected.cpu_system,
     )
 
 
@@ -1244,6 +1246,66 @@ try:
     relocated = temporary / "relocated"
     shutil.copytree(root, relocated)
     runner.validate_seqax_bf16_validation(relocated, contract)
+
+    original_runner_cpu_reference = runner.seqax_forward_canonical_reference
+    original_numerical_cpu_reference = numerical.seqax_forward_canonical_reference
+
+    def replay_cpu_reference(*args, delta, **kwargs):
+        value = original_runner_cpu_reference(*args, **kwargs).copy()
+        value.flat[0] += np.float32(delta)
+        return value
+
+    runner.seqax_forward_canonical_reference = lambda *args, **kwargs: replay_cpu_reference(
+        *args, delta=1e-4, **kwargs
+    )
+    numerical.seqax_forward_canonical_reference = runner.seqax_forward_canonical_reference
+    runner.validate_seqax_bf16_validation(relocated, contract)
+    runner.seqax_forward_canonical_reference = lambda *args, **kwargs: replay_cpu_reference(
+        *args, delta=0.1, **kwargs
+    )
+    numerical.seqax_forward_canonical_reference = runner.seqax_forward_canonical_reference
+    require_rejected(relocated, contract)
+    runner.seqax_forward_canonical_reference = original_runner_cpu_reference
+    numerical.seqax_forward_canonical_reference = original_numerical_cpu_reference
+
+    one_reference_mutant = temporary / "one-reference-mutant"
+    shutil.copytree(root, one_reference_mutant)
+    scenario = contract.scenarios[0]
+    seed = scenario.seeds[0]
+    seed_root = one_reference_mutant / "scenarios" / scenario.name / f"seed-{seed}"
+    saved_cpu = np.load(seed_root / "cpu_reference.npy")
+    one_reference_output = saved_cpu.copy()
+    one_reference_output.flat[0] += np.float32(0.03)
+    np.save(seed_root / "pallas_output.npy", one_reference_output, allow_pickle=False)
+    np.save(seed_root / "control_output.npy", one_reference_output, allow_pickle=False)
+    observation_path = seed_root / "observation.json"
+    observation = json.loads(observation_path.read_text())
+    observation["pallas_output_sha256"] = runner.array_sha256(one_reference_output)
+    observation["control_output_sha256"] = runner.array_sha256(one_reference_output)
+    observation["normal_assessment"] = numerical._assess_output_arrays(
+        one_reference_output,
+        one_reference_output,
+        saved_cpu,
+        policy=contract.policy,
+        scenario=scenario,
+    ).model_dump(mode="json")
+    observation_path.write_text(json.dumps(observation, indent=2, sort_keys=True) + "\n")
+
+    def one_reference_cpu(*args, **kwargs):
+        value = original_runner_cpu_reference(*args, **kwargs).copy()
+        value.flat[0] -= np.float32(0.007)
+        return value
+
+    runner.seqax_forward_canonical_reference = one_reference_cpu
+    numerical.seqax_forward_canonical_reference = one_reference_cpu
+    try:
+        runner._validate_seed(one_reference_mutant, contract, scenario, seed)
+    except ValueError as error:
+        assert "SEQAX_BF16_OBSERVATION_REPLAY_MISMATCH" in str(error)
+    else:
+        raise AssertionError("TPU output passing only the saved CPU reference was accepted")
+    runner.seqax_forward_canonical_reference = original_runner_cpu_reference
+    numerical.seqax_forward_canonical_reference = original_numerical_cpu_reference
 
     contract_mutant = temporary / "contract-mutant"
     shutil.copytree(root, contract_mutant)

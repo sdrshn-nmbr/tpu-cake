@@ -20,8 +20,8 @@ from tpu_cake.workloads.seqax_oracle import (
 )
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
-SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v4"
-SEQAX_BF16_HLO_IDENTITY_STATUS = "pinned"
+SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v5"
+SEQAX_BF16_HLO_IDENTITY_STATUS = "pending"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
 _V2_CALIBRATION_SCHEMA = "bf16-forward-numerical-v2"
@@ -152,45 +152,45 @@ _V2_CALIBRATION_SEEDS = {
     for name in _V2_CALIBRATION_PARAMETERS
 }
 _HELD_OUT_PARAMETERS = {
-    "m224-b4-s5-l2": {
-        "batch": 4,
+    "m240-b2-s7-l2": {
+        "batch": 2,
         "data_mesh": 2,
-        "feed_forward": 56,
+        "feed_forward": 60,
         "head": 4,
         "key_value_heads": 4,
         "layers": 2,
-        "model": 224,
+        "model": 240,
         "query_groups": 2,
         "rope_max_timescale": 256,
-        "sequence": 5,
+        "sequence": 7,
         "tensor_mesh": 4,
         "vocabulary": 64,
     },
-    "m352-b2-s6-l1": {
-        "batch": 2,
+    "m416-b4-s3-l1": {
+        "batch": 4,
         "data_mesh": 2,
-        "feed_forward": 44,
+        "feed_forward": 52,
         "head": 4,
         "key_value_heads": 4,
         "layers": 1,
-        "model": 352,
+        "model": 416,
         "query_groups": 2,
         "rope_max_timescale": 256,
-        "sequence": 6,
+        "sequence": 3,
         "tensor_mesh": 4,
         "vocabulary": 64,
     },
-    "m288-b4-s4-l3": {
-        "batch": 4,
+    "m272-b2-s9-l3": {
+        "batch": 2,
         "data_mesh": 2,
-        "feed_forward": 48,
+        "feed_forward": 68,
         "head": 4,
         "key_value_heads": 4,
         "layers": 3,
-        "model": 288,
+        "model": 272,
         "query_groups": 2,
         "rope_max_timescale": 256,
-        "sequence": 4,
+        "sequence": 9,
         "tensor_mesh": 4,
         "vocabulary": 64,
     },
@@ -238,23 +238,23 @@ _STABLEHLO_SHA256 = {
         "instrumented_pallas": "9e9e098b9db1c9e8685ac9a85e5c20848de78490fbaa3a01b787e7a031d8af3a",
         "instrumented_control": "01c5c72b190f8c52ffc7eac137c182b645649ccd5bfa3472e10d1d60b6c0e7b5",
     },
-    "m224-b4-s5-l2": {
-        "pallas": "d4c131b07cebe39054093108625b0b318e614e758a20280bf125fd4d9e27f62e",
-        "control": "61f7c4fb2033d1e838789b488150a3d887e71ea290ba898f7d71c933ff64d0ed",
-        "instrumented_pallas": "29dbed80adfd10dd538f035a62f88a3180644bd1ade92cdb7384779d5495d8fe",
-        "instrumented_control": "659ddecc9b0af170335a868ecac2314ee4239e68320ec615d79a4072d44b8ab2",
+    "m240-b2-s7-l2": {
+        "pallas": "0000000000000000000000000000000000000000000000000000000000000000",
+        "control": "0000000000000000000000000000000000000000000000000000000000000000",
+        "instrumented_pallas": "0000000000000000000000000000000000000000000000000000000000000000",
+        "instrumented_control": "0000000000000000000000000000000000000000000000000000000000000000",
     },
-    "m352-b2-s6-l1": {
-        "pallas": "44ddaa5e5c26fada8070f1e9689f497a53bcfa08dbca7296483f55145fee0207",
-        "control": "298609f59b416647cff463c9ffa10d57e2b692965e6e77365f22186c97e5dad5",
-        "instrumented_pallas": "0c32cc83f358c742676a1f7c948b198b8d2ce3ee012dc201f3442e1ec84255e9",
-        "instrumented_control": "7f0c3da0eeaa3bbbe5ad97fb064c6bac5f8d5c42303978668aa3469cd64aad34",
+    "m416-b4-s3-l1": {
+        "pallas": "0000000000000000000000000000000000000000000000000000000000000000",
+        "control": "0000000000000000000000000000000000000000000000000000000000000000",
+        "instrumented_pallas": "0000000000000000000000000000000000000000000000000000000000000000",
+        "instrumented_control": "0000000000000000000000000000000000000000000000000000000000000000",
     },
-    "m288-b4-s4-l3": {
-        "pallas": "627531d588e67c7a9ccd30c20f3494b3b66260a0335051b52def16a0b4ac9153",
-        "control": "909ab3cacc4a53c7c07769e89bc1dbbae10256eea5b7ac8ed08282dafd85b99b",
-        "instrumented_pallas": "33f7137163d7c731b22f7ff526a07f95b2d7a9ee0fa8e1d27e28a4981d683d50",
-        "instrumented_control": "11a89a52ec841090e0bc54c37e8d106eef61db900c91ba8e99721edf27bdfe65",
+    "m272-b2-s9-l3": {
+        "pallas": "0000000000000000000000000000000000000000000000000000000000000000",
+        "control": "0000000000000000000000000000000000000000000000000000000000000000",
+        "instrumented_pallas": "0000000000000000000000000000000000000000000000000000000000000000",
+        "instrumented_control": "0000000000000000000000000000000000000000000000000000000000000000",
     },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
@@ -434,8 +434,9 @@ class SeqaxBf16NumericalPolicy(BaseModel):
     depth_scaling: str = "sqrt_layers"
     row_scale_floor: float = Field(gt=0)
     metric_quantization_decimals: int = Field(ge=12, le=15)
-    cpu_reference: str = "seqax_forward_canonical_reference"
+    cpu_reference: str = "jax_cpu_reference_v1"
     cpu_reference_quantization_decimals: int = 6
+    cpu_replay_rule: str = "cross_path_numerical_bounds"
     checkpoint_storage_dtype: str = "uint16"
     checkpoint_logical_dtype: str = "bfloat16"
     checkpoint_encoding: str = "bf16-bit-pattern-v1"
@@ -462,6 +463,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             self.metric_quantization_decimals,
             self.cpu_reference,
             self.cpu_reference_quantization_decimals,
+            self.cpu_replay_rule,
             self.checkpoint_storage_dtype,
             self.checkpoint_logical_dtype,
             self.checkpoint_encoding,
@@ -477,8 +479,9 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             "sqrt_layers",
             1.0,
             15,
-            "seqax_forward_canonical_reference",
+            "jax_cpu_reference_v1",
             6,
+            "cross_path_numerical_bounds",
             "uint16",
             "bfloat16",
             "bf16-bit-pattern-v1",
@@ -943,6 +946,19 @@ class SeqaxBf16OutputAssessment(BaseModel):
     final_outputs_satisfy_policy: bool
 
 
+class SeqaxBf16CpuReferenceReplayAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    saved_to_fresh_relative_l2: float = Field(ge=0)
+    fresh_to_saved_relative_l2: float = Field(ge=0)
+    saved_to_fresh_row_scaled_max: float = Field(ge=0)
+    fresh_to_saved_row_scaled_max: float = Field(ge=0)
+    relative_l2_limit: float = Field(gt=0)
+    row_scaled_max_limit: float = Field(gt=0)
+    top1_matches: bool
+    within_bounds: bool
+
+
 class SeqaxBf16NumericalAssessment(SeqaxBf16OutputAssessment):
     rms_input_cross_path_max_ulp: int = Field(ge=0)
     pallas_rms_mean_square_max_bound_ratio: float = Field(ge=0)
@@ -998,6 +1014,8 @@ class SeqaxBf16RuntimeContract(BaseModel):
     jaxlib: str = Field(pattern=r"^0\.11\.0$")
     libtpu: str = Field(pattern=r"^0\.0\.44\.1$")
     ml_dtypes: str = Field(pattern=r"^0\.6\.0$")
+    cpu_machine: str = Field(pattern=r"^x86_64$")
+    cpu_system: str = Field(pattern=r"^Linux$")
     libtpu_init_args: str = Field(pattern=r"^ --xla_tpu_use_enhanced_launch_barrier=true$")
     uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -1216,6 +1234,8 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             jaxlib="0.11.0",
             libtpu="0.0.44.1",
             ml_dtypes="0.6.0",
+            cpu_machine="x86_64",
+            cpu_system="Linux",
             libtpu_init_args=" --xla_tpu_use_enhanced_launch_barrier=true",
             uv_lock_sha256="7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b",
         ),
@@ -1506,33 +1526,14 @@ def _bf16_max_ulp_distance(actual: np.ndarray, expected: np.ndarray) -> int:
     return int(np.max(np.abs(ordered(actual) - ordered(expected))))
 
 
-def _assess_seqax_bf16_outputs(
+def _assess_output_arrays(
     pallas: np.ndarray,
     control: np.ndarray,
+    cpu_reference: np.ndarray,
     *,
-    seed: int,
-    inputs: tuple[np.ndarray, ...],
     policy: SeqaxBf16NumericalPolicy,
     scenario: SeqaxBf16NumericalScenario,
-) -> tuple[SeqaxBf16OutputAssessment, tuple[np.ndarray, ...]]:
-    if type(seed) is not int or seed not in scenario.seeds:
-        raise ValueError("Seqax BF16 numerical seed is not declared by the scenario")
-    validate_seqax_numerical_inputs(inputs, scenario)
-    expected_inputs = tuple(
-        np.asarray(value)
-        for value in seqax_forward_inputs(
-            seed=seed,
-            **scenario.parameters.model_dump(),
-        )
-    )
-    for actual, expected, contract in zip(inputs, expected_inputs, scenario.inputs, strict=True):
-        if not np.array_equal(actual, expected):
-            raise ValueError(f"Seqax numerical deterministic input mismatch: {contract.name}")
-    cpu_reference = seqax_forward_canonical_reference(
-        expected_inputs,
-        quantization_decimals=policy.cpu_reference_quantization_decimals,
-        **scenario.parameters.model_dump(),
-    )
+) -> SeqaxBf16OutputAssessment:
     arrays = tuple(np.asarray(value) for value in (pallas, control, cpu_reference))
     if len({value.shape for value in arrays}) != 1 or arrays[0].shape != scenario.output.shape:
         raise ValueError("Seqax BF16 numerical output shape does not match the contract")
@@ -1575,18 +1576,115 @@ def _assess_seqax_bf16_outputs(
     pallas_top1 = np.argmax(arrays[0], axis=-1)
     control_top1 = np.argmax(arrays[1], axis=-1)
     cpu_top1 = np.argmax(arrays[2], axis=-1)
+    return SeqaxBf16OutputAssessment(
+        cpu_pallas_relative_l2=pallas_relative,
+        cpu_control_relative_l2=control_relative,
+        cross_path_relative_l2=cross_relative,
+        cpu_pallas_row_scaled_max=pallas_scaled,
+        cpu_control_row_scaled_max=control_scaled,
+        cross_path_row_scaled_max=cross_scaled,
+        pallas_top1_matches_cpu=bool(np.array_equal(pallas_top1, cpu_top1)),
+        control_top1_matches_cpu=bool(np.array_equal(control_top1, cpu_top1)),
+        pallas_top1_matches_control=bool(np.array_equal(pallas_top1, control_top1)),
+        final_outputs_satisfy_policy=final_outputs_satisfy_policy,
+    )
+
+
+def assess_seqax_cpu_reference_replay(
+    saved: np.ndarray,
+    fresh: np.ndarray,
+    *,
+    policy: SeqaxBf16NumericalPolicy,
+    scenario: SeqaxBf16NumericalScenario,
+) -> SeqaxBf16CpuReferenceReplayAssessment:
+    if policy.cpu_replay_rule != "cross_path_numerical_bounds":
+        raise ValueError("Seqax BF16 CPU replay rule is not supported")
+    arrays = tuple(np.asarray(value) for value in (saved, fresh))
+    if len({value.shape for value in arrays}) != 1 or arrays[0].shape != scenario.output.shape:
+        raise ValueError("Seqax BF16 CPU reference shape does not match the contract")
+    if policy.require_float32_output and any(value.dtype != np.float32 for value in arrays):
+        raise TypeError("Seqax BF16 CPU references must use float32")
+    if policy.require_finite_output and any(not np.all(np.isfinite(value)) for value in arrays):
+        raise ValueError("Seqax BF16 CPU references must be finite")
+    saved_to_fresh_relative_l2 = _relative_l2(
+        arrays[0],
+        arrays[1],
+        quantization_decimals=policy.metric_quantization_decimals,
+    )
+    fresh_to_saved_relative_l2 = _relative_l2(
+        arrays[1],
+        arrays[0],
+        quantization_decimals=policy.metric_quantization_decimals,
+    )
+    saved_to_fresh_row_scaled_max = _row_scaled_max(
+        arrays[0],
+        arrays[1],
+        scale_floor=policy.row_scale_floor,
+        quantization_decimals=policy.metric_quantization_decimals,
+    )
+    fresh_to_saved_row_scaled_max = _row_scaled_max(
+        arrays[1],
+        arrays[0],
+        scale_floor=policy.row_scale_floor,
+        quantization_decimals=policy.metric_quantization_decimals,
+    )
+    depth_scale = policy.depth_scale(scenario.parameters.layers)
+    relative_l2_limit = policy.cross_path_relative_l2_units * policy.unit_roundoff * depth_scale
+    row_scaled_max_limit = (
+        policy.cross_path_row_scaled_max_units * policy.unit_roundoff * depth_scale
+    )
+    return SeqaxBf16CpuReferenceReplayAssessment(
+        saved_to_fresh_relative_l2=saved_to_fresh_relative_l2,
+        fresh_to_saved_relative_l2=fresh_to_saved_relative_l2,
+        saved_to_fresh_row_scaled_max=saved_to_fresh_row_scaled_max,
+        fresh_to_saved_row_scaled_max=fresh_to_saved_row_scaled_max,
+        relative_l2_limit=relative_l2_limit,
+        row_scaled_max_limit=row_scaled_max_limit,
+        top1_matches=bool(
+            np.array_equal(np.argmax(arrays[0], axis=-1), np.argmax(arrays[1], axis=-1))
+        ),
+        within_bounds=(
+            max(saved_to_fresh_relative_l2, fresh_to_saved_relative_l2) <= relative_l2_limit
+            and max(saved_to_fresh_row_scaled_max, fresh_to_saved_row_scaled_max)
+            <= row_scaled_max_limit
+        ),
+    )
+
+
+def _assess_seqax_bf16_outputs(
+    pallas: np.ndarray,
+    control: np.ndarray,
+    *,
+    seed: int,
+    inputs: tuple[np.ndarray, ...],
+    policy: SeqaxBf16NumericalPolicy,
+    scenario: SeqaxBf16NumericalScenario,
+) -> tuple[SeqaxBf16OutputAssessment, tuple[np.ndarray, ...]]:
+    if type(seed) is not int or seed not in scenario.seeds:
+        raise ValueError("Seqax BF16 numerical seed is not declared by the scenario")
+    validate_seqax_numerical_inputs(inputs, scenario)
+    expected_inputs = tuple(
+        np.asarray(value)
+        for value in seqax_forward_inputs(
+            seed=seed,
+            **scenario.parameters.model_dump(),
+        )
+    )
+    for actual, expected, contract in zip(inputs, expected_inputs, scenario.inputs, strict=True):
+        if not np.array_equal(actual, expected):
+            raise ValueError(f"Seqax numerical deterministic input mismatch: {contract.name}")
+    cpu_reference = seqax_forward_canonical_reference(
+        expected_inputs,
+        quantization_decimals=policy.cpu_reference_quantization_decimals,
+        **scenario.parameters.model_dump(),
+    )
     return (
-        SeqaxBf16OutputAssessment(
-            cpu_pallas_relative_l2=pallas_relative,
-            cpu_control_relative_l2=control_relative,
-            cross_path_relative_l2=cross_relative,
-            cpu_pallas_row_scaled_max=pallas_scaled,
-            cpu_control_row_scaled_max=control_scaled,
-            cross_path_row_scaled_max=cross_scaled,
-            pallas_top1_matches_cpu=bool(np.array_equal(pallas_top1, cpu_top1)),
-            control_top1_matches_cpu=bool(np.array_equal(control_top1, cpu_top1)),
-            pallas_top1_matches_control=bool(np.array_equal(pallas_top1, control_top1)),
-            final_outputs_satisfy_policy=final_outputs_satisfy_policy,
+        _assess_output_arrays(
+            pallas,
+            control,
+            cpu_reference,
+            policy=policy,
+            scenario=scenario,
         ),
         expected_inputs,
     )

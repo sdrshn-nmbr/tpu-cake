@@ -1,0 +1,3997 @@
+{
+  "schema_version": "bf16-forward-numerical-v5",
+  "policy": {
+    "schema_version": "bf16-forward-numerical-v5",
+    "numerical_semantics": "typed_bf16_hidden_v2",
+    "unit_roundoff": 0.00390625,
+    "cpu_relative_l2_units": 3.0,
+    "cpu_row_scaled_max_units": 8.0,
+    "cross_path_relative_l2_units": 2.0,
+    "cross_path_row_scaled_max_units": 2.0,
+    "depth_scaling": "sqrt_layers",
+    "row_scale_floor": 1.0,
+    "metric_quantization_decimals": 15,
+    "cpu_reference": "jax_cpu_reference_v1",
+    "cpu_reference_quantization_decimals": 6,
+    "cpu_replay_rule": "cross_path_numerical_bounds",
+    "checkpoint_storage_dtype": "uint16",
+    "checkpoint_logical_dtype": "bfloat16",
+    "checkpoint_encoding": "bf16-bit-pattern-v1",
+    "require_float32_output": true,
+    "require_finite_output": true,
+    "mathematical_silu_max_ulp": 1,
+    "rms_inverse_relative_error_units": 4.0
+  },
+  "scenarios": [
+    {
+      "name": "calibration-m256-b2-s1-l1",
+      "role": "calibration",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 16,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 256,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 1,
+        "tensor_mesh": 4,
+        "vocabulary": 16
+      },
+      "seeds": [
+        12655767603698703491,
+        16669898698845158318,
+        9762931224767261018,
+        8742091806033755611,
+        16432226195980612678
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            1
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            1
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            16,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            256,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            256,
+            16
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            256,
+            16
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            256,
+            16
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            16,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          1,
+          16
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            2,
+            1,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            2,
+            1,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            2,
+            1,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            2,
+            1,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            1,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            2,
+            1,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            2,
+            1,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae",
+      "control_stablehlo_sha256": "05f377de78b292c90d020b8d865285c807ed2e5d3814c0b4977da09c629cffa6",
+      "instrumented_pallas_stablehlo_sha256": "82032504f755d6485035fd8142e0323177928ec7369bf7ffbf966b00f9e0b6e5",
+      "instrumented_control_stablehlo_sha256": "e9980b0fd41a0e1e0898fa59946b6dff911772a57e017b5596f3a5d55a97ad0a"
+    },
+    {
+      "name": "m128-b2-s3-l2",
+      "role": "calibration",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 24,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 2,
+        "model": 128,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 3,
+        "tensor_mesh": 4,
+        "vocabulary": 32
+      },
+      "seeds": [
+        17531964649473308400,
+        18227512014091791437,
+        17997680181925008669,
+        15707804070171824051
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            3
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            3
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            32,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            2,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            2,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            2,
+            128,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            2,
+            2,
+            128,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            2,
+            128,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            2,
+            128,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            2,
+            128,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            2,
+            128,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            32,
+            128
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          3,
+          32
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_rms_input",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            2,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_mean_square",
+          "shape": [
+            2,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            2,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_inverse",
+          "shape": [
+            2,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_normalized_float32",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_gate",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_silu",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_up",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_hidden",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_down_float32",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_down_bfloat16",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "7c18eda7e1951421cefe44430f9f897d23f823210e23fa9a18c9e25425bb3ab6",
+      "control_stablehlo_sha256": "3fd1c90846f71c80f141a2db8b5b6b15ab8e0c840444bc920c8f8115a1d70021",
+      "instrumented_pallas_stablehlo_sha256": "db270f066229731aeb5601884e659e08fca2444de66d76a399f42a60f27b95e9",
+      "instrumented_control_stablehlo_sha256": "7cf32ba85a08866bc731eb4cd8530fe78fbeb989d99e41672153fa7054dc54e2"
+    },
+    {
+      "name": "m256-b4-s2-l1",
+      "role": "calibration",
+      "parameters": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 32,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 256,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 2,
+        "tensor_mesh": 4,
+        "vocabulary": 32
+      },
+      "seeds": [
+        11939665099256687482,
+        11829749738583119961,
+        14254663479888143935,
+        4837878715531074066
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            4,
+            2
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            32,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            256,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            32,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          4,
+          2,
+          32
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            4,
+            2,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            4,
+            2,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            4,
+            2,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            4,
+            2,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            4,
+            2,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            4,
+            2,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            4,
+            2,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "2e57c9234a684f3453ef5e234bd7889626bad4c31088b45a5dd17481383f3e39",
+      "control_stablehlo_sha256": "72addb368ded5587116f727253fe983b832cafb644291cdd286dbb9156f9cc74",
+      "instrumented_pallas_stablehlo_sha256": "384097fb860b225e8785cde71ed26a031c5660c16cf06f5fdf2b8416f8e8ebae",
+      "instrumented_control_stablehlo_sha256": "7f61b8dfc0a64000a9602c47ce062fa3fcd3cc561d7c11af722561b8244c28c1"
+    },
+    {
+      "name": "m384-b2-s2-l1",
+      "role": "calibration",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 24,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 384,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 2,
+        "tensor_mesh": 4,
+        "vocabulary": 32
+      },
+      "seeds": [
+        651485306999063194,
+        16577306631068379789,
+        3607069910055968068,
+        16491228204229630496
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            2
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            2
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            32,
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            384,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            384,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            384,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            384,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            384,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            384,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            384
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            32,
+            384
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          2,
+          32
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            2,
+            2,
+            384
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            2,
+            2,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            2,
+            2,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            2,
+            2,
+            384
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            2,
+            384
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            2,
+            2,
+            384
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            2,
+            2,
+            384
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "44a5569e10046f01d837d7b2ee2d79751be94fe558c4434269cd439ba3528370",
+      "control_stablehlo_sha256": "35e3b6c7e12ae821fe6edee8ee515c8da1c0109cd02c345762d66b838e2cea76",
+      "instrumented_pallas_stablehlo_sha256": "c959a6e7c41aefb9bec6f091c7388b2b914ff5e9a45e7fc823e7a9727c2af9fb",
+      "instrumented_control_stablehlo_sha256": "bccedf167f0b9bfb71151fb81895ac6c978b09941574b797d3a795253b4aa2a6"
+    },
+    {
+      "name": "m192-b2-s4-l2",
+      "role": "calibration",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 32,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 2,
+        "model": 192,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 4,
+        "tensor_mesh": 4,
+        "vocabulary": 48
+      },
+      "seeds": [
+        7665202991217809126,
+        2767027476054309122,
+        12036698206514984563,
+        6905503351780430941
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            4
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            4
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            48,
+            192
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            2,
+            192
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            2,
+            192
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            2,
+            192,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            2,
+            2,
+            192,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            2,
+            192,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            2,
+            192,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            2,
+            192,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            2,
+            192,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            192
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            48,
+            192
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          4,
+          48
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_rms_input",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            2,
+            4,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_mean_square",
+          "shape": [
+            2,
+            4,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            2,
+            4,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_inverse",
+          "shape": [
+            2,
+            4,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_normalized_float32",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_gate",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_silu",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_up",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_hidden",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_down_float32",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_down_bfloat16",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "6249025460ce9418ce087273072d6d96209c05e356d49f26347182db60bb2531",
+      "control_stablehlo_sha256": "aa7a9344ee40fc5269c4fef332fa51ec02bb958c105142eb23ab31178d7d19a7",
+      "instrumented_pallas_stablehlo_sha256": "39636de1e87e73f1a923bf8a274a6dae869c229906dc98e6da5e53a740f9f62f",
+      "instrumented_control_stablehlo_sha256": "e627cfd0d8c6a45483f10dd50f0bc62864410dc3749f18f0319a64092482bba9"
+    },
+    {
+      "name": "m320-b4-s3-l1",
+      "role": "calibration",
+      "parameters": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 40,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 320,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 3,
+        "tensor_mesh": 4,
+        "vocabulary": 48
+      },
+      "seeds": [
+        6191602168516372006,
+        5143182763570166171,
+        16212433315887347240,
+        12157769969535494253
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            48,
+            320
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            320
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            320
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            320,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            320,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            320,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            320,
+            40
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            320,
+            40
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            320,
+            40
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            320
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            48,
+            320
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          4,
+          3,
+          48
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            4,
+            3,
+            320
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            4,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            4,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            4,
+            3,
+            320
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            4,
+            3,
+            320
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            4,
+            3,
+            320
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            4,
+            3,
+            320
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "750804aa2a24bdabbd65da65e89b819a3487e5fb42738f285960e23b76f0d5b3",
+      "control_stablehlo_sha256": "87ef688fd0a932c6878894da5a6e564b190236ef6768bc3e86580132de4b4676",
+      "instrumented_pallas_stablehlo_sha256": "45cb18809686d3044276c7a9d0adf809f5323919cf8ae826a26faf18693e5358",
+      "instrumented_control_stablehlo_sha256": "4297f162e9acf9d5c6821f89b0a4203561b52b27274330aa6a1cd8022c1ff4a3"
+    },
+    {
+      "name": "m256-b2-s8-l4",
+      "role": "calibration",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 32,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 4,
+        "model": 256,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 8,
+        "tensor_mesh": 4,
+        "vocabulary": 64
+      },
+      "seeds": [
+        6824166706470064538,
+        13777499615047958089,
+        3419111418850295170,
+        4085765692742194659
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            8
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            8
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            64,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            4,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            4,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            4,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            4,
+            2,
+            256,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            4,
+            256,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            4,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            4,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            4,
+            256,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            64,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          8,
+          64
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_rms_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_rms_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_rms_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_mean_square",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_rms_mean_square",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_rms_mean_square",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_inverse",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_rms_inverse",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_rms_inverse",
+          "shape": [
+            2,
+            8,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_normalized_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_normalized_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_normalized_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_gate",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_gate",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_gate",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_silu",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_silu",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_silu",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_up",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_up",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_up",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_hidden",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_hidden",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_hidden",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_down_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_down_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_down_float32",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_down_bfloat16",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_down_bfloat16",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_down_bfloat16",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "19426e64a79ad76fdc75702daaefbf2c43abfe48b84522773244029d3e1da03d",
+      "control_stablehlo_sha256": "0514db06552295c04707be2bcdc0d0800801ed79326a1556be916d3d31d4cff3",
+      "instrumented_pallas_stablehlo_sha256": "9e9e098b9db1c9e8685ac9a85e5c20848de78490fbaa3a01b787e7a031d8af3a",
+      "instrumented_control_stablehlo_sha256": "01c5c72b190f8c52ffc7eac137c182b645649ccd5bfa3472e10d1d60b6c0e7b5"
+    },
+    {
+      "name": "m240-b2-s7-l2",
+      "role": "held_out",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 60,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 2,
+        "model": 240,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 7,
+        "tensor_mesh": 4,
+        "vocabulary": 64
+      },
+      "seeds": [
+        3842837506340522550,
+        5356406686960103257,
+        18354979756364792605,
+        16972617696055868236
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            7
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            7
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            64,
+            240
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            2,
+            240
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            2,
+            240
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            2,
+            240,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            2,
+            2,
+            240,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            2,
+            240,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            2,
+            240,
+            60
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            2,
+            240,
+            60
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            2,
+            240,
+            60
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            240
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            64,
+            240
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          7,
+          64
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_rms_input",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            2,
+            7,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_mean_square",
+          "shape": [
+            2,
+            7,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            2,
+            7,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_inverse",
+          "shape": [
+            2,
+            7,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_normalized_float32",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_gate",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_silu",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_up",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_hidden",
+          "shape": [
+            2,
+            7,
+            60
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_down_float32",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_down_bfloat16",
+          "shape": [
+            2,
+            7,
+            240
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "instrumented_pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "instrumented_control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "m416-b4-s3-l1",
+      "role": "held_out",
+      "parameters": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 52,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 416,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 3,
+        "tensor_mesh": 4,
+        "vocabulary": 64
+      },
+      "seeds": [
+        4790919959524914723,
+        17711867483721371128,
+        9292255792048756349,
+        6061508227194480379
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            4,
+            3
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            64,
+            416
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            1,
+            416
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            1,
+            416
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            1,
+            416,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            1,
+            2,
+            416,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            1,
+            416,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            1,
+            416,
+            52
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            1,
+            416,
+            52
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            1,
+            416,
+            52
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            416
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            64,
+            416
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          4,
+          3,
+          64
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            4,
+            3,
+            416
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            4,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            4,
+            3,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            4,
+            3,
+            416
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            4,
+            3,
+            416
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            4,
+            3,
+            52
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            4,
+            3,
+            52
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            4,
+            3,
+            52
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            4,
+            3,
+            52
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            4,
+            3,
+            52
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            4,
+            3,
+            52
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            4,
+            3,
+            416
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            4,
+            3,
+            416
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "instrumented_pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "instrumented_control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "m272-b2-s9-l3",
+      "role": "held_out",
+      "parameters": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 68,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 3,
+        "model": 272,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 9,
+        "tensor_mesh": 4,
+        "vocabulary": 64
+      },
+      "seeds": [
+        1965330550054001085,
+        3500085754341555796,
+        15103284558182332644,
+        4280919651916015196
+      ],
+      "inputs": [
+        {
+          "name": "tokens",
+          "shape": [
+            2,
+            9
+          ],
+          "dtype": "uint32"
+        },
+        {
+          "name": "sequence_starts",
+          "shape": [
+            2,
+            9
+          ],
+          "dtype": "bool"
+        },
+        {
+          "name": "embedding",
+          "shape": [
+            64,
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_1",
+          "shape": [
+            3,
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_norm_2",
+          "shape": [
+            3,
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "query_weights",
+          "shape": [
+            3,
+            272,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "key_value_weights",
+          "shape": [
+            3,
+            2,
+            272,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "output_weights",
+          "shape": [
+            3,
+            272,
+            2,
+            4,
+            4
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "gate_weights",
+          "shape": [
+            3,
+            272,
+            68
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "up_weights",
+          "shape": [
+            3,
+            272,
+            68
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "down_weights",
+          "shape": [
+            3,
+            272,
+            68
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "final_layer_norm",
+          "shape": [
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "unembedding",
+          "shape": [
+            64,
+            272
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "output": {
+        "name": "logits",
+        "shape": [
+          2,
+          9,
+          64
+        ],
+        "dtype": "float32"
+      },
+      "rms_input_checkpoints": [
+        {
+          "name": "layer_00_rms_input",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_rms_input",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_rms_input",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "rms_mean_square_checkpoints": [
+        {
+          "name": "layer_00_rms_mean_square",
+          "shape": [
+            2,
+            9,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_mean_square",
+          "shape": [
+            2,
+            9,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_rms_mean_square",
+          "shape": [
+            2,
+            9,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "rms_inverse_checkpoints": [
+        {
+          "name": "layer_00_rms_inverse",
+          "shape": [
+            2,
+            9,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_rms_inverse",
+          "shape": [
+            2,
+            9,
+            1
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_rms_inverse",
+          "shape": [
+            2,
+            9,
+            1
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_float32_checkpoints": [
+        {
+          "name": "layer_00_normalized_float32",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_normalized_float32",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_normalized_float32",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_normalized_input",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_gate_float32",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "gate_checkpoints": [
+        {
+          "name": "layer_00_gate",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_gate",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_gate",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "silu_checkpoints": [
+        {
+          "name": "layer_00_silu",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_silu",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_silu",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_up_float32",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "up_checkpoints": [
+        {
+          "name": "layer_00_up",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_up",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_up",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "hidden_checkpoints": [
+        {
+          "name": "layer_00_hidden",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_hidden",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_hidden",
+          "shape": [
+            2,
+            9,
+            68
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "down_float32_checkpoints": [
+        {
+          "name": "layer_00_down_float32",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_down_float32",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_down_float32",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "float32"
+        }
+      ],
+      "down_bfloat16_checkpoints": [
+        {
+          "name": "layer_00_down_bfloat16",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_down_bfloat16",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_down_bfloat16",
+          "shape": [
+            2,
+            9,
+            272
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "instrumented_pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "instrumented_control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "activation_mutant_stablehlo": [
+    {
+      "discriminator": "identity_silu",
+      "pallas_stablehlo_sha256": "0cdf402b2bbc65a0558d0abd74b6ced1d5cf24f8d13c0c6836948dffafc4603d",
+      "control_stablehlo_sha256": "96af1a60b031e515dc674fafaf8b79964133a13e2972d2a717d2d105af86ee7d"
+    },
+    {
+      "discriminator": "relu_silu",
+      "pallas_stablehlo_sha256": "c94cd093d7191755250c6ebaf1d2ca0e105d616b850dd831cdec286c9fa819f0",
+      "control_stablehlo_sha256": "5f177aff06654d8d656d67c0d8bb846330fe2b7869bd52ccbd0a4b7a6a45b0e1"
+    }
+  ],
+  "required_discriminators": [
+    "remove_input_barrier",
+    "remove_output_barrier",
+    "remove_hidden_barrier",
+    "identity_silu",
+    "relu_silu",
+    "bypass_rms_norm_checkpoint",
+    "wrong_rms_scale_checkpoint",
+    "corrupt_rms_mean_square_checkpoint",
+    "corrupt_rms_inv_checkpoint",
+    "corrupt_normalized_float32_checkpoint",
+    "corrupt_normalized_bfloat16_checkpoint",
+    "wrong_gate_weight_checkpoint",
+    "corrupt_gate_float32_checkpoint",
+    "corrupt_gate_bfloat16_checkpoint",
+    "wrong_up_weight_checkpoint",
+    "corrupt_up_float32_checkpoint",
+    "corrupt_up_bfloat16_checkpoint",
+    "corrupt_down_checkpoint",
+    "drop_reduction_collective",
+    "drop_embedding_shard",
+    "roll_model_shard",
+    "omit_mlp_term",
+    "swap_gate_up",
+    "localized_spike",
+    "distributed_drift",
+    "nonfinite_output",
+    "dtype_output",
+    "shape_output"
+  ],
+  "runtime": {
+    "python_major_minor": "3.12",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "ml_dtypes": "0.6.0",
+    "cpu_machine": "x86_64",
+    "cpu_system": "Linux",
+    "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true",
+    "uv_lock_sha256": "7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b"
+  },
+  "compilation_source_root": "/home/sudarshan/tpu-cake-main",
+  "hlo_identity_status": "pending",
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "acceptance_authority": "authenticated-runner-and-relocated-public-replay",
+  "checkpoint_capture": "typed-strict-rms-mlp-extra-outputs-v4",
+  "require_normal_output_policy": true,
+  "require_instrumented_output_policy": true,
+  "require_discriminator_artifact_replay": true
+}
