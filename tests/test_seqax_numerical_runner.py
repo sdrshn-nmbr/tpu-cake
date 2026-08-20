@@ -1209,6 +1209,14 @@ def test_relocation_attestation_rejects_pending_contract_before_archive_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    contract = default_seqax_bf16_validation_contract().model_copy(
+        update={"hlo_identity_status": "pending"}
+    )
+    monkeypatch.setattr(
+        numerical_runner,
+        "default_seqax_bf16_validation_contract",
+        lambda: contract,
+    )
     monkeypatch.setattr(
         numerical_runner.shutil,
         "copyfile",
@@ -1218,7 +1226,7 @@ def test_relocation_attestation_rejects_pending_contract_before_archive_access(
     with pytest.raises(ValueError, match="HLO_IDENTITIES_PENDING"):
         numerical_runner._relocation_attestation(
             tmp_path / "missing.tar",
-            default_seqax_bf16_validation_contract(),
+            contract,
         )
 
 
@@ -1332,11 +1340,11 @@ def test_runner_refuses_pending_hlo_identities_before_writes(
     assert not root.exists()
 
 
-def test_runner_rejects_a_caller_promoted_pending_contract_before_writes(
+def test_runner_rejects_a_caller_demoted_pinned_contract_before_writes(
     tmp_path: Path,
 ) -> None:
     contract = default_seqax_bf16_validation_contract().model_copy(
-        update={"hlo_identity_status": "pinned"}
+        update={"hlo_identity_status": "pending"}
     )
     root = tmp_path / "run"
 
