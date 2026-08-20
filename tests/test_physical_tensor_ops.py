@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import ml_dtypes
 import numpy as np
 import pytest
 from xdsl.dialects.builtin import bf16, f16, f32, i1, i32
@@ -15,6 +16,7 @@ from tpu_cake.dialects.tpu_schedule import (
     VectorMaterialization,
 )
 from tpu_cake.frontend import KernelBuilder, buffer
+from tpu_cake.seqax_numerical import rounded_mathematical_silu_bf16
 from tpu_cake.seqax_physical_execution import _vector_compute
 
 
@@ -282,6 +284,26 @@ def test_vector_compute_strict_materialization_requires_bf16_silu() -> None:
         wrong_dtype.verify()
     with pytest.raises(VerifyException, match="only supported for SiLU"):
         wrong_function.verify()
+
+
+def test_physical_strict_typed_silu_rounds_once_from_a_float32_interior() -> None:
+    source = AllocOp(_spec((5,), ("F",)).to_type(), "source")
+    output = AllocOp(_spec((5,), ("F",)).to_type(), "output")
+    operation = VectorComputeOp(
+        (source,),
+        output,
+        stage=1,
+        function="silu",
+        materialization=VectorMaterialization.STRICT_TYPED,
+    )
+    gate = np.asarray(
+        [2.4375, 1.6484375, 0.625, -2.375, 2.953125],
+        dtype=ml_dtypes.bfloat16,
+    )
+
+    actual = np.asarray(_vector_compute(operation, (jnp.asarray(gate),), {}))
+
+    np.testing.assert_array_equal(actual, rounded_mathematical_silu_bf16(gate))
 
 
 def test_vector_compute_rejects_missing_slice_contract() -> None:

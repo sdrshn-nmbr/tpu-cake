@@ -15,6 +15,7 @@ from tpu_cake.seqax_numerical import (
     SeqaxBf16ValidationContract,
     SeqaxInputMutation,
     SeqaxNumericalDiscriminator,
+    _validate_strict_silu_stablehlo,
     assess_seqax_bf16_forward,
     decode_seqax_bf16_checkpoint,
     default_seqax_bf16_validation_contract,
@@ -22,8 +23,12 @@ from tpu_cake.seqax_numerical import (
     mutate_seqax_forward_inputs,
     rounded_mathematical_silu_bf16,
     seqax_discriminator_clause,
+    seqax_stablehlo_sha256,
+    validate_activation_mutant_stablehlo,
     validate_seqax_numerical_inputs,
-    validate_strict_silu_stablehlo,
+)
+from tpu_cake.seqax_numerical import (
+    validate_strict_silu_stablehlo as validate_trusted_strict_silu_stablehlo,
 )
 from tpu_cake.seqax_pallas_lowering import (
     _parse_physical,
@@ -41,19 +46,27 @@ from tpu_cake.workloads.seqax_oracle import (
 )
 
 _SILU_FUNCTION = """
-      func.func private @silu(%arg0: tensor<1x4xbf16>) -> tensor<1x4xbf16> {
-        %0 = stablehlo.negate %arg0 : tensor<1x4xbf16>
-        %1 = stablehlo.exponential %0 : tensor<1x4xbf16>
-        %cst = stablehlo.constant dense<1.000000e+00> : tensor<bf16>
-        %2 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<bf16>) -> tensor<1x4xbf16>
-        %3 = stablehlo.add %2, %1 : tensor<1x4xbf16>
-        %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<bf16>
-        %4 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<bf16>) -> tensor<1x4xbf16>
-        %5 = stablehlo.divide %4, %3 : tensor<1x4xbf16>
-        %6 = stablehlo.multiply %arg0, %5 : tensor<1x4xbf16>
-        return %6 : tensor<1x4xbf16>
+      func.func private @silu(%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {
+        %0 = stablehlo.negate %arg0 : tensor<1x4xf32>
+        %1 = stablehlo.exponential %0 : tensor<1x4xf32>
+        %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+        %2 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f32>) -> tensor<1x4xf32>
+        %3 = stablehlo.add %2, %1 : tensor<1x4xf32>
+        %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+        %4 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<f32>) -> tensor<1x4xf32>
+        %5 = stablehlo.divide %4, %3 : tensor<1x4xf32>
+        %6 = stablehlo.multiply %arg0, %5 : tensor<1x4xf32>
+        return %6 : tensor<1x4xf32>
       }
 """
+
+
+def validate_strict_silu_stablehlo(stablehlo: str, *, expected_count: int) -> None:
+    _validate_strict_silu_stablehlo(
+        stablehlo,
+        expected_count=expected_count,
+        instrumented=False,
+    )
 
 
 def _calibration_evidence(
@@ -126,8 +139,10 @@ def test_strict_silu_stablehlo_requires_barrier_dataflow_into_multiply() -> None
         %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
       ) -> tensor<1x4xbf16> {{
         %1 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
-        %2 = func.call @silu(%1) : (tensor<1x4xbf16>) -> tensor<1x4xbf16>
-        %3 = stablehlo.optimization_barrier %2 : tensor<1x4xbf16>
+        %promoted = stablehlo.convert %1 : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+        %2 = func.call @silu(%promoted) : (tensor<1x4xf32>) -> tensor<1x4xf32>
+        %rounded = stablehlo.convert %2 : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+        %3 = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
         %4 = stablehlo.multiply %other, %3 : tensor<1x4xbf16>
         return %4 : tensor<1x4xbf16>
       }}
@@ -137,12 +152,15 @@ def test_strict_silu_stablehlo_requires_barrier_dataflow_into_multiply() -> None
 
     with pytest.raises(ValueError, match="input barrier"):
         validate_strict_silu_stablehlo(
-            stablehlo.replace("func.call @silu(%1)", "func.call @silu(%arg0)"),
+            stablehlo.replace(
+                "%promoted = stablehlo.convert %1",
+                "%promoted = stablehlo.convert %arg0",
+            ),
             expected_count=1,
         )
-    with pytest.raises(ValueError, match="result must feed only"):
+    with pytest.raises(ValueError, match="BF16 result must feed only"):
         validate_strict_silu_stablehlo(
-            stablehlo.replace("optimization_barrier %2", "optimization_barrier %arg0"),
+            stablehlo.replace("optimization_barrier %rounded", "optimization_barrier %arg0"),
             expected_count=1,
         )
     with pytest.raises(ValueError, match="must feed exactly one"):
@@ -154,8 +172,7 @@ def test_strict_silu_stablehlo_requires_barrier_dataflow_into_multiply() -> None
         validate_strict_silu_stablehlo(
             stablehlo.replace(
                 "return %4 : tensor<1x4xbf16>",
-                "%5 = stablehlo.multiply %other, %2 : tensor<1x4xbf16>\n"
-                "        return %4 : tensor<1x4xbf16>",
+                "%5 = stablehlo.add %2, %2 : tensor<1x4xf32>\n        return %4 : tensor<1x4xbf16>",
             ),
             expected_count=1,
         )
@@ -173,14 +190,109 @@ def test_strict_silu_stablehlo_requires_barrier_dataflow_into_multiply() -> None
         validate_strict_silu_stablehlo(stablehlo, expected_count=2)
 
 
+def test_trusted_stablehlo_identity_rejects_a_live_bypass_path() -> None:
+    stablehlo = f"""module {{
+      {_SILU_FUNCTION}
+      func.func public @main(
+        %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
+      ) -> tensor<1x4xbf16> {{
+        %1 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
+        %promoted = stablehlo.convert %1 : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+        %2 = func.call @silu(%promoted) : (tensor<1x4xf32>) -> tensor<1x4xf32>
+        %rounded = stablehlo.convert %2 : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+        %3 = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
+        %4 = stablehlo.multiply %other, %3 : tensor<1x4xbf16>
+        return %4 : tensor<1x4xbf16>
+      }}
+    }}"""
+    expected_sha256 = seqax_stablehlo_sha256(stablehlo)
+    validate_trusted_strict_silu_stablehlo(
+        stablehlo,
+        expected_count=1,
+        expected_sha256=expected_sha256,
+    )
+    bypass = stablehlo.replace(
+        "return %4 : tensor<1x4xbf16>",
+        "%bad = stablehlo.negate %arg0 : tensor<1x4xbf16>\n"
+        "        %out = stablehlo.add %4, %bad : tensor<1x4xbf16>\n"
+        "        return %out : tensor<1x4xbf16>",
+    )
+
+    with pytest.raises(ValueError, match="trusted identity"):
+        validate_trusted_strict_silu_stablehlo(
+            bypass,
+            expected_count=1,
+            expected_sha256=expected_sha256,
+        )
+
+
+@pytest.mark.parametrize("relu", (False, True))
+def test_trusted_activation_mutant_identity_rejects_a_live_bypass_path(
+    relu: bool,
+) -> None:
+    activation = (
+        """func.func private @relu(%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {
+        %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+        %broadcast = stablehlo.broadcast_in_dim %zero, dims = [] : (tensor<f32>) -> tensor<1x4xf32>
+        %result = stablehlo.maximum %arg0, %broadcast : tensor<1x4xf32>
+        return %result : tensor<1x4xf32>
+      }"""
+        if relu
+        else ""
+    )
+    activation_op = (
+        "%activated = func.call @relu(%promoted) : (tensor<1x4xf32>) -> tensor<1x4xf32>"
+        if relu
+        else ""
+    )
+    activation_result = "%activated" if relu else "%promoted"
+    stablehlo = f"""module {{
+      {activation}
+      func.func public @main(
+        %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
+      ) -> tensor<1x4xbf16> {{
+        %barrier = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
+        %promoted = stablehlo.convert %barrier : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+        {activation_op}
+        %rounded = stablehlo.convert {activation_result} : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+        %result = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
+        %hidden = stablehlo.multiply %other, %result : tensor<1x4xbf16>
+        return %hidden : tensor<1x4xbf16>
+      }}
+    }}"""
+    expected_sha256 = seqax_stablehlo_sha256(stablehlo)
+    validate_activation_mutant_stablehlo(
+        stablehlo,
+        expected_count=1,
+        expected_sha256=expected_sha256,
+        relu=relu,
+    )
+    bypass = stablehlo.replace(
+        "return %hidden : tensor<1x4xbf16>",
+        "%bad = stablehlo.negate %arg0 : tensor<1x4xbf16>\n"
+        "        %out = stablehlo.add %hidden, %bad : tensor<1x4xbf16>\n"
+        "        return %out : tensor<1x4xbf16>",
+    )
+
+    with pytest.raises(ValueError, match="trusted identity"):
+        validate_activation_mutant_stablehlo(
+            bypass,
+            expected_count=1,
+            expected_sha256=expected_sha256,
+            relu=relu,
+        )
+
+
 def test_strict_silu_stablehlo_rejects_a_dead_private_decoy_chain() -> None:
     function = """
       func.func private @{name}(
         %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
       ) -> tensor<1x4xbf16> {{
         %0 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
-        %1 = func.call @silu(%0) : (tensor<1x4xbf16>) -> tensor<1x4xbf16>
-        %2 = stablehlo.optimization_barrier %1 : tensor<1x4xbf16>
+        %promoted = stablehlo.convert %0 : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+        %1 = func.call @silu(%promoted) : (tensor<1x4xf32>) -> tensor<1x4xf32>
+        %rounded = stablehlo.convert %1 : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+        %2 = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
         %3 = stablehlo.multiply %other, %2 : tensor<1x4xbf16>
         return %3 : tensor<1x4xbf16>
       }}
@@ -241,7 +353,7 @@ def test_bf16_forward_external_contract_is_canonical() -> None:
     )
 
     assert saved == default_seqax_bf16_validation_contract()
-    assert saved.contract_id == "7d45ba2e62265c8f61e31c4109672d573fb1e9aa3a9af1bd86cca88a98a6c03e"
+    assert saved.contract_id == "78fee918dd933e1a8a01019a54ca8da91fbaf5e8e8c3d7114f4543aed8365e51"
     assert saved.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
     assert saved.checkpoint_capture == "typed-extra-outputs-v1"
     assert saved.require_instrumented_output_parity
@@ -323,6 +435,12 @@ def test_bf16_checkpoint_uint16_codec_preserves_exact_logical_bits() -> None:
         (("checkpoint_capture",), "host-callback", "acceptance authority"),
         (("scenarios", 0, "parameters", "model"), "256", "model"),
         (("scenarios", 0, "inputs", 0, "dtype"), "int32", "input ABI"),
+        (("scenarios", 0, "pallas_stablehlo_sha256"), "0" * 64, "StableHLO identity"),
+        (
+            ("activation_mutant_stablehlo", 0, "pallas_stablehlo_sha256"),
+            "0" * 64,
+            "StableHLO identity",
+        ),
         (
             ("required_discriminators",),
             [value.value for value in tuple(SeqaxNumericalDiscriminator)[:-1]],
@@ -376,6 +494,56 @@ def test_bf16_forward_policy_distinguishes_row_spikes_and_distributed_drift() ->
     assert distributed_assessment.cpu_pallas_row_scaled_max < 4 * BF16_UNIT_ROUNDOFF
     assert not distributed_assessment.final_outputs_satisfy_policy
     assert distributed_assessment.checkpoint_values_consistent
+
+
+def test_bf16_forward_relative_error_budget_scales_with_sqrt_layer_depth() -> None:
+    contract = default_seqax_bf16_validation_contract()
+    scenario = contract.scenarios[1]
+    seed = scenario.seeds[0]
+    inputs = seqax_forward_inputs(seed=seed, **scenario.parameters.model_dump())
+    reference = seqax_forward_canonical_reference(inputs, **scenario.parameters.model_dump())
+    gates = tuple(
+        np.full(checkpoint.shape, 0.625, dtype=ml_dtypes.bfloat16)
+        for checkpoint in scenario.gate_checkpoints
+    )
+    silus = tuple(rounded_mathematical_silu_bf16(gate) for gate in gates)
+    evidence = {
+        "seed": seed,
+        "inputs": inputs,
+        "pallas_gate_checkpoints": gates,
+        "control_gate_checkpoints": gates,
+        "pallas_silu_checkpoints": silus,
+        "control_silu_checkpoints": silus,
+        "policy": contract.policy,
+        "scenario": scenario,
+    }
+    within = reference * np.float32(1.0 + 2.4 * BF16_UNIT_ROUNDOFF)
+    outside = reference * np.float32(1.0 + 3.0 * BF16_UNIT_ROUNDOFF)
+
+    within_assessment = assess_seqax_bf16_forward(within, within, **evidence)
+    outside_assessment = assess_seqax_bf16_forward(outside, outside, **evidence)
+
+    assert within_assessment.final_outputs_satisfy_policy
+    assert not outside_assessment.final_outputs_satisfy_policy
+
+
+def test_bf16_forward_cross_path_budget_rejects_opposing_drift() -> None:
+    contract, scenario, _inputs, reference, evidence = _calibration_evidence()
+    pallas = reference * np.float32(1.0 + 1.1 * BF16_UNIT_ROUNDOFF)
+    control = reference * np.float32(1.0 - 1.1 * BF16_UNIT_ROUNDOFF)
+
+    assessment = assess_seqax_bf16_forward(
+        pallas,
+        control,
+        **evidence,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+
+    assert assessment.cpu_pallas_relative_l2 < 2 * BF16_UNIT_ROUNDOFF
+    assert assessment.cpu_control_relative_l2 < 2 * BF16_UNIT_ROUNDOFF
+    assert assessment.cross_path_relative_l2 > 2 * BF16_UNIT_ROUNDOFF
+    assert not assessment.final_outputs_satisfy_policy
 
 
 def test_bf16_forward_metrics_are_layout_independent_and_quantized() -> None:
@@ -644,28 +812,29 @@ def test_strict_silu_stablehlo_authenticates_the_silu_function_body() -> None:
         %arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>
       ) -> tensor<1x4xbf16> {{
         %1 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
-        %2 = func.call @silu(%1) : (tensor<1x4xbf16>) -> tensor<1x4xbf16>
-        %3 = stablehlo.optimization_barrier %2 : tensor<1x4xbf16>
+        %promoted = stablehlo.convert %1 : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+        %2 = func.call @silu(%promoted) : (tensor<1x4xf32>) -> tensor<1x4xf32>
+        %rounded = stablehlo.convert %2 : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+        %3 = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
         %4 = stablehlo.multiply %other, %3 : tensor<1x4xbf16>
         return %4 : tensor<1x4xbf16>
       }}
     }}"""
     identity = stablehlo.replace(
-        "%6 = stablehlo.multiply %arg0, %5 : tensor<1x4xbf16>\n"
-        "        return %6 : tensor<1x4xbf16>",
-        "return %arg0 : tensor<1x4xbf16>",
+        "%6 = stablehlo.multiply %arg0, %5 : tensor<1x4xf32>\n        return %6 : tensor<1x4xf32>",
+        "return %arg0 : tensor<1x4xf32>",
     )
     relu = stablehlo.replace(
-        "%0 = stablehlo.negate %arg0 : tensor<1x4xbf16>",
-        "%zero = stablehlo.constant dense<0.000000e+00> : tensor<1x4xbf16>\n"
-        "        %0 = stablehlo.maximum %arg0, %zero : tensor<1x4xbf16>",
+        "%0 = stablehlo.negate %arg0 : tensor<1x4xf32>",
+        "%zero = stablehlo.constant dense<0.000000e+00> : tensor<1x4xf32>\n"
+        "        %0 = stablehlo.maximum %arg0, %zero : tensor<1x4xf32>",
     )
     relaxed_exponential = stablehlo.replace(
-        "%1 = stablehlo.exponential %0 : tensor<1x4xbf16>",
+        "%1 = stablehlo.exponential %0 : tensor<1x4xf32>",
         "%1 = stablehlo.exponential %0 "
         "{result_accuracy = #stablehlo.result_accuracy<atol = 1.0, rtol = 1.0, "
         "ulps = 1000000, mode = #stablehlo.result_accuracy_mode<TOLERANCE>>} "
-        ": tensor<1x4xbf16>",
+        ": tensor<1x4xf32>",
     )
 
     with pytest.raises(ValueError, match="implementation"):

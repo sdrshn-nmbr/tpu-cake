@@ -28,6 +28,7 @@ from tpu_cake.dialects.tpu_schedule import (
     VectorImplementation,
     YieldOp,
 )
+from tpu_cake.dtensor_interpreter import _strict_typed_silu
 
 
 class UnsupportedPhysicalExecutionError(ValueError):
@@ -207,7 +208,7 @@ def _vector_compute(
     elif function == "multiply":
         result = values[0] * values[1]
     elif function == "silu":
-        result = jax.nn.silu(values[0])
+        result = _strict_typed_silu(values[0]) if strict_materialization else jax.nn.silu(values[0])
     elif function == "silu_multiply":
         if (
             operation.implementation is None

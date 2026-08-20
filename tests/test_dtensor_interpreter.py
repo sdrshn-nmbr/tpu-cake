@@ -1,7 +1,15 @@
+import ml_dtypes
 import numpy as np
 import pytest
+from xdsl.dialects.builtin import bf16
 
-from tpu_cake.dtensor_interpreter import interpret_distributed_program
+from tpu_cake.dialects.distributed_tensor import ElementwiseMaterialization
+from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
+from tpu_cake.dtensor_interpreter import (
+    execute_distributed_program_jax,
+    interpret_distributed_program,
+)
+from tpu_cake.seqax_numerical import rounded_mathematical_silu_bf16
 from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_inputs,
@@ -54,6 +62,25 @@ def test_seqax_oracle_inputs_are_seed_replayable() -> None:
         np.testing.assert_array_equal(left, right)
 
 
+def test_strict_typed_silu_rounds_once_from_a_float32_interior() -> None:
+    value_type = tensor(bf16, (("F", 5),))
+    builder = DistributedProgramBuilder("strict_silu", {}, (value_type,))
+    result = builder.elementwise(
+        builder.inputs[0],
+        result=value_type,
+        function="silu",
+        materialization=ElementwiseMaterialization.STRICT_TYPED,
+    )
+    gate = np.asarray(
+        [2.4375, 1.6484375, 0.625, -2.375, 2.953125],
+        dtype=ml_dtypes.bfloat16,
+    )
+
+    (actual,) = execute_distributed_program_jax(builder.module(result), (gate,))
+
+    np.testing.assert_array_equal(actual, rounded_mathematical_silu_bf16(gate))
+
+
 def test_seqax_oracle_discriminates_a_wrong_rope_contract() -> None:
     parameters = {
         "batch": 2,
@@ -71,9 +98,7 @@ def test_seqax_oracle_discriminates_a_wrong_rope_contract() -> None:
     }
     inputs = seqax_forward_inputs(seed=41, **parameters)
     expected = seqax_forward_reference(inputs, **parameters)
-    wrong_schedule = seqax_forward_schedule(
-        **{**parameters, "rope_max_timescale": 4_096}
-    )
+    wrong_schedule = seqax_forward_schedule(**{**parameters, "rope_max_timescale": 4_096})
     (wrong,) = interpret_distributed_program(wrong_schedule, inputs)
 
     assert not np.allclose(wrong, expected, rtol=2e-3, atol=2e-3)

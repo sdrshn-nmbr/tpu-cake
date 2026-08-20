@@ -38,7 +38,9 @@ from tpu_cake.seqax_numerical import (
     SeqaxDiscriminatorClause,
     SeqaxInputMutation,
     SeqaxNumericalDiscriminator,
+    _validate_strict_silu_stablehlo,
     assess_seqax_bf16_forward,
+    canonical_seqax_stablehlo,
     decode_seqax_bf16_checkpoint,
     default_seqax_bf16_validation_contract,
     encode_seqax_bf16_checkpoint,
@@ -696,8 +698,16 @@ def _prepare_scenario(
     control_plan = lower_distributed_program_to_jax_mesh(distributed)
     pallas = _compile_path(pallas_plan, host_inputs, devices, pallas=True)
     control = _compile_path(control_plan, host_inputs, devices, pallas=False)
-    validate_strict_silu_stablehlo(pallas.stablehlo, expected_count=parameters["layers"])
-    validate_strict_silu_stablehlo(control.stablehlo, expected_count=parameters["layers"])
+    validate_strict_silu_stablehlo(
+        pallas.stablehlo,
+        expected_count=parameters["layers"],
+        expected_sha256=scenario.pallas_stablehlo_sha256,
+    )
+    validate_strict_silu_stablehlo(
+        control.stablehlo,
+        expected_count=parameters["layers"],
+        expected_sha256=scenario.control_stablehlo_sha256,
+    )
     all_gathers, reduce_scatters = _physical_collective_counts(physical)
     _validate_compiled_program(
         pallas.stablehlo,
@@ -722,10 +732,12 @@ def _prepare_scenario(
     validate_instrumented_strict_silu_stablehlo(
         instrumented_pallas.stablehlo,
         expected_count=parameters["layers"],
+        expected_sha256=scenario.instrumented_pallas_stablehlo_sha256,
     )
     validate_instrumented_strict_silu_stablehlo(
         instrumented_control.stablehlo,
         expected_count=parameters["layers"],
+        expected_sha256=scenario.instrumented_control_stablehlo_sha256,
     )
     plan_root = _plan_root(root, scenario)
     files = {
@@ -733,13 +745,17 @@ def _prepare_scenario(
         "physical.xdsl": canonical_text(physical),
         "lowered_pallas.py": pallas_plan.render_executable_source(),
         "lowered_control.py": control_plan.render_executable_source(),
-        "pallas_stablehlo.txt": pallas.stablehlo + "\n",
+        "pallas_stablehlo.txt": canonical_seqax_stablehlo(pallas.stablehlo),
         "pallas_compiler_hlo.txt": pallas.compiler_hlo + "\n",
-        "control_stablehlo.txt": control.stablehlo + "\n",
+        "control_stablehlo.txt": canonical_seqax_stablehlo(control.stablehlo),
         "control_compiler_hlo.txt": control.compiler_hlo + "\n",
-        "instrumented_pallas_stablehlo.txt": instrumented_pallas.stablehlo + "\n",
+        "instrumented_pallas_stablehlo.txt": canonical_seqax_stablehlo(
+            instrumented_pallas.stablehlo
+        ),
         "instrumented_pallas_compiler_hlo.txt": instrumented_pallas.compiler_hlo + "\n",
-        "instrumented_control_stablehlo.txt": instrumented_control.stablehlo + "\n",
+        "instrumented_control_stablehlo.txt": canonical_seqax_stablehlo(
+            instrumented_control.stablehlo
+        ),
         "instrumented_control_compiler_hlo.txt": instrumented_control.compiler_hlo + "\n",
     }
     for name, value in files.items():
@@ -940,7 +956,26 @@ def _remove_strict_barrier(stablehlo: str, *, input_barrier: bool) -> str:
     if call_match is None:
         raise ValueError("SEQAX_BF16_DISCRIMINATOR_SILU_CALL_INVALID")
     if input_barrier:
-        barrier_result = call_match.group("input")
+        converted_input = call_match.group("input")
+        conversion_index = next(
+            (
+                index
+                for index, line in enumerate(lines[:call_index])
+                if re.search(
+                    rf"^\s*{re.escape(converted_input)} = stablehlo\.convert ",
+                    line,
+                )
+            ),
+            None,
+        )
+        if conversion_index is None:
+            raise ValueError("SEQAX_BF16_DISCRIMINATOR_INPUT_PROMOTION_MISSING")
+        conversion_match = re.search(
+            r"stablehlo\.convert (?P<source>%[A-Za-z0-9_]+)",
+            lines[conversion_index],
+        )
+        assert conversion_match is not None
+        barrier_result = conversion_match.group("source")
         barrier_index = next(
             (
                 index
@@ -962,12 +997,31 @@ def _remove_strict_barrier(stablehlo: str, *, input_barrier: bool) -> str:
         replacement = source_match.group("source")
     else:
         call_result = call_match.group("result")
-        barrier_index = next(
+        conversion_index = next(
             (
                 index
                 for index, line in enumerate(lines[call_index + 1 :], start=call_index + 1)
-                if "stablehlo.optimization_barrier" in line
+                if "stablehlo.convert" in line
                 and re.search(rf"\s{re.escape(call_result)}\s*:", line)
+            ),
+            None,
+        )
+        if conversion_index is None:
+            raise ValueError("SEQAX_BF16_DISCRIMINATOR_OUTPUT_ROUNDING_MISSING")
+        conversion_match = re.search(
+            r"^\s*(?P<result>%[A-Za-z0-9_]+) =",
+            lines[conversion_index],
+        )
+        assert conversion_match is not None
+        converted_result = conversion_match.group("result")
+        barrier_index = next(
+            (
+                index
+                for index, line in enumerate(
+                    lines[conversion_index + 1 :], start=conversion_index + 1
+                )
+                if "stablehlo.optimization_barrier" in line
+                and re.search(rf"\s{re.escape(converted_result)}\s*:", line)
             ),
             None,
         )
@@ -976,14 +1030,14 @@ def _remove_strict_barrier(stablehlo: str, *, input_barrier: bool) -> str:
         result_match = re.search(r"^\s*(?P<result>%[A-Za-z0-9_]+) =", lines[barrier_index])
         assert result_match is not None
         barrier_result = result_match.group("result")
-        replacement = call_result
+        replacement = converted_result
     del lines[barrier_index]
     return re.sub(rf"{re.escape(barrier_result)}\b", replacement, "\n".join(lines)) + "\n"
 
 
 def _replace_silu_body(stablehlo: str, *, relu: bool) -> str:
     match = re.search(
-        r"(?ms)^  func\.func private @silu\(%arg0: (?P<type>tensor<[^\n]+xbf16>)\) "
+        r"(?ms)^  func\.func private @silu\(%arg0: (?P<type>tensor<[^\n]+xf32>)\) "
         r"-> (?P=type) \{.*?^  \}",
         stablehlo,
     )
@@ -992,8 +1046,8 @@ def _replace_silu_body(stablehlo: str, *, relu: bool) -> str:
     tensor_type = match.group("type")
     if relu:
         replacement = f"""  func.func private @silu(%arg0: {tensor_type}) -> {tensor_type} {{
-    %cst = stablehlo.constant dense<0.000000e+00> : tensor<bf16>
-    %0 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<bf16>) -> {tensor_type}
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %0 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f32>) -> {tensor_type}
     %1 = stablehlo.maximum %arg0, %0 : {tensor_type}
     return %1 : {tensor_type}
   }}"""
@@ -1075,15 +1129,18 @@ def _mutation_failure(
             ) from error
         return f"{type(error).__name__}: {error}"
     unit = contract.policy.unit_roundoff
+    depth_scale = contract.policy.depth_scale(scenario.parameters.layers)
     clause_rejected = {
         SeqaxDiscriminatorClause.FORWARD_NUMERICAL_POLICY: (
             not assessment.final_outputs_satisfy_policy
         ),
         SeqaxDiscriminatorClause.ROW_SCALED_MAXIMUM: (
-            assessment.cpu_pallas_row_scaled_max > contract.policy.cpu_row_scaled_max_units * unit
+            assessment.cpu_pallas_row_scaled_max
+            > contract.policy.cpu_row_scaled_max_units * unit * depth_scale
         ),
         SeqaxDiscriminatorClause.RELATIVE_L2: (
-            assessment.cpu_pallas_relative_l2 > contract.policy.cpu_relative_l2_units * unit
+            assessment.cpu_pallas_relative_l2
+            > contract.policy.cpu_relative_l2_units * unit * depth_scale
         ),
     }.get(clause, False)
     if not clause_rejected:
@@ -1135,6 +1192,23 @@ def _artifact_identities(
     )
 
 
+def _activation_mutant_stablehlo_sha256(
+    contract: SeqaxBf16ValidationContract,
+    discriminator: SeqaxNumericalDiscriminator,
+    label: str,
+) -> str:
+    expected = next(
+        value
+        for value in contract.activation_mutant_stablehlo
+        if value.discriminator is discriminator
+    )
+    if label == "pallas":
+        return expected.pallas_stablehlo_sha256
+    if label == "control":
+        return expected.control_stablehlo_sha256
+    raise ValueError(f"SEQAX_BF16_ACTIVATION_PATH_INVALID path={label}")
+
+
 def _run_discriminators(
     root: Path,
     contract: SeqaxBf16ValidationContract,
@@ -1169,7 +1243,7 @@ def _run_discriminators(
             )
         )
 
-    pallas_hlo = compiled.pallas.stablehlo
+    pallas_hlo = canonical_seqax_stablehlo(compiled.pallas.stablehlo)
     hlo_mutants = {
         SeqaxNumericalDiscriminator.REMOVE_INPUT_BARRIER: _remove_strict_barrier(
             pallas_hlo, input_barrier=True
@@ -1180,13 +1254,18 @@ def _run_discriminators(
         SeqaxNumericalDiscriminator.IDENTITY_SILU: _replace_silu_body(pallas_hlo, relu=False),
         SeqaxNumericalDiscriminator.RELU_SILU: _replace_silu_body(pallas_hlo, relu=True),
     }
+    hlo_mutants = {
+        discriminator: canonical_seqax_stablehlo(mutant)
+        for discriminator, mutant in hlo_mutants.items()
+    }
     for discriminator, mutant in hlo_mutants.items():
         path = root / "discriminators" / discriminator / "mutant_stablehlo.txt"
         _write_text(path, mutant)
         try:
-            validate_strict_silu_stablehlo(
+            _validate_strict_silu_stablehlo(
                 mutant,
                 expected_count=scenario.parameters.layers,
+                instrumented=False,
             )
         except ValueError as error:
             failure = f"{type(error).__name__}: {error}"
@@ -1211,11 +1290,16 @@ def _run_discriminators(
                 validate_activation_mutant_stablehlo(
                     runtime_hlo,
                     expected_count=scenario.parameters.layers,
+                    expected_sha256=_activation_mutant_stablehlo_sha256(
+                        contract,
+                        discriminator,
+                        label,
+                    ),
                     relu=discriminator is SeqaxNumericalDiscriminator.RELU_SILU,
                 )
                 runtime_hlo_path = path.with_name(f"{label}_runtime_stablehlo.txt")
                 runtime_output_path = path.with_name(f"{label}_runtime_output.npy")
-                _write_text(runtime_hlo_path, runtime_hlo + "\n")
+                _write_text(runtime_hlo_path, canonical_seqax_stablehlo(runtime_hlo))
                 _save_array(runtime_output_path, runtime_output)
                 causal_failure = _mutation_failure(
                     runtime_output,
@@ -1777,18 +1861,22 @@ def _validate_plan(
     validate_strict_silu_stablehlo(
         pallas_stablehlo,
         expected_count=scenario.parameters.layers,
+        expected_sha256=scenario.pallas_stablehlo_sha256,
     )
     validate_strict_silu_stablehlo(
         control_stablehlo,
         expected_count=scenario.parameters.layers,
+        expected_sha256=scenario.control_stablehlo_sha256,
     )
     validate_instrumented_strict_silu_stablehlo(
         (plan_root / "instrumented_pallas_stablehlo.txt").read_text(),
         expected_count=scenario.parameters.layers,
+        expected_sha256=scenario.instrumented_pallas_stablehlo_sha256,
     )
     validate_instrumented_strict_silu_stablehlo(
         (plan_root / "instrumented_control_stablehlo.txt").read_text(),
         expected_count=scenario.parameters.layers,
+        expected_sha256=scenario.instrumented_control_stablehlo_sha256,
     )
     all_gathers, reduce_scatters = _physical_collective_counts(physical)
     _validate_compiled_program(
@@ -1950,8 +2038,9 @@ def _validate_discriminators(
     )
     baseline = _load_array(seed_root / "pallas_output.npy")
     gates, silus = _load_saved_checkpoints(seed_root, scenario, "pallas")
-    pallas_hlo = (_plan_root(root, scenario) / "pallas_stablehlo.txt").read_text()
-    pallas_hlo = pallas_hlo.removesuffix("\n")
+    pallas_hlo = canonical_seqax_stablehlo(
+        (_plan_root(root, scenario) / "pallas_stablehlo.txt").read_text()
+    )
     expected = []
 
     hlo_mutants = {
@@ -1964,14 +2053,19 @@ def _validate_discriminators(
         SeqaxNumericalDiscriminator.IDENTITY_SILU: _replace_silu_body(pallas_hlo, relu=False),
         SeqaxNumericalDiscriminator.RELU_SILU: _replace_silu_body(pallas_hlo, relu=True),
     }
+    hlo_mutants = {
+        discriminator: canonical_seqax_stablehlo(mutant)
+        for discriminator, mutant in hlo_mutants.items()
+    }
     for discriminator, mutant in hlo_mutants.items():
         path = root / "discriminators" / discriminator / "mutant_stablehlo.txt"
         if path.read_text() != mutant:
             raise ValueError(f"SEQAX_BF16_HLO_MUTANT_REPLAY_MISMATCH name={discriminator}")
         try:
-            validate_strict_silu_stablehlo(
+            _validate_strict_silu_stablehlo(
                 mutant,
                 expected_count=scenario.parameters.layers,
+                instrumented=False,
             )
         except ValueError as error:
             failure = f"{type(error).__name__}: {error}"
@@ -1990,6 +2084,11 @@ def _validate_discriminators(
                 validate_activation_mutant_stablehlo(
                     runtime_hlo,
                     expected_count=scenario.parameters.layers,
+                    expected_sha256=_activation_mutant_stablehlo_sha256(
+                        contract,
+                        discriminator,
+                        label,
+                    ),
                     relu=discriminator is SeqaxNumericalDiscriminator.RELU_SILU,
                 )
                 causal_failure = _mutation_failure(

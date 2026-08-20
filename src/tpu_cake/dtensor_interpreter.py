@@ -71,6 +71,10 @@ class _ExecutionSemantics:
 _LOGICAL_SEMANTICS = _ExecutionSemantics()
 
 
+def _strict_typed_silu(value: jax.Array) -> jax.Array:
+    return jax.nn.silu(value.astype(jnp.float32)).astype(value.dtype)
+
+
 def _axis_name(axes: tuple[str, ...]):
     if not axes:
         raise UnsupportedInterpretationError("collective needs at least one mesh axis")
@@ -357,7 +361,11 @@ def _execute_block(
             elif function == "multiply":
                 result = values[0] * values[1]
             elif function == "silu":
-                result = jax.nn.silu(values[0])
+                result = (
+                    _strict_typed_silu(values[0])
+                    if strict_materialization
+                    else jax.nn.silu(values[0])
+                )
             elif function == "silu_multiply":
                 result = jax.nn.silu(values[0]) * values[1]
             elif function == "exp":

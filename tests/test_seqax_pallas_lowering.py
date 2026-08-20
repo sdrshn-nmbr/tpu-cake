@@ -395,9 +395,10 @@ import numpy as np
 
 from tpu_cake.seqax_pallas_lowering import _einsum_tiles, lower_seqax_physical_to_pallas
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
+from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
 from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
 from tpu_cake.seqax_numerical import _validate_strict_silu_stablehlo
-from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs, seqax_forward_reference
+from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
 
 parameters = {
     "batch": 2,
@@ -440,6 +441,7 @@ namespace = {}
 exec(compile(source, "<seqax-physical-pallas>", "exec"), namespace)
 assert namespace["PLAN"].manifest() == plan.manifest()
 executable, mesh = namespace["build"](interpret=True, devices=devices)
+control, _control_mesh = lower_distributed_program_to_jax_mesh(distributed).build(devices=devices)
 inputs = seqax_forward_inputs(seed=9173, **parameters)
 arrays = tuple(jnp.asarray(value) for value in inputs)
 stablehlo = str(executable.lower(*arrays).compiler_ir("stablehlo"))
@@ -450,11 +452,17 @@ _validate_strict_silu_stablehlo(
     allow_callbacks=True,
 )
 (actual,) = executable(*arrays)
+(control_actual,) = control(*arrays)
 actual.block_until_ready()
-expected = seqax_forward_reference(inputs, **parameters)
-np.testing.assert_allclose(np.asarray(actual), expected, rtol=5e-2, atol=6e-3)
+control_actual.block_until_ready()
+np.testing.assert_allclose(
+    np.asarray(actual),
+    np.asarray(control_actual),
+    rtol=0.0,
+    atol=1e-6,
+)
 assert mesh.shape == {"d": 2, "t": 4}
-print(float(np.max(np.abs(np.asarray(actual) - expected))))
+print(float(np.max(np.abs(np.asarray(actual) - np.asarray(control_actual)))))
 """
     environment = os.environ.copy()
     environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"

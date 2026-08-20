@@ -15,6 +15,7 @@ from tpu_cake.seqax_numerical import (
     SeqaxDiscriminatorClause,
     SeqaxNumericalDiscriminator,
     default_seqax_bf16_validation_contract,
+    seqax_stablehlo_sha256,
     validate_strict_silu_stablehlo,
 )
 from tpu_cake.seqax_numerical_runner import (
@@ -38,28 +39,35 @@ from tpu_cake.workloads.seqax_oracle import (
 _STRICT_HLO = """module {
   func.func public @main(%arg0: tensor<1x4xbf16>, %other: tensor<1x4xbf16>) -> tensor<1x4xbf16> {
     %0 = stablehlo.optimization_barrier %arg0 : tensor<1x4xbf16>
-    %1 = func.call @silu(%0) : (tensor<1x4xbf16>) -> tensor<1x4xbf16>
-    %2 = stablehlo.optimization_barrier %1 : tensor<1x4xbf16>
+    %promoted = stablehlo.convert %0 : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+    %1 = func.call @silu(%promoted) : (tensor<1x4xf32>) -> tensor<1x4xf32>
+    %rounded = stablehlo.convert %1 : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+    %2 = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
     %3 = stablehlo.multiply %other, %2 : tensor<1x4xbf16>
     return %3 : tensor<1x4xbf16>
   }
-  func.func private @silu(%arg0: tensor<1x4xbf16>) -> tensor<1x4xbf16> {
-    %0 = stablehlo.negate %arg0 : tensor<1x4xbf16>
-    %1 = stablehlo.exponential %0 : tensor<1x4xbf16>
-    %cst = stablehlo.constant dense<1.000000e+00> : tensor<bf16>
-    %2 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<bf16>) -> tensor<1x4xbf16>
-    %3 = stablehlo.add %2, %1 : tensor<1x4xbf16>
-    %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<bf16>
-    %4 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<bf16>) -> tensor<1x4xbf16>
-    %5 = stablehlo.divide %4, %3 : tensor<1x4xbf16>
-    %6 = stablehlo.multiply %arg0, %5 : tensor<1x4xbf16>
-    return %6 : tensor<1x4xbf16>
+  func.func private @silu(%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {
+    %0 = stablehlo.negate %arg0 : tensor<1x4xf32>
+    %1 = stablehlo.exponential %0 : tensor<1x4xf32>
+    %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+    %2 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f32>) -> tensor<1x4xf32>
+    %3 = stablehlo.add %2, %1 : tensor<1x4xf32>
+    %cst_0 = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+    %4 = stablehlo.broadcast_in_dim %cst_0, dims = [] : (tensor<f32>) -> tensor<1x4xf32>
+    %5 = stablehlo.divide %4, %3 : tensor<1x4xf32>
+    %6 = stablehlo.multiply %arg0, %5 : tensor<1x4xf32>
+    return %6 : tensor<1x4xf32>
   }
 }"""
 
 
 def test_runner_hlo_discriminators_mutate_the_real_strict_chain() -> None:
-    validate_strict_silu_stablehlo(_STRICT_HLO, expected_count=1)
+    expected_sha256 = seqax_stablehlo_sha256(_STRICT_HLO)
+    validate_strict_silu_stablehlo(
+        _STRICT_HLO,
+        expected_count=1,
+        expected_sha256=expected_sha256,
+    )
     mutants = (
         _remove_strict_barrier(_STRICT_HLO, input_barrier=True),
         _remove_strict_barrier(_STRICT_HLO, input_barrier=False),
@@ -69,7 +77,11 @@ def test_runner_hlo_discriminators_mutate_the_real_strict_chain() -> None:
 
     for mutant in mutants:
         with pytest.raises(ValueError):
-            validate_strict_silu_stablehlo(mutant, expected_count=1)
+            validate_strict_silu_stablehlo(
+                mutant,
+                expected_count=1,
+                expected_sha256=expected_sha256,
+            )
     assert "stablehlo.maximum" in mutants[-1]
     assert "func.call @silu" in mutants[-1]
 
@@ -79,10 +91,14 @@ def test_instrumented_control_returns_global_checkpoints_on_eight_devices() -> N
 import jax
 import numpy as np
 import re
+import tempfile
+from pathlib import Path
 
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
 from tpu_cake.seqax_numerical import (
+    canonical_seqax_stablehlo,
     default_seqax_bf16_validation_contract,
+    seqax_stablehlo_sha256,
     validate_instrumented_strict_silu_stablehlo,
 )
 from tpu_cake.seqax_numerical_runner import (
@@ -110,10 +126,15 @@ compiled = _compile_instrumented_control(
     devices,
     expected_layers=parameters["layers"],
 )
-validate_instrumented_strict_silu_stablehlo(
-    compiled.stablehlo,
-    expected_count=parameters["layers"],
-)
+with tempfile.TemporaryDirectory() as temporary:
+    stablehlo_path = Path(temporary) / "instrumented_stablehlo.txt"
+    stablehlo_path.write_text(canonical_seqax_stablehlo(compiled.stablehlo))
+    replayed_stablehlo = stablehlo_path.read_text()
+    validate_instrumented_strict_silu_stablehlo(
+        replayed_stablehlo,
+        expected_count=parameters["layers"],
+        expected_sha256=seqax_stablehlo_sha256(compiled.stablehlo),
+    )
 checkpoint_return = next(
     line for line in compiled.stablehlo.splitlines()
     if "sdy.return" in line and line.count("xbf16") == 4
@@ -133,6 +154,7 @@ try:
     validate_instrumented_strict_silu_stablehlo(
         mutant,
         expected_count=parameters["layers"],
+        expected_sha256=seqax_stablehlo_sha256(compiled.stablehlo),
     )
 except ValueError:
     pass
@@ -150,6 +172,7 @@ try:
     validate_instrumented_strict_silu_stablehlo(
         mutant,
         expected_count=parameters["layers"],
+        expected_sha256=seqax_stablehlo_sha256(compiled.stablehlo),
     )
 except ValueError:
     pass
@@ -688,6 +711,7 @@ from pathlib import Path
 
 import numpy as np
 
+import tpu_cake.seqax_numerical as numerical
 import tpu_cake.seqax_numerical_runner as runner
 from tpu_cake.contracts import RuntimeIdentity, SourceFileContract
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
@@ -859,6 +883,7 @@ runner._runtime = runtime
 runner._device_inventory = device_inventory
 runner._require_clean_repository = lambda root: None
 runner._validate_compiled_program = lambda *args, **kwargs: None
+numerical._require_stablehlo_identity = lambda *args, **kwargs: None
 
 contract = runner.default_seqax_bf16_validation_contract()
 temporary = Path(tempfile.mkdtemp(prefix="seqax-bf16-lifecycle-"))

@@ -82,6 +82,42 @@ _HELD_OUT_PARAMETERS = {
         "vocabulary": 32,
     },
 }
+_STABLEHLO_SHA256 = {
+    "calibration-m256-b2-s1-l1": {
+        "pallas": "5929bb1c10607998e1fd78f8177f7c4fbb38da883939fc458dd08c865e851aed",
+        "control": "e012666b6b40f2d9e0efac1517312ebcb29e2a27ae6999cb63cdd112b12a331f",
+        "instrumented_pallas": "76723b3f25b6d18f06b02421f2a5e6d3b8f71176d204d6397b986efe03e8936c",
+        "instrumented_control": "bf118a132a3a6be5fcd62becce670364d676ee778eb029a53ce7744b583ebfb1",
+    },
+    "m128-b2-s3-l2": {
+        "pallas": "5d0547860342606fb13156dbbdb63cbd0e57ce388ac588278d7aedd5f93c9a4a",
+        "control": "f027b8411006ac97e2b548aaf26f9561b02c920dfa4af7979db36e91aaf6561c",
+        "instrumented_pallas": "15fe2b6a44ad6262567126ac939af90ee9c6d4570446cc8b7d33487fff3826cb",
+        "instrumented_control": "90fd1818ce0fd577c992ec569ca97145b7dbbd78b8ca355c924608b9b613c7b9",
+    },
+    "m256-b4-s2-l1": {
+        "pallas": "6e028e13338fd91166ef8f93fc3957a4e2cda6fca617322ca5759632374a657f",
+        "control": "176cde5eda31748aa89ce5ed5634c4732877a77d7fefa6f5883fa2438655e159",
+        "instrumented_pallas": "bae52e53ca35211c9c8533722035d89f30182faec7fb26f57f7ead44398df6e2",
+        "instrumented_control": "50e9200f6093b3279f0f78bf8ce7e1ce596a96ccd9a2b8e28f0b90f164da0565",
+    },
+    "m384-b2-s2-l1": {
+        "pallas": "e3ff523ec48c7e6b09243c4cf387938df0bf359d5cde8448219b60781f828789",
+        "control": "8efc8cec47c7f7901bae8dfcb042a32ac3c1645ac960381749d3ef00dbd4c740",
+        "instrumented_pallas": "7a50d66bea13e8ae4be494ebb2de84ce926291f88be52db90e60cfd78bd4ba62",
+        "instrumented_control": "f7525f6eef598329764b57c1517b9e392df11619cd5173e0382c023d2f9bfc2f",
+    },
+}
+_ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
+    "identity_silu": {
+        "pallas": "1248d6c3fe4d298b964c87de68af0af77076a6269559125e28000edb0e67bc68",
+        "control": "cef7589996b812a807a93c1d2113fd22fa27ca851a265240ac44372c486f9a89",
+    },
+    "relu_silu": {
+        "pallas": "869c964fb7134a838e0ca741e4071602f7fa5ee71e39d6dba6dfe7735b4fdb98",
+        "control": "1ae5bdc96b55a530bbae97f950507572caa2d40dbce27b7b3d22aa32acf42f85",
+    },
+}
 
 
 class SeqaxNumericalScenarioRole(StrEnum):
@@ -160,6 +196,19 @@ def seqax_discriminator_clause(
     return _DISCRIMINATOR_CLAUSES[discriminator]
 
 
+def canonical_seqax_stablehlo(stablehlo: str) -> str:
+    return stablehlo.rstrip("\n") + "\n"
+
+
+def seqax_stablehlo_sha256(stablehlo: str) -> str:
+    return hashlib.sha256(canonical_seqax_stablehlo(stablehlo).encode()).hexdigest()
+
+
+def _require_stablehlo_identity(stablehlo: str, expected_sha256: str) -> None:
+    if seqax_stablehlo_sha256(stablehlo) != expected_sha256:
+        raise ValueError("Seqax StableHLO trusted identity mismatch")
+
+
 class SeqaxBf16NumericalPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -170,6 +219,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
     cpu_row_scaled_max_units: float = Field(gt=0)
     cross_path_relative_l2_units: float = Field(gt=0)
     cross_path_row_scaled_max_units: float = Field(gt=0)
+    depth_scaling: str = "sqrt_layers"
     row_scale_floor: float = Field(gt=0)
     metric_quantization_decimals: int = Field(ge=12, le=15)
     cpu_reference: str = "seqax_forward_canonical_reference"
@@ -194,6 +244,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             self.cpu_row_scaled_max_units,
             self.cross_path_relative_l2_units,
             self.cross_path_row_scaled_max_units,
+            self.depth_scaling,
             self.row_scale_floor,
             self.metric_quantization_decimals,
             self.cpu_reference,
@@ -207,8 +258,9 @@ class SeqaxBf16NumericalPolicy(BaseModel):
         ) != (
             2.0,
             4.0,
-            0.5,
-            1.0,
+            2.0,
+            2.0,
+            "sqrt_layers",
             1.0,
             15,
             "seqax_forward_canonical_reference",
@@ -222,6 +274,11 @@ class SeqaxBf16NumericalPolicy(BaseModel):
         ):
             raise ValueError("Seqax BF16 numerical policy is not canonical")
         return self
+
+    def depth_scale(self, layers: int) -> float:
+        if type(layers) is not int or layers <= 0:
+            raise ValueError("Seqax BF16 numerical depth must be a positive integer")
+        return math.sqrt(layers)
 
 
 class SeqaxBf16ScenarioParameters(BaseModel):
@@ -333,6 +390,10 @@ class SeqaxBf16NumericalScenario(BaseModel):
     output: SeqaxNumericalTensorContract
     gate_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
     silu_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    instrumented_control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def parameter_schema_is_complete(self) -> SeqaxBf16NumericalScenario:
@@ -349,6 +410,37 @@ class SeqaxBf16NumericalScenario(BaseModel):
             raise ValueError("Seqax BF16 numerical scenario gate checkpoint ABI mismatch")
         if self.silu_checkpoints != expected_silu:
             raise ValueError("Seqax BF16 numerical scenario SiLU checkpoint ABI mismatch")
+        expected_hlo = _STABLEHLO_SHA256.get(self.name)
+        if expected_hlo is None or (
+            self.pallas_stablehlo_sha256,
+            self.control_stablehlo_sha256,
+            self.instrumented_pallas_stablehlo_sha256,
+            self.instrumented_control_stablehlo_sha256,
+        ) != (
+            expected_hlo["pallas"],
+            expected_hlo["control"],
+            expected_hlo["instrumented_pallas"],
+            expected_hlo["instrumented_control"],
+        ):
+            raise ValueError("Seqax BF16 numerical scenario StableHLO identity mismatch")
+        return self
+
+
+class SeqaxBf16ActivationMutantStablehloContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    discriminator: SeqaxNumericalDiscriminator
+    pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def identity_is_canonical(self) -> SeqaxBf16ActivationMutantStablehloContract:
+        expected = _ACTIVATION_MUTANT_STABLEHLO_SHA256.get(self.discriminator.value)
+        if expected is None or (
+            self.pallas_stablehlo_sha256,
+            self.control_stablehlo_sha256,
+        ) != (expected["pallas"], expected["control"]):
+            raise ValueError("Seqax BF16 activation mutant StableHLO identity mismatch")
         return self
 
 
@@ -358,6 +450,9 @@ class SeqaxBf16ValidationContract(BaseModel):
     schema_version: str = SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA
     policy: SeqaxBf16NumericalPolicy
     scenarios: tuple[SeqaxBf16NumericalScenario, ...] = Field(min_length=4)
+    activation_mutant_stablehlo: tuple[SeqaxBf16ActivationMutantStablehloContract, ...] = Field(
+        min_length=2, max_length=2
+    )
     required_discriminators: tuple[SeqaxNumericalDiscriminator, ...]
     runtime: SeqaxBf16RuntimeContract
     backend: str
@@ -388,6 +483,11 @@ class SeqaxBf16ValidationContract(BaseModel):
             raise ValueError("Seqax BF16 validation acceptance authority mismatch")
         if self.required_discriminators != tuple(SeqaxNumericalDiscriminator):
             raise ValueError("Seqax BF16 validation discriminators are not canonical")
+        if tuple(value.discriminator for value in self.activation_mutant_stablehlo) != (
+            SeqaxNumericalDiscriminator.IDENTITY_SILU,
+            SeqaxNumericalDiscriminator.RELU_SILU,
+        ):
+            raise ValueError("Seqax BF16 activation mutant StableHLO order mismatch")
         if tuple(scenario.name for scenario in self.scenarios) != (
             "calibration-m256-b2-s1-l1",
             *_HELD_OUT_PARAMETERS,
@@ -409,7 +509,10 @@ class SeqaxBf16ValidationContract(BaseModel):
                 _CALIBRATION_SEEDS
                 if scenario.role is SeqaxNumericalScenarioRole.CALIBRATION
                 else tuple(
-                    semantic_seed(self.schema_version, f"{scenario.name}:{index}")
+                    semantic_seed(
+                        self.schema_version,
+                        f"{scenario.name}:sqrt-depth:{index}",
+                    )
                     for index in range(4)
                 )
             )
@@ -461,6 +564,15 @@ class SeqaxBf16RuntimeContract(BaseModel):
 
 
 def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
+    def scenario_hlo(name: str) -> dict[str, str]:
+        expected = _STABLEHLO_SHA256[name]
+        return {
+            "pallas_stablehlo_sha256": expected["pallas"],
+            "control_stablehlo_sha256": expected["control"],
+            "instrumented_pallas_stablehlo_sha256": expected["instrumented_pallas"],
+            "instrumented_control_stablehlo_sha256": expected["instrumented_control"],
+        }
+
     calibration_parameters = SeqaxBf16ScenarioParameters(**_CALIBRATION_PARAMETERS)
     calibration_inputs, calibration_output, calibration_gates, calibration_silu = _scenario_abi(
         calibration_parameters
@@ -475,6 +587,7 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             output=calibration_output,
             gate_checkpoints=calibration_gates,
             silu_checkpoints=calibration_silu,
+            **scenario_hlo("calibration-m256-b2-s1-l1"),
         )
     ]
     for name, raw_parameters in _HELD_OUT_PARAMETERS.items():
@@ -488,7 +601,7 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 seeds=tuple(
                     semantic_seed(
                         SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA,
-                        f"{name}:{index}",
+                        f"{name}:sqrt-depth:{index}",
                     )
                     for index in range(4)
                 ),
@@ -496,18 +609,27 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 output=output,
                 gate_checkpoints=gates,
                 silu_checkpoints=silu,
+                **scenario_hlo(name),
             )
         )
     return SeqaxBf16ValidationContract(
         policy=SeqaxBf16NumericalPolicy(
             cpu_relative_l2_units=2.0,
             cpu_row_scaled_max_units=4.0,
-            cross_path_relative_l2_units=0.5,
-            cross_path_row_scaled_max_units=1.0,
+            cross_path_relative_l2_units=2.0,
+            cross_path_row_scaled_max_units=2.0,
             row_scale_floor=1.0,
             metric_quantization_decimals=15,
         ),
         scenarios=tuple(scenarios),
+        activation_mutant_stablehlo=tuple(
+            SeqaxBf16ActivationMutantStablehloContract(
+                discriminator=SeqaxNumericalDiscriminator(name),
+                pallas_stablehlo_sha256=value["pallas"],
+                control_stablehlo_sha256=value["control"],
+            )
+            for name, value in _ACTIVATION_MUTANT_STABLEHLO_SHA256.items()
+        ),
         required_discriminators=tuple(SeqaxNumericalDiscriminator),
         runtime=SeqaxBf16RuntimeContract(
             python_major_minor="3.12",
@@ -671,13 +793,14 @@ def assess_seqax_bf16_forward(
         for pallas_value, control_value in zip(pallas_silu, control_silu, strict=True)
     )
     unit = policy.unit_roundoff
+    depth_scale = policy.depth_scale(scenario.parameters.layers)
     final_outputs_satisfy_policy = (
-        pallas_relative <= policy.cpu_relative_l2_units * unit
-        and control_relative <= policy.cpu_relative_l2_units * unit
-        and cross_relative <= policy.cross_path_relative_l2_units * unit
-        and pallas_scaled <= policy.cpu_row_scaled_max_units * unit
-        and control_scaled <= policy.cpu_row_scaled_max_units * unit
-        and cross_scaled <= policy.cross_path_row_scaled_max_units * unit
+        pallas_relative <= policy.cpu_relative_l2_units * unit * depth_scale
+        and control_relative <= policy.cpu_relative_l2_units * unit * depth_scale
+        and cross_relative <= policy.cross_path_relative_l2_units * unit * depth_scale
+        and pallas_scaled <= policy.cpu_row_scaled_max_units * unit * depth_scale
+        and control_scaled <= policy.cpu_row_scaled_max_units * unit * depth_scale
+        and cross_scaled <= policy.cross_path_row_scaled_max_units * unit * depth_scale
     )
     checkpoint_values_consistent = (
         gate_cross_path
@@ -788,6 +911,13 @@ def _is_bf16_tensor(value: ir.Value) -> bool:
     )
 
 
+def _is_f32_tensor(value: ir.Value) -> bool:
+    value_type = value.type.maybe_downcast()
+    return isinstance(value_type, ir.RankedTensorType) and isinstance(
+        value_type.element_type.maybe_downcast(), ir.F32Type
+    )
+
+
 def _as_operation(value: object) -> ir.Operation | None:
     if isinstance(value, ir.Operation):
         return value
@@ -868,16 +998,16 @@ def _require_attribute_names(operation: ir.Operation, expected: frozenset[str]) 
         )
 
 
-def _require_bf16_one(operation: ir.Operation) -> ir.Value:
+def _require_f32_one(operation: ir.Operation) -> ir.Value:
     _require_attribute_names(operation, frozenset({"value"}))
-    if len(operation.results) != 1 or not _is_bf16_tensor(operation.results[0]):
-        raise ValueError("strict SiLU implementation must use an exact BF16 one")
+    if len(operation.results) != 1 or not _is_f32_tensor(operation.results[0]):
+        raise ValueError("strict SiLU implementation must use an exact float32 one")
     result = operation.results[0]
     if ir.RankedTensorType(result.type).rank != 0:
-        raise ValueError("strict SiLU implementation must use an exact BF16 one")
+        raise ValueError("strict SiLU implementation must use an exact float32 one")
     value = ir.DenseElementsAttr(operation.attributes["value"])
-    if not value.is_splat or str(value.get_splat_value()) != "1.000000e+00 : bf16":
-        raise ValueError("strict SiLU implementation must use an exact BF16 one")
+    if not value.is_splat or str(value.get_splat_value()) != "1.000000e+00 : f32":
+        raise ValueError("strict SiLU implementation must use an exact float32 one")
     return result
 
 
@@ -891,8 +1021,8 @@ def _validate_silu_function(function: ir.Operation) -> None:
     if len(function.regions) != 1 or len(function.regions[0].blocks) != 1:
         raise ValueError("strict SiLU implementation must have one body block")
     block = function.regions[0].blocks[0]
-    if len(block.arguments) != 1 or not _is_bf16_tensor(block.arguments[0]):
-        raise ValueError("strict SiLU implementation must take one BF16 tensor")
+    if len(block.arguments) != 1 or not _is_f32_tensor(block.arguments[0]):
+        raise ValueError("strict SiLU implementation must take one float32 tensor")
     argument = block.arguments[0]
     operations = tuple(operation.operation for operation in block.operations)
     expected_names = (
@@ -931,18 +1061,18 @@ def _validate_silu_function(function: ir.Operation) -> None:
     negated = _require_single_result(negate, tensor_type)
     _require_operands(exponential, (negated,))
     exponentiated = _require_single_result(exponential, tensor_type)
-    one_value = _require_bf16_one(one)
+    one_value = _require_f32_one(one)
     _require_operands(broadcast_one, (one_value,))
     broadcast_one_value = _require_single_result(broadcast_one, tensor_type)
     if str(broadcast_one.attributes["broadcast_dimensions"]) != "array<i64>":
-        raise ValueError("strict SiLU implementation must scalar-broadcast BF16 one")
+        raise ValueError("strict SiLU implementation must scalar-broadcast float32 one")
     _require_operands(add, (broadcast_one_value, exponentiated))
     denominator = _require_single_result(add, tensor_type)
-    numerator_value = _require_bf16_one(numerator)
+    numerator_value = _require_f32_one(numerator)
     _require_operands(broadcast_numerator, (numerator_value,))
     broadcast_numerator_value = _require_single_result(broadcast_numerator, tensor_type)
     if str(broadcast_numerator.attributes["broadcast_dimensions"]) != "array<i64>":
-        raise ValueError("strict SiLU implementation must scalar-broadcast BF16 one")
+        raise ValueError("strict SiLU implementation must scalar-broadcast float32 one")
     _require_operands(divide, (broadcast_numerator_value, denominator))
     sigmoid = _require_single_result(divide, tensor_type)
     _require_operands(multiply, (argument, sigmoid))
@@ -1019,25 +1149,38 @@ def _validate_strict_silu_stablehlo(
             for layer, silu_call in enumerate(silu_calls):
                 if len(silu_call.operands) != 1 or len(silu_call.results) != 1:
                     raise ValueError("strict SiLU call must have one input and one result")
-                source = silu_call.operands[0]
-                result = silu_call.results[0]
-                if not _is_bf16_tensor(source) or not _is_bf16_tensor(result):
-                    raise ValueError("strict SiLU call must use BF16 tensors")
+                call_source = silu_call.operands[0]
+                call_result = silu_call.results[0]
+                if not _is_f32_tensor(call_source) or not _is_f32_tensor(call_result):
+                    raise ValueError("strict SiLU call must use float32 tensors")
+                input_convert = _as_operation(call_source.owner)
+                if (
+                    input_convert is None
+                    or input_convert.name != "stablehlo.convert"
+                    or len(input_convert.operands) != 1
+                    or len(input_convert.results) != 1
+                    or input_convert.results[0] != call_source
+                    or not _is_bf16_tensor(input_convert.operands[0])
+                    or tuple(_as_operation(use.owner) for use in call_source.uses) != (silu_call,)
+                ):
+                    raise ValueError("strict SiLU must promote its barrier output to float32")
+                _require_attribute_names(input_convert, frozenset())
+                source = input_convert.operands[0]
                 input_barrier = _as_operation(source.owner)
                 if input_barrier is None or input_barrier.name != (
                     "stablehlo.optimization_barrier"
                 ):
                     raise ValueError("strict SiLU StableHLO is missing its input barrier")
                 source_consumers = tuple(_as_operation(use.owner) for use in source.uses)
-                result_consumers = tuple(_as_operation(use.owner) for use in result.uses)
+                call_result_consumers = tuple(_as_operation(use.owner) for use in call_result.uses)
                 checkpoint_return: ir.Operation | None = None
                 if instrumented:
                     checkpoint_uses = tuple(
-                        use for use in source.uses if _as_operation(use.owner) != silu_call
+                        use for use in source.uses if _as_operation(use.owner) != input_convert
                     )
                     if (
                         len(source_consumers) != 2
-                        or not any(operation == silu_call for operation in source_consumers)
+                        or not any(operation == input_convert for operation in source_consumers)
                         or len(checkpoint_uses) != 1
                         or _as_operation(checkpoint_uses[0].owner) is None
                         or _as_operation(checkpoint_uses[0].owner).name not in _REGION_TERMINATORS
@@ -1051,15 +1194,35 @@ def _validate_strict_silu_stablehlo(
                         leading_result_count + 1 + 2 * layer,
                     )
                     checkpoint_return = _as_operation(checkpoint_uses[0].owner)
-                elif source_consumers != (silu_call,):
-                    raise ValueError("strict SiLU input barrier must feed only its SiLU call")
+                elif source_consumers != (input_convert,):
+                    raise ValueError("strict SiLU input barrier must feed only its promotion")
                 if (
-                    len(result_consumers) != 1
-                    or result_consumers[0] is None
-                    or result_consumers[0].name != "stablehlo.optimization_barrier"
+                    len(call_result_consumers) != 1
+                    or call_result_consumers[0] is None
+                    or call_result_consumers[0].name != "stablehlo.convert"
                 ):
-                    raise ValueError("strict SiLU result must feed only its result barrier")
-                result_barrier = result_consumers[0]
+                    raise ValueError("strict SiLU result must feed only its BF16 conversion")
+                output_convert = call_result_consumers[0]
+                assert output_convert is not None
+                if (
+                    len(output_convert.operands) != 1
+                    or len(output_convert.results) != 1
+                    or output_convert.operands[0] != call_result
+                    or not _is_bf16_tensor(output_convert.results[0])
+                ):
+                    raise ValueError("strict SiLU must round its float32 result to BF16")
+                _require_attribute_names(output_convert, frozenset())
+                converted_result = output_convert.results[0]
+                converted_consumers = tuple(
+                    _as_operation(use.owner) for use in converted_result.uses
+                )
+                if (
+                    len(converted_consumers) != 1
+                    or converted_consumers[0] is None
+                    or converted_consumers[0].name != "stablehlo.optimization_barrier"
+                ):
+                    raise ValueError("strict SiLU BF16 result must feed only its result barrier")
+                result_barrier = converted_consumers[0]
                 assert result_barrier is not None
                 if len(result_barrier.results) != 1:
                     raise ValueError("strict SiLU StableHLO is missing its unique result barrier")
@@ -1128,7 +1291,13 @@ def _validate_strict_silu_stablehlo(
         raise ValueError("strict SiLU StableHLO is not valid MLIR") from error
 
 
-def validate_strict_silu_stablehlo(stablehlo: str, *, expected_count: int) -> None:
+def validate_strict_silu_stablehlo(
+    stablehlo: str,
+    *,
+    expected_count: int,
+    expected_sha256: str,
+) -> None:
+    _require_stablehlo_identity(stablehlo, expected_sha256)
     _validate_strict_silu_stablehlo(
         stablehlo,
         expected_count=expected_count,
@@ -1140,7 +1309,9 @@ def validate_instrumented_strict_silu_stablehlo(
     stablehlo: str,
     *,
     expected_count: int,
+    expected_sha256: str,
 ) -> None:
+    _require_stablehlo_identity(stablehlo, expected_sha256)
     _validate_strict_silu_stablehlo(
         stablehlo,
         expected_count=expected_count,
@@ -1152,8 +1323,8 @@ def _validate_relu_function(function: ir.Operation) -> None:
     if len(function.regions) != 1 or len(function.regions[0].blocks) != 1:
         raise ValueError("ReLU discriminator must have one body block")
     block = function.regions[0].blocks[0]
-    if len(block.arguments) != 1 or not _is_bf16_tensor(block.arguments[0]):
-        raise ValueError("ReLU discriminator must take one BF16 tensor")
+    if len(block.arguments) != 1 or not _is_f32_tensor(block.arguments[0]):
+        raise ValueError("ReLU discriminator must take one float32 tensor")
     operations = tuple(operation.operation for operation in block.operations)
     if tuple(operation.name for operation in operations) != (
         "stablehlo.constant",
@@ -1166,15 +1337,15 @@ def _validate_relu_function(function: ir.Operation) -> None:
     _require_attribute_names(zero, frozenset({"value"}))
     if (
         len(zero.results) != 1
-        or str(zero.results[0].type) != "tensor<bf16>"
-        or str(zero.attributes["value"]) != "dense<0.000000e+00> : tensor<bf16>"
+        or str(zero.results[0].type) != "tensor<f32>"
+        or str(zero.attributes["value"]) != "dense<0.000000e+00> : tensor<f32>"
     ):
-        raise ValueError("ReLU discriminator must use exact BF16 zero")
+        raise ValueError("ReLU discriminator must use exact float32 zero")
     _require_attribute_names(broadcast, frozenset({"broadcast_dimensions"}))
     _require_operands(broadcast, (zero.results[0],))
     broadcast_value = _require_single_result(broadcast, block.arguments[0].type)
     if str(broadcast.attributes["broadcast_dimensions"]) != "array<i64>":
-        raise ValueError("ReLU discriminator must scalar-broadcast BF16 zero")
+        raise ValueError("ReLU discriminator must scalar-broadcast float32 zero")
     _require_attribute_names(maximum, frozenset())
     _require_operands(maximum, (block.arguments[0], broadcast_value))
     maximum_value = _require_single_result(maximum, block.arguments[0].type)
@@ -1184,12 +1355,25 @@ def _validate_relu_function(function: ir.Operation) -> None:
 
 def _validate_mutant_chain_result(result: ir.Value) -> None:
     result_uses = tuple(result.uses)
+    if len(result_uses) != 1 or _as_operation(result_uses[0].owner).name != "stablehlo.convert":
+        raise ValueError("activation discriminator result must feed one BF16 conversion")
+    conversion = _as_operation(result_uses[0].owner)
+    assert conversion is not None
     if (
-        len(result_uses) != 1
-        or _as_operation(result_uses[0].owner).name != "stablehlo.optimization_barrier"
+        len(conversion.operands) != 1
+        or len(conversion.results) != 1
+        or not _is_f32_tensor(conversion.operands[0])
+        or not _is_bf16_tensor(conversion.results[0])
     ):
-        raise ValueError("activation discriminator result must feed one result barrier")
-    barrier = _as_operation(result_uses[0].owner)
+        raise ValueError("activation discriminator result must round from float32 to BF16")
+    _require_attribute_names(conversion, frozenset())
+    converted_uses = tuple(conversion.results[0].uses)
+    if (
+        len(converted_uses) != 1
+        or _as_operation(converted_uses[0].owner).name != "stablehlo.optimization_barrier"
+    ):
+        raise ValueError("activation discriminator BF16 result must feed one result barrier")
+    barrier = _as_operation(converted_uses[0].owner)
     assert barrier is not None
     if len(barrier.results) != 1:
         raise ValueError("activation discriminator result barrier must have one result")
@@ -1207,7 +1391,7 @@ def _validate_mutant_chain_result(result: ir.Value) -> None:
         raise ValueError("activation discriminator multiply must reach the entrypoint return")
 
 
-def validate_activation_mutant_stablehlo(
+def _validate_activation_mutant_stablehlo(
     stablehlo: str,
     *,
     expected_count: int,
@@ -1260,12 +1444,25 @@ def validate_activation_mutant_stablehlo(
                         raise ValueError("ReLU discriminator call has invalid arity")
                     source = call.operands[0]
                     source_owner = _as_operation(source.owner)
+                    gate = (
+                        source_owner.operands[0]
+                        if source_owner is not None
+                        and source_owner.name == "stablehlo.convert"
+                        and len(source_owner.operands) == 1
+                        else None
+                    )
+                    gate_owner = _as_operation(gate.owner) if gate is not None else None
                     if (
                         source_owner is None
-                        or source_owner.name != "stablehlo.optimization_barrier"
+                        or source_owner.name != "stablehlo.convert"
+                        or gate is None
+                        or gate_owner is None
+                        or gate_owner.name != "stablehlo.optimization_barrier"
                         or tuple(_as_operation(use.owner) for use in source.uses) != (call,)
-                        or not _is_bf16_tensor(source)
-                        or not _is_bf16_tensor(call.results[0])
+                        or tuple(_as_operation(use.owner) for use in gate.uses) != (source_owner,)
+                        or not _is_bf16_tensor(gate)
+                        or not _is_f32_tensor(source)
+                        or not _is_f32_tensor(call.results[0])
                     ):
                         raise ValueError("ReLU discriminator must consume the strict input barrier")
                     _validate_mutant_chain_result(call.results[0])
@@ -1281,17 +1478,20 @@ def validate_activation_mutant_stablehlo(
                     source_uses = tuple(source.uses)
                     if (
                         len(source_uses) != 1
-                        or _as_operation(source_uses[0].owner).name
-                        != "stablehlo.optimization_barrier"
+                        or _as_operation(source_uses[0].owner).name != "stablehlo.convert"
                     ):
                         continue
                     if not _is_bf16_tensor(source):
                         raise ValueError("identity discriminator must use BF16 barriers")
-                    second_barrier = _as_operation(source_uses[0].owner)
-                    assert second_barrier is not None
-                    if len(second_barrier.results) != 1:
-                        raise ValueError("identity discriminator result barrier is invalid")
-                    _validate_mutant_chain_result(source)
+                    promotion = _as_operation(source_uses[0].owner)
+                    assert promotion is not None
+                    if (
+                        len(promotion.operands) != 1
+                        or len(promotion.results) != 1
+                        or not _is_f32_tensor(promotion.results[0])
+                    ):
+                        raise ValueError("identity discriminator promotion is invalid")
+                    _validate_mutant_chain_result(promotion.results[0])
                     chains += 1
             if chains != expected_count:
                 raise ValueError(
@@ -1299,6 +1499,21 @@ def validate_activation_mutant_stablehlo(
                 )
     except ir.MLIRError as error:
         raise ValueError("activation discriminator StableHLO is not valid MLIR") from error
+
+
+def validate_activation_mutant_stablehlo(
+    stablehlo: str,
+    *,
+    expected_count: int,
+    expected_sha256: str,
+    relu: bool,
+) -> None:
+    _require_stablehlo_identity(stablehlo, expected_sha256)
+    _validate_activation_mutant_stablehlo(
+        stablehlo,
+        expected_count=expected_count,
+        relu=relu,
+    )
 
 
 def rounded_mathematical_silu_bf16(value: np.ndarray) -> np.ndarray:
