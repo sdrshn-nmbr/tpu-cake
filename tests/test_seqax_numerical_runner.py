@@ -27,6 +27,7 @@ from tpu_cake.seqax_numerical_runner import (
     _record_failure,
     _remove_strict_barrier,
     _replace_silu_body,
+    _require_compilation_source_root,
     _require_safe_root,
     _transition_or_replay,
     _write_json_atomic,
@@ -514,6 +515,11 @@ def test_runner_reuses_same_root_after_uncaught_active_run_crash(
 
     sentinel = object()
     monkeypatch.setattr(numerical_runner, "_require_clean_repository", lambda _root: None)
+    monkeypatch.setattr(
+        numerical_runner,
+        "_require_compilation_source_root",
+        lambda _root, _contract: None,
+    )
     monkeypatch.setattr(numerical_runner, "_runtime", lambda _contract: object())
     monkeypatch.setattr(numerical_runner.jax, "devices", list)
     monkeypatch.setattr(numerical_runner, "_validate_devices", lambda _devices, _contract: None)
@@ -662,6 +668,11 @@ def test_runner_retries_after_identity_publication_failure(
         original_write(path, value)
 
     monkeypatch.setattr(numerical_runner, "_require_clean_repository", lambda _root: None)
+    monkeypatch.setattr(
+        numerical_runner,
+        "_require_compilation_source_root",
+        lambda _root, _contract: None,
+    )
     monkeypatch.setattr(numerical_runner, "_runtime", lambda _contract: object())
     monkeypatch.setattr(numerical_runner.jax, "devices", list)
     monkeypatch.setattr(numerical_runner, "_validate_devices", lambda _devices, _contract: None)
@@ -698,6 +709,27 @@ def test_bf16_validation_cli_requires_external_contract() -> None:
     assert verify.command == "verify-seqax-bf16-forward"
     with pytest.raises(SystemExit):
         parser.parse_args(["verify-seqax-bf16-forward", "run"])
+
+
+def test_runner_requires_the_contract_compilation_source_root(tmp_path: Path) -> None:
+    contract = default_seqax_bf16_validation_contract()
+
+    with pytest.raises(ValueError, match="SEQAX_BF16_COMPILATION_SOURCE_ROOT_MISMATCH"):
+        _require_compilation_source_root(tmp_path, contract)
+
+
+def test_runner_rejects_a_wrong_compilation_root_before_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = default_seqax_bf16_validation_contract()
+    root = tmp_path / "run"
+    monkeypatch.setattr(numerical_runner, "_require_clean_repository", lambda _root: None)
+
+    with pytest.raises(ValueError, match="SEQAX_BF16_COMPILATION_SOURCE_ROOT_MISMATCH"):
+        numerical_runner.run_seqax_bf16_validation(root, contract)
+
+    assert not root.exists()
 
 
 def test_bf16_runner_builds_and_replays_a_relocated_receipt() -> None:
@@ -882,6 +914,7 @@ runner._source_manifest = source_manifest
 runner._runtime = runtime
 runner._device_inventory = device_inventory
 runner._require_clean_repository = lambda root: None
+runner._require_compilation_source_root = lambda root, contract: None
 runner._validate_compiled_program = lambda *args, **kwargs: None
 numerical._require_stablehlo_identity = lambda *args, **kwargs: None
 

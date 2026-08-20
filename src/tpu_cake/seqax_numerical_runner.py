@@ -1642,6 +1642,7 @@ def run_seqax_bf16_validation(
             raise ValueError("SEQAX_BF16_LOCK_MISMATCH")
         if (root / "receipt.json").exists() or (root / "receipt.json").is_symlink():
             return validate_seqax_bf16_validation(root, contract)
+        _require_compilation_source_root(repository_root, contract)
         source_commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=repository_root,
@@ -1677,6 +1678,18 @@ def run_seqax_bf16_validation(
         except Exception as error:
             _record_failure(root, run_id, error)
             raise
+
+
+def _require_compilation_source_root(
+    repository_root: Path,
+    contract: SeqaxBf16ValidationContract,
+) -> None:
+    observed = repository_root.resolve()
+    expected = Path(contract.compilation_source_root)
+    if observed != expected:
+        raise ValueError(
+            f"SEQAX_BF16_COMPILATION_SOURCE_ROOT_MISMATCH observed={observed} expected={expected}"
+        )
 
 
 def _canonical_plans(

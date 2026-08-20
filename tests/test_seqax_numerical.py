@@ -353,8 +353,9 @@ def test_bf16_forward_external_contract_is_canonical() -> None:
     )
 
     assert saved == default_seqax_bf16_validation_contract()
-    assert saved.contract_id == "78fee918dd933e1a8a01019a54ca8da91fbaf5e8e8c3d7114f4543aed8365e51"
+    assert saved.contract_id == "946cf7cca30b65d2419209bf017117909e6f51aef0c741017f1bc259cc4caa33"
     assert saved.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
+    assert saved.compilation_source_root == "/home/sudarshan/tpu-cake-main"
     assert saved.checkpoint_capture == "typed-extra-outputs-v1"
     assert saved.require_instrumented_output_parity
     assert saved.require_discriminator_artifact_replay

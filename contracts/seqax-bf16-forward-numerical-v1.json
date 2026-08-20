@@ -193,9 +193,9 @@
           "dtype": "bfloat16"
         }
       ],
-      "pallas_stablehlo_sha256": "5929bb1c10607998e1fd78f8177f7c4fbb38da883939fc458dd08c865e851aed",
+      "pallas_stablehlo_sha256": "f914d06da5716168c9ca447ef9f26b37ba84f42be6cace2860f4ab03d730425b",
       "control_stablehlo_sha256": "e012666b6b40f2d9e0efac1517312ebcb29e2a27ae6999cb63cdd112b12a331f",
-      "instrumented_pallas_stablehlo_sha256": "76723b3f25b6d18f06b02421f2a5e6d3b8f71176d204d6397b986efe03e8936c",
+      "instrumented_pallas_stablehlo_sha256": "a2af894fa96cb8e9658ecdb854d5645d79d4743f2d78abf4f26c868ebd5a4a03",
       "instrumented_control_stablehlo_sha256": "bf118a132a3a6be5fcd62becce670364d676ee778eb029a53ce7744b583ebfb1"
     },
     {
@@ -387,9 +387,9 @@
           "dtype": "bfloat16"
         }
       ],
-      "pallas_stablehlo_sha256": "5d0547860342606fb13156dbbdb63cbd0e57ce388ac588278d7aedd5f93c9a4a",
+      "pallas_stablehlo_sha256": "a48ec8246f774059681d055362912a92775b4a8b11a7d0032ba0f49ca8590b3a",
       "control_stablehlo_sha256": "f027b8411006ac97e2b548aaf26f9561b02c920dfa4af7979db36e91aaf6561c",
-      "instrumented_pallas_stablehlo_sha256": "15fe2b6a44ad6262567126ac939af90ee9c6d4570446cc8b7d33487fff3826cb",
+      "instrumented_pallas_stablehlo_sha256": "41c5bc0bd02743f70f7d16523c241b9b9637a81041e215ae730cd8ccf9b00897",
       "instrumented_control_stablehlo_sha256": "90fd1818ce0fd577c992ec569ca97145b7dbbd78b8ca355c924608b9b613c7b9"
     },
     {
@@ -563,9 +563,9 @@
           "dtype": "bfloat16"
         }
       ],
-      "pallas_stablehlo_sha256": "6e028e13338fd91166ef8f93fc3957a4e2cda6fca617322ca5759632374a657f",
+      "pallas_stablehlo_sha256": "c1e3bc28366ad47032b2b23245d5628b3dc7826cfb0200957daff685558a0029",
       "control_stablehlo_sha256": "176cde5eda31748aa89ce5ed5634c4732877a77d7fefa6f5883fa2438655e159",
-      "instrumented_pallas_stablehlo_sha256": "bae52e53ca35211c9c8533722035d89f30182faec7fb26f57f7ead44398df6e2",
+      "instrumented_pallas_stablehlo_sha256": "018e93660c463bbc7d7ce56eceee4e2f03066c3e8f5c56d1e107f95b1f630314",
       "instrumented_control_stablehlo_sha256": "50e9200f6093b3279f0f78bf8ce7e1ce596a96ccd9a2b8e28f0b90f164da0565"
     },
     {
@@ -739,21 +739,21 @@
           "dtype": "bfloat16"
         }
       ],
-      "pallas_stablehlo_sha256": "e3ff523ec48c7e6b09243c4cf387938df0bf359d5cde8448219b60781f828789",
+      "pallas_stablehlo_sha256": "6a3032320ea43d96e973e430e8290673b71448b5c0611edbf9679359d08fea34",
       "control_stablehlo_sha256": "8efc8cec47c7f7901bae8dfcb042a32ac3c1645ac960381749d3ef00dbd4c740",
-      "instrumented_pallas_stablehlo_sha256": "7a50d66bea13e8ae4be494ebb2de84ce926291f88be52db90e60cfd78bd4ba62",
+      "instrumented_pallas_stablehlo_sha256": "5c6e9f7c31449be1b3dedd2158b6025e9a8b331e592da227a17d90ad1ecaf30a",
       "instrumented_control_stablehlo_sha256": "f7525f6eef598329764b57c1517b9e392df11619cd5173e0382c023d2f9bfc2f"
     }
   ],
   "activation_mutant_stablehlo": [
     {
       "discriminator": "identity_silu",
-      "pallas_stablehlo_sha256": "1248d6c3fe4d298b964c87de68af0af77076a6269559125e28000edb0e67bc68",
+      "pallas_stablehlo_sha256": "32f83731b4e76caff7ea6f41476e38e2059aef863ccf3aefc31e651371ea150e",
       "control_stablehlo_sha256": "cef7589996b812a807a93c1d2113fd22fa27ca851a265240ac44372c486f9a89"
     },
     {
       "discriminator": "relu_silu",
-      "pallas_stablehlo_sha256": "869c964fb7134a838e0ca741e4071602f7fa5ee71e39d6dba6dfe7735b4fdb98",
+      "pallas_stablehlo_sha256": "9b266c4b2b1000a7dc52815f9881b7ddeedc99f45bfd5e89f0d0e470b077ab27",
       "control_stablehlo_sha256": "1ae5bdc96b55a530bbae97f950507572caa2d40dbce27b7b3d22aa32acf42f85"
     }
   ],
@@ -782,6 +782,7 @@
     "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true",
     "uv_lock_sha256": "7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b"
   },
+  "compilation_source_root": "/home/sudarshan/tpu-cake-main",
   "backend": "tpu",
   "device_kind": "TPU7x",
   "device_count": 8,

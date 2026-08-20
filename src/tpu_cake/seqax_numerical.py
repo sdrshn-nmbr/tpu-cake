@@ -20,6 +20,7 @@ from tpu_cake.workloads.seqax_oracle import (
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
 SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v1"
+SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _REGION_TERMINATORS = frozenset({"sdy.return", "stablehlo.return"})
 _CALIBRATION_PARAMETERS = {
     "batch": 2,
@@ -84,37 +85,37 @@ _HELD_OUT_PARAMETERS = {
 }
 _STABLEHLO_SHA256 = {
     "calibration-m256-b2-s1-l1": {
-        "pallas": "5929bb1c10607998e1fd78f8177f7c4fbb38da883939fc458dd08c865e851aed",
+        "pallas": "f914d06da5716168c9ca447ef9f26b37ba84f42be6cace2860f4ab03d730425b",
         "control": "e012666b6b40f2d9e0efac1517312ebcb29e2a27ae6999cb63cdd112b12a331f",
-        "instrumented_pallas": "76723b3f25b6d18f06b02421f2a5e6d3b8f71176d204d6397b986efe03e8936c",
+        "instrumented_pallas": "a2af894fa96cb8e9658ecdb854d5645d79d4743f2d78abf4f26c868ebd5a4a03",
         "instrumented_control": "bf118a132a3a6be5fcd62becce670364d676ee778eb029a53ce7744b583ebfb1",
     },
     "m128-b2-s3-l2": {
-        "pallas": "5d0547860342606fb13156dbbdb63cbd0e57ce388ac588278d7aedd5f93c9a4a",
+        "pallas": "a48ec8246f774059681d055362912a92775b4a8b11a7d0032ba0f49ca8590b3a",
         "control": "f027b8411006ac97e2b548aaf26f9561b02c920dfa4af7979db36e91aaf6561c",
-        "instrumented_pallas": "15fe2b6a44ad6262567126ac939af90ee9c6d4570446cc8b7d33487fff3826cb",
+        "instrumented_pallas": "41c5bc0bd02743f70f7d16523c241b9b9637a81041e215ae730cd8ccf9b00897",
         "instrumented_control": "90fd1818ce0fd577c992ec569ca97145b7dbbd78b8ca355c924608b9b613c7b9",
     },
     "m256-b4-s2-l1": {
-        "pallas": "6e028e13338fd91166ef8f93fc3957a4e2cda6fca617322ca5759632374a657f",
+        "pallas": "c1e3bc28366ad47032b2b23245d5628b3dc7826cfb0200957daff685558a0029",
         "control": "176cde5eda31748aa89ce5ed5634c4732877a77d7fefa6f5883fa2438655e159",
-        "instrumented_pallas": "bae52e53ca35211c9c8533722035d89f30182faec7fb26f57f7ead44398df6e2",
+        "instrumented_pallas": "018e93660c463bbc7d7ce56eceee4e2f03066c3e8f5c56d1e107f95b1f630314",
         "instrumented_control": "50e9200f6093b3279f0f78bf8ce7e1ce596a96ccd9a2b8e28f0b90f164da0565",
     },
     "m384-b2-s2-l1": {
-        "pallas": "e3ff523ec48c7e6b09243c4cf387938df0bf359d5cde8448219b60781f828789",
+        "pallas": "6a3032320ea43d96e973e430e8290673b71448b5c0611edbf9679359d08fea34",
         "control": "8efc8cec47c7f7901bae8dfcb042a32ac3c1645ac960381749d3ef00dbd4c740",
-        "instrumented_pallas": "7a50d66bea13e8ae4be494ebb2de84ce926291f88be52db90e60cfd78bd4ba62",
+        "instrumented_pallas": "5c6e9f7c31449be1b3dedd2158b6025e9a8b331e592da227a17d90ad1ecaf30a",
         "instrumented_control": "f7525f6eef598329764b57c1517b9e392df11619cd5173e0382c023d2f9bfc2f",
     },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
     "identity_silu": {
-        "pallas": "1248d6c3fe4d298b964c87de68af0af77076a6269559125e28000edb0e67bc68",
+        "pallas": "32f83731b4e76caff7ea6f41476e38e2059aef863ccf3aefc31e651371ea150e",
         "control": "cef7589996b812a807a93c1d2113fd22fa27ca851a265240ac44372c486f9a89",
     },
     "relu_silu": {
-        "pallas": "869c964fb7134a838e0ca741e4071602f7fa5ee71e39d6dba6dfe7735b4fdb98",
+        "pallas": "9b266c4b2b1000a7dc52815f9881b7ddeedc99f45bfd5e89f0d0e470b077ab27",
         "control": "1ae5bdc96b55a530bbae97f950507572caa2d40dbce27b7b3d22aa32acf42f85",
     },
 }
@@ -455,6 +456,7 @@ class SeqaxBf16ValidationContract(BaseModel):
     )
     required_discriminators: tuple[SeqaxNumericalDiscriminator, ...]
     runtime: SeqaxBf16RuntimeContract
+    compilation_source_root: str
     backend: str
     device_kind: str
     device_count: int = Field(gt=0)
@@ -469,6 +471,8 @@ class SeqaxBf16ValidationContract(BaseModel):
             raise ValueError("Seqax BF16 validation schema mismatch")
         if (self.backend, self.device_kind, self.device_count) != ("tpu", "TPU7x", 8):
             raise ValueError("Seqax BF16 validation hardware contract mismatch")
+        if self.compilation_source_root != SEQAX_BF16_COMPILATION_SOURCE_ROOT:
+            raise ValueError("Seqax BF16 validation compilation source root mismatch")
         if (
             self.acceptance_authority,
             self.checkpoint_capture,
@@ -640,6 +644,7 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             libtpu_init_args=" --xla_tpu_use_enhanced_launch_barrier=true",
             uv_lock_sha256="7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b",
         ),
+        compilation_source_root=SEQAX_BF16_COMPILATION_SOURCE_ROOT,
         backend="tpu",
         device_kind="TPU7x",
         device_count=8,
