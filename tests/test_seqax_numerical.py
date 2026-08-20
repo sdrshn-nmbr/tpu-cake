@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import ml_dtypes
 import numpy as np
@@ -474,15 +475,25 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
     )
 
 
-def test_bf16_forward_contract_refuses_execution_until_hlo_identities_are_pinned() -> None:
+def test_bf16_forward_contract_binds_pinned_hlo_identities() -> None:
     contract = default_seqax_bf16_validation_contract()
 
-    assert contract.hlo_identity_status == "pending"
+    assert contract.hlo_identity_status == "pinned"
     assert contract.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
     assert contract.compilation_source_root == "/home/sudarshan/tpu-cake-main"
     assert contract.checkpoint_capture == "typed-strict-mlp-extra-outputs-v3"
     assert contract.require_instrumented_output_parity
     assert contract.require_discriminator_artifact_replay
+
+
+def test_tracked_bf16_forward_contract_matches_the_canonical_factory() -> None:
+    contract = default_seqax_bf16_validation_contract()
+    path = Path("contracts/seqax-bf16-forward-numerical-v3.json")
+
+    assert SeqaxBf16ValidationContract.model_validate_json(path.read_text()) == contract
+    assert (
+        contract.contract_id == "d8b4348f4eafad97baac377817dd2fcd7dcc7393818c49a746213883297301e4"
+    )
 
 
 def test_bf16_forward_scenario_abis_match_strict_physical_plans() -> None:

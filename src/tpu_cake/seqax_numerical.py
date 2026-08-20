@@ -21,7 +21,7 @@ from tpu_cake.workloads.seqax_oracle import (
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
 SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v3"
-SEQAX_BF16_HLO_IDENTITY_STATUS = "pending"
+SEQAX_BF16_HLO_IDENTITY_STATUS = "pinned"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
 _V2_CALIBRATION_SCHEMA = "bf16-forward-numerical-v2"
@@ -197,74 +197,74 @@ _HELD_OUT_PARAMETERS = {
 }
 _STABLEHLO_SHA256 = {
     "calibration-m256-b2-s1-l1": {
-        "pallas": "f914d06da5716168c9ca447ef9f26b37ba84f42be6cace2860f4ab03d730425b",
-        "control": "e012666b6b40f2d9e0efac1517312ebcb29e2a27ae6999cb63cdd112b12a331f",
-        "instrumented_pallas": "a2af894fa96cb8e9658ecdb854d5645d79d4743f2d78abf4f26c868ebd5a4a03",
-        "instrumented_control": "bf118a132a3a6be5fcd62becce670364d676ee778eb029a53ce7744b583ebfb1",
+        "pallas": "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae",
+        "control": "05f377de78b292c90d020b8d865285c807ed2e5d3814c0b4977da09c629cffa6",
+        "instrumented_pallas": "2a3e4810bbedebd652cfbcf44b16fc05f5a15b906d389459d9d6a7face2dc752",
+        "instrumented_control": "4ace7363560a9d18841338b6f3aa2e42e478166831ac02df899f5e3a24e63ea1",
     },
     "m128-b2-s3-l2": {
-        "pallas": "a48ec8246f774059681d055362912a92775b4a8b11a7d0032ba0f49ca8590b3a",
-        "control": "f027b8411006ac97e2b548aaf26f9561b02c920dfa4af7979db36e91aaf6561c",
-        "instrumented_pallas": "41c5bc0bd02743f70f7d16523c241b9b9637a81041e215ae730cd8ccf9b00897",
-        "instrumented_control": "90fd1818ce0fd577c992ec569ca97145b7dbbd78b8ca355c924608b9b613c7b9",
+        "pallas": "7c18eda7e1951421cefe44430f9f897d23f823210e23fa9a18c9e25425bb3ab6",
+        "control": "3fd1c90846f71c80f141a2db8b5b6b15ab8e0c840444bc920c8f8115a1d70021",
+        "instrumented_pallas": "d1206817b54c09d6993e2154478eaedf070600a6c1a95a74abfd015e18900c61",
+        "instrumented_control": "38816fa44043bbbe19c6108a2a27af6ff8b5e097153c12cc794e5114043fb4e6",
     },
     "m256-b4-s2-l1": {
-        "pallas": "c1e3bc28366ad47032b2b23245d5628b3dc7826cfb0200957daff685558a0029",
-        "control": "176cde5eda31748aa89ce5ed5634c4732877a77d7fefa6f5883fa2438655e159",
-        "instrumented_pallas": "018e93660c463bbc7d7ce56eceee4e2f03066c3e8f5c56d1e107f95b1f630314",
-        "instrumented_control": "50e9200f6093b3279f0f78bf8ce7e1ce596a96ccd9a2b8e28f0b90f164da0565",
+        "pallas": "2e57c9234a684f3453ef5e234bd7889626bad4c31088b45a5dd17481383f3e39",
+        "control": "72addb368ded5587116f727253fe983b832cafb644291cdd286dbb9156f9cc74",
+        "instrumented_pallas": "c7e1c7ac1efa026a3e957ec258e02ecea516c50d63864152de0c27f03fb59ae0",
+        "instrumented_control": "cdb1fbfd52153e86bd07fbb4a7543edf89947016c38a406f9bc308ccff3a7291",
     },
     "m384-b2-s2-l1": {
-        "pallas": "6a3032320ea43d96e973e430e8290673b71448b5c0611edbf9679359d08fea34",
-        "control": "8efc8cec47c7f7901bae8dfcb042a32ac3c1645ac960381749d3ef00dbd4c740",
-        "instrumented_pallas": "5c6e9f7c31449be1b3dedd2158b6025e9a8b331e592da227a17d90ad1ecaf30a",
-        "instrumented_control": "f7525f6eef598329764b57c1517b9e392df11619cd5173e0382c023d2f9bfc2f",
+        "pallas": "44a5569e10046f01d837d7b2ee2d79751be94fe558c4434269cd439ba3528370",
+        "control": "35e3b6c7e12ae821fe6edee8ee515c8da1c0109cd02c345762d66b838e2cea76",
+        "instrumented_pallas": "3824d9bf485435f08aca96a26bd5d53c8140a18431875e66539744c758331286",
+        "instrumented_control": "94e47c4e1c09e6402e4788a6da7b507dd07f8dacd358e35d6c4904e7ad9e693c",
     },
     "m192-b2-s4-l2": {
-        "pallas": "f82161148b6f2e36afccca3adfbcf8ea700a879df5297482390405fd3d35c973",
-        "control": "7cc8b16442e5d98a70a0a513e96c9de608146bcae7431bf184be8e859112de50",
-        "instrumented_pallas": "baeb21604a50cd77807fbd9cc90603a425677af053fba8659186492394646cf1",
-        "instrumented_control": "4c541d8832bb03534f7989cbd9c2dc1387c9d6f8620746ea0bf4cf7fa1ee2641",
+        "pallas": "6249025460ce9418ce087273072d6d96209c05e356d49f26347182db60bb2531",
+        "control": "aa7a9344ee40fc5269c4fef332fa51ec02bb958c105142eb23ab31178d7d19a7",
+        "instrumented_pallas": "70fe7fb9e7373e4d3c86bfde9d17634fc4d482f10b5c769f204cd925b3ef0547",
+        "instrumented_control": "1f129a23d963d538c877ff649280028c1fb68aa87428cbd005b87576b5eb9e32",
     },
     "m320-b4-s3-l1": {
-        "pallas": "acd2361cc4a14ebeb0d097299a0f079671d8db1ef7045d63076b17c56aace960",
-        "control": "14d9569435ab5b8892fdf98eeba6a1da7e9999e1dd998cf6f61efc7a46521340",
-        "instrumented_pallas": "e03e5ed1b6f1935dff582d62dc6a0e063a1acf752bdb98560b92aca9ab04f0fc",
-        "instrumented_control": "fc1107a6331d5321091aa2d3bbee0fe13e738daab72300efce0861d53c9d6822",
+        "pallas": "750804aa2a24bdabbd65da65e89b819a3487e5fb42738f285960e23b76f0d5b3",
+        "control": "87ef688fd0a932c6878894da5a6e564b190236ef6768bc3e86580132de4b4676",
+        "instrumented_pallas": "bd80eec4e054601c9464ac39873ec9f4f562ebfd3c7023ffa66035231e4c3046",
+        "instrumented_control": "cf58c2f35508c76d39629c702f55cad12e94e9d7ec246b61b557b31a9618699d",
     },
     "m256-b2-s8-l4": {
-        "pallas": "220306763eb8c308e331c17931145bedcf1c504559b0e9aaaedb8b2be58c248e",
-        "control": "68c42cf8d7b5e98f41a449c536e3092982b863c87698546193bc47df47456b06",
-        "instrumented_pallas": "e1744714945f2960f6434b7a6fa318f22779a5a218f9b23ee7d7677ac7983159",
-        "instrumented_control": "0215702f5ca20e8841d33cd818e0fd41f257e5eb5dbe82ecba1cc744343079d3",
+        "pallas": "19426e64a79ad76fdc75702daaefbf2c43abfe48b84522773244029d3e1da03d",
+        "control": "0514db06552295c04707be2bcdc0d0800801ed79326a1556be916d3d31d4cff3",
+        "instrumented_pallas": "5b190364d7f4783b04c8eed0930e37896fcc0f15722c8fee6db5c89719df86ef",
+        "instrumented_control": "11d820879076925c9ed8d6d3548ca5ef2d53665bb286c57e09ed69b838f72127",
     },
     "m224-b4-s5-l2": {
-        "pallas": "1aa604c425d158797cc5e95ab4e27ba73fe7e4cffe8b76631208caf36e37be2c",
-        "control": "5b5c87f00b189ad942fe6da3b4c62b00dd3cd7fea75ea7e65250e6db8f1ab285",
-        "instrumented_pallas": "06b51213587d4ed05289631bc093ef5d847bbe52a3a165f3cc82230343e0d13b",
-        "instrumented_control": "41395212f0b09255f015184bf595224c33c660a2bafe2d784b005c482cc22c44",
+        "pallas": "d4c131b07cebe39054093108625b0b318e614e758a20280bf125fd4d9e27f62e",
+        "control": "61f7c4fb2033d1e838789b488150a3d887e71ea290ba898f7d71c933ff64d0ed",
+        "instrumented_pallas": "3ca48906825d416be8865f0baa9da1ca3b27d81068d1ed676a658ac17eb12d78",
+        "instrumented_control": "8f6edcee4500dc0e1282019a40e20e2a417ce9256b039799363ebeaae9f0b637",
     },
     "m352-b2-s6-l1": {
-        "pallas": "b92905ad6c3b031f3db23958a5e1a4d721d761cc5418e3ffe9de84d180fe7a69",
-        "control": "580e88491762c2907e3ac853486c8cd2c3207762e07f0d869cba42dc1bdd9062",
-        "instrumented_pallas": "6ebb99f3c9d73faba3a8b19e2d49f56694d0a828f7825fd48fbc0cf4091f97f7",
-        "instrumented_control": "617d65edb907f42e1885b848576aa1402324aa422f97461bd25874417e776271",
+        "pallas": "44ddaa5e5c26fada8070f1e9689f497a53bcfa08dbca7296483f55145fee0207",
+        "control": "298609f59b416647cff463c9ffa10d57e2b692965e6e77365f22186c97e5dad5",
+        "instrumented_pallas": "155a0bc08abe24846bc242922dcceca890f2e3057d32cf198368878af3761a7e",
+        "instrumented_control": "ca23b3e1755f5493a7721272a1f88811ef694f7eb8614de3d159a3318bc57216",
     },
     "m288-b4-s4-l3": {
-        "pallas": "8b5c8e95eee7a2f9b7a73c72a9e596b1ff3b2a10f2bdd8419b5aa1cbe7572e88",
-        "control": "5a32f34548ddbab5998586d3d6f489e45581eca8a88b9c7fd1798f500f533e54",
-        "instrumented_pallas": "1f174e03cc3c95ffe99f0f71a648be9854ce6e1b5b2a7f1065314c1272236070",
-        "instrumented_control": "df32c73e17a9912ef72b372c98aa3714dc808d0b3a80106c1b37d71ed208e6d9",
+        "pallas": "627531d588e67c7a9ccd30c20f3494b3b66260a0335051b52def16a0b4ac9153",
+        "control": "909ab3cacc4a53c7c07769e89bc1dbbae10256eea5b7ac8ed08282dafd85b99b",
+        "instrumented_pallas": "8ae2e6da3eba2b606c299a71398c823684aea19907f69f5077a0540e5273f492",
+        "instrumented_control": "2aa9c8e89aa27cd0087281080cb2533ed8d93164a564a3d5d8684728a10b25e3",
     },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
     "identity_silu": {
-        "pallas": "32f83731b4e76caff7ea6f41476e38e2059aef863ccf3aefc31e651371ea150e",
-        "control": "cef7589996b812a807a93c1d2113fd22fa27ca851a265240ac44372c486f9a89",
+        "pallas": "0cdf402b2bbc65a0558d0abd74b6ced1d5cf24f8d13c0c6836948dffafc4603d",
+        "control": "96af1a60b031e515dc674fafaf8b79964133a13e2972d2a717d2d105af86ee7d",
     },
     "relu_silu": {
-        "pallas": "9b266c4b2b1000a7dc52815f9881b7ddeedc99f45bfd5e89f0d0e470b077ab27",
-        "control": "1ae5bdc96b55a530bbae97f950507572caa2d40dbce27b7b3d22aa32acf42f85",
+        "pallas": "c94cd093d7191755250c6ebaf1d2ca0e105d616b850dd831cdec286c9fa819f0",
+        "control": "5f177aff06654d8d656d67c0d8bb846330fe2b7869bd52ccbd0a4b7a6a45b0e1",
     },
 }
 
