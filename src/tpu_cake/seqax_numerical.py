@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from collections import deque
+from collections.abc import Callable
 from enum import StrEnum
 
 import ml_dtypes
@@ -1519,6 +1520,40 @@ def _require_attribute_names(operation: ir.Operation, expected: frozenset[str]) 
         )
 
 
+def _follow_shape_only_reshapes(
+    value: ir.Value,
+    *,
+    ignored_terminators: bool,
+    expected_dtype: Callable[[ir.Value], bool],
+) -> ir.OpOperand:
+    current = value
+    first = True
+    while True:
+        uses = tuple(
+            use
+            for use in current.uses
+            if not (
+                first
+                and ignored_terminators
+                and _as_operation(use.owner) is not None
+                and _as_operation(use.owner).name in _REGION_TERMINATORS
+            )
+        )
+        if len(uses) != 1:
+            raise ValueError("strict MLP shape-only path must have one semantic use")
+        use = uses[0]
+        operation = _as_operation(use.owner)
+        if operation is None or operation.name != "stablehlo.reshape":
+            return use
+        if use.operand_number != 0:
+            raise ValueError("strict MLP reshape must consume operand zero")
+        _require_attribute_names(operation, frozenset())
+        if len(operation.results) != 1 or not expected_dtype(operation.results[0]):
+            raise ValueError("strict MLP reshape has an invalid result")
+        current = operation.results[0]
+        first = False
+
+
 def _require_f32_one(operation: ir.Operation) -> ir.Value:
     _require_attribute_names(operation, frozenset({"value"}))
     if len(operation.results) != 1 or not _is_f32_tensor(operation.results[0]):
@@ -1911,28 +1946,35 @@ def _validate_strict_silu_stablehlo(
                         and str(operation.attributes.get("kernel_name")) == '"seqax_named_einsum"'
                     )
 
-                hidden_dot_uses = tuple(use for use in hidden_uses if is_down_projection(use))
+                hidden_dot_use = _follow_shape_only_reshapes(
+                    materialized_hidden,
+                    ignored_terminators=instrumented,
+                    expected_dtype=_is_bf16_tensor,
+                )
                 expected_hidden_use_count = 2 if instrumented else 1
                 if (
                     len(hidden_uses) != expected_hidden_use_count
-                    or len(hidden_dot_uses) != 1
-                    or hidden_dot_uses[0].operand_number != 0
+                    or not is_down_projection(hidden_dot_use)
+                    or hidden_dot_use.operand_number != 0
                 ):
                     raise ValueError(
                         "strict hidden materialization must feed the down projection lhs"
                     )
-                down_dot = _as_operation(hidden_dot_uses[0].owner)
+                down_dot = _as_operation(hidden_dot_use.owner)
                 assert down_dot is not None
                 if len(down_dot.results) != 1 or not _is_f32_tensor(down_dot.results[0]):
                     raise ValueError("strict MLP down projection must produce float32")
-                down_dot_uses = tuple(down_dot.results[0].uses)
+                down_dot_use = _follow_shape_only_reshapes(
+                    down_dot.results[0],
+                    ignored_terminators=False,
+                    expected_dtype=_is_f32_tensor,
+                )
                 if (
-                    len(down_dot_uses) != 1
-                    or _as_operation(down_dot_uses[0].owner) is None
-                    or _as_operation(down_dot_uses[0].owner).name != "stablehlo.reduce_scatter"
+                    _as_operation(down_dot_use.owner) is None
+                    or _as_operation(down_dot_use.owner).name != "stablehlo.reduce_scatter"
                 ):
                     raise ValueError("strict MLP down projection must feed one reduce-scatter")
-                down_reduce_scatter = _as_operation(down_dot_uses[0].owner)
+                down_reduce_scatter = _as_operation(down_dot_use.owner)
                 assert down_reduce_scatter is not None
                 if len(down_reduce_scatter.results) != 1 or not _is_f32_tensor(
                     down_reduce_scatter.results[0]

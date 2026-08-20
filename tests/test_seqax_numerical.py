@@ -330,6 +330,62 @@ def test_trusted_activation_mutant_identity_rejects_a_live_bypass_path(
         )
 
 
+def test_strict_hidden_path_allows_only_shape_preserving_pallas_reshapes() -> None:
+    stablehlo = f"""module {{
+      {_SILU_FUNCTION}
+      func.func public @main(
+        %gate: tensor<1x4xbf16>, %up: tensor<1x4xbf16>,
+        %down_weight: tensor<2x4xbf16>, %residual: tensor<1x8xbf16>
+      ) -> tensor<1x8xbf16> {{
+        %gate_barrier = stablehlo.optimization_barrier %gate : tensor<1x4xbf16>
+        %promoted = stablehlo.convert %gate_barrier : (tensor<1x4xbf16>) -> tensor<1x4xf32>
+        %activated = func.call @silu(%promoted) : (tensor<1x4xf32>) -> tensor<1x4xf32>
+        %rounded = stablehlo.convert %activated : (tensor<1x4xf32>) -> tensor<1x4xbf16>
+        %silu_barrier = stablehlo.optimization_barrier %rounded : tensor<1x4xbf16>
+        %up_barrier = stablehlo.optimization_barrier %up : tensor<1x4xbf16>
+        %multiply_input = stablehlo.optimization_barrier %silu_barrier : tensor<1x4xbf16>
+        %hidden = stablehlo.multiply %up_barrier, %multiply_input : tensor<1x4xbf16>
+        %materialized = stablehlo.optimization_barrier %hidden : tensor<1x4xbf16>
+        %pallas_lhs = stablehlo.reshape %materialized : (tensor<1x4xbf16>) -> tensor<2x2xbf16>
+        %down = stablehlo.dot_general %pallas_lhs, %down_weight,
+          contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT]
+          : (tensor<2x2xbf16>, tensor<2x4xbf16>) -> tensor<2x4xf32>
+        %logical_down = stablehlo.reshape %down : (tensor<2x4xf32>) -> tensor<1x8xf32>
+        %reduced = "stablehlo.reduce_scatter"(%logical_down) <{{
+          channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>,
+          replica_groups = dense<[[0]]> : tensor<1x1xi64>,
+          scatter_dimension = 1 : i64,
+          use_global_device_ids
+        }}> ({{
+        ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+          %sum = stablehlo.add %lhs, %rhs : tensor<f32>
+          stablehlo.return %sum : tensor<f32>
+        }}) : (tensor<1x8xf32>) -> tensor<1x8xf32>
+        %down_bf16 = stablehlo.convert %reduced : (tensor<1x8xf32>) -> tensor<1x8xbf16>
+        %output = stablehlo.add %residual, %down_bf16 : tensor<1x8xbf16>
+        return %output : tensor<1x8xbf16>
+      }}
+    }}"""
+
+    _validate_strict_silu_stablehlo(
+        stablehlo,
+        expected_count=1,
+        instrumented=False,
+        require_hidden_down=True,
+    )
+    with pytest.raises(ValueError, match="down projection lhs"):
+        _validate_strict_silu_stablehlo(
+            stablehlo.replace(
+                "%pallas_lhs = stablehlo.reshape %materialized",
+                "%changed = stablehlo.negate %materialized : tensor<1x4xbf16>\n"
+                "        %pallas_lhs = stablehlo.reshape %changed",
+            ),
+            expected_count=1,
+            instrumented=False,
+            require_hidden_down=True,
+        )
+
+
 def test_strict_silu_stablehlo_rejects_a_dead_private_decoy_chain() -> None:
     function = """
       func.func private @{name}(
