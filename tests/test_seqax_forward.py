@@ -1,7 +1,7 @@
 from collections import Counter
 
 import pytest
-from xdsl.dialects.builtin import IntegerType, Signedness, bf16, f32
+from xdsl.dialects.builtin import IntegerType, ModuleOp, Signedness, bf16, f32
 from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.distributed_tensor import (
@@ -98,6 +98,26 @@ def test_seqax_typed_bf16_semantics_bind_the_silu_materialization_boundary() -> 
         seqax_forward_schedule(numerical_semantics="typed_bf16_v1")
 
 
+def test_seqax_hidden_materialization_semantics_adds_only_the_mlp_multiply_boundary() -> None:
+    legacy = seqax_forward_schedule()
+    strict_silu = seqax_forward_schedule(numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1)
+    strict_hidden = seqax_forward_schedule(
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2
+    )
+
+    def materialized_functions(module: ModuleOp) -> tuple[str, ...]:
+        return tuple(
+            operation.function.data
+            for operation in module.walk()
+            if isinstance(operation, ElementwiseOp) and operation.materialization is not None
+        )
+
+    assert materialized_functions(legacy) == ()
+    assert materialized_functions(strict_silu) == ("silu",)
+    assert materialized_functions(strict_hidden) == ("silu", "multiply")
+    assert schedule_sha256(strict_hidden) != schedule_sha256(strict_silu)
+
+
 def test_seqax_fused_silu_multiply_is_an_explicit_canonical_operation() -> None:
     separate = seqax_forward_schedule()
     fused = seqax_forward_schedule(feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY)
@@ -128,6 +148,11 @@ def test_seqax_fused_silu_multiply_is_an_explicit_canonical_operation() -> None:
     with pytest.raises(ValueError, match="strict BF16 materialization"):
         seqax_forward_schedule(
             numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
+            feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY,
+        )
+    with pytest.raises(ValueError, match="strict BF16 materialization"):
+        seqax_forward_schedule(
+            numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
             feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY,
         )
 

@@ -1,7 +1,8 @@
 import ml_dtypes
 import numpy as np
 import pytest
-from xdsl.dialects.builtin import bf16
+from xdsl.dialects.builtin import bf16, f32
+from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.distributed_tensor import ElementwiseMaterialization
 from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
@@ -79,6 +80,30 @@ def test_strict_typed_silu_rounds_once_from_a_float32_interior() -> None:
     (actual,) = execute_distributed_program_jax(builder.module(result), (gate,))
 
     np.testing.assert_array_equal(actual, rounded_mathematical_silu_bf16(gate))
+
+
+def test_strict_typed_multiply_requires_bf16_and_rejects_other_operations() -> None:
+    f32_type = tensor(f32, (("F", 4),))
+    f32_builder = DistributedProgramBuilder("strict_f32_multiply", {}, (f32_type, f32_type))
+    f32_result = f32_builder.elementwise(
+        *f32_builder.inputs,
+        result=f32_type,
+        function="multiply",
+        materialization=ElementwiseMaterialization.STRICT_TYPED,
+    )
+    with pytest.raises(VerifyException, match="requires BF16"):
+        f32_builder.module(f32_result)
+
+    bf16_type = tensor(bf16, (("F", 4),))
+    add_builder = DistributedProgramBuilder("strict_add", {}, (bf16_type, bf16_type))
+    add_result = add_builder.elementwise(
+        *add_builder.inputs,
+        result=bf16_type,
+        function="add",
+        materialization=ElementwiseMaterialization.STRICT_TYPED,
+    )
+    with pytest.raises(VerifyException, match="only supported for SiLU and multiply"):
+        add_builder.module(add_result)
 
 
 def test_seqax_oracle_discriminates_a_wrong_rope_contract() -> None:

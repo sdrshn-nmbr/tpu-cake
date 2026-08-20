@@ -251,7 +251,7 @@ def test_vector_compute_rejects_duplicate_configuration_keys() -> None:
         operation.verify()
 
 
-def test_vector_compute_strict_materialization_requires_bf16_silu() -> None:
+def test_vector_compute_strict_materialization_requires_supported_bf16_operation() -> None:
     bf16_source = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "bf16_source")
     bf16_output = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "bf16_output")
     strict_silu = VectorComputeOp(
@@ -262,6 +262,14 @@ def test_vector_compute_strict_materialization_requires_bf16_silu() -> None:
         materialization=VectorMaterialization.STRICT_TYPED,
     )
     strict_silu.verify()
+    strict_multiply = VectorComputeOp(
+        (bf16_source, bf16_source),
+        bf16_output,
+        stage=1,
+        function="multiply",
+        materialization=VectorMaterialization.STRICT_TYPED,
+    )
+    strict_multiply.verify()
 
     f32_source = AllocOp(_spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_source")
     f32_output = AllocOp(_spec((2, 4), ("B", "M"), dtype=f32).to_type(), "f32_output")
@@ -282,7 +290,7 @@ def test_vector_compute_strict_materialization_requires_bf16_silu() -> None:
 
     with pytest.raises(VerifyException, match="requires BF16"):
         wrong_dtype.verify()
-    with pytest.raises(VerifyException, match="only supported for SiLU"):
+    with pytest.raises(VerifyException, match="only supported for SiLU and multiply"):
         wrong_function.verify()
 
 

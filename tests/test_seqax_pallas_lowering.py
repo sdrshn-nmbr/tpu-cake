@@ -135,6 +135,33 @@ def test_typed_bf16_materialization_lowers_into_the_physical_schedule() -> None:
     assert canonical_module_text(legacy_physical) != canonical_module_text(strict_physical)
 
 
+def test_hidden_bf16_materialization_lowers_into_the_physical_schedule() -> None:
+    strict = seqax_forward_schedule(
+        **SMALL_SEQAX,
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    )
+    physical = lower_seqax_forward_to_physical(strict).module
+    materialized = tuple(
+        operation
+        for operation in physical.walk()
+        if isinstance(operation, VectorComputeOp) and operation.materialization is not None
+    )
+
+    assert (
+        tuple(operation.function.data for operation in materialized)
+        == (
+            "silu",
+            "multiply",
+        )
+        * SMALL_SEQAX["layers"]
+    )
+    assert all(
+        operation.materialization.data is VectorMaterialization.STRICT_TYPED
+        for operation in materialized
+        if operation.materialization is not None
+    )
+
+
 def test_replicated_norm_scales_remove_exact_physical_gather_chains() -> None:
     parameters = {**TILED_SEQAX, "sequence": 1, "layers": 1}
     sharded = seqax_forward_schedule(**parameters)

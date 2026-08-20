@@ -61,6 +61,7 @@ class SeqaxDataAxisPlacement(StrEnum):
 class SeqaxNumericalSemantics(StrEnum):
     LEGACY_FUSED_V0 = "legacy_fused_v0"
     TYPED_BF16_V1 = "typed_bf16_v1"
+    TYPED_BF16_HIDDEN_V2 = "typed_bf16_hidden_v2"
 
 
 class SeqaxFeedForwardFusion(StrEnum):
@@ -133,10 +134,10 @@ def seqax_forward_schedule(
         raise TypeError("numerical_semantics must be a SeqaxNumericalSemantics")
     if not isinstance(feed_forward_fusion, SeqaxFeedForwardFusion):
         raise TypeError("feed_forward_fusion must be a SeqaxFeedForwardFusion")
-    if (
-        feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY
-        and numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_V1
-    ):
+    if feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY and numerical_semantics in {
+        SeqaxNumericalSemantics.TYPED_BF16_V1,
+        SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }:
         raise ValueError("fused SiLU multiply does not implement strict BF16 materialization")
     norm_scale_sharding = (
         {} if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED else {"M": ("t", "d")}
@@ -744,7 +745,11 @@ def seqax_forward_schedule(
                 function="silu",
                 materialization=(
                     ElementwiseMaterialization.STRICT_TYPED
-                    if numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_V1
+                    if numerical_semantics
+                    in {
+                        SeqaxNumericalSemantics.TYPED_BF16_V1,
+                        SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+                    }
                     else None
                 ),
                 source=_source(193),
@@ -754,6 +759,11 @@ def seqax_forward_schedule(
                 up,
                 result=projected_bf16,
                 function="multiply",
+                materialization=(
+                    ElementwiseMaterialization.STRICT_TYPED
+                    if numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2
+                    else None
+                ),
                 source=_source(193),
             )
         layer_wdown = body.cast(

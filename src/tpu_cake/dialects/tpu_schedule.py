@@ -1303,10 +1303,12 @@ class VectorComputeOp(IRDLOperation):
         if function in {"silu", "silu_multiply", "exp"} and not _is_float_buffer(output):
             raise VerifyException("nonlinear physical vector operations require floating point")
         if self.materialization is not None:
-            if function != "silu":
-                raise VerifyException("strict typed materialization is only supported for SiLU")
+            if function not in {"silu", "multiply"}:
+                raise VerifyException(
+                    "strict typed materialization is only supported for SiLU and multiply"
+                )
             if not isinstance(output.storage.element_type, BFloat16Type):
-                raise VerifyException("strict typed SiLU materialization requires BF16")
+                raise VerifyException("strict typed materialization requires BF16")
         if function == "silu_multiply":
             if (
                 self.implementation is None

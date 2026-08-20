@@ -242,10 +242,12 @@ class ElementwiseOp(IRDLOperation):
         ):
             raise VerifyException("nonlinear elementwise functions require floating-point values")
         if self.materialization is not None:
-            if self.function.data != "silu":
-                raise VerifyException("strict typed materialization is only supported for SiLU")
+            if self.function.data not in {"silu", "multiply"}:
+                raise VerifyException(
+                    "strict typed materialization is only supported for SiLU and multiply"
+                )
             if not isinstance(result.element_type, BFloat16Type):
-                raise VerifyException("strict typed SiLU materialization requires BF16")
+                raise VerifyException("strict typed materialization requires BF16")
 
 
 @irdl_op_definition
