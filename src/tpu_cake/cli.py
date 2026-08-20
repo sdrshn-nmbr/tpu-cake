@@ -54,7 +54,9 @@ from tpu_cake.seqax_cost_calibration import (
 from tpu_cake.seqax_numerical import SeqaxBf16ValidationContract
 from tpu_cake.seqax_numerical_runner import (
     run_seqax_bf16_validation,
+    validate_seqax_bf16_relocation_attestation,
     validate_seqax_bf16_validation,
+    write_seqax_bf16_relocation_attestation,
 )
 from tpu_cake.seqax_pallas_bundle import (
     build_seqax_pallas_receipt,
@@ -237,6 +239,16 @@ def _parser() -> argparse.ArgumentParser:
     verify_seqax_bf16 = commands.add_parser("verify-seqax-bf16-forward")
     verify_seqax_bf16.add_argument("run_root", type=Path)
     verify_seqax_bf16.add_argument("--contract", required=True, type=Path)
+
+    attest_seqax_bf16 = commands.add_parser("attest-seqax-bf16-forward-relocation")
+    attest_seqax_bf16.add_argument("archive", type=Path)
+    attest_seqax_bf16.add_argument("--contract", required=True, type=Path)
+    attest_seqax_bf16.add_argument("--output", required=True, type=Path)
+
+    verify_seqax_bf16_attestation = commands.add_parser("verify-seqax-bf16-forward-relocation")
+    verify_seqax_bf16_attestation.add_argument("attestation", type=Path)
+    verify_seqax_bf16_attestation.add_argument("archive", type=Path)
+    verify_seqax_bf16_attestation.add_argument("--contract", required=True, type=Path)
 
     diagnose_seqax_weight_placement = commands.add_parser("diagnose-seqax-weight-placement")
     diagnose_seqax_weight_placement.add_argument("--search-root", required=True, type=Path)
@@ -619,14 +631,40 @@ def main() -> None:
         contract = SeqaxBf16ValidationContract.model_validate_json(args.contract.read_text())
         result = run_seqax_bf16_validation(args.output_dir, contract)
         print(result.model_dump_json(indent=2))
-        code = 0 if result.passed else 1
+        code = 0 if result.producer_passed else 1
     elif args.command == "verify-seqax-bf16-forward":
         contract = SeqaxBf16ValidationContract.model_validate_json(args.contract.read_text())
         result = validate_seqax_bf16_validation(args.run_root, contract)
         print(
-            "SEQAX_BF16_FORWARD_ACCEPTED "
+            "SEQAX_BF16_FORWARD_PRODUCER_VALIDATED "
             f"scenarios={len(result.plans)} observations={len(result.observations)} "
             f"discriminators={len(result.discriminators)} scope={result.claim_scope}"
+        )
+        code = 0
+    elif args.command == "attest-seqax-bf16-forward-relocation":
+        contract = SeqaxBf16ValidationContract.model_validate_json(args.contract.read_text())
+        attestation = write_seqax_bf16_relocation_attestation(
+            args.output,
+            archive=args.archive,
+            contract=contract,
+        )
+        print(
+            "SEQAX_BF16_FORWARD_PORTABLE_ACCEPTED "
+            f"observations={len(attestation.observations)} "
+            f"scope={attestation.claim_scope}"
+        )
+        code = 0
+    elif args.command == "verify-seqax-bf16-forward-relocation":
+        contract = SeqaxBf16ValidationContract.model_validate_json(args.contract.read_text())
+        attestation = validate_seqax_bf16_relocation_attestation(
+            args.attestation,
+            archive=args.archive,
+            contract=contract,
+        )
+        print(
+            "SEQAX_BF16_FORWARD_RELOCATION_REPLAYED "
+            f"observations={len(attestation.observations)} "
+            f"scope={attestation.claim_scope}"
         )
         code = 0
     elif args.command == "diagnose-seqax-weight-placement":

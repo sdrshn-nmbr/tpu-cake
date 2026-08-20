@@ -208,7 +208,7 @@ def test_mathematical_silu_reference_rounds_once_to_bf16() -> None:
     )
     assert actual.dtype == np.dtype(ml_dtypes.bfloat16)
     assert BF16_UNIT_ROUNDOFF == 0.00390625
-    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v5"
+    assert SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA == "bf16-forward-numerical-v6"
 
 
 def test_mathematical_silu_reference_rejects_non_bf16_or_nonfinite_input() -> None:
@@ -536,6 +536,9 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
         "calibration",
         "calibration",
         "calibration",
+        "calibration",
+        "calibration",
+        "calibration",
         "held_out",
         "held_out",
         "held_out",
@@ -552,19 +555,19 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
         if scenario.role.value == "held_out"
         for seed in scenario.seeds
     }
-    v4 = json.loads(Path("contracts/seqax-bf16-forward-numerical-v4.json").read_text())
-    v4_seeds = {seed for scenario in v4["scenarios"] for seed in scenario["seeds"]}
-    v4_shapes = {tuple(sorted(scenario["parameters"].items())) for scenario in v4["scenarios"]}
+    v5 = json.loads(Path("contracts/seqax-bf16-forward-numerical-v5.json").read_text())
+    v5_seeds = {seed for scenario in v5["scenarios"] for seed in scenario["seeds"]}
+    v5_shapes = {tuple(sorted(scenario["parameters"].items())) for scenario in v5["scenarios"]}
     held_out_shapes = {
         tuple(sorted(scenario.parameters.model_dump().items()))
         for scenario in contract.scenarios
         if scenario.role.value == "held_out"
     }
     assert calibration_seeds.isdisjoint(held_out_seeds)
-    assert v4_seeds.isdisjoint(held_out_seeds)
-    assert v4_shapes.isdisjoint(held_out_shapes)
+    assert v5_seeds.isdisjoint(held_out_seeds)
+    assert v5_shapes.isdisjoint(held_out_shapes)
     assert 16491228204229630496 in calibration_seeds
-    assert len(calibration_seeds) == 29
+    assert len(calibration_seeds) == 41
     assert len(held_out_seeds) == 12
     assert contract.policy.cpu_relative_l2_units == 3.0
     assert contract.policy.cpu_row_scaled_max_units == 8.0
@@ -596,22 +599,33 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
 def test_bf16_forward_contract_binds_fresh_hlo_identities() -> None:
     contract = default_seqax_bf16_validation_contract()
 
-    assert contract.hlo_identity_status == "pinned"
-    assert contract.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
+    assert contract.hlo_identity_status == "pending"
+    assert (
+        contract.acceptance_authority == "authenticated-producer-receipt-and-relocation-attestation"
+    )
     assert contract.compilation_source_root == "/home/sudarshan/tpu-cake-main"
     assert contract.checkpoint_capture == "typed-strict-rms-mlp-extra-outputs-v4"
     assert contract.require_normal_output_policy
     assert contract.require_instrumented_output_policy
     assert contract.require_discriminator_artifact_replay
+    assert contract.require_relocation_attestation
+    assert contract.relocation_archive_limits.model_dump() == {
+        "max_compressed_bytes": 1_073_741_824,
+        "max_expanded_archive_bytes": 4_831_838_208,
+        "max_members": 10_000,
+        "max_member_name_bytes": 65_536,
+        "max_member_bytes": 1_073_741_824,
+        "max_total_uncompressed_bytes": 4_294_967_296,
+    }
 
 
 def test_tracked_bf16_forward_contract_matches_the_canonical_factory() -> None:
     contract = default_seqax_bf16_validation_contract()
-    path = Path("contracts/seqax-bf16-forward-numerical-v5.json")
+    path = Path("contracts/seqax-bf16-forward-numerical-v6.json")
 
     assert SeqaxBf16ValidationContract.model_validate_json(path.read_text()) == contract
     assert (
-        contract.contract_id == "1d1362a26225483bfe5602b0e2583693576706125d3ee26648b32624cca09fe3"
+        contract.contract_id == "cc4b189eb249116a2ecc220ef9cd1e1074e1491f251b75d095d08cc1f132ef6b"
     )
 
 
@@ -704,11 +718,12 @@ def test_bf16_checkpoint_comparison_accepts_one_ulp_and_rejects_two() -> None:
         (("policy", "mathematical_silu_max_ulp"), 0, "not canonical"),
         (("acceptance_authority",), "pure-evaluator", "acceptance authority"),
         (("checkpoint_capture",), "host-callback", "acceptance authority"),
+        (("relocation_archive_limits", "max_members"), 10_001, "not canonical"),
         (("scenarios", 0, "parameters", "model"), "256", "model"),
         (("scenarios", 0, "inputs", 0, "dtype"), "int32", "input ABI"),
         (("scenarios", 0, "pallas_stablehlo_sha256"), "0" * 64, "StableHLO identity"),
-        (("scenarios", 7, "role"), "calibration", "role mismatch"),
-        (("scenarios", 7, "seeds", 0), 1, "seeds mismatch"),
+        (("scenarios", 10, "role"), "calibration", "role mismatch"),
+        (("scenarios", 10, "seeds", 0), 1, "seeds mismatch"),
         (
             ("activation_mutant_stablehlo", 0, "pallas_stablehlo_sha256"),
             "0" * 64,
@@ -888,7 +903,7 @@ def test_bf16_output_assessment_does_not_claim_checkpoint_provenance() -> None:
     assert "checkpoint_values_consistent" not in type(assessment).model_fields
 
 
-def test_cpu_reference_replay_uses_the_frozen_cross_path_bounds() -> None:
+def test_cpu_reference_replay_uses_the_frozen_cpu_facing_bounds() -> None:
     contract, scenario, _inputs, reference, _evidence = _calibration_evidence()
     nearby = reference.copy()
     nearby.flat[0] += np.float32(1e-4)
@@ -910,6 +925,16 @@ def test_cpu_reference_replay_uses_the_frozen_cross_path_bounds() -> None:
 
     assert accepted.within_bounds
     assert not rejected.within_bounds
+    assert accepted.relative_l2_limit == pytest.approx(
+        contract.policy.cpu_relative_l2_units
+        * contract.policy.unit_roundoff
+        * contract.policy.depth_scale(scenario.parameters.layers)
+    )
+    assert accepted.row_scaled_max_limit == pytest.approx(
+        contract.policy.cpu_row_scaled_max_units
+        * contract.policy.unit_roundoff
+        * contract.policy.depth_scale(scenario.parameters.layers)
+    )
 
 
 def test_tpu_output_must_pass_both_portable_cpu_references() -> None:

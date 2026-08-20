@@ -10,16 +10,18 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import tarfile
 import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import jax
 import jax.numpy as jnp
+import jaxlib
 import ml_dtypes
 import numpy as np
 from jax.sharding import NamedSharding, PartitionSpec
@@ -33,9 +35,11 @@ from tpu_cake.jax_lowering import JaxDistributedMeshPlan, lower_distributed_prog
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_numerical import (
+    SeqaxBf16CpuReferenceReplayAssessment,
     SeqaxBf16NumericalAssessment,
     SeqaxBf16NumericalScenario,
     SeqaxBf16OutputAssessment,
+    SeqaxBf16RelocationArchiveLimits,
     SeqaxBf16ValidationContract,
     SeqaxDiscriminatorClause,
     SeqaxInputMutation,
@@ -73,7 +77,7 @@ from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import seqax_forward_canonical_reference, seqax_forward_inputs
 
-SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v5"
+SEQAX_BF16_RUN_SCHEMA = "seqax-bf16-forward-validation-run-v6"
 _STRICT_MLP_CHECKPOINT_SPECS = (
     PartitionSpec("d", None, None),
     PartitionSpec("d", None, None),
@@ -112,7 +116,7 @@ class SeqaxBf16Runtime(BaseModel):
 class SeqaxBf16RunIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v5$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v6$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -226,30 +230,70 @@ class SeqaxBf16DiscriminatorObservation(BaseModel):
 class SeqaxBf16ValidationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v5$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-run-v6$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime: SeqaxBf16Runtime
     devices: tuple[SeqaxBf16Device, ...] = Field(min_length=8, max_length=8)
     source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
-    plans: tuple[SeqaxBf16PlanRecord, ...] = Field(min_length=10, max_length=10)
-    observations: tuple[SeqaxBf16SeedObservation, ...] = Field(min_length=41, max_length=41)
+    plans: tuple[SeqaxBf16PlanRecord, ...] = Field(min_length=13, max_length=13)
+    observations: tuple[SeqaxBf16SeedObservation, ...] = Field(min_length=53, max_length=53)
     discriminators: tuple[SeqaxBf16DiscriminatorObservation, ...] = Field(min_length=16)
-    passed: bool
-    claim_scope: str = Field(pattern=r"^declared-surface-dual-jax-cpu-bf16-numerical-agreement-v1$")
+    producer_passed: bool
+    claim_scope: str = Field(pattern=r"^producer-host-bf16-validation-only-v1$")
 
 
 class SeqaxBf16ValidationReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v5$")
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-validation-receipt-v6$")
     contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    status: str = Field(pattern=r"^passed$")
+    status: str = Field(pattern=r"^producer_passed$")
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     ledger_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
+
+
+class SeqaxBf16RelocationRuntime(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    python: str = Field(min_length=1)
+    jax: str = Field(min_length=1)
+    jaxlib: str = Field(min_length=1)
+    ml_dtypes: str = Field(min_length=1)
+    machine: str = Field(min_length=1)
+    system: str = Field(min_length=1)
+
+
+class SeqaxBf16RelocationObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    scenario: str = Field(min_length=1)
+    seed: int = Field(ge=0)
+    saved_cpu_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fresh_cpu_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cpu_replay: SeqaxBf16CpuReferenceReplayAssessment
+    normal_against_fresh_cpu: SeqaxBf16OutputAssessment
+    instrumented_against_fresh_cpu: SeqaxBf16OutputAssessment
+
+
+class SeqaxBf16RelocationAttestation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: str = Field(pattern=r"^seqax-bf16-forward-relocation-attestation-v1$")
+    contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    producer_result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_runtime: SeqaxBf16RelocationRuntime
+    verifier_source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
+    observations: tuple[SeqaxBf16RelocationObservation, ...] = Field(min_length=53, max_length=53)
+    status: str = Field(pattern=r"^portable_accepted$")
+    claim_scope: str = Field(pattern=r"^declared-surface-dual-jax-cpu-bf16-agreement-v2$")
 
 
 @dataclass(frozen=True)
@@ -2470,10 +2514,10 @@ def _build_receipt(
     if path.exists():
         raise ValueError("SEQAX_BF16_RECEIPT_EXISTS")
     receipt = SeqaxBf16ValidationReceipt(
-        schema_version="seqax-bf16-forward-validation-receipt-v5",
+        schema_version="seqax-bf16-forward-validation-receipt-v6",
         contract_id=contract.contract_id,
         run_id=run_id,
-        status="passed",
+        status="producer_passed",
         result_sha256=_sha256(root / "result.json"),
         ledger_sha256=_sha256(root / "ledger.sqlite"),
         artifacts=_artifact_manifest(root),
@@ -2574,8 +2618,8 @@ def _execute_seqax_bf16_validation(
         plans=tuple(value.record for value in compiled),
         observations=observations,
         discriminators=discriminators,
-        passed=True,
-        claim_scope="declared-surface-dual-jax-cpu-bf16-numerical-agreement-v1",
+        producer_passed=True,
+        claim_scope="producer-host-bf16-validation-only-v1",
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
     with ExperimentLedger(ledger_path) as ledger:
@@ -2607,7 +2651,7 @@ def _execute_seqax_bf16_validation(
             ledger,
             run_id,
             RunState.ACCEPTED,
-            {"result_sha256": _sha256(root / "result.json"), "passed": True},
+            {"result_sha256": _sha256(root / "result.json"), "producer_passed": True},
         )
     _close_ledger(ledger_path)
     _build_receipt(root, contract, run_id)
@@ -2962,6 +3006,7 @@ def _validate_seed(
     contract: SeqaxBf16ValidationContract,
     scenario: SeqaxBf16NumericalScenario,
     seed: int,
+    relocation_observations: list[SeqaxBf16RelocationObservation] | None = None,
 ) -> SeqaxBf16SeedObservation:
     seed_root = _seed_root(root, scenario.name, seed)
     expected_inputs = tuple(
@@ -3149,6 +3194,24 @@ def _validate_seed(
     ):
         raise ValueError(
             f"SEQAX_BF16_OBSERVATION_REPLAY_MISMATCH scenario={scenario.name} seed={seed}"
+        )
+    if relocation_observations is not None:
+        relocation_observations.append(
+            SeqaxBf16RelocationObservation(
+                scenario=scenario.name,
+                seed=seed,
+                saved_cpu_sha256=array_sha256(saved_cpu),
+                fresh_cpu_sha256=array_sha256(fresh_cpu),
+                cpu_replay=cpu_replay,
+                normal_against_fresh_cpu=fresh_normal_assessment,
+                instrumented_against_fresh_cpu=_assess_output_arrays(
+                    instrumented_pallas,
+                    instrumented_control,
+                    fresh_cpu,
+                    policy=contract.policy,
+                    scenario=scenario,
+                ),
+            )
         )
     return expected
 
@@ -3633,7 +3696,7 @@ def _ledger_payloads(
         payloads += (
             (
                 RunState.ACCEPTED,
-                {"result_sha256": result_sha256, "passed": True},
+                {"result_sha256": result_sha256, "producer_passed": True},
             ),
         )
     return payloads
@@ -3645,6 +3708,7 @@ def _validate(
     *,
     require_accepted: bool,
     require_receipt: bool | None = None,
+    relocation_observations: list[SeqaxBf16RelocationObservation] | None = None,
 ) -> SeqaxBf16ValidationResult:
     if require_receipt is None:
         require_receipt = require_accepted
@@ -3687,8 +3751,8 @@ def _validate(
         or result.runtime.ml_dtypes != expected_runtime.ml_dtypes
         or result.runtime.cpu_machine != expected_runtime.cpu_machine
         or result.runtime.cpu_system != expected_runtime.cpu_system
-        or not result.passed
-        or result.claim_scope != "declared-surface-dual-jax-cpu-bf16-numerical-agreement-v1"
+        or not result.producer_passed
+        or result.claim_scope != "producer-host-bf16-validation-only-v1"
     ):
         raise ValueError("SEQAX_BF16_RESULT_IDENTITY_MISMATCH")
     if (
@@ -3708,7 +3772,13 @@ def _validate(
     for scenario, record in zip(trusted_contract.scenarios, result.plans, strict=True):
         _validate_plan(root, scenario, record)
     observations = tuple(
-        _validate_seed(root, trusted_contract, scenario, seed)
+        _validate_seed(
+            root,
+            trusted_contract,
+            scenario,
+            seed,
+            relocation_observations,
+        )
         for scenario in trusted_contract.scenarios
         for seed in scenario.seeds
     )
@@ -3762,3 +3832,365 @@ def validate_seqax_bf16_validation(
     root = root.resolve()
     _preflight_existing_root(root)
     return _validate(root, trusted_contract, require_accepted=True)
+
+
+def _relocation_runtime() -> SeqaxBf16RelocationRuntime:
+    return SeqaxBf16RelocationRuntime(
+        python=platform.python_version(),
+        jax=jax.__version__,
+        jaxlib=jaxlib.__version__,
+        ml_dtypes=ml_dtypes.__version__,
+        machine=platform.machine(),
+        system=platform.system(),
+    )
+
+
+def _require_relocation_runtime(
+    verifier: SeqaxBf16RelocationRuntime,
+    contract: SeqaxBf16ValidationContract,
+    producer: SeqaxBf16Runtime,
+) -> None:
+    _require_relocation_software(verifier, contract)
+    if (verifier.machine, verifier.system) == (producer.cpu_machine, producer.cpu_system):
+        raise ValueError("SEQAX_BF16_RELOCATION_ARCHITECTURE_NOT_DISTINCT")
+
+
+def _require_relocation_software(
+    verifier: SeqaxBf16RelocationRuntime,
+    contract: SeqaxBf16ValidationContract,
+) -> None:
+    expected = contract.runtime
+    if (
+        not verifier.python.startswith(expected.python_major_minor + ".")
+        or verifier.jax != expected.jax
+        or verifier.jaxlib != expected.jaxlib
+        or verifier.ml_dtypes != expected.ml_dtypes
+    ):
+        raise ValueError(
+            f"SEQAX_BF16_RELOCATION_RUNTIME_MISMATCH runtime={verifier} expected={expected}"
+        )
+
+
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def _materialize_tar_archive(
+    staged_archive: Path,
+    expanded_archive: Path,
+    *,
+    max_expanded_archive_bytes: int,
+) -> Path:
+    with staged_archive.open("rb") as stream:
+        compressed = stream.read(len(_ZSTD_MAGIC)) == _ZSTD_MAGIC
+    if not compressed:
+        if staged_archive.stat().st_size > max_expanded_archive_bytes:
+            raise ValueError("SEQAX_BF16_ARCHIVE_EXPANDED_SIZE_EXCEEDED")
+        return staged_archive
+    if shutil.which("zstd") is None:
+        raise ValueError("SEQAX_BF16_ARCHIVE_ZSTD_UNAVAILABLE")
+    process = subprocess.Popen(
+        ["zstd", "--decompress", "--stdout", str(staged_archive)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    destination_descriptor = os.open(
+        expanded_archive,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    expanded_bytes = 0
+    try:
+        while chunk := process.stdout.read(1 << 20):
+            expanded_bytes += len(chunk)
+            if expanded_bytes > max_expanded_archive_bytes:
+                raise ValueError("SEQAX_BF16_ARCHIVE_EXPANDED_SIZE_EXCEEDED")
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_descriptor, view)
+                view = view[written:]
+        if process.wait() != 0:
+            raise ValueError("SEQAX_BF16_ARCHIVE_DECOMPRESSION_FAILED")
+        os.fsync(destination_descriptor)
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        os.close(destination_descriptor)
+    return expanded_archive
+
+
+def _inspect_relocation_archive(
+    archive: Path,
+    *,
+    max_members: int,
+    max_member_name_bytes: int,
+    max_member_bytes: int,
+    max_total_uncompressed_bytes: int,
+) -> tuple[tuple[str, ...], str]:
+    archive_listing: list[str] = []
+    member_sizes: list[int] = []
+    receipt_members: list[str] = []
+    try:
+        with tarfile.open(archive, mode="r:") as bundle:
+            for member in bundle:
+                if len(archive_listing) >= max_members:
+                    raise ValueError("SEQAX_BF16_ARCHIVE_MEMBER_COUNT_EXCEEDED")
+                if not member.isfile() and not member.isdir():
+                    raise ValueError("SEQAX_BF16_ARCHIVE_MEMBER_TYPE_INVALID")
+                name = member.name
+                if len(name.encode("utf-8")) > max_member_name_bytes:
+                    raise ValueError("SEQAX_BF16_ARCHIVE_MEMBER_NAME_TOO_LONG")
+                archive_listing.append(name)
+                member_sizes.append(member.size)
+                if member.isfile() and name.endswith("/receipt.json"):
+                    receipt_members.append(name)
+    except tarfile.TarError as error:
+        raise ValueError("SEQAX_BF16_ARCHIVE_FORMAT_INVALID") from error
+    if len(archive_listing) != len(set(archive_listing)):
+        raise ValueError("SEQAX_BF16_ARCHIVE_DUPLICATE_PATH")
+    canonical_members = []
+    for name in archive_listing:
+        member = PurePosixPath(name)
+        if not name or member.is_absolute() or ".." in member.parts:
+            raise ValueError(f"SEQAX_BF16_ARCHIVE_UNSAFE_PATH path={name}")
+        canonical = member.as_posix()
+        if name.rstrip("/") != canonical:
+            raise ValueError(f"SEQAX_BF16_ARCHIVE_NONCANONICAL_PATH path={name}")
+        canonical_members.append(canonical)
+    if len(canonical_members) != len(set(canonical_members)):
+        raise ValueError("SEQAX_BF16_ARCHIVE_CANONICAL_PATH_COLLISION")
+    top_level = {PurePosixPath(name).parts[0] for name in archive_listing}
+    if len(top_level) != 1:
+        raise ValueError("SEQAX_BF16_ARCHIVE_ROOT_CARDINALITY_MISMATCH")
+    if len(receipt_members) != 1:
+        raise ValueError("SEQAX_BF16_ARCHIVE_RECEIPT_CARDINALITY_MISMATCH")
+    total_uncompressed_bytes = 0
+    for member_bytes in member_sizes:
+        if member_bytes > max_member_bytes:
+            raise ValueError("SEQAX_BF16_ARCHIVE_MEMBER_SIZE_EXCEEDED")
+        total_uncompressed_bytes += member_bytes
+        if total_uncompressed_bytes > max_total_uncompressed_bytes:
+            raise ValueError("SEQAX_BF16_ARCHIVE_TOTAL_SIZE_EXCEEDED")
+    return tuple(archive_listing), next(iter(top_level))
+
+
+def _extract_relocation_archive(archive: Path, destination: Path) -> None:
+    try:
+        with tarfile.open(archive, mode="r:") as bundle:
+            bundle.extractall(destination, filter="data")
+    except (OSError, tarfile.TarError) as error:
+        raise ValueError("SEQAX_BF16_ARCHIVE_EXTRACTION_FAILED") from error
+
+
+def _preflight_relocation_attestation(
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16RelocationRuntime:
+    canonical = default_seqax_bf16_validation_contract()
+    if contract != canonical:
+        raise ValueError("SEQAX_BF16_EXTERNAL_CONTRACT_MISMATCH")
+    if contract.hlo_identity_status != "pinned":
+        raise ValueError("SEQAX_BF16_HLO_IDENTITIES_PENDING")
+    repository_root = Path(__file__).resolve().parents[2]
+    _require_clean_repository(repository_root)
+    if _sha256(repository_root / "uv.lock") != contract.runtime.uv_lock_sha256:
+        raise ValueError("SEQAX_BF16_LOCK_MISMATCH")
+    verifier_runtime = _relocation_runtime()
+    _require_relocation_software(verifier_runtime, contract)
+    return verifier_runtime
+
+
+@dataclass(frozen=True)
+class _ArchiveFileIdentity:
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+def _archive_file_identity(status: os.stat_result) -> _ArchiveFileIdentity:
+    return _ArchiveFileIdentity(
+        device=status.st_dev,
+        inode=status.st_ino,
+        mode=status.st_mode,
+        link_count=status.st_nlink,
+        size=status.st_size,
+        modified_ns=status.st_mtime_ns,
+        changed_ns=status.st_ctime_ns,
+    )
+
+
+@contextmanager
+def _staged_relocation_archive(
+    archive: Path,
+    staged_archive: Path,
+    *,
+    max_compressed_bytes: int,
+) -> Iterator[str]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_descriptor = os.open(archive, flags)
+    except OSError as error:
+        raise ValueError(f"SEQAX_BF16_ARCHIVE_INVALID path={archive}") from error
+    try:
+        before = _archive_file_identity(os.fstat(source_descriptor))
+        if not stat.S_ISREG(before.mode) or before.link_count != 1:
+            raise ValueError(f"SEQAX_BF16_ARCHIVE_INVALID path={archive}")
+        if before.size > max_compressed_bytes:
+            raise ValueError("SEQAX_BF16_ARCHIVE_COMPRESSED_SIZE_EXCEEDED")
+        destination_descriptor = os.open(
+            staged_archive,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        digest = hashlib.sha256()
+        copied_bytes = 0
+        try:
+            while True:
+                chunk = os.read(source_descriptor, min(1 << 20, max_compressed_bytes + 1))
+                if not chunk:
+                    break
+                copied_bytes += len(chunk)
+                if copied_bytes > max_compressed_bytes:
+                    raise ValueError("SEQAX_BF16_ARCHIVE_COMPRESSED_SIZE_EXCEEDED")
+                digest.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(destination_descriptor, view)
+                    view = view[written:]
+            os.fsync(destination_descriptor)
+        finally:
+            os.close(destination_descriptor)
+        after_copy = _archive_file_identity(os.fstat(source_descriptor))
+        if after_copy != before or copied_bytes != before.size:
+            raise ValueError("SEQAX_BF16_ARCHIVE_CHANGED_DURING_COPY")
+        try:
+            path_identity = _archive_file_identity(os.stat(archive, follow_symlinks=False))
+        except OSError as error:
+            raise ValueError("SEQAX_BF16_ARCHIVE_CHANGED_DURING_COPY") from error
+        if path_identity != before:
+            raise ValueError("SEQAX_BF16_ARCHIVE_CHANGED_DURING_COPY")
+        yield digest.hexdigest()
+        if _archive_file_identity(os.fstat(source_descriptor)) != before:
+            raise ValueError("SEQAX_BF16_ARCHIVE_CHANGED_DURING_VALIDATION")
+        try:
+            final_path_identity = _archive_file_identity(os.stat(archive, follow_symlinks=False))
+        except OSError as error:
+            raise ValueError("SEQAX_BF16_ARCHIVE_CHANGED_DURING_VALIDATION") from error
+        if final_path_identity != before:
+            raise ValueError("SEQAX_BF16_ARCHIVE_CHANGED_DURING_VALIDATION")
+    finally:
+        os.close(source_descriptor)
+
+
+def _relocation_attestation(
+    archive: Path,
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16RelocationAttestation:
+    verifier_runtime = _preflight_relocation_attestation(contract)
+    limits: SeqaxBf16RelocationArchiveLimits = contract.relocation_archive_limits
+    with tempfile.TemporaryDirectory(prefix="seqax-bf16-relocation-") as temporary:
+        temporary_root = Path(temporary)
+        staged_archive = temporary_root / "bundle.tar"
+        with _staged_relocation_archive(
+            archive,
+            staged_archive,
+            max_compressed_bytes=limits.max_compressed_bytes,
+        ) as archive_sha256:
+            tar_archive = _materialize_tar_archive(
+                staged_archive,
+                temporary_root / "expanded.tar",
+                max_expanded_archive_bytes=limits.max_expanded_archive_bytes,
+            )
+            _archive_listing, top_level = _inspect_relocation_archive(
+                tar_archive,
+                max_members=limits.max_members,
+                max_member_name_bytes=limits.max_member_name_bytes,
+                max_member_bytes=limits.max_member_bytes,
+                max_total_uncompressed_bytes=limits.max_total_uncompressed_bytes,
+            )
+            extracted = temporary_root / "extracted"
+            extracted.mkdir()
+            _extract_relocation_archive(tar_archive, extracted)
+            root = extracted / top_level
+            _preflight_existing_root(root)
+            relocation_observations: list[SeqaxBf16RelocationObservation] = []
+            result = _validate(
+                root,
+                contract,
+                require_accepted=True,
+                relocation_observations=relocation_observations,
+            )
+            identity = SeqaxBf16RunIdentity.model_validate_json(
+                (root / "run_identity.json").read_text()
+            )
+            _require_relocation_runtime(verifier_runtime, contract, result.runtime)
+            return SeqaxBf16RelocationAttestation(
+                schema_version="seqax-bf16-forward-relocation-attestation-v1",
+                contract_id=contract.contract_id,
+                run_id=result.run_id,
+                source_commit=identity.source_commit,
+                archive_sha256=archive_sha256,
+                receipt_sha256=_sha256(root / "receipt.json"),
+                producer_result_sha256=_sha256(root / "result.json"),
+                verifier_runtime=verifier_runtime,
+                verifier_source_manifest=_source_manifest(),
+                observations=tuple(relocation_observations),
+                status="portable_accepted",
+                claim_scope="declared-surface-dual-jax-cpu-bf16-agreement-v2",
+            )
+
+
+def write_seqax_bf16_relocation_attestation(
+    output: Path,
+    *,
+    archive: Path,
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16RelocationAttestation:
+    output = output.absolute()
+    if output.exists() or output.is_symlink():
+        raise ValueError(f"SEQAX_BF16_RELOCATION_ATTESTATION_EXISTS path={output}")
+    parent = output.parent
+    if parent.is_symlink() or not parent.is_dir() or parent.resolve() != parent:
+        raise ValueError(f"SEQAX_BF16_RELOCATION_ATTESTATION_PARENT_INVALID path={parent}")
+    attestation = _relocation_attestation(archive, contract)
+    temporary = parent / f".{output.name}.tmp-{os.getpid()}-{time.time_ns()}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(attestation.model_dump_json(indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output)
+        temporary.unlink()
+        directory = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return attestation
+
+
+def validate_seqax_bf16_relocation_attestation(
+    attestation_path: Path,
+    *,
+    archive: Path,
+    contract: SeqaxBf16ValidationContract,
+) -> SeqaxBf16RelocationAttestation:
+    if (
+        attestation_path.is_symlink()
+        or not attestation_path.is_file()
+        or attestation_path.stat().st_nlink != 1
+    ):
+        raise ValueError(f"SEQAX_BF16_RELOCATION_ATTESTATION_INVALID path={attestation_path}")
+    saved = SeqaxBf16RelocationAttestation.model_validate_json(attestation_path.read_text())
+    expected = _relocation_attestation(archive, contract)
+    if saved != expected:
+        raise ValueError("SEQAX_BF16_RELOCATION_ATTESTATION_MISMATCH")
+    return expected

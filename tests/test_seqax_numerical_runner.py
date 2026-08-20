@@ -1,6 +1,8 @@
+import io
 import os
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from tpu_cake.seqax_numerical_runner import (
     _remove_strict_barrier,
     _replace_silu_body,
     _require_compilation_source_root,
+    _require_relocation_runtime,
     _require_safe_root,
     _transition_or_replay,
     _write_json_atomic,
@@ -590,7 +593,7 @@ def test_runner_rejects_protected_output_roots() -> None:
 def test_runner_archives_only_an_owned_incomplete_root(tmp_path: Path) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v5",
+        schema_version="seqax-bf16-forward-validation-run-v6",
         contract_id=contract.contract_id,
         run_id="1" * 64,
         source_commit="2" * 40,
@@ -679,7 +682,7 @@ def test_runner_resumes_active_owned_root_and_archives_rejected_root(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v5",
+        schema_version="seqax-bf16-forward-validation-run-v6",
         contract_id=contract.contract_id,
         run_id="8" * 64,
         source_commit="9" * 40,
@@ -752,7 +755,7 @@ def test_runner_reuses_same_root_after_uncaught_active_run_crash(
                 ledger.create(
                     run_id,
                     {
-                        "schema": "seqax-bf16-forward-validation-run-v5",
+                        "schema": "seqax-bf16-forward-validation-run-v6",
                         "contract_id": active_contract.contract_id,
                         "source_commit": source_commit,
                     },
@@ -796,12 +799,12 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         text=True,
     ).stdout.strip()
     run_id = numerical_runner.semantic_sha256(
-        "seqax-bf16-forward-validation-run-v5",
+        "seqax-bf16-forward-validation-run-v6",
         contract.contract_id,
         source_commit,
     )
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v5",
+        schema_version="seqax-bf16-forward-validation-run-v6",
         contract_id=contract.contract_id,
         run_id=run_id,
         source_commit=source_commit,
@@ -811,7 +814,7 @@ def test_runner_rejects_a_concurrent_live_owner_without_mutation(
         ledger.create(
             run_id,
             {
-                "schema": "seqax-bf16-forward-validation-run-v5",
+                "schema": "seqax-bf16-forward-validation-run-v6",
                 "contract_id": contract.contract_id,
                 "source_commit": source_commit,
             },
@@ -866,7 +869,7 @@ def test_atomic_run_markers_do_not_publish_truncated_targets(
 ) -> None:
     contract = default_seqax_bf16_validation_contract()
     identity = SeqaxBf16RunIdentity(
-        schema_version="seqax-bf16-forward-validation-run-v5",
+        schema_version="seqax-bf16-forward-validation-run-v6",
         contract_id=contract.contract_id,
         run_id="5" * 64,
         source_commit="6" * 40,
@@ -951,11 +954,335 @@ def test_bf16_validation_cli_requires_external_contract() -> None:
         ]
     )
     verify = parser.parse_args(["verify-seqax-bf16-forward", "run", "--contract", "contract.json"])
+    attest = parser.parse_args(
+        [
+            "attest-seqax-bf16-forward-relocation",
+            "bundle.tar.zst",
+            "--contract",
+            "contract.json",
+            "--output",
+            "attestation.json",
+        ]
+    )
+    replay_attestation = parser.parse_args(
+        [
+            "verify-seqax-bf16-forward-relocation",
+            "attestation.json",
+            "bundle.tar.zst",
+            "--contract",
+            "contract.json",
+        ]
+    )
 
     assert run.command == "validate-seqax-bf16-forward"
     assert verify.command == "verify-seqax-bf16-forward"
+    assert attest.command == "attest-seqax-bf16-forward-relocation"
+    assert replay_attestation.command == "verify-seqax-bf16-forward-relocation"
     with pytest.raises(SystemExit):
         parser.parse_args(["verify-seqax-bf16-forward", "run"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["attest-seqax-bf16-forward-relocation", "bundle.tar.zst", "--output", "a.json"]
+        )
+
+
+def test_relocation_archive_rejects_canonical_path_aliases(tmp_path: Path) -> None:
+    archive = tmp_path / "aliased.tar"
+    payload = b"same target"
+    with tarfile.open(archive, "w") as bundle:
+        for name in ("bundle/a", "bundle/./a"):
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            bundle.addfile(member, io.BytesIO(payload))
+
+    with pytest.raises(ValueError, match="NONCANONICAL_PATH|CANONICAL_PATH_COLLISION"):
+        numerical_runner._inspect_relocation_archive(
+            archive,
+            max_members=10,
+            max_member_name_bytes=1024,
+            max_member_bytes=1024,
+            max_total_uncompressed_bytes=2048,
+        )
+
+
+def test_relocation_archive_rejects_compressed_size_before_copy(tmp_path: Path) -> None:
+    archive = tmp_path / "oversized.tar"
+    archive.write_bytes(b"12345")
+
+    with (
+        pytest.raises(ValueError, match="COMPRESSED_SIZE_EXCEEDED"),
+        numerical_runner._staged_relocation_archive(
+            archive,
+            tmp_path / "staged.tar",
+            max_compressed_bytes=4,
+        ),
+    ):
+        pytest.fail("oversized archive must not be staged")
+
+
+def test_relocation_archive_staging_stops_if_the_source_grows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = tmp_path / "growing.tar"
+    archive.write_bytes(b"1234")
+    original_read = numerical_runner.os.read
+    appended = False
+
+    def growing_read(descriptor: int, count: int) -> bytes:
+        nonlocal appended
+        if not appended:
+            appended = True
+            with archive.open("ab") as stream:
+                stream.write(b"5")
+        return original_read(descriptor, count)
+
+    monkeypatch.setattr(numerical_runner.os, "read", growing_read)
+    with (
+        pytest.raises(ValueError, match="COMPRESSED_SIZE_EXCEEDED"),
+        numerical_runner._staged_relocation_archive(
+            archive,
+            tmp_path / "staged.tar",
+            max_compressed_bytes=4,
+        ),
+    ):
+        pytest.fail("growing archive must not be staged")
+
+
+def test_relocation_archive_rejects_member_count_while_streaming(tmp_path: Path) -> None:
+    archive = tmp_path / "too-many.tar"
+    with tarfile.open(archive, "w") as bundle:
+        for name in ("bundle/receipt.json", "bundle/result.json"):
+            member = tarfile.TarInfo(name)
+            bundle.addfile(member, io.BytesIO())
+
+    with pytest.raises(ValueError, match="MEMBER_COUNT_EXCEEDED"):
+        numerical_runner._inspect_relocation_archive(
+            archive,
+            max_members=1,
+            max_member_name_bytes=1024,
+            max_member_bytes=1024,
+            max_total_uncompressed_bytes=2048,
+        )
+
+
+@pytest.mark.parametrize(
+    ("max_member_bytes", "max_total_uncompressed_bytes", "message"),
+    ((3, 16, "MEMBER_SIZE_EXCEEDED"), (16, 7, "TOTAL_SIZE_EXCEEDED")),
+)
+def test_relocation_archive_rejects_uncompressed_size_limits(
+    tmp_path: Path,
+    max_member_bytes: int,
+    max_total_uncompressed_bytes: int,
+    message: str,
+) -> None:
+    archive = tmp_path / "oversized-member.tar"
+    payload = b"1234"
+    with tarfile.open(archive, "w") as bundle:
+        for name in ("bundle/receipt.json", "bundle/result.json"):
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            bundle.addfile(member, io.BytesIO(payload))
+
+    with pytest.raises(ValueError, match=message):
+        numerical_runner._inspect_relocation_archive(
+            archive,
+            max_members=10,
+            max_member_name_bytes=1024,
+            max_member_bytes=max_member_bytes,
+            max_total_uncompressed_bytes=max_total_uncompressed_bytes,
+        )
+
+
+def test_relocation_archive_uses_header_size_not_spoofed_owner_fields(tmp_path: Path) -> None:
+    archive = tmp_path / "spoofed-owner.tar"
+    payload = b"x" * 1234
+    with tarfile.open(archive, "w") as bundle:
+        member = tarfile.TarInfo("bundle/receipt.json")
+        member.size = len(payload)
+        member.uname = "123"
+        member.gname = "2026-01-01"
+        bundle.addfile(member, io.BytesIO(payload))
+
+    with pytest.raises(ValueError, match="MEMBER_SIZE_EXCEEDED"):
+        numerical_runner._inspect_relocation_archive(
+            archive,
+            max_members=10,
+            max_member_name_bytes=1024,
+            max_member_bytes=200,
+            max_total_uncompressed_bytes=200,
+        )
+
+
+def test_relocation_archive_rejects_an_oversized_member_name(tmp_path: Path) -> None:
+    archive = tmp_path / "long-name.tar"
+    with tarfile.open(archive, "w") as bundle:
+        member = tarfile.TarInfo("bundle/" + "a" * 200 + "/receipt.json")
+        bundle.addfile(member, io.BytesIO())
+
+    with pytest.raises(ValueError, match="MEMBER_NAME_TOO_LONG"):
+        numerical_runner._inspect_relocation_archive(
+            archive,
+            max_members=10,
+            max_member_name_bytes=64,
+            max_member_bytes=1024,
+            max_total_uncompressed_bytes=2048,
+        )
+
+
+def test_relocation_archive_caps_the_expanded_zstd_stream(tmp_path: Path) -> None:
+    if numerical_runner.shutil.which("zstd") is None:
+        pytest.skip("zstd is required for relocation archive verification")
+    source = tmp_path / "payload.tar"
+    source.write_bytes(b"0" * 4096)
+    compressed = tmp_path / "payload.tar.zst"
+    with compressed.open("wb") as output:
+        subprocess.run(
+            ["zstd", "--compress", "--stdout", str(source)],
+            check=True,
+            stdout=output,
+        )
+
+    with pytest.raises(ValueError, match="EXPANDED_SIZE_EXCEEDED"):
+        numerical_runner._materialize_tar_archive(
+            compressed,
+            tmp_path / "expanded.tar",
+            max_expanded_archive_bytes=1024,
+        )
+
+
+def test_relocation_archive_rejects_missing_zstd_with_a_typed_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compressed = tmp_path / "bundle.tar.zst"
+    compressed.write_bytes(numerical_runner._ZSTD_MAGIC + b"payload")
+    monkeypatch.setattr(numerical_runner.shutil, "which", lambda _name: None)
+
+    with pytest.raises(ValueError, match="ZSTD_UNAVAILABLE"):
+        numerical_runner._materialize_tar_archive(
+            compressed,
+            tmp_path / "expanded.tar",
+            max_expanded_archive_bytes=1024,
+        )
+
+
+def test_relocation_archive_inspects_and_extracts_a_zstd_snapshot(tmp_path: Path) -> None:
+    if numerical_runner.shutil.which("zstd") is None:
+        pytest.skip("zstd is required for relocation archive verification")
+    source = tmp_path / "bundle.tar"
+    payload = b"receipt"
+    with tarfile.open(source, "w") as bundle:
+        member = tarfile.TarInfo("bundle/receipt.json")
+        member.size = len(payload)
+        bundle.addfile(member, io.BytesIO(payload))
+    compressed = tmp_path / "bundle.tar.zst"
+    with compressed.open("wb") as output:
+        subprocess.run(
+            ["zstd", "--compress", "--stdout", str(source)],
+            check=True,
+            stdout=output,
+        )
+
+    expanded = numerical_runner._materialize_tar_archive(
+        compressed,
+        tmp_path / "expanded.tar",
+        max_expanded_archive_bytes=20_000,
+    )
+    members, top_level = numerical_runner._inspect_relocation_archive(
+        expanded,
+        max_members=10,
+        max_member_name_bytes=1024,
+        max_member_bytes=1024,
+        max_total_uncompressed_bytes=2048,
+    )
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+    numerical_runner._extract_relocation_archive(expanded, destination)
+
+    assert members == ("bundle/receipt.json",)
+    assert top_level == "bundle"
+    assert (destination / "bundle" / "receipt.json").read_bytes() == payload
+
+
+def test_relocation_attestation_rejects_pending_contract_before_archive_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        numerical_runner.shutil,
+        "copyfile",
+        lambda *_args, **_kwargs: pytest.fail("archive must not be copied"),
+    )
+
+    with pytest.raises(ValueError, match="HLO_IDENTITIES_PENDING"):
+        numerical_runner._relocation_attestation(
+            tmp_path / "missing.tar",
+            default_seqax_bf16_validation_contract(),
+        )
+
+
+def test_relocation_attestation_rejects_a_symlinked_output_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    (target / "nested").mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(
+        numerical_runner,
+        "_relocation_attestation",
+        lambda *_args: pytest.fail("attestation evaluation must not run"),
+    )
+
+    with pytest.raises(ValueError, match="ATTESTATION_PARENT_INVALID"):
+        numerical_runner.write_seqax_bf16_relocation_attestation(
+            alias / "nested" / "attestation.json",
+            archive=tmp_path / "unused.tar",
+            contract=default_seqax_bf16_validation_contract(),
+        )
+
+
+def test_relocation_runtime_requires_exact_software_and_distinct_architecture() -> None:
+    contract = default_seqax_bf16_validation_contract()
+    expected = contract.runtime
+    producer = numerical_runner.SeqaxBf16Runtime(
+        runtime=numerical_runner.RuntimeIdentity(
+            python=expected.python_major_minor + ".3",
+            jax=expected.jax,
+            jaxlib=expected.jaxlib,
+            libtpu=expected.libtpu,
+            xla=expected.libtpu_init_args,
+        ),
+        ml_dtypes=expected.ml_dtypes,
+        cpu_machine=expected.cpu_machine,
+        cpu_system=expected.cpu_system,
+    )
+    portable = numerical_runner.SeqaxBf16RelocationRuntime(
+        python=expected.python_major_minor + ".3",
+        jax=expected.jax,
+        jaxlib=expected.jaxlib,
+        ml_dtypes=expected.ml_dtypes,
+        machine="arm64",
+        system="Darwin",
+    )
+
+    _require_relocation_runtime(portable, contract, producer)
+    with pytest.raises(ValueError, match="RUNTIME_MISMATCH"):
+        _require_relocation_runtime(
+            portable.model_copy(update={"jax": "0.11.1"}),
+            contract,
+            producer,
+        )
+    with pytest.raises(ValueError, match="ARCHITECTURE_NOT_DISTINCT"):
+        _require_relocation_runtime(
+            portable.model_copy(
+                update={"machine": expected.cpu_machine, "system": expected.cpu_system}
+            ),
+            contract,
+            producer,
+        )
 
 
 def test_runner_requires_the_contract_compilation_source_root(tmp_path: Path) -> None:
@@ -1005,11 +1332,11 @@ def test_runner_refuses_pending_hlo_identities_before_writes(
     assert not root.exists()
 
 
-def test_runner_rejects_a_caller_demoted_pinned_contract_before_writes(
+def test_runner_rejects_a_caller_promoted_pending_contract_before_writes(
     tmp_path: Path,
 ) -> None:
     contract = default_seqax_bf16_validation_contract().model_copy(
-        update={"hlo_identity_status": "pending"}
+        update={"hlo_identity_status": "pinned"}
     )
     root = tmp_path / "run"
 
@@ -1020,11 +1347,15 @@ def test_runner_rejects_a_caller_demoted_pinned_contract_before_writes(
 
 
 def test_bf16_runner_builds_and_replays_a_relocated_receipt() -> None:
+    if numerical_runner.shutil.which("zstd") is None:
+        pytest.skip("zstd is required for relocation lifecycle verification")
     script = r"""
 import hashlib
 import json
 import shutil
 import sqlite3
+import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -1181,6 +1512,17 @@ def runtime(contract):
     )
 
 
+def relocation_runtime():
+    return runner.SeqaxBf16RelocationRuntime(
+        python="3.12.3",
+        jax="0.11.0",
+        jaxlib="0.11.0",
+        ml_dtypes="0.6.0",
+        machine="arm64",
+        system="Darwin",
+    )
+
+
 def device_inventory(devices):
     return tuple(
         runner.SeqaxBf16Device(
@@ -1226,6 +1568,7 @@ runner._execute_outputs = execute_outputs
 runner._source_state = source_state
 runner._source_manifest = source_manifest
 runner._runtime = runtime
+runner._relocation_runtime = relocation_runtime
 runner._device_inventory = device_inventory
 runner._require_clean_repository = lambda root: None
 runner._require_compilation_source_root = lambda root, contract: None
@@ -1235,17 +1578,84 @@ numerical._require_stablehlo_identity = lambda *args, **kwargs: None
 contract = runner.default_seqax_bf16_validation_contract()
 contract = contract.model_copy(update={"hlo_identity_status": "pinned"})
 runner.default_seqax_bf16_validation_contract = lambda: contract
-temporary = Path(tempfile.mkdtemp(prefix="seqax-bf16-lifecycle-"))
+temporary = Path(tempfile.mkdtemp(prefix="seqax-bf16-lifecycle-")).resolve()
 try:
     root = temporary / "run"
     result = runner.run_seqax_bf16_validation(root, contract)
-    assert len(result.observations) == 41
+    assert len(result.observations) == 53
+    assert result.producer_passed
+    assert result.claim_scope == "producer-host-bf16-validation-only-v1"
     assert len(result.discriminators) == len(tuple(numerical.SeqaxNumericalDiscriminator))
     assert not any(value.instrumentation_difference.exact for value in result.observations)
     assert runner.run_seqax_bf16_validation(root, contract) == result
     relocated = temporary / "relocated"
     shutil.copytree(root, relocated)
     runner.validate_seqax_bf16_validation(relocated, contract)
+    archive_tar = temporary / "bundle.tar"
+    with tarfile.open(archive_tar, "w") as bundle:
+        bundle.add(root, arcname="bundle")
+    archive = temporary / "bundle.tar.zst"
+    with archive.open("wb") as output:
+        subprocess.run(
+            ["zstd", "--compress", "--stdout", str(archive_tar)],
+            check=True,
+            stdout=output,
+        )
+    attestation_path = temporary / "relocation-attestation.json"
+    attestation = runner.write_seqax_bf16_relocation_attestation(
+        attestation_path,
+        archive=archive,
+        contract=contract,
+    )
+    assert attestation.status == "portable_accepted"
+    assert attestation.claim_scope == "declared-surface-dual-jax-cpu-bf16-agreement-v2"
+    assert len(attestation.observations) == 53
+    assert (
+        runner.validate_seqax_bf16_relocation_attestation(
+            attestation_path,
+            archive=archive,
+            contract=contract,
+        )
+        == attestation
+    )
+
+    mutated_attestation_path = temporary / "mutated-attestation.json"
+    mutated_attestation = json.loads(attestation_path.read_text())
+    mutated_attestation["observations"][0]["fresh_cpu_sha256"] = "0" * 64
+    mutated_attestation_path.write_text(
+        json.dumps(mutated_attestation, indent=2, sort_keys=True) + "\n"
+    )
+    try:
+        runner.validate_seqax_bf16_relocation_attestation(
+            mutated_attestation_path,
+            archive=archive,
+            contract=contract,
+        )
+    except ValueError as error:
+        assert "SEQAX_BF16_RELOCATION_ATTESTATION_MISMATCH" in str(error)
+    else:
+        raise AssertionError("mutated relocation attestation was accepted")
+
+    changed_archive_tar = temporary / "changed-bundle.tar"
+    with tarfile.open(changed_archive_tar, "w") as bundle:
+        bundle.add(root, arcname="bundle2")
+    changed_archive = temporary / "changed-bundle.tar.zst"
+    with changed_archive.open("wb") as output:
+        subprocess.run(
+            ["zstd", "--compress", "--stdout", str(changed_archive_tar)],
+            check=True,
+            stdout=output,
+        )
+    try:
+        runner.validate_seqax_bf16_relocation_attestation(
+            attestation_path,
+            archive=changed_archive,
+            contract=contract,
+        )
+    except ValueError as error:
+        assert "SEQAX_BF16_RELOCATION_ATTESTATION_MISMATCH" in str(error)
+    else:
+        raise AssertionError("relocation attestation accepted a changed archive")
 
     original_runner_cpu_reference = runner.seqax_forward_canonical_reference
     original_numerical_cpu_reference = numerical.seqax_forward_canonical_reference
@@ -1320,7 +1730,7 @@ try:
     result_mutant = temporary / "result-mutant"
     shutil.copytree(root, result_mutant)
     payload = json.loads((result_mutant / "result.json").read_text())
-    payload["passed"] = False
+    payload["producer_passed"] = False
     (result_mutant / "result.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n"
     )

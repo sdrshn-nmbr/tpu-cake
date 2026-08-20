@@ -20,8 +20,8 @@ from tpu_cake.workloads.seqax_oracle import (
 )
 
 BF16_UNIT_ROUNDOFF = 2.0**-8
-SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v5"
-SEQAX_BF16_HLO_IDENTITY_STATUS = "pinned"
+SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA = "bf16-forward-numerical-v6"
+SEQAX_BF16_HLO_IDENTITY_STATUS = "pending"
 SEQAX_BF16_COMPILATION_SOURCE_ROOT = "/home/sudarshan/tpu-cake-main"
 _CALIBRATION_SCHEMA = "bf16-forward-numerical-v1"
 _V2_CALIBRATION_SCHEMA = "bf16-forward-numerical-v2"
@@ -151,7 +151,7 @@ _V2_CALIBRATION_SEEDS = {
     )
     for name in _V2_CALIBRATION_PARAMETERS
 }
-_HELD_OUT_PARAMETERS = {
+_V5_CALIBRATION_PARAMETERS = {
     "m240-b2-s7-l2": {
         "batch": 2,
         "data_mesh": 2,
@@ -191,6 +191,60 @@ _HELD_OUT_PARAMETERS = {
         "query_groups": 2,
         "rope_max_timescale": 256,
         "sequence": 9,
+        "tensor_mesh": 4,
+        "vocabulary": 64,
+    },
+}
+_V5_CALIBRATION_SEEDS = {
+    name: tuple(
+        semantic_seed(
+            "bf16-forward-numerical-v5",
+            f"{name}:held-out:{index}",
+        )
+        for index in range(4)
+    )
+    for name in _V5_CALIBRATION_PARAMETERS
+}
+_HELD_OUT_PARAMETERS = {
+    "m304-b2-s5-l2": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 76,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 2,
+        "model": 304,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 5,
+        "tensor_mesh": 4,
+        "vocabulary": 64,
+    },
+    "m448-b4-s5-l1": {
+        "batch": 4,
+        "data_mesh": 2,
+        "feed_forward": 56,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 1,
+        "model": 448,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 5,
+        "tensor_mesh": 4,
+        "vocabulary": 64,
+    },
+    "m336-b2-s11-l3": {
+        "batch": 2,
+        "data_mesh": 2,
+        "feed_forward": 84,
+        "head": 4,
+        "key_value_heads": 4,
+        "layers": 3,
+        "model": 336,
+        "query_groups": 2,
+        "rope_max_timescale": 256,
+        "sequence": 11,
         "tensor_mesh": 4,
         "vocabulary": 64,
     },
@@ -255,6 +309,24 @@ _STABLEHLO_SHA256 = {
         "control": "712966e66b048bc426f17c9d309afcfb271e1d021a4c10bde47f116ae4e4cf69",
         "instrumented_pallas": "694fe5098ef05097cdd091ece373f4cddb01903fd6957c4770aedec663279f5b",
         "instrumented_control": "83ef4a7000b7a54833409a19242a0ec30f485df1b734e05d0076ba4820bd0c8d",
+    },
+    "m304-b2-s5-l2": {
+        "pallas": "0" * 64,
+        "control": "0" * 64,
+        "instrumented_pallas": "0" * 64,
+        "instrumented_control": "0" * 64,
+    },
+    "m448-b4-s5-l1": {
+        "pallas": "0" * 64,
+        "control": "0" * 64,
+        "instrumented_pallas": "0" * 64,
+        "instrumented_control": "0" * 64,
+    },
+    "m336-b2-s11-l3": {
+        "pallas": "0" * 64,
+        "control": "0" * 64,
+        "instrumented_pallas": "0" * 64,
+        "instrumented_control": "0" * 64,
     },
 }
 _ACTIVATION_MUTANT_STABLEHLO_SHA256 = {
@@ -436,7 +508,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
     metric_quantization_decimals: int = Field(ge=12, le=15)
     cpu_reference: str = "jax_cpu_reference_v1"
     cpu_reference_quantization_decimals: int = 6
-    cpu_replay_rule: str = "cross_path_numerical_bounds"
+    cpu_replay_rule: str = "cpu_facing_numerical_bounds"
     checkpoint_storage_dtype: str = "uint16"
     checkpoint_logical_dtype: str = "bfloat16"
     checkpoint_encoding: str = "bf16-bit-pattern-v1"
@@ -481,7 +553,7 @@ class SeqaxBf16NumericalPolicy(BaseModel):
             15,
             "jax_cpu_reference_v1",
             6,
-            "cross_path_numerical_bounds",
+            "cpu_facing_numerical_bounds",
             "uint16",
             "bfloat16",
             "bf16-bit-pattern-v1",
@@ -827,27 +899,60 @@ class SeqaxBf16ActivationMutantStablehloContract(BaseModel):
         return self
 
 
+class SeqaxBf16RelocationArchiveLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    max_compressed_bytes: int = Field(gt=0)
+    max_expanded_archive_bytes: int = Field(gt=0)
+    max_members: int = Field(gt=0)
+    max_member_name_bytes: int = Field(gt=0)
+    max_member_bytes: int = Field(gt=0)
+    max_total_uncompressed_bytes: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def limits_are_canonical(self) -> SeqaxBf16RelocationArchiveLimits:
+        if (
+            self.max_compressed_bytes,
+            self.max_expanded_archive_bytes,
+            self.max_members,
+            self.max_member_name_bytes,
+            self.max_member_bytes,
+            self.max_total_uncompressed_bytes,
+        ) != (
+            1_073_741_824,
+            4_831_838_208,
+            10_000,
+            65_536,
+            1_073_741_824,
+            4_294_967_296,
+        ):
+            raise ValueError("Seqax BF16 relocation archive limits are not canonical")
+        return self
+
+
 class SeqaxBf16ValidationContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: str = SEQAX_BF16_FORWARD_NUMERICAL_SCHEMA
     policy: SeqaxBf16NumericalPolicy
-    scenarios: tuple[SeqaxBf16NumericalScenario, ...] = Field(min_length=10, max_length=10)
+    scenarios: tuple[SeqaxBf16NumericalScenario, ...] = Field(min_length=13, max_length=13)
     activation_mutant_stablehlo: tuple[SeqaxBf16ActivationMutantStablehloContract, ...] = Field(
         min_length=2, max_length=2
     )
     required_discriminators: tuple[SeqaxNumericalDiscriminator, ...]
     runtime: SeqaxBf16RuntimeContract
+    relocation_archive_limits: SeqaxBf16RelocationArchiveLimits
     compilation_source_root: str
     hlo_identity_status: str = Field(pattern=r"^(pending|pinned)$")
     backend: str
     device_kind: str
     device_count: int = Field(gt=0)
-    acceptance_authority: str = "authenticated-runner-and-relocated-public-replay"
+    acceptance_authority: str = "authenticated-producer-receipt-and-relocation-attestation"
     checkpoint_capture: str = "typed-strict-rms-mlp-extra-outputs-v4"
     require_normal_output_policy: bool = True
     require_instrumented_output_policy: bool = True
     require_discriminator_artifact_replay: bool = True
+    require_relocation_attestation: bool = True
 
     @model_validator(mode="after")
     def validation_surface_is_canonical(self) -> SeqaxBf16ValidationContract:
@@ -863,9 +968,11 @@ class SeqaxBf16ValidationContract(BaseModel):
             self.require_normal_output_policy,
             self.require_instrumented_output_policy,
             self.require_discriminator_artifact_replay,
+            self.require_relocation_attestation,
         ) != (
-            "authenticated-runner-and-relocated-public-replay",
+            "authenticated-producer-receipt-and-relocation-attestation",
             "typed-strict-rms-mlp-extra-outputs-v4",
+            True,
             True,
             True,
             True,
@@ -882,6 +989,7 @@ class SeqaxBf16ValidationContract(BaseModel):
             "calibration-m256-b2-s1-l1",
             *_CALIBRATION_SURFACE_PARAMETERS,
             *_V2_CALIBRATION_PARAMETERS,
+            *_V5_CALIBRATION_PARAMETERS,
             *_HELD_OUT_PARAMETERS,
         ):
             raise ValueError("Seqax BF16 validation scenarios are not canonical")
@@ -898,6 +1006,10 @@ class SeqaxBf16ValidationContract(BaseModel):
                 expected_role = SeqaxNumericalScenarioRole.CALIBRATION
                 expected_parameters = _V2_CALIBRATION_PARAMETERS[scenario.name]
                 expected_seeds = _V2_CALIBRATION_SEEDS[scenario.name]
+            elif scenario.name in _V5_CALIBRATION_PARAMETERS:
+                expected_role = SeqaxNumericalScenarioRole.CALIBRATION
+                expected_parameters = _V5_CALIBRATION_PARAMETERS[scenario.name]
+                expected_seeds = _V5_CALIBRATION_SEEDS[scenario.name]
             else:
                 expected_role = SeqaxNumericalScenarioRole.HELD_OUT
                 expected_parameters = _HELD_OUT_PARAMETERS.get(scenario.name)
@@ -1158,6 +1270,49 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
                 **scenario_hlo(name),
             )
         )
+    for name, raw_parameters in _V5_CALIBRATION_PARAMETERS.items():
+        parameters = SeqaxBf16ScenarioParameters(**raw_parameters)
+        (
+            inputs,
+            output,
+            rms_inputs,
+            rms_mean_square,
+            rms_inverse,
+            normalized_float32,
+            normalized_inputs,
+            gate_float32,
+            gates,
+            silu,
+            up_float32,
+            up,
+            hidden,
+            down_float32,
+            down_bfloat16,
+        ) = _scenario_abi(parameters)
+        scenarios.append(
+            SeqaxBf16NumericalScenario(
+                name=name,
+                role=SeqaxNumericalScenarioRole.CALIBRATION,
+                parameters=parameters,
+                seeds=_V5_CALIBRATION_SEEDS[name],
+                inputs=inputs,
+                output=output,
+                rms_input_checkpoints=rms_inputs,
+                rms_mean_square_checkpoints=rms_mean_square,
+                rms_inverse_checkpoints=rms_inverse,
+                normalized_float32_checkpoints=normalized_float32,
+                normalized_input_checkpoints=normalized_inputs,
+                gate_float32_checkpoints=gate_float32,
+                gate_checkpoints=gates,
+                silu_checkpoints=silu,
+                up_float32_checkpoints=up_float32,
+                up_checkpoints=up,
+                hidden_checkpoints=hidden,
+                down_float32_checkpoints=down_float32,
+                down_bfloat16_checkpoints=down_bfloat16,
+                **scenario_hlo(name),
+            )
+        )
     for name, raw_parameters in _HELD_OUT_PARAMETERS.items():
         parameters = SeqaxBf16ScenarioParameters(**raw_parameters)
         (
@@ -1238,6 +1393,14 @@ def default_seqax_bf16_validation_contract() -> SeqaxBf16ValidationContract:
             cpu_system="Linux",
             libtpu_init_args=" --xla_tpu_use_enhanced_launch_barrier=true",
             uv_lock_sha256="7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b",
+        ),
+        relocation_archive_limits=SeqaxBf16RelocationArchiveLimits(
+            max_compressed_bytes=1_073_741_824,
+            max_expanded_archive_bytes=4_831_838_208,
+            max_members=10_000,
+            max_member_name_bytes=65_536,
+            max_member_bytes=1_073_741_824,
+            max_total_uncompressed_bytes=4_294_967_296,
         ),
         compilation_source_root=SEQAX_BF16_COMPILATION_SOURCE_ROOT,
         hlo_identity_status=SEQAX_BF16_HLO_IDENTITY_STATUS,
@@ -1597,7 +1760,7 @@ def assess_seqax_cpu_reference_replay(
     policy: SeqaxBf16NumericalPolicy,
     scenario: SeqaxBf16NumericalScenario,
 ) -> SeqaxBf16CpuReferenceReplayAssessment:
-    if policy.cpu_replay_rule != "cross_path_numerical_bounds":
+    if policy.cpu_replay_rule != "cpu_facing_numerical_bounds":
         raise ValueError("Seqax BF16 CPU replay rule is not supported")
     arrays = tuple(np.asarray(value) for value in (saved, fresh))
     if len({value.shape for value in arrays}) != 1 or arrays[0].shape != scenario.output.shape:
@@ -1629,10 +1792,8 @@ def assess_seqax_cpu_reference_replay(
         quantization_decimals=policy.metric_quantization_decimals,
     )
     depth_scale = policy.depth_scale(scenario.parameters.layers)
-    relative_l2_limit = policy.cross_path_relative_l2_units * policy.unit_roundoff * depth_scale
-    row_scaled_max_limit = (
-        policy.cross_path_row_scaled_max_units * policy.unit_roundoff * depth_scale
-    )
+    relative_l2_limit = policy.cpu_relative_l2_units * policy.unit_roundoff * depth_scale
+    row_scaled_max_limit = policy.cpu_row_scaled_max_units * policy.unit_roundoff * depth_scale
     return SeqaxBf16CpuReferenceReplayAssessment(
         saved_to_fresh_relative_l2=saved_to_fresh_relative_l2,
         fresh_to_saved_relative_l2=fresh_to_saved_relative_l2,
