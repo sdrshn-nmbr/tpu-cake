@@ -504,10 +504,10 @@ def test_bf16_forward_contract_binds_surface_abi_and_held_out_seeds() -> None:
     )
 
 
-def test_bf16_forward_contract_requires_fresh_hlo_identities() -> None:
+def test_bf16_forward_contract_pins_fresh_hlo_identities() -> None:
     contract = default_seqax_bf16_validation_contract()
 
-    assert contract.hlo_identity_status == "pending"
+    assert contract.hlo_identity_status == "pinned"
     assert contract.acceptance_authority == "authenticated-runner-and-relocated-public-replay"
     assert contract.compilation_source_root == "/home/sudarshan/tpu-cake-main"
     assert contract.checkpoint_capture == "typed-strict-mlp-extra-outputs-v3"
@@ -522,7 +522,7 @@ def test_tracked_bf16_forward_contract_matches_the_canonical_factory() -> None:
 
     assert SeqaxBf16ValidationContract.model_validate_json(path.read_text()) == contract
     assert (
-        contract.contract_id == "7aabc9409b4d32856edd15b83fe58a774234e55a881a0193518ce017a81499d8"
+        contract.contract_id == "0455ed3262824f94d686717179a47fbce88472463b66e208d788d13d64ecbcf0"
     )
 
 
