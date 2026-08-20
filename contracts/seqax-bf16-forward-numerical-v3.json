@@ -18,7 +18,6 @@
     "checkpoint_encoding": "bf16-bit-pattern-v1",
     "require_float32_output": true,
     "require_finite_output": true,
-    "checkpoint_cross_path_max_ulp": 1,
     "mathematical_silu_max_ulp": 1
   },
   "scenarios": [
@@ -172,6 +171,28 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            1,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -192,6 +213,17 @@
             16
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            1,
+            16
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -392,6 +424,46 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            3,
+            128
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -430,6 +502,26 @@
             24
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            3,
+            24
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -666,6 +758,28 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            4,
+            2,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -686,6 +800,17 @@
             32
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            4,
+            2,
+            32
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -886,6 +1011,28 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            2,
+            384
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -906,6 +1053,17 @@
             24
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            2,
+            24
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -1106,6 +1264,46 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            4,
+            192
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -1144,6 +1342,26 @@
             32
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            4,
+            32
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -1380,6 +1598,28 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            4,
+            3,
+            320
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -1400,6 +1640,17 @@
             40
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            4,
+            3,
+            40
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -1600,6 +1851,82 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_03_normalized_input",
+          "shape": [
+            2,
+            8,
+            256
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_gate_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -1674,6 +2001,44 @@
             32
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_03_up_float32",
+          "shape": [
+            2,
+            8,
+            32
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -1982,6 +2347,46 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            4,
+            5,
+            224
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            4,
+            5,
+            224
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            4,
+            5,
+            56
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            4,
+            5,
+            56
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -2020,6 +2425,26 @@
             56
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            4,
+            5,
+            56
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            4,
+            5,
+            56
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -2256,6 +2681,28 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            2,
+            6,
+            352
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            2,
+            6,
+            44
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -2276,6 +2723,17 @@
             44
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            2,
+            6,
+            44
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -2476,6 +2934,64 @@
         ],
         "dtype": "float32"
       },
+      "normalized_input_checkpoints": [
+        {
+          "name": "layer_00_normalized_input",
+          "shape": [
+            4,
+            4,
+            288
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_01_normalized_input",
+          "shape": [
+            4,
+            4,
+            288
+          ],
+          "dtype": "bfloat16"
+        },
+        {
+          "name": "layer_02_normalized_input",
+          "shape": [
+            4,
+            4,
+            288
+          ],
+          "dtype": "bfloat16"
+        }
+      ],
+      "gate_float32_checkpoints": [
+        {
+          "name": "layer_00_gate_float32",
+          "shape": [
+            4,
+            4,
+            48
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_gate_float32",
+          "shape": [
+            4,
+            4,
+            48
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_gate_float32",
+          "shape": [
+            4,
+            4,
+            48
+          ],
+          "dtype": "float32"
+        }
+      ],
       "gate_checkpoints": [
         {
           "name": "layer_00_gate",
@@ -2532,6 +3048,35 @@
             48
           ],
           "dtype": "bfloat16"
+        }
+      ],
+      "up_float32_checkpoints": [
+        {
+          "name": "layer_00_up_float32",
+          "shape": [
+            4,
+            4,
+            48
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_01_up_float32",
+          "shape": [
+            4,
+            4,
+            48
+          ],
+          "dtype": "float32"
+        },
+        {
+          "name": "layer_02_up_float32",
+          "shape": [
+            4,
+            4,
+            48
+          ],
+          "dtype": "float32"
         }
       ],
       "up_checkpoints": [
@@ -2674,6 +3219,13 @@
     "remove_hidden_barrier",
     "identity_silu",
     "relu_silu",
+    "forged_normalized_input",
+    "wrong_gate_weight_checkpoint",
+    "corrupt_gate_float32_checkpoint",
+    "corrupt_gate_bfloat16_checkpoint",
+    "wrong_up_weight_checkpoint",
+    "corrupt_up_float32_checkpoint",
+    "corrupt_up_bfloat16_checkpoint",
     "corrupt_down_checkpoint",
     "drop_reduction_collective",
     "drop_embedding_shard",
@@ -2696,7 +3248,7 @@
     "uv_lock_sha256": "7790b780e29c426595854b93c7bbde10571afe93bc13134c3ebc83df5e4f4c7b"
   },
   "compilation_source_root": "/home/sudarshan/tpu-cake-main",
-  "hlo_identity_status": "pinned",
+  "hlo_identity_status": "pending",
   "backend": "tpu",
   "device_kind": "TPU7x",
   "device_count": 8,

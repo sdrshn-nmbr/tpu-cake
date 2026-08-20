@@ -95,7 +95,10 @@ def _vector_compute(
     values: tuple[jax.Array, ...],
     mesh: dict[str, int],
     strict_mlp_checkpoints: list[list[jax.Array]] | None = None,
+    strict_normalized_input: jax.Array | None = None,
+    strict_gate_float32: jax.Array | None = None,
     strict_up_index: int | None = None,
+    strict_up_float32: jax.Array | None = None,
     pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
     | None = None,
 ) -> jax.Array:
@@ -231,17 +234,24 @@ def _vector_compute(
         result = jax.lax.optimization_barrier(result)
     if strict_materialization and strict_mlp_checkpoints is not None:
         if function == "silu":
-            strict_mlp_checkpoints.append([values[0], result])
+            if strict_normalized_input is None or strict_gate_float32 is None:
+                raise UnsupportedPhysicalExecutionError(
+                    "strict SiLU must bind its normalized input and float32 gate projection"
+                )
+            strict_mlp_checkpoints.append(
+                [strict_normalized_input, strict_gate_float32, values[0], result]
+            )
         elif function == "multiply":
             if (
                 not strict_mlp_checkpoints
-                or len(strict_mlp_checkpoints[-1]) != 2
+                or len(strict_mlp_checkpoints[-1]) != 4
                 or strict_up_index not in {0, 1}
+                or strict_up_float32 is None
             ):
                 raise UnsupportedPhysicalExecutionError(
                     "strict hidden multiply must follow its strict SiLU"
                 )
-            strict_mlp_checkpoints[-1].extend((values[strict_up_index], result))
+            strict_mlp_checkpoints[-1].extend((strict_up_float32, values[strict_up_index], result))
     if tuple(result.shape) != output_type.storage.get_shape():
         raise UnsupportedPhysicalExecutionError(
             f"physical {function} produced {tuple(result.shape)}, "
@@ -304,6 +314,7 @@ def execute_seqax_physical_program_jax(
                 f"{jnp.dtype(_dtype(argument_type))}"
             )
     environment: dict[SSAValue, jax.Array] = dict(zip(input_arguments, inputs, strict=True))
+    buffer_writers: dict[SSAValue, object] = {}
     pending_dma: dict[SSAValue, jax.Array] = {}
     external_outputs: dict[SSAValue, jax.Array] = {}
     mesh = dict(
@@ -329,15 +340,40 @@ def execute_seqax_physical_program_jax(
             assert isinstance(start, DmaStartOp)
             value = pending_dma.pop(operation.token)
             environment[start.destination] = value
+            buffer_writers[start.destination] = start
             if start.destination in output_arguments:
                 external_outputs[start.destination] = value
             continue
         if isinstance(operation, VectorComputeOp):
             values = tuple(environment[value] for value in operation.inputs)
+            strict_normalized_input = None
+            strict_gate_float32 = None
             strict_up_index = None
+            strict_up_float32 = None
+            if (
+                strict_mlp_checkpoints is not None
+                and operation.function.data == "silu"
+                and operation.materialization is not None
+            ):
+                gate_cast = buffer_writers.get(operation.inputs[0])
+                if (
+                    not isinstance(gate_cast, VectorComputeOp)
+                    or gate_cast.function.data != "cast"
+                    or len(gate_cast.inputs) != 1
+                ):
+                    raise UnsupportedPhysicalExecutionError(
+                        "strict SiLU gate must come from a casted projection"
+                    )
+                gate_projection = buffer_writers.get(gate_cast.inputs[0])
+                if not isinstance(gate_projection, MxuEinsumOp):
+                    raise UnsupportedPhysicalExecutionError(
+                        "strict SiLU gate must come from an MXU projection"
+                    )
+                strict_normalized_input = environment[gate_projection.lhs]
+                strict_gate_float32 = environment[gate_cast.inputs[0]]
             if (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 2
+                and len(strict_mlp_checkpoints[-1]) == 4
                 and operation.function.data == "multiply"
                 and operation.materialization is not None
             ):
@@ -351,32 +387,47 @@ def execute_seqax_physical_program_jax(
                         "strict hidden multiply must consume one strict SiLU"
                     )
                 strict_up_index = 1 - silu_indices[0]
+                up_cast = buffer_writers.get(operation.inputs[strict_up_index])
+                if (
+                    not isinstance(up_cast, VectorComputeOp)
+                    or up_cast.function.data != "cast"
+                    or len(up_cast.inputs) != 1
+                    or not isinstance(buffer_writers.get(up_cast.inputs[0]), MxuEinsumOp)
+                ):
+                    raise UnsupportedPhysicalExecutionError(
+                        "strict hidden up operand must come from a casted MXU projection"
+                    )
+                strict_up_float32 = environment[up_cast.inputs[0]]
             result = _vector_compute(
                 operation,
                 values,
                 mesh,
                 strict_mlp_checkpoints,
+                strict_normalized_input,
+                strict_gate_float32,
                 strict_up_index,
+                strict_up_float32,
                 pallas_silu_multiply,
             )
             environment[operation.output] = result
+            buffer_writers[operation.output] = operation
             if (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 2
+                and len(strict_mlp_checkpoints[-1]) == 4
                 and operation.function.data == "silu"
                 and operation.materialization is not None
             ):
                 strict_silu_buffer = operation.output
             elif (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 4
+                and len(strict_mlp_checkpoints[-1]) == 7
                 and operation.function.data == "multiply"
                 and operation.materialization is not None
             ):
                 strict_hidden_buffer = operation.output
             elif (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 5
+                and len(strict_mlp_checkpoints[-1]) == 8
                 and strict_down_reduced_buffer is not None
                 and tuple(operation.inputs) == (strict_down_reduced_buffer,)
                 and operation.function.data == "cast"
@@ -393,6 +444,7 @@ def execute_seqax_physical_program_jax(
                 environment[operation.lhs],
                 environment[operation.rhs],
             )
+            buffer_writers[operation.accumulator] = operation
             if strict_hidden_buffer is not None and operation.lhs == strict_hidden_buffer:
                 strict_down_partial_buffer = operation.accumulator
             continue
@@ -431,9 +483,10 @@ def execute_seqax_physical_program_jax(
                     f"unsupported physical collective {operation.kind.data}"
                 )
             environment[operation.destination] = result
+            buffer_writers[operation.destination] = operation
             if (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 4
+                and len(strict_mlp_checkpoints[-1]) == 7
                 and operation.kind.data is CollectiveKind.REDUCE_SCATTER
                 and strict_down_partial_buffer is not None
                 and operation.source == strict_down_partial_buffer

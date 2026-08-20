@@ -170,15 +170,50 @@ with tempfile.TemporaryDirectory() as temporary:
     )
 checkpoint_return = next(
     line for line in compiled.stablehlo.splitlines()
-    if "sdy.return" in line and line.count("xbf16") == 10
+    if "sdy.return" in line and line.count(",") >= 8
 )
 match = re.search(
-    r"sdy.return (?P<output>%[A-Za-z0-9_]+), (?P<gate>%[A-Za-z0-9_]+), "
-    r"(?P<silu>%[A-Za-z0-9_]+), (?P<up>%[A-Za-z0-9_]+), "
-    r"(?P<hidden>%[A-Za-z0-9_]+),",
+    r"sdy.return (?P<output>%[A-Za-z0-9_]+), "
+    r"(?P<normalized>%[A-Za-z0-9_]+), (?P<gate_float32>%[A-Za-z0-9_]+), "
+    r"(?P<gate>%[A-Za-z0-9_]+), "
+    r"(?P<silu>%[A-Za-z0-9_]+), (?P<up_float32>%[A-Za-z0-9_]+), "
+    r"(?P<up_bfloat16>%[A-Za-z0-9_]+), (?P<hidden>%[A-Za-z0-9_]+), "
+    r"(?P<down_float32>%[A-Za-z0-9_]+), (?P<down_bfloat16>%[A-Za-z0-9_]+)",
     checkpoint_return,
 )
 assert match is not None
+normalized_mutant_return = checkpoint_return.replace(
+    f", {match.group('normalized')}, {match.group('gate_float32')},",
+    f", {match.group('gate')}, {match.group('gate_float32')},",
+)
+normalized_mutant = compiled.stablehlo.replace(checkpoint_return, normalized_mutant_return)
+try:
+    _validate_strict_silu_stablehlo(
+        normalized_mutant,
+        expected_count=parameters["layers"],
+        instrumented=True,
+    )
+except ValueError:
+    pass
+else:
+    raise AssertionError("instrumented executable accepted a forged normalized input output")
+gate_float32_mutant_return = checkpoint_return.replace(
+    f", {match.group('gate_float32')}, {match.group('gate')},",
+    f", {match.group('up_float32')}, {match.group('gate')},",
+)
+gate_float32_mutant = compiled.stablehlo.replace(
+    checkpoint_return, gate_float32_mutant_return
+)
+try:
+    _validate_strict_silu_stablehlo(
+        gate_float32_mutant,
+        expected_count=parameters["layers"],
+        instrumented=True,
+    )
+except ValueError:
+    pass
+else:
+    raise AssertionError("instrumented executable accepted a forged float32 gate output")
 mutant_return = checkpoint_return.replace(
     f", {match.group('gate')}, {match.group('silu')},",
     f", {match.group('silu')}, {match.group('silu')},",
@@ -195,8 +230,8 @@ except ValueError:
 else:
     raise AssertionError("instrumented executable accepted a forged gate output")
 hidden_mutant_return = checkpoint_return.replace(
-    f", {match.group('up')}, {match.group('hidden')},",
-    f", {match.group('up')}, {match.group('silu')},",
+    f", {match.group('up_bfloat16')}, {match.group('hidden')},",
+    f", {match.group('up_bfloat16')}, {match.group('silu')},",
 )
 hidden_mutant = compiled.stablehlo.replace(checkpoint_return, hidden_mutant_return)
 try:
@@ -249,7 +284,7 @@ else:
     raise AssertionError("instrumented executable accepted a hidden barrier bypass")
 outer_return = next(
     line for line in compiled.stablehlo.splitlines()
-    if "return %0#0, %0#1, %0#2, %0#3, %0#4, %0#5, %0#6, %0#7, %0#8, %0#9, %0#10, %0#11, %0#12" in line
+    if "return " + ", ".join(f"%0#{index}" for index in range(19)) in line
 )
 mutant = compiled.stablehlo.replace(
     outer_return,
@@ -267,21 +302,28 @@ else:
     raise AssertionError("instrumented executable accepted a dropped gate result")
 resident = _resident_inputs(inputs, plan, compiled.mesh)
 outputs = _execute_outputs(compiled.executable, resident)
-assert tuple(value.shape for value in outputs) == (
+actual_shapes = tuple(value.shape for value in outputs)
+assert actual_shapes == (
     (2, 3, 32),
+    (2, 3, 128),
+    (2, 3, 24),
+    (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 128),
     (2, 3, 128),
+    (2, 3, 128),
+    (2, 3, 24),
+    (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 24),
     (2, 3, 128),
     (2, 3, 128),
-)
+), actual_shapes
 """
     environment = os.environ.copy()
     environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
@@ -344,15 +386,19 @@ _validate_strict_silu_stablehlo(
 )
 resident = _resident_inputs(inputs, plan, compiled.mesh)
 outputs = _execute_outputs(compiled.executable, resident)
-assert tuple((value.shape, str(value.dtype)) for value in outputs) == (
+actual_outputs = tuple((value.shape, str(value.dtype)) for value in outputs)
+assert actual_outputs == (
+        ((2, 1, 16), "float32"),
+        ((2, 1, 256), "bfloat16"),
+        ((2, 1, 16), "float32"),
+        ((2, 1, 16), "bfloat16"),
+    ((2, 1, 16), "bfloat16"),
     ((2, 1, 16), "float32"),
-    ((2, 1, 16), "bfloat16"),
-    ((2, 1, 16), "bfloat16"),
     ((2, 1, 16), "bfloat16"),
     ((2, 1, 16), "bfloat16"),
     ((2, 1, 256), "float32"),
     ((2, 1, 256), "bfloat16"),
-)
+), actual_outputs
 """
     environment = os.environ.copy()
     environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
@@ -384,7 +430,12 @@ def test_runner_numerical_discriminators_target_the_named_clause() -> None:
         )
     )
     gate = np.zeros(scenario.gate_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
+    gate_float32 = np.zeros(scenario.gate_float32_checkpoints[0].shape, dtype=np.float32)
+    normalized_input = np.zeros(
+        scenario.normalized_input_checkpoints[0].shape, dtype=ml_dtypes.bfloat16
+    )
     silu = gate.copy()
+    up_float32 = np.zeros(scenario.up_float32_checkpoints[0].shape, dtype=np.float32)
     up = gate.copy()
     hidden = np.zeros(scenario.hidden_checkpoints[0].shape, dtype=ml_dtypes.bfloat16)
     down_float32 = np.zeros(scenario.down_float32_checkpoints[0].shape, dtype=np.float32)
@@ -399,8 +450,11 @@ def test_runner_numerical_discriminators_target_the_named_clause() -> None:
         scenario=scenario,
         seed=seed,
         inputs=inputs,
+        normalized_inputs=(normalized_input,),
+        gate_float32=(gate_float32,),
         gates=(gate,),
         silus=(silu,),
+        up_float32=(up_float32,),
         up=(up,),
         hidden=(hidden,),
         down_float32=(down_float32,),
@@ -864,11 +918,11 @@ def test_runner_refuses_pending_hlo_identities_before_writes(
     assert not root.exists()
 
 
-def test_runner_rejects_a_caller_demoted_pinned_contract_before_writes(
+def test_runner_rejects_a_caller_promoted_pending_contract_before_writes(
     tmp_path: Path,
 ) -> None:
     contract = default_seqax_bf16_validation_contract().model_copy(
-        update={"hlo_identity_status": "pending"}
+        update={"hlo_identity_status": "pinned"}
     )
     root = tmp_path / "run"
 
@@ -991,12 +1045,14 @@ def execute_outputs(executable, inputs):
     outputs = list(original_execute_outputs(executable, inputs))
     if len(outputs) > 1:
         outputs[0] = outputs[0] + np.float32(1e-5)
-        for gate_index in range(1, len(outputs), 6):
-            outputs[gate_index + 1] = rounded_mathematical_silu_bf16(outputs[gate_index])
-            outputs[gate_index + 3] = np.asarray(
-                outputs[gate_index + 1].astype(np.float32)
-                * outputs[gate_index + 2].astype(np.float32),
-                dtype=outputs[gate_index + 3].dtype,
+        for checkpoint_index in range(1, len(outputs), 9):
+            outputs[checkpoint_index + 3] = rounded_mathematical_silu_bf16(
+                outputs[checkpoint_index + 2]
+            )
+            outputs[checkpoint_index + 6] = np.asarray(
+                outputs[checkpoint_index + 3].astype(np.float32)
+                * outputs[checkpoint_index + 5].astype(np.float32),
+                dtype=outputs[checkpoint_index + 6].dtype,
             )
     return tuple(outputs)
 
@@ -1095,7 +1151,7 @@ try:
     root = temporary / "run"
     result = runner.run_seqax_bf16_validation(root, contract)
     assert len(result.observations) == 41
-    assert len(result.discriminators) == 16
+    assert len(result.discriminators) == 23
     assert not any(value.instrumentation_difference.exact for value in result.observations)
     assert runner.run_seqax_bf16_validation(root, contract) == result
     relocated = temporary / "relocated"

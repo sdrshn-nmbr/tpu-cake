@@ -244,7 +244,7 @@ def _execute_block(
                     scatter_dimension=scatter_dimension,
                     tiled=True,
                 )
-            if strict_mlp_checkpoints and len(strict_mlp_checkpoints[-1]) == 4:
+            if strict_mlp_checkpoints and len(strict_mlp_checkpoints[-1]) == 7:
                 producer = operation.value.owner
                 if isinstance(producer, (EinsumOp, EinsumLocalOp)):
                     hidden = producer.lhs.owner
@@ -260,7 +260,7 @@ def _execute_block(
             result = _cast(environment[operation.value], result_type)
             if (
                 strict_mlp_checkpoints
-                and len(strict_mlp_checkpoints[-1]) == 5
+                and len(strict_mlp_checkpoints[-1]) == 8
                 and isinstance(operation.value.owner, ReduceScatterOp)
             ):
                 strict_mlp_checkpoints[-1].append(result)
@@ -395,9 +395,26 @@ def _execute_block(
                 result = jax.lax.optimization_barrier(result)
             if strict_materialization and strict_mlp_checkpoints is not None:
                 if function == "silu":
-                    strict_mlp_checkpoints.append([values[0], result])
+                    gate_cast = operation.values[0].owner
+                    if not isinstance(gate_cast, CastOp):
+                        raise UnsupportedInterpretationError(
+                            "strict SiLU gate must come from a casted projection"
+                        )
+                    gate_projection = gate_cast.value.owner
+                    if not isinstance(gate_projection, (EinsumOp, EinsumLocalOp)):
+                        raise UnsupportedInterpretationError(
+                            "strict SiLU gate must come from an einsum projection"
+                        )
+                    strict_mlp_checkpoints.append(
+                        [
+                            environment[gate_projection.lhs],
+                            environment[gate_cast.value],
+                            values[0],
+                            result,
+                        ]
+                    )
                 elif function == "multiply":
-                    if not strict_mlp_checkpoints or len(strict_mlp_checkpoints[-1]) != 2:
+                    if not strict_mlp_checkpoints or len(strict_mlp_checkpoints[-1]) != 4:
                         raise UnsupportedInterpretationError(
                             "strict hidden multiply must follow its strict SiLU"
                         )
@@ -413,7 +430,18 @@ def _execute_block(
                             "strict hidden multiply must consume one strict SiLU"
                         )
                     up_index = 1 - silu_indices[0]
-                    strict_mlp_checkpoints[-1].extend((values[up_index], result))
+                    up_cast = operation.values[up_index].owner
+                    if not isinstance(up_cast, CastOp):
+                        raise UnsupportedInterpretationError(
+                            "strict hidden up operand must come from a casted projection"
+                        )
+                    if not isinstance(up_cast.value.owner, (EinsumOp, EinsumLocalOp)):
+                        raise UnsupportedInterpretationError(
+                            "strict hidden up operand must come from an einsum projection"
+                        )
+                    strict_mlp_checkpoints[-1].extend(
+                        (environment[up_cast.value], values[up_index], result)
+                    )
         elif isinstance(operation, LayerScanOp):
             captures = tuple(environment[value] for value in operation.captures)
             carries = captures[: operation.carry_count.data]
@@ -588,7 +616,7 @@ def execute_distributed_program_jax_sharded_with_strict_mlp(
     )
     if outputs is None:
         raise UnsupportedInterpretationError("distributed program did not return")
-    if any(len(checkpoint) != 6 for checkpoint in checkpoints):
+    if any(len(checkpoint) != 9 for checkpoint in checkpoints):
         raise UnsupportedInterpretationError("strict MLP checkpoint set is incomplete")
     return outputs, tuple(tuple(checkpoint) for checkpoint in checkpoints)
 

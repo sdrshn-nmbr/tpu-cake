@@ -390,7 +390,7 @@ class SeqaxPallasPlan:
         interpret: bool,
         devices,
         strict_mlp_layers: int,
-        checkpoint_spec: PartitionSpec | None,
+        checkpoint_specs: tuple[PartitionSpec, ...] | None,
     ):
         _distributed, physical = self._validated_modules()
         selected_devices = tuple(devices or jax.devices())
@@ -498,7 +498,7 @@ class SeqaxPallasPlan:
             if checkpoints is None:
                 return outputs
             if len(checkpoints) != strict_mlp_layers or any(
-                len(checkpoint) != 6 for checkpoint in checkpoints
+                len(checkpoint) != 9 for checkpoint in checkpoints
             ):
                 raise ValueError(
                     f"strict MLP expected {strict_mlp_layers} complete checkpoints, "
@@ -508,9 +508,9 @@ class SeqaxPallasPlan:
 
         output_specs = tuple(contract.partition_spec() for contract in self.output_contracts)
         if strict_mlp_layers:
-            if checkpoint_spec is None:
-                raise ValueError("strict MLP checkpoint sharding must be explicit")
-            output_specs += (checkpoint_spec,) * (6 * strict_mlp_layers)
+            if checkpoint_specs is None or len(checkpoint_specs) != 9:
+                raise ValueError("strict MLP needs exactly nine checkpoint shardings")
+            output_specs += checkpoint_specs * strict_mlp_layers
 
         mapped = jax.shard_map(
             physical_call,
@@ -526,7 +526,7 @@ class SeqaxPallasPlan:
             interpret=interpret,
             devices=devices,
             strict_mlp_layers=0,
-            checkpoint_spec=None,
+            checkpoint_specs=None,
         )
 
     def build(self, *, interpret: bool = False, devices=None):
@@ -537,7 +537,7 @@ class SeqaxPallasPlan:
         self,
         *,
         expected_layers: int,
-        checkpoint_spec: PartitionSpec,
+        checkpoint_specs: tuple[PartitionSpec, ...],
         interpret: bool = False,
         devices=None,
     ):
@@ -547,7 +547,7 @@ class SeqaxPallasPlan:
             interpret=interpret,
             devices=devices,
             strict_mlp_layers=expected_layers,
-            checkpoint_spec=checkpoint_spec,
+            checkpoint_specs=checkpoint_specs,
         )
         return jax.jit(mapped), mesh
 

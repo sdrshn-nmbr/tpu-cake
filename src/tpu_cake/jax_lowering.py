@@ -452,11 +452,13 @@ class JaxDistributedMeshPlan:
         self,
         *,
         expected_layers: int,
-        checkpoint_spec: PartitionSpec,
+        checkpoint_specs: tuple[PartitionSpec, ...],
         devices=None,
     ):
         if expected_layers <= 0:
             raise ValueError("strict MLP checkpoint count must be positive")
+        if len(checkpoint_specs) != 9:
+            raise ValueError("strict MLP needs exactly nine checkpoint shardings")
         selected_devices = tuple(devices or jax.devices())
         if len(selected_devices) != self.device_count:
             raise ValueError(
@@ -478,7 +480,7 @@ class JaxDistributedMeshPlan:
                 module, inputs
             )
             if len(checkpoints) != expected_layers or any(
-                len(checkpoint) != 6 for checkpoint in checkpoints
+                len(checkpoint) != 9 for checkpoint in checkpoints
             ):
                 raise ValueError(
                     f"strict MLP expected {expected_layers} complete checkpoints, "
@@ -486,12 +488,12 @@ class JaxDistributedMeshPlan:
                 )
             return (*outputs, *(value for checkpoint in checkpoints for value in checkpoint))
 
-        checkpoint_specs = (checkpoint_spec,) * (6 * expected_layers)
+        result_checkpoint_specs = checkpoint_specs * expected_layers
         mapped = jax.shard_map(
             execute,
             mesh=mesh,
             in_specs=self.input_partition_specs,
-            out_specs=(*self.output_partition_specs, *checkpoint_specs),
+            out_specs=(*self.output_partition_specs, *result_checkpoint_specs),
             check_vma=False,
         )
         return jax.jit(mapped), mesh
