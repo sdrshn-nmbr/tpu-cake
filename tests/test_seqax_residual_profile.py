@@ -50,9 +50,9 @@ def test_seqax_residual_profile_external_contract_matches_factory() -> None:
     expected = default_seqax_residual_profile_contract(saved.runtime)
 
     assert saved == expected
-    assert saved.hlo_identity_status == "pending"
+    assert saved.hlo_identity_status == "pinned"
     assert all(
-        value == "0" * 64
+        value != "0" * 64
         for candidate in saved.candidates
         for value in (
             candidate.pallas_stablehlo_sha256,
@@ -63,8 +63,28 @@ def test_seqax_residual_profile_external_contract_matches_factory() -> None:
     )
 
 
-def test_seqax_residual_profile_pending_contract_refuses_before_writes(tmp_path: Path) -> None:
-    contract = default_seqax_residual_profile_contract(_runtime_identity())
+def test_seqax_residual_profile_pending_contract_refuses_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pinned = default_seqax_residual_profile_contract(_runtime_identity())
+    pending_candidates = tuple(
+        value.model_copy(
+            update={
+                "pallas_stablehlo_sha256": "0" * 64,
+                "pallas_compiler_hlo_sha256": "0" * 64,
+                "control_stablehlo_sha256": "0" * 64,
+                "control_compiler_hlo_sha256": "0" * 64,
+            }
+        )
+        for value in pinned.candidates
+    )
+    contract = pinned.model_copy(
+        update={"hlo_identity_status": "pending", "candidates": pending_candidates}
+    )
+    monkeypatch.setattr(
+        profile_runner, "default_seqax_residual_profile_contract", lambda _runtime=None: contract
+    )
     root = tmp_path / "run"
 
     with pytest.raises(ValueError, match="HLO_IDENTITIES_PENDING"):
@@ -205,12 +225,12 @@ def test_seqax_residual_profile_rejects_output_inside_repository() -> None:
     assert not root.exists()
 
 
-def test_seqax_residual_profile_contract_rejects_a_caller_pinned_placeholder() -> None:
+def test_seqax_residual_profile_contract_rejects_a_caller_demoted_nonzero_contract() -> None:
     contract = default_seqax_residual_profile_contract(_runtime_identity())
     payload = contract.model_dump(mode="json", exclude_computed_fields=True)
-    payload["hlo_identity_status"] = "pinned"
+    payload["hlo_identity_status"] = "pending"
 
-    with pytest.raises(ValidationError, match="Pinned Seqax residual HLO identities"):
+    with pytest.raises(ValidationError, match="Pending Seqax residual HLO identities"):
         type(contract).model_validate_json(json.dumps(payload))
 
 

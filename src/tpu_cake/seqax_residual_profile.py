@@ -386,7 +386,6 @@ def _parameters() -> dict[str, int | str]:
 
 
 def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
-    pending = "0" * 64
     return (
         SeqaxResidualProfileCandidateContract(
             candidate=SeqaxResidualNormStrategy.STANDARD,
@@ -402,10 +401,18 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
             pallas_manifest_sha256=(
                 "eaaf2c271d6aa58d55379c026e70e370e1b34296371ff987bfc101a8f01c6228"
             ),
-            pallas_stablehlo_sha256=pending,
-            pallas_compiler_hlo_sha256=pending,
-            control_stablehlo_sha256=pending,
-            control_compiler_hlo_sha256=pending,
+            pallas_stablehlo_sha256=(
+                "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae"
+            ),
+            pallas_compiler_hlo_sha256=(
+                "ec878d40b14ea707d673a7b76ea4f21f7ac8736aeeebe12d9aaabefe0d72a318"
+            ),
+            control_stablehlo_sha256=(
+                "05f377de78b292c90d020b8d865285c807ed2e5d3814c0b4977da09c629cffa6"
+            ),
+            control_compiler_hlo_sha256=(
+                "70c8ed1607151a9b6894430ad2df0373a9cf4fb1b06f830c820b6daff62a88da"
+            ),
             expected_pallas_regions=9,
             expected_all_gathers=17,
             expected_all_reduces=0,
@@ -432,10 +439,18 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
             pallas_manifest_sha256=(
                 "4b29f8cd1d0ff96de8d910c1e8bad0f6fc4f409a13e738cf080f6ea3ec58a453"
             ),
-            pallas_stablehlo_sha256=pending,
-            pallas_compiler_hlo_sha256=pending,
-            control_stablehlo_sha256=pending,
-            control_compiler_hlo_sha256=pending,
+            pallas_stablehlo_sha256=(
+                "741390690a9448d24e65bf350d50743b9afc56f88b2594cdf9daa7b6e9f88909"
+            ),
+            pallas_compiler_hlo_sha256=(
+                "b4596c4bab7071eab8f98ba18afbbbb0747fd040ca70ee982edfad0515a5ff17"
+            ),
+            control_stablehlo_sha256=(
+                "e3a7902d71030a1cb180d4d44b77f290d0f3e0933f09df9d84d301cbeba416b2"
+            ),
+            control_compiler_hlo_sha256=(
+                "a6c6e7437611907d9f3564901660eb29f334a8f800d53e040e99d3c4d160b7ba"
+            ),
             expected_pallas_regions=9,
             expected_all_gathers=15,
             expected_all_reduces=2,
@@ -457,7 +472,7 @@ def default_seqax_residual_profile_contract(
     return SeqaxResidualProfileContract(
         numerical_contract_id=default_seqax_bf16_validation_contract().contract_id,
         compilation_source_root=SEQAX_RESIDUAL_PROFILE_COMPILATION_ROOT,
-        hlo_identity_status="pending",
+        hlo_identity_status="pinned",
         timing_seed=SEQAX_RESIDUAL_PROFILE_TIMING_SEED,
         correctness_seeds=SEQAX_PALLAS_CORRECTNESS_SEEDS,
         warmup_iterations=SEQAX_RESIDUAL_PROFILE_WARMUPS,
