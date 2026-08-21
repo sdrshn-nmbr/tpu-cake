@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import tpu_cake.seqax_weight_placement_runner as placement_runner
+from tpu_cake.compiler_analysis import capture_compiler_analysis
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.dtensor_interpreter import interpret_distributed_program
 from tpu_cake.identity import array_sha256, arrays_sha256
@@ -49,6 +50,32 @@ def _runtime() -> RuntimeIdentity:
         jaxlib="0.11.0",
         libtpu="0.0.44.1",
         xla="--xla_tpu_use_enhanced_launch_barrier=true",
+    )
+
+
+def _compiler_analysis(stablehlo: str, compiler_hlo: str):
+    memory = SimpleNamespace(
+        generated_code_size_in_bytes=100,
+        argument_size_in_bytes=200,
+        output_size_in_bytes=80,
+        alias_size_in_bytes=0,
+        temp_size_in_bytes=40,
+        host_generated_code_size_in_bytes=0,
+        host_argument_size_in_bytes=0,
+        host_output_size_in_bytes=0,
+        host_alias_size_in_bytes=0,
+        host_temp_size_in_bytes=0,
+        peak_memory_in_bytes=320,
+        serialized_buffer_assignment_proto=b"fixture-buffer-assignment",
+    )
+    executable = SimpleNamespace(
+        cost_analysis=lambda: {"bytes accessed": 512.0, "flops": 1024.0},
+        memory_analysis=lambda: memory,
+    )
+    return capture_compiler_analysis(
+        executable,
+        stablehlo=stablehlo,
+        compiler_hlo=compiler_hlo,
     )
 
 
@@ -196,6 +223,7 @@ def test_isolated_memory_probe_reports_child_failure(
 def test_weight_placement_source_manifest_binds_runtime_authority() -> None:
     paths = {value.path for value in _source_manifest()}
     assert "tpu_cake/cli.py" in paths
+    assert "tpu_cake/compiler_analysis.py" in paths
     assert "tpu_cake/seqax_weight_confirmation.py" in paths
     assert "tpu_cake/seqax_weight_confirmation_runner.py" in paths
     assert "tpu_cake/seqax_weight_placement.py" in paths
@@ -447,6 +475,7 @@ def test_weight_placement_runner_builds_and_replays_a_closed_receipt(
             mesh=None,
             stablehlo=stablehlo,
             compiler_hlo=compiler_hlo,
+            compiler_analysis=_compiler_analysis(stablehlo, compiler_hlo),
         )
 
     def memory_observations(_contract, _repository_root):
@@ -567,6 +596,16 @@ def test_weight_placement_runner_builds_and_replays_a_closed_receipt(
     _repair_receipt(changed_memory, "memory.json", "result.json")
     with pytest.raises(ValueError, match="MEMORY_REPLAY_MISMATCH"):
         validate_seqax_weight_placement(changed_memory, contract)
+
+    changed_analysis = tmp_path / "changed-analysis"
+    shutil.copytree(root, changed_analysis)
+    analysis_path = changed_analysis / "plans" / "sharded" / "compiler_analysis.json"
+    analysis = json.loads(analysis_path.read_text())
+    analysis["stablehlo_sha256"] = "0" * 64
+    analysis_path.write_text(json.dumps(analysis, indent=2, sort_keys=True) + "\n")
+    _repair_receipt(changed_analysis, "plans/sharded/compiler_analysis.json")
+    with pytest.raises(ValueError, match="COMPILER_ANALYSIS_PROGRAM_MISMATCH"):
+        validate_seqax_weight_placement(changed_analysis, contract)
 
     changed_contract = tmp_path / "changed-contract"
     shutil.copytree(root, changed_contract)

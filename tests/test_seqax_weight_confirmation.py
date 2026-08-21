@@ -13,6 +13,7 @@ import pytest
 
 import tpu_cake.seqax_weight_confirmation_runner as confirmation_runner
 import tpu_cake.seqax_weight_placement_runner as placement_runner
+from tpu_cake.compiler_analysis import capture_compiler_analysis
 from tpu_cake.contracts import RuntimeIdentity, SourceFileContract
 from tpu_cake.dtensor_interpreter import interpret_distributed_program
 from tpu_cake.identity import arrays_sha256
@@ -41,6 +42,32 @@ def _runtime() -> RuntimeIdentity:
         jaxlib="0.11.0",
         libtpu="0.0.44.1",
         xla=" --xla_tpu_use_enhanced_launch_barrier=true",
+    )
+
+
+def _compiler_analysis(stablehlo: str, compiler_hlo: str):
+    memory = SimpleNamespace(
+        generated_code_size_in_bytes=100,
+        argument_size_in_bytes=200,
+        output_size_in_bytes=80,
+        alias_size_in_bytes=0,
+        temp_size_in_bytes=40,
+        host_generated_code_size_in_bytes=0,
+        host_argument_size_in_bytes=0,
+        host_output_size_in_bytes=0,
+        host_alias_size_in_bytes=0,
+        host_temp_size_in_bytes=0,
+        peak_memory_in_bytes=320,
+        serialized_buffer_assignment_proto=b"fixture-buffer-assignment",
+    )
+    executable = SimpleNamespace(
+        cost_analysis=lambda: {"bytes accessed": 512.0, "flops": 1024.0},
+        memory_analysis=lambda: memory,
+    )
+    return capture_compiler_analysis(
+        executable,
+        stablehlo=stablehlo,
+        compiler_hlo=compiler_hlo,
     )
 
 
@@ -353,6 +380,7 @@ def test_confirmation_runner_builds_relocates_and_rejects_repaired_mutations(
             mesh=None,
             stablehlo=stablehlo,
             compiler_hlo=compiler_hlo,
+            compiler_analysis=_compiler_analysis(stablehlo, compiler_hlo),
         )
 
     def observations(_contract, _compiled, _resident):

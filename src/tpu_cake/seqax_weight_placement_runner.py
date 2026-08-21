@@ -31,6 +31,12 @@ from tpu_cake.artifacts import (
     write_text as _write_text,
 )
 from tpu_cake.canonical import canonical_text
+from tpu_cake.compiler_analysis import (
+    CompilerExecutableAnalysis,
+    capture_compiler_analysis,
+    validate_compiler_analysis,
+    write_compiler_analysis,
+)
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.distributed_tensor import AllGatherOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
@@ -95,6 +101,7 @@ class CompiledPlacement:
     mesh: Any
     stablehlo: str
     compiler_hlo: str
+    compiler_analysis: CompilerExecutableAnalysis
 
 
 def _save_array(path: Path, value: np.ndarray) -> None:
@@ -114,6 +121,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "artifacts.py",
         package / "canonical.py",
         package / "cli.py",
+        package / "compiler_analysis.py",
         package / "contracts.py",
         package / "dtensor_interpreter.py",
         package / "identity.py",
@@ -283,12 +291,18 @@ def _compile(
         raise ValueError(
             f"SEQAX_WEIGHT_PLACEMENT_STABLEHLO_GATHER_MISMATCH candidate={prepared.candidate.name}"
         )
+    executable = lowered.compile()
     return CompiledPlacement(
         prepared=prepared,
-        executable=lowered.compile(),
+        executable=executable,
         mesh=mesh,
         stablehlo=stablehlo,
         compiler_hlo=compiler_hlo,
+        compiler_analysis=capture_compiler_analysis(
+            executable,
+            stablehlo=stablehlo,
+            compiler_hlo=compiler_hlo,
+        ),
     )
 
 
@@ -654,6 +668,10 @@ def run_seqax_weight_placement(
         plan_root = root / "plans" / value.prepared.candidate.name
         _write_text(plan_root / "stablehlo.txt", value.stablehlo + "\n")
         _write_text(plan_root / "compiler_hlo.txt", value.compiler_hlo + "\n")
+        write_compiler_analysis(
+            plan_root / "compiler_analysis.json",
+            value.compiler_analysis,
+        )
     plan_records = tuple(_plan_record(root, value) for value in compiled)
     with ExperimentLedger(ledger_path) as ledger:
         ledger.transition(
@@ -784,6 +802,7 @@ def _expected_files(
                 "plan_manifest.json",
                 "stablehlo.txt",
                 "compiler_hlo.txt",
+                "compiler_analysis.json",
             )
         )
     for seed in contract.correctness_seeds:
@@ -833,6 +852,8 @@ def _artifact_role(path: Path) -> ArtifactRole:
         return ArtifactRole.STABLEHLO
     if value.endswith("/compiler_hlo.txt"):
         return ArtifactRole.COMPILER_HLO
+    if value.endswith("/compiler_analysis.json"):
+        return ArtifactRole.SEARCH_EVIDENCE
     if "/inputs/" in value:
         return ArtifactRole.CORRECTNESS_INPUT
     if value.endswith("/cpu_oracle.npy"):
@@ -1016,6 +1037,11 @@ def _validate(
         plan_root = root / "plans" / expected.candidate.name
         stablehlo = (plan_root / "stablehlo.txt").read_text()
         compiler_hlo = (plan_root / "compiler_hlo.txt").read_text()
+        validate_compiler_analysis(
+            plan_root / "compiler_analysis.json",
+            stablehlo_path=plan_root / "stablehlo.txt",
+            compiler_hlo_path=plan_root / "compiler_hlo.txt",
+        )
         all_gathers, reduce_scatters = _physical_collective_counts(expected.physical)
         _validate_compiled_program(
             stablehlo,

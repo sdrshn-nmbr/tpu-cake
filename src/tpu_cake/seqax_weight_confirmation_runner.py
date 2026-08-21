@@ -23,6 +23,10 @@ from tpu_cake.artifacts import (
     write_text as _write_text,
 )
 from tpu_cake.canonical import canonical_text
+from tpu_cake.compiler_analysis import (
+    validate_compiler_analysis,
+    write_compiler_analysis,
+)
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.distributed_tensor import AllGatherOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
@@ -169,6 +173,7 @@ def _expected_files(root: Path, *, receipt_present: bool) -> set[Path]:
                 "plan_manifest.json",
                 "stablehlo.txt",
                 "compiler_hlo.txt",
+                "compiler_analysis.json",
             )
         )
     for seed in contract.correctness_seeds:
@@ -218,6 +223,8 @@ def _artifact_role(path: Path) -> ArtifactRole:
         return ArtifactRole.STABLEHLO
     if value.endswith("/compiler_hlo.txt"):
         return ArtifactRole.COMPILER_HLO
+    if value.endswith("/compiler_analysis.json"):
+        return ArtifactRole.SEARCH_EVIDENCE
     if "/inputs/" in value:
         return ArtifactRole.CORRECTNESS_INPUT
     if value.endswith("/cpu_oracle.npy"):
@@ -302,6 +309,10 @@ def run_seqax_weight_confirmation(
         plan_root = root / "plans" / value.prepared.candidate.name
         _write_text(plan_root / "stablehlo.txt", value.stablehlo + "\n")
         _write_text(plan_root / "compiler_hlo.txt", value.compiler_hlo + "\n")
+        write_compiler_analysis(
+            plan_root / "compiler_analysis.json",
+            value.compiler_analysis,
+        )
     plans = tuple(_plan_record(root, value) for value in compiled)
     with ExperimentLedger(ledger_path) as ledger:
         ledger.transition(
@@ -414,6 +425,11 @@ def _validate_plans(
         plan_root = root / "plans" / expected.candidate.name
         stablehlo = (plan_root / "stablehlo.txt").read_text()
         compiler_hlo = (plan_root / "compiler_hlo.txt").read_text()
+        validate_compiler_analysis(
+            plan_root / "compiler_analysis.json",
+            stablehlo_path=plan_root / "stablehlo.txt",
+            compiler_hlo_path=plan_root / "compiler_hlo.txt",
+        )
         all_gathers, reduce_scatters = _physical_collective_counts(expected.physical)
         _validate_compiled_program(
             stablehlo,
