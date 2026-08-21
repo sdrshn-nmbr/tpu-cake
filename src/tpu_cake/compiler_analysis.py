@@ -133,6 +133,13 @@ def _compiler_operation_lines(value: str, operation: str) -> tuple[str, ...]:
     return tuple(line for line in value.splitlines() if pattern.search(line))
 
 
+def _stablehlo_operation_count(value: str, operation: str) -> int:
+    pattern = re.compile(
+        rf'=\s*"?stablehlo\.{re.escape(operation)}"?(?=[\s(<])'
+    )
+    return sum(bool(pattern.search(line)) for line in value.splitlines())
+
+
 def analyze_compiler_collectives(
     *,
     stablehlo: str,
@@ -141,12 +148,11 @@ def analyze_compiler_collectives(
     reduce_scatter_lines = _compiler_operation_lines(compiler_hlo, "reduce-scatter")
     all_gather_lines = _compiler_operation_lines(compiler_hlo, "all-gather")
     return CompilerCollectiveAnalysis(
-        stablehlo_reduce_scatter_count=len(
-            re.findall(r"=\s*stablehlo\.reduce_scatter\b", stablehlo)
+        stablehlo_reduce_scatter_count=_stablehlo_operation_count(
+            stablehlo,
+            "reduce_scatter",
         ),
-        stablehlo_all_gather_count=len(
-            re.findall(r"=\s*stablehlo\.all_gather\b", stablehlo)
-        ),
+        stablehlo_all_gather_count=_stablehlo_operation_count(stablehlo, "all_gather"),
         compiler_reduce_scatter_count=len(reduce_scatter_lines),
         compiler_all_reduce_count=len(
             _compiler_operation_lines(compiler_hlo, "all-reduce")

@@ -106,8 +106,8 @@ def test_compiler_analysis_rejects_hlo_not_bound_to_executable() -> None:
 def test_compiler_collectives_report_semantic_and_emitted_strategy() -> None:
     analysis = analyze_compiler_collectives(
         stablehlo="""
-          %0 = stablehlo.reduce_scatter %arg0 scatter_dimension = 1 : tensor<4x8xbf16>
-          %1 = stablehlo.all_gather %0, dim = 1 : tensor<4x2xbf16> -> tensor<4x8xbf16>
+          %0 = "stablehlo.reduce_scatter"(%arg0) {scatter_dimension = 1 : i64}
+          %1 = "stablehlo.all_gather"(%0) {all_gather_dim = 1 : i64}
         """,
         compiler_hlo="""
           %reduce-scatter.1 = bf16[4,2] reduce-scatter(%arg0), backend_config={"device_type":"DEVICE_TYPE_SPARSECORE","reduce_scatter_offload_config":{}}
