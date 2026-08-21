@@ -55,7 +55,27 @@ def _ring_mod(value, modulus):
     return lax.rem(value + modulus, modulus)
 
 
-def _ring_signal(direction, semaphore, *, axis_name: str, group_size: int) -> None:
+def _ring_device_id(
+    neighbor,
+    *,
+    axis_name: str,
+    mesh_axis_names: tuple[str, ...],
+):
+    if mesh_axis_names.count(axis_name) != 1:
+        raise ValueError("ring axis must appear exactly once in the mesh")
+    return tuple(
+        neighbor if name == axis_name else lax.axis_index(name) for name in mesh_axis_names
+    )
+
+
+def _ring_signal(
+    direction,
+    semaphore,
+    *,
+    axis_name: str,
+    mesh_axis_names: tuple[str, ...],
+    group_size: int,
+) -> None:
     device_id = lax.axis_index(axis_name)
     neighbor = _ring_mod(device_id - 1, group_size)
     if direction == 1:
@@ -63,7 +83,11 @@ def _ring_signal(direction, semaphore, *, axis_name: str, group_size: int) -> No
     pl.semaphore_signal(
         semaphore,
         inc=1,
-        device_id=(neighbor,),
+        device_id=_ring_device_id(
+            neighbor,
+            axis_name=axis_name,
+            mesh_axis_names=mesh_axis_names,
+        ),
         device_id_type=pl.DeviceIdType.MESH,
     )
 
@@ -74,7 +98,7 @@ def _ring_barrier(left_neighbor, right_neighbor) -> None:
         pl.semaphore_signal(
             barrier,
             inc=1,
-            device_id=(neighbor,),
+            device_id=neighbor,
             device_id_type=pl.DeviceIdType.MESH,
         )
     pl.semaphore_wait(barrier, 2)
@@ -85,7 +109,7 @@ def _ring_barrier(left_neighbor, right_neighbor) -> None:
             pl.semaphore_signal(
                 second,
                 inc=1,
-                device_id=(neighbor,),
+                device_id=neighbor,
                 device_id_type=pl.DeviceIdType.MESH,
             )
         pl.semaphore_wait(second, 2)
@@ -105,6 +129,7 @@ def _bidirectional_reduce_scatter_kernel(
     accumulator,
     *,
     axis_name: str,
+    mesh_axis_names: tuple[str, ...],
     group_size: int,
     block_shape: tuple[int, int],
 ) -> None:
@@ -119,6 +144,16 @@ def _bidirectional_reduce_scatter_kernel(
     device_id = lax.axis_index(axis_name)
     right_neighbor = _ring_mod(device_id + 1, group_size)
     left_neighbor = _ring_mod(device_id - 1, group_size)
+    right_neighbor_id = _ring_device_id(
+        right_neighbor,
+        axis_name=axis_name,
+        mesh_axis_names=mesh_axis_names,
+    )
+    left_neighbor_id = _ring_device_id(
+        left_neighbor,
+        axis_name=axis_name,
+        mesh_axis_names=mesh_axis_names,
+    )
     left_source = _ring_mod(device_id + outer_step + 1, group_size)
     right_source = _ring_mod(device_id - outer_step - 1, group_size)
     half_rows = block_shape[0] // 2
@@ -128,6 +163,7 @@ def _bidirectional_reduce_scatter_kernel(
     signal = functools.partial(
         _ring_signal,
         axis_name=axis_name,
+        mesh_axis_names=mesh_axis_names,
         group_size=group_size,
     )
 
@@ -136,7 +172,7 @@ def _bidirectional_reduce_scatter_kernel(
         hbm_scratch.at[working_slot, left_slice],
         left_send_sem,
         left_recv_sem,
-        device_id=(left_neighbor,),
+        device_id=left_neighbor_id,
         device_id_type=pl.DeviceIdType.MESH,
     )
     initial_right = pltpu.make_async_remote_copy(
@@ -144,7 +180,7 @@ def _bidirectional_reduce_scatter_kernel(
         hbm_scratch.at[working_slot, right_slice],
         right_send_sem,
         right_recv_sem,
-        device_id=(right_neighbor,),
+        device_id=right_neighbor_id,
         device_id_type=pl.DeviceIdType.MESH,
     )
     left_copy = pltpu.make_async_remote_copy(
@@ -152,7 +188,7 @@ def _bidirectional_reduce_scatter_kernel(
         hbm_scratch.at[receiving_slot, left_slice],
         left_send_sem,
         left_recv_sem,
-        device_id=(left_neighbor,),
+        device_id=left_neighbor_id,
         device_id_type=pl.DeviceIdType.MESH,
     )
     right_copy = pltpu.make_async_remote_copy(
@@ -160,13 +196,13 @@ def _bidirectional_reduce_scatter_kernel(
         hbm_scratch.at[working_slot, right_slice],
         right_send_sem,
         right_recv_sem,
-        device_id=(right_neighbor,),
+        device_id=right_neighbor_id,
         device_id_type=pl.DeviceIdType.MESH,
     )
 
     @pl.when(is_start)
     def _start():
-        _ring_barrier(left_neighbor, right_neighbor)
+        _ring_barrier(left_neighbor_id, right_neighbor_id)
         output_ref[...] = jnp.zeros_like(output_ref[...])
         accumulator[...] = jnp.zeros_like(accumulator[...])
         initial_left.start()
@@ -242,6 +278,7 @@ def _pallas_bidirectional_reduce_scatter(
     partial,
     *,
     axis_name: str,
+    mesh_axis_names: tuple[str, ...],
     group_size: int,
     scatter_dimension: int,
     output_shape: tuple[int, int],
@@ -276,6 +313,7 @@ def _pallas_bidirectional_reduce_scatter(
     kernel = functools.partial(
         _bidirectional_reduce_scatter_kernel,
         axis_name=axis_name,
+        mesh_axis_names=mesh_axis_names,
         group_size=group_size,
         block_shape=output_shape,
     )
@@ -412,6 +450,7 @@ class PallasMatmulPlan:
                 return _pallas_bidirectional_reduce_scatter(
                     partial,
                     axis_name=self.mesh_axis,
+                    mesh_axis_names=(self.mesh_axis,),
                     group_size=self.mesh_size,
                     scatter_dimension=self.scatter_dimension,
                     output_shape=self.output_local_shape,

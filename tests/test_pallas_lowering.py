@@ -10,6 +10,7 @@ import pytest
 from xdsl.dialects.builtin import IntAttr, StringAttr
 from xdsl.utils.exceptions import VerifyException
 
+from tpu_cake import pallas_lowering
 from tpu_cake.canonical import canonical_text
 from tpu_cake.dialects.tpu_schedule import (
     CollectiveImplementation,
@@ -277,3 +278,25 @@ def test_pallas_native_reduce_scatter_interpreter_matches_oracle() -> None:
     assert result["maximum_absolute_error"] <= 1e-4
     assert result["output_shape"] == [128, 1024]
     assert result["output_dtype"] == "float32"
+
+
+def test_pallas_native_reduce_scatter_addresses_its_ring_inside_a_2d_mesh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        pallas_lowering.lax,
+        "axis_index",
+        lambda name: {"d": 1, "t": 2}[name],
+    )
+
+    assert pallas_lowering._ring_device_id(
+        3,
+        axis_name="t",
+        mesh_axis_names=("d", "t"),
+    ) == (1, 3)
+    with pytest.raises(ValueError, match="exactly once"):
+        pallas_lowering._ring_device_id(
+            3,
+            axis_name="t",
+            mesh_axis_names=("d", "d"),
+        )
