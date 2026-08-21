@@ -24,7 +24,9 @@ from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership
 from tpu_cake.frontend import KernelBuilder, buffer, schedule_sha256
 from tpu_cake.rpa_lowering import (
     FusedRpaPlan,
+    ShardedFusedRpaPlan,
     lower_inkling_rpa_to_pallas,
+    lower_inkling_sharded_rpa_to_pallas,
 )
 from tpu_cake.source import SourceLocation
 
@@ -445,6 +447,107 @@ def inkling_fused_rpa_reference(
     )
 
 
+INKLING_SHARDED_RPA_LOCAL_CONTEXTS = (128, 512, 1024, 2048)
+
+
+def inkling_sharded_fused_rpa_inputs(seed: int) -> tuple[np.ndarray, ...]:
+    generator = np.random.default_rng(seed)
+    data_mesh, tensor_mesh = 2, 4
+    local_tokens, local_query_heads, local_kv_heads = 4, 8, 4
+    head_dimension, relative_dimension, relative_extent = 128, 16, 512
+    local_pages = sum(INKLING_SHARDED_RPA_LOCAL_CONTEXTS)
+    page_indices_per_data = local_tokens * max(INKLING_SHARDED_RPA_LOCAL_CONTEXTS)
+
+    def bf16(shape: tuple[int, ...], scale: float = 1.0) -> np.ndarray:
+        values = generator.normal(scale=scale, size=shape).astype(np.float32)
+        return np.asarray(jnp.asarray(values, dtype=jnp.bfloat16))
+
+    page_indices = np.zeros((page_indices_per_data,), dtype=np.int32)
+    page_indices[:local_pages] = np.arange(local_pages, dtype=np.int32)
+    cumulative_kv_lengths = np.concatenate(
+        (
+            np.zeros((1,), dtype=np.int32),
+            np.cumsum(INKLING_SHARDED_RPA_LOCAL_CONTEXTS, dtype=np.int32),
+        )
+    )
+    return (
+        bf16((data_mesh * local_tokens, tensor_mesh * local_query_heads, head_dimension)),
+        bf16((data_mesh * local_tokens, tensor_mesh * local_kv_heads, head_dimension)),
+        bf16((data_mesh * local_tokens, tensor_mesh * local_kv_heads, head_dimension)),
+        bf16(
+            (data_mesh * local_pages, 1, tensor_mesh * local_kv_heads, 2, head_dimension),
+            scale=0.25,
+        ),
+        np.tile(np.asarray(INKLING_SHARDED_RPA_LOCAL_CONTEXTS, dtype=np.int32), data_mesh),
+        np.tile(page_indices, data_mesh),
+        np.tile(np.arange(local_tokens + 1, dtype=np.int32), data_mesh),
+        np.tile(cumulative_kv_lengths, data_mesh),
+        np.tile(np.full((3,), local_tokens, dtype=np.int32), data_mesh),
+        bf16(
+            (
+                data_mesh * local_tokens,
+                tensor_mesh * local_query_heads,
+                relative_dimension,
+            ),
+            scale=0.4,
+        ),
+        bf16((relative_dimension, relative_extent), scale=0.4),
+    )
+
+
+def inkling_sharded_fused_rpa_reference(
+    inputs: tuple[np.ndarray, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    plan = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
+    plan.preflight(*inputs)
+    output = np.empty(plan.global_output_shapes[0], dtype=jnp.bfloat16)
+    updated_cache = np.empty(plan.global_output_shapes[1], dtype=jnp.bfloat16)
+    local_pages = plan.local_plan.fused_cache_shape[0]
+    local_page_indices = plan.local_plan.page_indices_shape[0]
+    local_tokens = plan.local_plan.query_shape[0]
+    local_query_heads = plan.local_plan.query_shape[1]
+    local_kv_heads = plan.local_plan.key_shape[1]
+
+    for data_index in range(plan.mesh_shape[0]):
+        token_slice = slice(data_index * local_tokens, (data_index + 1) * local_tokens)
+        page_slice = slice(data_index * local_pages, (data_index + 1) * local_pages)
+        page_index_slice = slice(
+            data_index * local_page_indices,
+            (data_index + 1) * local_page_indices,
+        )
+        n1_slice = slice(
+            data_index * (local_tokens + 1),
+            (data_index + 1) * (local_tokens + 1),
+        )
+        distribution_slice = slice(data_index * 3, (data_index + 1) * 3)
+        for tensor_index in range(plan.mesh_shape[1]):
+            query_head_slice = slice(
+                tensor_index * local_query_heads,
+                (tensor_index + 1) * local_query_heads,
+            )
+            kv_head_slice = slice(
+                tensor_index * local_kv_heads,
+                (tensor_index + 1) * local_kv_heads,
+            )
+            local_inputs = (
+                inputs[0][token_slice, query_head_slice],
+                inputs[1][token_slice, kv_head_slice],
+                inputs[2][token_slice, kv_head_slice],
+                inputs[3][page_slice, :, kv_head_slice],
+                inputs[4][token_slice],
+                inputs[5][page_index_slice],
+                inputs[6][n1_slice],
+                inputs[7][n1_slice],
+                inputs[8][distribution_slice],
+                inputs[9][token_slice, query_head_slice],
+                inputs[10],
+            )
+            local_output, local_cache = inkling_fused_rpa_reference(local_inputs)
+            output[token_slice, query_head_slice] = np.asarray(local_output)
+            updated_cache[page_slice, :, kv_head_slice] = np.asarray(local_cache)
+    return output, updated_cache
+
+
 def inkling_rpa_contract() -> WorkloadContract:
     def tensor(
         name: str, shape: tuple[int, ...], logical: tuple[str, ...], dtype: str
@@ -549,6 +652,80 @@ def inkling_fused_rpa_contract(plan: FusedRpaPlan | None = None) -> WorkloadCont
     )
 
 
+def inkling_sharded_fused_rpa_contract(
+    plan: ShardedFusedRpaPlan | None = None,
+) -> WorkloadContract:
+    if plan is None:
+        plan = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
+
+    input_metadata = (
+        ("queries", ("T", "Hq", "D")),
+        ("keys", ("T", "Hkv", "D")),
+        ("values", ("T", "Hkv", "D")),
+        ("fused_cache", ("P", "S", "Hkv2p", "Pack", "Dpad")),
+        ("kv_lengths", ("N",)),
+        ("page_indices", ("PI",)),
+        ("cumulative_query_lengths", ("N1",)),
+        ("cumulative_kv_lengths", ("N1",)),
+        ("distribution", ("R3",)),
+        ("relative_states", ("T", "Hq", "R")),
+        ("relative_projection", ("R", "E")),
+    )
+    inputs = tuple(
+        TensorContract(
+            name=name,
+            shape=shape,
+            logical_shape=logical,
+            dtype=dtype,
+            sharding=spec,
+        )
+        for (name, logical), shape, dtype, spec in zip(
+            input_metadata,
+            plan.global_input_shapes,
+            plan.local_plan.input_dtypes,
+            plan.input_partition_specs,
+            strict=True,
+        )
+    )
+    outputs = (
+        TensorContract(
+            name="output",
+            shape=plan.global_output_shapes[0],
+            logical_shape=("T", "Hq", "D"),
+            dtype=plan.local_plan.output_dtypes[0],
+            sharding=plan.output_partition_specs[0],
+        ),
+        TensorContract(
+            name="updated_fused_cache",
+            shape=plan.global_output_shapes[1],
+            logical_shape=("P", "S", "Hkv2p", "Pack", "Dpad"),
+            dtype=plan.local_plan.output_dtypes[1],
+            sharding=plan.output_partition_specs[1],
+        ),
+    )
+    return WorkloadContract(
+        name="inkling-fused-ragged-paged-relative-bias-decode-owned-sharding",
+        stage="steady_decode",
+        inputs=inputs,
+        outputs=outputs,
+        numerical=NumericalContract(
+            reference="tpu_cake.workloads.inkling_rpa.inkling_sharded_fused_rpa_reference",
+            absolute_tolerance=0.001,
+            relative_tolerance=0.006,
+        ),
+        execution=ExecutionContract(
+            executor=("tpu_cake.rpa_lowering.ShardedFusedRpaPlan.build_executable"),
+            scope=plan.execution_scope,
+            preflight="tpu_cake.rpa_lowering.ShardedFusedRpaPlan.preflight",
+            source_revision=plan.local_plan.backend_repository_revision,
+            source_manifest=tuple(
+                SourceFileContract(path=path, sha256=sha256)
+                for path, sha256 in plan.backend_manifest
+            ),
+        ),
+    )
+
+
 def inkling_fused_rpa_experiment(
     decode_block_sizes: tuple[int, int, int, int] = (8, 128, 8, 128),
 ) -> KernelExperiment:
@@ -575,6 +752,38 @@ def inkling_fused_rpa_experiment(
             name="inkling-fused-rpa-local-shard-decode",
             stage="steady_decode",
             minimum_tpu_device_planes=1,
+            require_tensor_core_activity=False,
+            required_timed_hlo_markers=("ragged_paged_attention", "pallas_call"),
+            forbidden_timed_hlo_fragments=("native_backend.py:500",),
+        ),
+        schedule_sha256=plan.schedule_sha256,
+    )
+
+
+def inkling_sharded_fused_rpa_experiment() -> KernelExperiment:
+    schedule = inkling_sharded_fused_rpa_schedule()
+    plan = lower_inkling_sharded_rpa_to_pallas(schedule)
+    return KernelExperiment(
+        workload=inkling_sharded_fused_rpa_contract(plan),
+        target=TargetHardware(
+            accelerator="TPU7x",
+            topology="2x4 data/tensor mesh",
+            chip_count=8,
+            vmem_budget_bytes_per_core=128 << 20,
+            smem_budget_bytes_per_core=32 << 20,
+            runtime_target="Pallas Mosaic TPU through pinned sglang-jax RPA v3",
+        ),
+        benchmark=BenchmarkProtocol(
+            warmup_iterations=5,
+            measured_iterations=50,
+            synchronization="block until global output and updated cache are ready",
+            statistic="median synchronized global sharded invocation wall duration",
+        ),
+        search=SearchPolicy(objective_metric="median_synchronized_global_invocation_ns"),
+        profile=ProfileExpectation(
+            name="inkling-fused-rpa-owned-sharding-decode",
+            stage="steady_decode",
+            minimum_tpu_device_planes=8,
             require_tensor_core_activity=False,
             required_timed_hlo_markers=("ragged_paged_attention", "pallas_call"),
             forbidden_timed_hlo_fragments=("native_backend.py:500",),
