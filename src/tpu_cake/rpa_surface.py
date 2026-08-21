@@ -26,7 +26,7 @@ INKLING_SHARDED_RPA_CORRECTNESS_SEEDS = tuple(
     semantic_seed(INKLING_SHARDED_RPA_SURFACE_SCHEMA, str(index)) for index in range(5)
 )
 INKLING_SHARDED_RPA_STABLEHLO_SHA256 = (
-    "ca8e1ab06a867355b902a0ce09645af43bb1b61c22def0fb1a99a21ad2512aa6"
+    "f5da8c8caa28f42ff79c9bb14cb5cd638d01de85eca4156d6116ec97d14f1c7e"
 )
 
 

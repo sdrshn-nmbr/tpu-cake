@@ -36,7 +36,7 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
     generated = default_inkling_sharded_rpa_surface_contract()
 
     assert saved == generated
-    assert saved.surface_id == ("7b14575747fdc7c79c1ee82c456651c57ebbfde83f0d01d40f2326d6779effb4")
+    assert saved.surface_id == ("297debf7e0aea1106fbd7bce984eade52d7d5f9d7659c58de439360b75c874b9")
     assert not set(INKLING_SHARDED_RPA_CORRECTNESS_SEEDS) & _CALIBRATION_SEEDS
     assert saved.plan.compiler_hlo_authority == (
         "receipt-bound-raw-bytes-not-reproducible-identity"

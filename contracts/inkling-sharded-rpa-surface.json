@@ -39,7 +39,7 @@
   "plan": {
     "schedule_sha256": "12007604b3b6305899bd2f13d311aa77889199fc0398a3615c142f7966572b13",
     "execution_sha256": "7700de42a727acbb3ff1528877ce878ffdeffcc6b1ab6fffab0150cb1636f9f9",
-    "stablehlo_sha256": "ca8e1ab06a867355b902a0ce09645af43bb1b61c22def0fb1a99a21ad2512aa6",
+    "stablehlo_sha256": "f5da8c8caa28f42ff79c9bb14cb5cd638d01de85eca4156d6116ec97d14f1c7e",
     "compiler_hlo_authority": "receipt-bound-raw-bytes-not-reproducible-identity",
     "mesh_axes": ["data", "tensor"],
     "mesh_shape": [2, 4],
