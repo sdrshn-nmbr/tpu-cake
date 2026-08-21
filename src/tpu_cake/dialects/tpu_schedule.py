@@ -2347,6 +2347,518 @@ class FusedRaggedPagedAttentionOp(IRDLOperation):
             )
 
 
+def _rpa_padded_kv_stride(packed_interleaved_heads: int) -> int:
+    banks = {(index * packed_interleaved_heads) % 32 for index in range(24)}
+    return packed_interleaved_heads + (len(banks) != 24)
+
+
+@irdl_op_definition
+class RpaDecodeCoreOp(IRDLOperation):
+    name = "tpu_schedule.rpa_decode_core"
+    queries = operand_def(BufferType)
+    merged_kv = operand_def(BufferType)
+    fused_cache = operand_def(BufferType)
+    kv_lengths = operand_def(BufferType)
+    page_indices = operand_def(BufferType)
+    cumulative_query_lengths = operand_def(BufferType)
+    cumulative_kv_lengths = operand_def(BufferType)
+    distribution = operand_def(BufferType)
+    relative_states = operand_def(BufferType)
+    relative_projection = operand_def(BufferType)
+    output = operand_def(BufferType)
+    updated_cache = operand_def(BufferType)
+    relative_states_resident = operand_def(BufferType)
+    relative_projection_resident = operand_def(BufferType)
+    kv_double_buffer = operand_def(BufferType)
+    query_double_buffer = operand_def(BufferType)
+    output_double_buffer = operand_def(BufferType)
+    online_l = operand_def(BufferType)
+    online_m = operand_def(BufferType)
+    accumulator = operand_def(BufferType)
+    compute_intermediates = operand_def(BufferType)
+    cumulative_mask_lengths = operand_def(BufferType)
+    semaphore_ids = operand_def(BufferType)
+    output_ids = operand_def(BufferType)
+    cache_update_ids = operand_def(BufferType)
+    dma_semaphores = operand_def(SemaphoreType)
+    stage = prop_def(IntAttr)
+    query_fetch_size = prop_def(IntAttr)
+    kv_fetch_size = prop_def(IntAttr)
+    query_compute_size = prop_def(IntAttr)
+    kv_compute_size = prop_def(IntAttr)
+    buffer_slots = prop_def(IntAttr)
+    dma_channels = prop_def(IntAttr)
+    prefetch_distance = prop_def(IntAttr)
+    relative_extent = prop_def(IntAttr)
+    softmax_scale = prop_def(StringAttr)
+    softmax_dtype = prop_def(StringAttr)
+    execution_authority = prop_def(StringAttr)
+    backend_repository_revision = prop_def(StringAttr)
+    backend_file_revision = prop_def(StringAttr)
+    backend_sha256 = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        queries: SSAValue | Operation,
+        merged_kv: SSAValue | Operation,
+        fused_cache: SSAValue | Operation,
+        kv_lengths: SSAValue | Operation,
+        page_indices: SSAValue | Operation,
+        cumulative_query_lengths: SSAValue | Operation,
+        cumulative_kv_lengths: SSAValue | Operation,
+        distribution: SSAValue | Operation,
+        relative_states: SSAValue | Operation,
+        relative_projection: SSAValue | Operation,
+        output: SSAValue | Operation,
+        updated_cache: SSAValue | Operation,
+        relative_states_resident: SSAValue | Operation,
+        relative_projection_resident: SSAValue | Operation,
+        kv_double_buffer: SSAValue | Operation,
+        query_double_buffer: SSAValue | Operation,
+        output_double_buffer: SSAValue | Operation,
+        online_l: SSAValue | Operation,
+        online_m: SSAValue | Operation,
+        accumulator: SSAValue | Operation,
+        compute_intermediates: SSAValue | Operation,
+        cumulative_mask_lengths: SSAValue | Operation,
+        semaphore_ids: SSAValue | Operation,
+        output_ids: SSAValue | Operation,
+        cache_update_ids: SSAValue | Operation,
+        dma_semaphores: SSAValue | Operation,
+        *,
+        stage: int,
+        query_fetch_size: int,
+        kv_fetch_size: int,
+        query_compute_size: int,
+        kv_compute_size: int,
+        buffer_slots: int,
+        dma_channels: int,
+        prefetch_distance: int,
+        relative_extent: int,
+        softmax_scale: str,
+        softmax_dtype: str,
+        backend_repository_revision: str,
+        backend_file_revision: str,
+        backend_sha256: str,
+    ) -> None:
+        super().__init__(
+            operands=[
+                queries,
+                merged_kv,
+                fused_cache,
+                kv_lengths,
+                page_indices,
+                cumulative_query_lengths,
+                cumulative_kv_lengths,
+                distribution,
+                relative_states,
+                relative_projection,
+                output,
+                updated_cache,
+                relative_states_resident,
+                relative_projection_resident,
+                kv_double_buffer,
+                query_double_buffer,
+                output_double_buffer,
+                online_l,
+                online_m,
+                accumulator,
+                compute_intermediates,
+                cumulative_mask_lengths,
+                semaphore_ids,
+                output_ids,
+                cache_update_ids,
+                dma_semaphores,
+            ],
+            properties={
+                "stage": IntAttr(stage),
+                "query_fetch_size": IntAttr(query_fetch_size),
+                "kv_fetch_size": IntAttr(kv_fetch_size),
+                "query_compute_size": IntAttr(query_compute_size),
+                "kv_compute_size": IntAttr(kv_compute_size),
+                "buffer_slots": IntAttr(buffer_slots),
+                "dma_channels": IntAttr(dma_channels),
+                "prefetch_distance": IntAttr(prefetch_distance),
+                "relative_extent": IntAttr(relative_extent),
+                "softmax_scale": StringAttr(softmax_scale),
+                "softmax_dtype": StringAttr(softmax_dtype),
+                "execution_authority": StringAttr("tpu-cake-static-contract-pending-pallas-v1"),
+                "backend_repository_revision": StringAttr(backend_repository_revision),
+                "backend_file_revision": StringAttr(backend_file_revision),
+                "backend_sha256": StringAttr(backend_sha256),
+            },
+        )
+
+    def verify_(self) -> None:
+        kernel = self.parent_op()
+        if not isinstance(kernel, KernelOp) or kernel.target.data != "tpu7x":
+            raise VerifyException("owned RPA core requires a TPU7x kernel")
+        hbm_buffers = (
+            self.queries,
+            self.merged_kv,
+            self.fused_cache,
+            self.kv_lengths,
+            self.page_indices,
+            self.cumulative_query_lengths,
+            self.cumulative_kv_lengths,
+            self.distribution,
+            self.relative_states,
+            self.relative_projection,
+            self.output,
+            self.updated_cache,
+        )
+        scratch_buffers = (
+            self.relative_states_resident,
+            self.relative_projection_resident,
+            self.kv_double_buffer,
+            self.query_double_buffer,
+            self.output_double_buffer,
+            self.online_l,
+            self.online_m,
+            self.accumulator,
+        )
+        scalar_state_buffers = (
+            self.cumulative_mask_lengths,
+            self.semaphore_ids,
+            self.output_ids,
+            self.cache_update_ids,
+        )
+        compute_intermediates = self.compute_intermediates
+        for value in (
+            *hbm_buffers,
+            *scratch_buffers,
+            compute_intermediates,
+            *scalar_state_buffers,
+        ):
+            value_type = value.type
+            assert isinstance(value_type, BufferType)
+            _check_live(value_type, self.stage.data)
+        if any(
+            not isinstance(value.type, BufferType) or value.type.space.data is not MemorySpace.HBM
+            for value in hbm_buffers
+        ):
+            raise VerifyException("owned RPA core inputs and aliased outputs must reside in HBM")
+        expected_input_dimensions = (
+            ("Hkv", "T", "Hqp", "Pack", "Dpad"),
+            ("T", "Hkv2p", "Pack", "Dpad"),
+            ("P", "S", "Hkv2p", "Pack", "Dpad"),
+            ("N",),
+            ("PI",),
+            ("N1",),
+            ("N1",),
+            ("R3",),
+            ("Hkv", "T", "Hqpk", "Rpad"),
+            ("Rpad", "Epad"),
+        )
+        for value, expected_dimensions in zip(
+            hbm_buffers[:10], expected_input_dimensions, strict=True
+        ):
+            value_type = value.type
+            assert isinstance(value_type, BufferType)
+            rank = len(expected_dimensions)
+            if (
+                tuple(item.data for item in value_type.shape.dimensions) != expected_dimensions
+                or any(item.data for item in value_type.sharding.axes)
+                or tuple(item.data for item in value_type.layout.order) != tuple(range(rank))
+            ):
+                raise VerifyException("owned RPA core input layout contract is not canonical")
+        if any(
+            not isinstance(value.type, BufferType)
+            or value.type.space.data is not MemorySpace.VMEM
+            or value.type.ownership.data is not Ownership.KERNEL
+            for value in scratch_buffers
+        ):
+            raise VerifyException("owned RPA core scratch buffers must be kernel-owned VMEM")
+        compute_type = compute_intermediates.type
+        assert isinstance(compute_type, BufferType)
+        if (
+            compute_type.space.data is not MemorySpace.VMEM
+            or compute_type.ownership.data is not Ownership.KERNEL
+            or not isinstance(compute_type.storage.element_type, Float32Type)
+        ):
+            raise VerifyException(
+                "owned RPA core compiler intermediates must be kernel-owned f32 VMEM"
+            )
+        if any(
+            not isinstance(value.type, BufferType)
+            or value.type.space.data is not MemorySpace.SMEM
+            or value.type.ownership.data is not Ownership.KERNEL
+            for value in scalar_state_buffers
+        ):
+            raise VerifyException("owned RPA core scalar-prefetch state must be kernel-owned SMEM")
+
+        queries = self.queries.type
+        merged_kv = self.merged_kv.type
+        cache = self.fused_cache.type
+        relative_states = self.relative_states.type
+        relative_projection = self.relative_projection.type
+        assert isinstance(queries, BufferType)
+        assert isinstance(merged_kv, BufferType)
+        assert isinstance(cache, BufferType)
+        assert isinstance(relative_states, BufferType)
+        assert isinstance(relative_projection, BufferType)
+        data_buffers = (
+            queries,
+            merged_kv,
+            cache,
+            relative_states,
+            relative_projection,
+            *(value.type for value in scratch_buffers),
+        )
+        if any(
+            not isinstance(value, BufferType)
+            or not isinstance(value.storage.element_type, BFloat16Type)
+            for value in data_buffers
+        ):
+            raise VerifyException("owned RPA core data and scratch buffers must use BF16")
+        metadata = (
+            self.kv_lengths.type,
+            self.page_indices.type,
+            self.cumulative_query_lengths.type,
+            self.cumulative_kv_lengths.type,
+            self.distribution.type,
+        )
+        if any(
+            not isinstance(value, BufferType)
+            or not isinstance(value.storage.element_type, IntegerType)
+            or value.storage.element_type.width.data != 32
+            or value.storage.element_type.signedness.data is Signedness.UNSIGNED
+            for value in metadata
+        ):
+            raise VerifyException("owned RPA core metadata must use signed i32")
+        if any(
+            not isinstance(value.type.storage.element_type, IntegerType)
+            or value.type.storage.element_type.width.data != 32
+            or value.type.storage.element_type.signedness.data is Signedness.UNSIGNED
+            for value in scalar_state_buffers
+        ):
+            raise VerifyException("owned RPA core scalar-prefetch state must use signed i32")
+
+        query_shape = queries.storage.get_shape()
+        kv_shape = merged_kv.storage.get_shape()
+        cache_shape = cache.storage.get_shape()
+        if len(query_shape) != 5 or len(kv_shape) != 4 or len(cache_shape) != 5:
+            raise VerifyException(
+                "owned RPA core requires packed query, merged-KV, and fused-cache layouts"
+            )
+        kv_heads, tokens, packed_q_heads, query_packing, head_dimension = query_shape
+        kv_tokens, packed_interleaved_heads, kv_packing, kv_dimension = kv_shape
+        _, page_size, cache_heads, cache_packing, cache_dimension = cache_shape
+        if (
+            tokens != kv_tokens
+            or packed_interleaved_heads != cache_heads
+            or kv_packing != cache_packing
+            or head_dimension != kv_dimension
+            or head_dimension != cache_dimension
+            or query_packing != 2
+            or kv_packing != 2
+            or packed_interleaved_heads * kv_packing != 2 * kv_heads
+            or head_dimension % 128
+        ):
+            raise VerifyException("owned RPA core packed data layouts are inconsistent")
+        kv_lengths_shape = self.kv_lengths.type.storage.get_shape()
+        page_indices_shape = self.page_indices.type.storage.get_shape()
+        if (
+            kv_lengths_shape != (tokens,)
+            or len(page_indices_shape) != 1
+            or page_indices_shape[0] % tokens
+            or self.cumulative_query_lengths.type.storage.get_shape() != (tokens + 1,)
+            or self.cumulative_kv_lengths.type.storage.get_shape() != (tokens + 1,)
+            or self.distribution.type.storage.get_shape() != (3,)
+        ):
+            raise VerifyException("owned RPA core metadata shapes do not match its sequences")
+        query_heads_per_kv_head = packed_q_heads * query_packing
+        if relative_states.storage.get_shape() != (
+            kv_heads,
+            tokens,
+            query_heads_per_kv_head,
+            128,
+        ):
+            raise VerifyException("owned RPA core relative-state layout is inconsistent")
+        resident_pairs = (
+            (relative_states, self.relative_states_resident.type),
+            (relative_projection, self.relative_projection_resident.type),
+        )
+        if any(
+            source.storage != resident.storage
+            or source.shape != resident.shape
+            or source.sharding != resident.sharding
+            or source.layout != resident.layout
+            for source, resident in resident_pairs
+        ):
+            raise VerifyException("owned RPA core resident relative inputs must preserve layout")
+        projection_shape = relative_projection.storage.get_shape()
+        pages_per_sequence = page_indices_shape[0] // tokens
+        if (
+            self.relative_extent.data <= 0
+            or len(projection_shape) != 2
+            or projection_shape
+            != (128, self.relative_extent.data + 2 * pages_per_sequence * page_size)
+        ):
+            raise VerifyException(
+                "owned RPA core relative projection does not match its padded sequence extent"
+            )
+        if self.output is not self.queries or self.updated_cache is not self.fused_cache:
+            raise VerifyException("owned RPA core output and cache must alias their inputs")
+
+        query_fetch = self.query_fetch_size.data
+        kv_fetch = self.kv_fetch_size.data
+        query_compute = self.query_compute_size.data
+        kv_compute = self.kv_compute_size.data
+        if (
+            query_fetch <= 0
+            or kv_fetch <= 0
+            or query_compute <= 0
+            or kv_compute <= 0
+            or query_fetch % query_compute
+            or kv_fetch % kv_compute
+            or kv_fetch % page_size
+        ):
+            raise VerifyException(
+                "owned RPA core blocks must be positive, nested, and page-aligned"
+            )
+        semaphore_owner = self.dma_semaphores.owner
+        if not isinstance(semaphore_owner, SemaphoreAllocOp):
+            raise VerifyException(
+                "owned RPA core DMA semaphores must come from a semaphore allocation"
+            )
+        if (
+            self.buffer_slots.data != 2
+            or self.dma_channels.data != 5
+            or self.prefetch_distance.data != 1
+            or semaphore_owner.slot_count != self.buffer_slots.data * self.dma_channels.data
+        ):
+            raise VerifyException(
+                "owned RPA core requires two buffers, five DMA channels, and one-block prefetch"
+            )
+        if self.execution_authority.data != "tpu-cake-static-contract-pending-pallas-v1":
+            raise VerifyException("owned RPA core has the wrong execution authority")
+        if (
+            len(self.backend_repository_revision.data) != 40
+            or len(self.backend_file_revision.data) != 40
+            or len(self.backend_sha256.data) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for value in (
+                    self.backend_repository_revision.data,
+                    self.backend_file_revision.data,
+                    self.backend_sha256.data,
+                )
+                for character in value
+            )
+        ):
+            raise VerifyException("owned RPA core backend identity is not canonical")
+        try:
+            scale = Decimal(self.softmax_scale.data)
+        except InvalidOperation as error:
+            raise VerifyException("owned RPA core softmax scale must be decimal") from error
+        if (
+            not scale.is_finite()
+            or scale * head_dimension != Decimal(1)
+            or self.softmax_dtype.data != "float32"
+        ):
+            raise VerifyException(
+                "owned RPA core requires f32 softmax scaled by 1 / head dimension"
+            )
+
+        expected_scratch_shapes = (
+            (
+                self.buffer_slots.data,
+                kv_fetch,
+                _rpa_padded_kv_stride(packed_interleaved_heads),
+                kv_packing,
+                head_dimension,
+            ),
+            (
+                self.buffer_slots.data,
+                kv_heads,
+                query_fetch,
+                packed_q_heads,
+                query_packing,
+                head_dimension,
+            ),
+            (
+                self.buffer_slots.data,
+                kv_heads,
+                query_fetch,
+                packed_q_heads,
+                query_packing,
+                head_dimension,
+            ),
+            (kv_heads, query_fetch * query_heads_per_kv_head, 128),
+            (kv_heads, query_fetch * query_heads_per_kv_head, 128),
+            (kv_heads, query_fetch * query_heads_per_kv_head, head_dimension),
+        )
+        actual_scratch_shapes = tuple(value.type.storage.get_shape() for value in scratch_buffers)
+        expected_scratch_shapes = (
+            relative_states.storage.get_shape(),
+            relative_projection.storage.get_shape(),
+            *expected_scratch_shapes,
+        )
+        if actual_scratch_shapes != expected_scratch_shapes:
+            raise VerifyException("owned RPA core scratch shapes do not match its block schedule")
+        expected_scratch_dimensions = (
+            ("Hkv", "T", "Hqpk", "Rpad"),
+            ("Rpad", "Epad"),
+            ("Slot", "Bkv", "Hkv2pPad", "Pack", "Dpad"),
+            ("Slot", "Hkv", "Bq", "Hqp", "Pack", "Dpad"),
+            ("Slot", "Hkv", "Bq", "Hqp", "Pack", "Dpad"),
+            ("Hkv", "QH", "Lane"),
+            ("Hkv", "QH", "Lane"),
+            ("Hkv", "QH", "Dpad"),
+        )
+        for value, expected_dimensions in zip(
+            scratch_buffers, expected_scratch_dimensions, strict=True
+        ):
+            value_type = value.type
+            assert isinstance(value_type, BufferType)
+            rank = len(expected_dimensions)
+            if (
+                tuple(item.data for item in value_type.shape.dimensions) != expected_dimensions
+                or any(item.data for item in value_type.sharding.axes)
+                or tuple(item.data for item in value_type.layout.order) != tuple(range(rank))
+            ):
+                raise VerifyException("owned RPA core scratch layout contract is not canonical")
+        if any(not isinstance(value.owner, AllocOp) for value in scratch_buffers):
+            raise VerifyException("owned RPA core scratch buffers must be direct allocations")
+        if len({SSAValue.get(value) for value in scratch_buffers}) != len(scratch_buffers):
+            raise VerifyException("owned RPA core scratch buffers must not alias")
+        expected_compute_shape = (
+            kv_heads,
+            query_fetch,
+            query_heads_per_kv_head,
+            kv_compute + head_dimension,
+            4,
+        )
+        if (
+            compute_type.storage.get_shape() != expected_compute_shape
+            or tuple(item.data for item in compute_type.shape.dimensions)
+            != ("Hkv", "Bq", "Hq", "KVD", "Work")
+            or any(item.data for item in compute_type.sharding.axes)
+            or tuple(item.data for item in compute_type.layout.order) != tuple(range(5))
+            or not isinstance(compute_intermediates.owner, AllocOp)
+        ):
+            raise VerifyException(
+                "owned RPA core compiler-intermediate reservation does not match its tiles"
+            )
+        if tuple(value.type.storage.get_shape() for value in scalar_state_buffers) != (
+            (1,),
+            (3,),
+            (4,),
+            (6,),
+        ):
+            raise VerifyException("owned RPA core scalar-prefetch state has the wrong shapes")
+        if tuple(
+            tuple(item.data for item in value.type.shape.dimensions)
+            for value in scalar_state_buffers
+        ) != (("One",), ("SemId",), ("OutputId",), ("UpdateId",)):
+            raise VerifyException("owned RPA core scalar-prefetch state has the wrong roles")
+        if any(not isinstance(value.owner, AllocOp) for value in scalar_state_buffers):
+            raise VerifyException(
+                "owned RPA core scalar-prefetch buffers must be direct allocations"
+            )
+
+
 @irdl_op_definition
 class PipelineYieldOp(IRDLOperation):
     name = "tpu_schedule.pipeline_yield"
@@ -3369,6 +3881,30 @@ class KernelOp(IRDLOperation):
                     initialized.add(output)
                     mark_written(output)
                     partial_reductions.pop(output, None)
+            if isinstance(operation, RpaDecodeCoreOp):
+                for value in operation.operands[:10]:
+                    require_initialized(value, operation)
+                    require_fully_reduced(value, operation)
+                if (
+                    self.dma_engine_count.data < 2
+                    or self.mxu_count.data < 1
+                    or self.vector_unit_count.data < 1
+                ):
+                    raise VerifyException(
+                        "owned RPA core needs two DMA engines, one MXU, and one vector unit"
+                    )
+                if not isinstance(operation.dma_semaphores.owner, SemaphoreAllocOp):
+                    raise VerifyException(
+                        "owned RPA core DMA semaphores must come from a semaphore allocation"
+                    )
+                for value in operation.operands[12:25]:
+                    initialized.add(root(value))
+                    partial_reductions.pop(root(value), None)
+                for value in (operation.output, operation.updated_cache):
+                    output = root(value)
+                    initialized.add(output)
+                    mark_written(output)
+                    partial_reductions.pop(output, None)
             if isinstance(operation, PipelineLoopOp):
                 for value in operation.captures:
                     require_initialized(value, operation)
@@ -3431,6 +3967,10 @@ class KernelOp(IRDLOperation):
                 for start in (op for op in operations if isinstance(op, DmaStartOp))
                 for wait in start.token.uses
                 if isinstance(wait.operation, DmaWaitOp)
+            ) + sum(
+                2
+                for operation in operations
+                if isinstance(operation, RpaDecodeCoreOp) and operation.stage.data == stage
             )
             active_remote_dma = sum(
                 start.stage.data <= stage <= wait.operation.stage.data
@@ -3441,13 +3981,14 @@ class KernelOp(IRDLOperation):
             mxu_uses = sum(
                 isinstance(
                     operation,
-                    (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp),
+                    (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp, RpaDecodeCoreOp),
                 )
                 and operation.stage.data == stage
                 for operation in operations
             )
             vector_uses = sum(
-                isinstance(operation, VectorComputeOp) and operation.stage.data == stage
+                isinstance(operation, (VectorComputeOp, RpaDecodeCoreOp))
+                and operation.stage.data == stage
                 for operation in operations
             )
             ici_uses = sum(
@@ -3569,6 +4110,7 @@ TPUSchedule = Dialect(
         CollectiveOp,
         RaggedPagedAttentionOp,
         FusedRaggedPagedAttentionOp,
+        RpaDecodeCoreOp,
         PipelineLoopOp,
         PipelineYieldOp,
         YieldOp,

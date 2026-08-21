@@ -33,6 +33,7 @@ from tpu_cake.dialects.tpu_schedule import (
     RaggedPagedAttentionOp,
     RemoteDmaStartOp,
     RemoteDmaWaitOp,
+    RpaDecodeCoreOp,
     SemaphoreAllocOp,
     VectorComputeOp,
     ViewOp,
@@ -986,7 +987,10 @@ def analyze_physical_kernel(
     unsupported = tuple(
         operation
         for operation, _ in executed
-        if isinstance(operation, (RaggedPagedAttentionOp, FusedRaggedPagedAttentionOp))
+        if isinstance(
+            operation,
+            (RaggedPagedAttentionOp, FusedRaggedPagedAttentionOp, RpaDecodeCoreOp),
+        )
     )
     if unsupported:
         raise UnsupportedPhysicalCostModelError(

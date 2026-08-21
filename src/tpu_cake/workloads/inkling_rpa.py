@@ -6,7 +6,7 @@ from enum import StrEnum
 import jax
 import jax.numpy as jnp
 import numpy as np
-from xdsl.dialects.builtin import ModuleOp, bf16, i32
+from xdsl.dialects.builtin import ModuleOp, bf16, f32, i32
 
 from tpu_cake.contracts import (
     BenchmarkProtocol,
@@ -23,6 +23,9 @@ from tpu_cake.contracts import (
 from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership
 from tpu_cake.frontend import KernelBuilder, buffer, schedule_sha256
 from tpu_cake.rpa_lowering import (
+    SHARDED_INKLE_REPOSITORY_REVISION,
+    SHARDED_INKLING_RPA_FILE_REVISION,
+    SHARDED_INKLING_RPA_SOURCE_SHA256,
     FusedRpaPlan,
     ShardedFusedRpaPlan,
     lower_inkling_rpa_to_pallas,
@@ -253,6 +256,145 @@ def inkling_sharded_fused_rpa_schedule() -> ModuleOp:
             "engine/sglang-jax/python/sgl_jax/srt/kernels/"
             "ragged_paged_attention/ragged_paged_attention_v3.py",
             1806,
+            1,
+        ),
+    )
+    return builder.module()
+
+
+def inkling_owned_rpa_decode_core_schedule() -> ModuleOp:
+    external = {
+        "memory": MemorySpace.HBM,
+        "ownership": Ownership.EXTERNAL,
+        "lifetime": (0, 0),
+    }
+    inputs = (
+        buffer((4, 4, 1, 2, 128), "Hkv T Hqp Pack Dpad", bf16, **external),
+        buffer((4, 4, 2, 128), "T Hkv2p Pack Dpad", bf16, **external),
+        buffer((3712, 1, 4, 2, 128), "P S Hkv2p Pack Dpad", bf16, **external),
+        buffer((4,), "N", i32, **external),
+        buffer((8192,), "PI", i32, **external),
+        buffer((5,), "N1", i32, **external),
+        buffer((5,), "N1", i32, **external),
+        buffer((3,), "R3", i32, **external),
+        buffer((4, 4, 2, 128), "Hkv T Hqpk Rpad", bf16, **external),
+        buffer((128, 4608), "Rpad Epad", bf16, **external),
+    )
+    builder = KernelBuilder(
+        "inkling_owned_rpa_decode_core",
+        "tpu7x",
+        inputs,
+        vmem_capacity_bytes=96 << 20,
+        smem_capacity_bytes=1 << 20,
+        argument_modes=("inout", "input", "inout", *("input",) * 7),
+    )
+    local = {
+        "memory": MemorySpace.VMEM,
+        "lifetime": (0, 0),
+    }
+    relative_states_resident = builder.alloc(
+        buffer((4, 4, 2, 128), "Hkv T Hqpk Rpad", bf16, **local),
+        "relative_states_resident",
+    )
+    relative_projection_resident = builder.alloc(
+        buffer((128, 4608), "Rpad Epad", bf16, **local),
+        "relative_projection_resident",
+    )
+    kv_double_buffer = builder.alloc(
+        buffer((2, 128, 5, 2, 128), "Slot Bkv Hkv2pPad Pack Dpad", bf16, **local),
+        "paged_kv_double_buffer",
+    )
+    query_double_buffer = builder.alloc(
+        buffer(
+            (2, 4, 8, 1, 2, 128),
+            "Slot Hkv Bq Hqp Pack Dpad",
+            bf16,
+            **local,
+        ),
+        "query_double_buffer",
+    )
+    output_double_buffer = builder.alloc(
+        buffer(
+            (2, 4, 8, 1, 2, 128),
+            "Slot Hkv Bq Hqp Pack Dpad",
+            bf16,
+            **local,
+        ),
+        "output_double_buffer",
+    )
+    online_l = builder.alloc(
+        buffer((4, 16, 128), "Hkv QH Lane", bf16, **local),
+        "online_softmax_l",
+    )
+    online_m = builder.alloc(
+        buffer((4, 16, 128), "Hkv QH Lane", bf16, **local),
+        "online_softmax_m",
+    )
+    accumulator = builder.alloc(
+        buffer((4, 16, 128), "Hkv QH Dpad", bf16, **local),
+        "attention_accumulator",
+    )
+    compute_intermediates = builder.alloc(
+        buffer((4, 8, 2, 256, 4), "Hkv Bq Hq KVD Work", f32, **local),
+        "compiler_attention_intermediates",
+    )
+    scalar_state = {
+        "memory": MemorySpace.SMEM,
+        "lifetime": (0, 0),
+    }
+    cumulative_mask_lengths = builder.alloc(
+        buffer((1,), "One", i32, **scalar_state),
+        "cumulative_mask_lengths",
+    )
+    semaphore_ids = builder.alloc(
+        buffer((3,), "SemId", i32, **scalar_state),
+        "semaphore_ids",
+    )
+    output_ids = builder.alloc(
+        buffer((4,), "OutputId", i32, **scalar_state),
+        "output_ids",
+    )
+    cache_update_ids = builder.alloc(
+        buffer((6,), "UpdateId", i32, **scalar_state),
+        "cache_update_ids",
+    )
+    dma_semaphores = builder.semaphore(slots=10)
+    builder.rpa_decode_core(
+        *builder.inputs,
+        builder.inputs[0],
+        builder.inputs[2],
+        relative_states_resident,
+        relative_projection_resident,
+        kv_double_buffer,
+        query_double_buffer,
+        output_double_buffer,
+        online_l,
+        online_m,
+        accumulator,
+        compute_intermediates,
+        cumulative_mask_lengths,
+        semaphore_ids,
+        output_ids,
+        cache_update_ids,
+        dma_semaphores,
+        stage=0,
+        query_fetch_size=8,
+        kv_fetch_size=128,
+        query_compute_size=8,
+        kv_compute_size=128,
+        buffer_slots=2,
+        dma_channels=5,
+        prefetch_distance=1,
+        relative_extent=512,
+        softmax_scale="0.0078125",
+        softmax_dtype="float32",
+        backend_repository_revision=SHARDED_INKLE_REPOSITORY_REVISION,
+        backend_file_revision=SHARDED_INKLING_RPA_FILE_REVISION,
+        backend_sha256=SHARDED_INKLING_RPA_SOURCE_SHA256,
+        source_location=SourceLocation(
+            "engine/sglang-jax/python/sgl_jax/srt/kernels/"
+            "ragged_paged_attention/ragged_paged_attention_v3.py",
+            1986,
             1,
         ),
     )

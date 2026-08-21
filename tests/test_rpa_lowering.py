@@ -11,15 +11,22 @@ import pytest
 from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr
 from xdsl.utils.exceptions import VerifyException
 
+from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.tpu_schedule import (
     BufferType,
     FusedRaggedPagedAttentionOp,
     KernelOp,
     LayoutAttr,
+    RpaDecodeCoreOp,
+    SemaphoreAllocOp,
     ShardingAttr,
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
+from tpu_cake.physical_cost_model import (
+    UnsupportedPhysicalCostModelError,
+    analyze_physical_kernel,
+)
 from tpu_cake.rpa_lowering import (
     ShardedFusedRpaPlan,
     lower_inkling_rpa_to_pallas,
@@ -27,6 +34,7 @@ from tpu_cake.rpa_lowering import (
 )
 from tpu_cake.workloads.inkling_rpa import (
     inkling_fused_rpa_schedule,
+    inkling_owned_rpa_decode_core_schedule,
     inkling_sharded_fused_rpa_schedule,
 )
 
@@ -146,6 +154,103 @@ def test_sharded_fused_rpa_lowers_to_the_production_mesh_contract() -> None:
         "12c6aeeade66538d3bb638f048850c3d69095ade4ec42559cd8b3566bfc68897"
     )
     assert first.source_sha256() == second.source_sha256()
+
+
+def test_owned_rpa_decode_core_exposes_the_static_physical_resources() -> None:
+    module = inkling_owned_rpa_decode_core_schedule()
+    module.verify()
+    assert schedule_sha256(module) == (
+        "86cf11b120352d115dd04e18845d44c41de1d3539b8169cf618a7d82f9b39559"
+    )
+    operation = next(
+        operation for operation in module.walk() if isinstance(operation, RpaDecodeCoreOp)
+    )
+
+    assert operation.execution_authority.data == "tpu-cake-static-contract-pending-pallas-v1"
+    assert operation.backend_repository_revision.data == (
+        "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7"
+    )
+    assert operation.backend_file_revision.data == ("ac88a2ecfa905965b43edbbb5e6510eb272d09e5")
+    assert operation.backend_sha256.data == (
+        "12c6aeeade66538d3bb638f048850c3d69095ade4ec42559cd8b3566bfc68897"
+    )
+    assert (
+        operation.query_fetch_size.data,
+        operation.kv_fetch_size.data,
+        operation.query_compute_size.data,
+        operation.kv_compute_size.data,
+    ) == (8, 128, 8, 128)
+    assert operation.buffer_slots.data == 2
+    assert operation.dma_channels.data == 5
+    assert operation.prefetch_distance.data == 1
+    assert operation.relative_extent.data == 512
+    assert operation.relative_states_resident.type.storage.get_shape() == (4, 4, 2, 128)
+    assert operation.relative_projection_resident.type.storage.get_shape() == (128, 4608)
+    assert operation.kv_double_buffer.type.storage.get_shape() == (2, 128, 5, 2, 128)
+    assert operation.query_double_buffer.type.storage.get_shape() == (2, 4, 8, 1, 2, 128)
+    assert operation.output_double_buffer.type.storage.get_shape() == (2, 4, 8, 1, 2, 128)
+    assert operation.online_l.type.storage.get_shape() == (4, 16, 128)
+    assert operation.online_m.type.storage.get_shape() == (4, 16, 128)
+    assert operation.accumulator.type.storage.get_shape() == (4, 16, 128)
+    assert operation.compute_intermediates.type.storage.get_shape() == (4, 8, 2, 256, 4)
+    assert operation.cumulative_mask_lengths.type.storage.get_shape() == (1,)
+    assert operation.semaphore_ids.type.storage.get_shape() == (3,)
+    assert operation.output_ids.type.storage.get_shape() == (4,)
+    assert operation.cache_update_ids.type.storage.get_shape() == (6,)
+    assert isinstance(operation.dma_semaphores.owner, SemaphoreAllocOp)
+    assert operation.dma_semaphores.owner.slot_count == 10
+    assert operation.output is operation.queries
+    assert operation.updated_cache is operation.fused_cache
+
+
+def test_owned_rpa_decode_core_rejects_resource_contract_drift() -> None:
+    wrong_block = inkling_owned_rpa_decode_core_schedule()
+    operation = next(
+        operation for operation in wrong_block.walk() if isinstance(operation, RpaDecodeCoreOp)
+    )
+    operation.properties["kv_fetch_size"] = IntAttr(256)
+    with pytest.raises(VerifyException, match="scratch shapes"):
+        wrong_block.verify()
+
+    wrong_semaphore = inkling_owned_rpa_decode_core_schedule()
+    operation = next(
+        operation for operation in wrong_semaphore.walk() if isinstance(operation, RpaDecodeCoreOp)
+    )
+    assert isinstance(operation.dma_semaphores.owner, SemaphoreAllocOp)
+    operation.dma_semaphores.owner.properties["slots"] = IntAttr(8)
+    with pytest.raises(VerifyException, match="two buffers, five DMA channels"):
+        wrong_semaphore.verify()
+
+    undersized = inkling_owned_rpa_decode_core_schedule()
+    kernel = next(operation for operation in undersized.walk() if isinstance(operation, KernelOp))
+    kernel.properties["vmem_capacity_bytes"] = IntAttr(1_957_888)
+    with pytest.raises(VerifyException, match="VMEM capacity exceeded.*2220032 > 1957888"):
+        undersized.verify()
+
+    wrong_source = inkling_owned_rpa_decode_core_schedule()
+    operation = next(
+        operation for operation in wrong_source.walk() if isinstance(operation, RpaDecodeCoreOp)
+    )
+    operation.properties["backend_sha256"] = StringAttr("not-a-sha")
+    with pytest.raises(VerifyException, match="backend identity is not canonical"):
+        wrong_source.verify()
+
+    wrong_target = inkling_owned_rpa_decode_core_schedule()
+    kernel = next(operation for operation in wrong_target.walk() if isinstance(operation, KernelOp))
+    kernel.properties["target"] = StringAttr("tpu6e")
+    with pytest.raises(VerifyException, match="requires a TPU7x kernel"):
+        wrong_target.verify()
+
+
+def test_owned_rpa_decode_core_has_no_unearned_cost_model_claim() -> None:
+    with pytest.raises(
+        UnsupportedPhysicalCostModelError,
+        match="no work convention for tpu_schedule.rpa_decode_core",
+    ):
+        analyze_physical_kernel(
+            inkling_owned_rpa_decode_core_schedule(),
+            hardware=tpu7x_tensorcore_rates(),
+        )
 
 
 def test_sharded_fused_rpa_rejects_the_wrong_device_inventory() -> None:
