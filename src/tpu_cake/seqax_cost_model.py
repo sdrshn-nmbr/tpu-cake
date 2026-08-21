@@ -32,6 +32,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceLocalOp,
     ReduceScatterOp,
     RenameDimensionOp,
+    ResidualAllReduceOp,
     ReturnOp,
     RmsNormApplyOp,
     RmsNormOp,
@@ -206,6 +207,7 @@ _DATA_OPERATIONS = (
     ReduceLocalOp,
     ReduceScatterOp,
     RenameDimensionOp,
+    ResidualAllReduceOp,
     RmsNormApplyOp,
     RmsNormOp,
     RmsNormPartialOp,
@@ -337,6 +339,11 @@ def _operation_work(operation: Operation, mesh: dict[str, int]) -> _Work:
             )
         work.global_vector += global_elements * global_factor
         work.local_vector += local_elements * local_factor
+    elif isinstance(operation, ResidualAllReduceOp):
+        residual_type = _tensor_type(operation.residual)
+        work.global_vector += global_elements
+        work.local_vector += local_elements
+        work.local_index += _local_elements(residual_type, mesh)
     elif isinstance(operation, RmsNormOp):
         dimension_size = dict(result_type.logical_shape())[operation.dimension.data]
         global_rows = global_elements // dimension_size
@@ -475,6 +482,14 @@ def _operation_traffic(operation: Operation, mesh: dict[str, int]) -> _Traffic:
     if isinstance(operation, (AllGatherOp, AllReduceOp, ReduceScatterOp)):
         axes, byte_count = _collective_traffic(operation, mesh)
         key = (operation.name.removeprefix("dtensor."), axes)
+        traffic.ici += byte_count
+        traffic.collectives[key] = [1, byte_count]
+    elif isinstance(operation, ResidualAllReduceOp):
+        axis = operation.mesh_axis.data
+        group_size = mesh[axis]
+        partial_bytes = _local_bytes(_tensor_type(operation.partial), mesh)
+        byte_count = Decimal(4 * partial_bytes * (group_size - 1)) / Decimal(group_size)
+        key = (operation.name.removeprefix("dtensor."), (axis,))
         traffic.ici += byte_count
         traffic.collectives[key] = [1, byte_count]
     return traffic

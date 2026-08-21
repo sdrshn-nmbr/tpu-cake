@@ -581,3 +581,80 @@ for seed in SEQAX_PALLAS_CORRECTNESS_SEEDS:
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_residual_all_reduce_matches_its_control_and_frozen_numerical_policy() -> None:
+    script = r"""
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
+from tpu_cake.seqax_numerical import assess_seqax_bf16_outputs, default_seqax_bf16_validation_contract
+from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
+from tpu_cake.seqax_pallas_search import SEQAX_PALLAS_CORRECTNESS_SEEDS, SEQAX_PALLAS_SEARCH_PARAMETERS
+from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
+from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, SeqaxResidualNormStrategy, seqax_forward_schedule
+from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
+
+parameters = {
+    **SEQAX_PALLAS_SEARCH_PARAMETERS,
+    "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+}
+standard = seqax_forward_schedule(**parameters)
+candidate = seqax_forward_schedule(
+    **parameters,
+    residual_norm_strategy=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+)
+physical = lower_seqax_forward_to_physical(candidate).module
+plan = lower_seqax_physical_to_pallas(candidate, physical)
+devices = jax.devices("cpu")
+assert len(devices) == 8
+candidate_pallas, _ = plan.build(interpret=True, devices=devices)
+candidate_control, _ = lower_distributed_program_to_jax_mesh(candidate).build(devices=devices)
+standard_control, _ = lower_distributed_program_to_jax_mesh(standard).build(devices=devices)
+contract = default_seqax_bf16_validation_contract()
+scenario = next(
+    value for value in contract.scenarios if value.name == "calibration-m256-b2-s1-l1"
+)
+
+for seed in SEQAX_PALLAS_CORRECTNESS_SEEDS:
+    inputs = tuple(
+        np.asarray(value)
+        for value in seqax_forward_inputs(seed=seed, **SEQAX_PALLAS_SEARCH_PARAMETERS)
+    )
+    arrays = tuple(jnp.asarray(value) for value in inputs)
+    (pallas_output,) = candidate_pallas(*arrays)
+    (candidate_output,) = candidate_control(*arrays)
+    (standard_output,) = standard_control(*arrays)
+    jax.block_until_ready((pallas_output, candidate_output, standard_output))
+    np.testing.assert_allclose(
+        np.asarray(pallas_output),
+        np.asarray(candidate_output),
+        rtol=0.0,
+        atol=1e-6,
+    )
+    assessment = assess_seqax_bf16_outputs(
+        np.asarray(pallas_output),
+        np.asarray(candidate_output),
+        seed=seed,
+        inputs=inputs,
+        policy=contract.policy,
+        scenario=scenario,
+    )
+    assert assessment.final_outputs_satisfy_policy
+    assert np.max(np.abs(np.asarray(pallas_output) - np.asarray(standard_output))) > 0
+"""
+    environment = os.environ.copy()
+    environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.getcwd(),
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=180,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr

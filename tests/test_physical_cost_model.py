@@ -208,6 +208,55 @@ def test_sharded_rms_physical_collectives_match_distributed_cost_authority() -> 
     )
 
 
+def test_residual_all_reduce_physical_collectives_are_exactly_accounted() -> None:
+    parameters = {
+        **SMALL_SEQAX,
+        "model": 256,
+        "sequence": 1,
+        "layers": 1,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    standard = _report(lower_seqax_forward_to_physical(seqax_forward_schedule(**parameters)).module)
+    candidate = _report(
+        lower_seqax_forward_to_physical(
+            seqax_forward_schedule(
+                **parameters,
+                residual_norm_strategy=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+            )
+        ).module
+    )
+
+    assert len(standard.collectives) == 20
+    assert len(candidate.collectives) == 18
+    assert sum(value.kind is CollectiveKind.ALL_GATHER for value in candidate.collectives) == 15
+    assert sum(value.kind is CollectiveKind.ALL_REDUCE for value in candidate.collectives) == 2
+    assert sum(value.kind is CollectiveKind.REDUCE_SCATTER for value in candidate.collectives) == 1
+    assert (
+        sum(
+            value.total_ring_equivalent_bidirectional_bytes_per_device
+            for value in standard.collectives
+        )
+        == 34_048
+    )
+    assert (
+        sum(
+            value.total_ring_equivalent_bidirectional_bytes_per_device
+            for value in candidate.collectives
+        )
+        == 35_584
+    )
+    assert [
+        (value.function, value.executions)
+        for value in candidate.vector_work
+        if value.function in {"residual_inject", "shard_extract"}
+    ] == [
+        ("residual_inject", 1),
+        ("shard_extract", 1),
+        ("residual_inject", 1),
+        ("shard_extract", 1),
+    ]
+
+
 def test_exact_tpu7x_collective_latency_distinguishes_standard_and_sharded_rms() -> None:
     parameters = {
         **SMALL_SEQAX,

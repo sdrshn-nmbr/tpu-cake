@@ -33,6 +33,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceLocalOp,
     ReduceScatterOp,
     RenameDimensionOp,
+    ResidualAllReduceOp,
     ReturnOp,
     RmsNormApplyOp,
     RmsNormOp,
@@ -257,6 +258,56 @@ def _execute_block(
                         and hidden.materialization is not None
                     ):
                         strict_mlp_checkpoints[-1].append(result)
+        elif isinstance(operation, ResidualAllReduceOp):
+            partial = environment[operation.partial]
+            residual = environment[operation.residual]
+            partial_type = operation.partial.type
+            residual_type = operation.residual.type
+            full_result_type = operation.full_result.type
+            shard_result_type = operation.shard_result.type
+            assert isinstance(partial_type, DTensorType)
+            assert isinstance(residual_type, DTensorType)
+            assert isinstance(full_result_type, DTensorType)
+            assert isinstance(shard_result_type, DTensorType)
+            dimension_index = _names(partial_type).index(operation.dimension.data)
+            if semantics.physical:
+                assert semantics.mesh is not None
+                axis = operation.mesh_axis.data
+                local_residual = residual.astype(partial.dtype)
+                contribution = jnp.zeros_like(partial)
+                start = jax.lax.axis_index(axis) * local_residual.shape[dimension_index]
+                contribution = jax.lax.dynamic_update_slice_in_dim(
+                    contribution,
+                    local_residual,
+                    start,
+                    axis=dimension_index,
+                )
+                full_result = jax.lax.psum(partial + contribution, axis)
+                full_result = _cast(full_result, full_result_type)
+                shard_result = jax.lax.dynamic_slice_in_dim(
+                    full_result,
+                    start,
+                    local_residual.shape[dimension_index],
+                    axis=dimension_index,
+                )
+            else:
+                full_result = _cast(
+                    partial + residual.astype(partial.dtype),
+                    full_result_type,
+                )
+                shard_result = full_result
+            for value, result, result_type in (
+                (operation.full_result, full_result, full_result_type),
+                (operation.shard_result, shard_result, shard_result_type),
+            ):
+                expected_shape = semantics.shape(result_type)
+                if tuple(result.shape) != expected_shape:
+                    raise UnsupportedInterpretationError(
+                        f"{operation.name} produced shape {tuple(result.shape)}, "
+                        f"expected {expected_shape}"
+                    )
+                environment[value] = _cast(result, result_type)
+            continue
         elif isinstance(operation, CastOp):
             result_type = operation.result.type
             assert isinstance(result_type, DTensorType)

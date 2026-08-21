@@ -251,6 +251,88 @@ class ElementwiseOp(IRDLOperation):
 
 
 @irdl_op_definition
+class ResidualAllReduceOp(IRDLOperation):
+    name = "dtensor.residual_all_reduce"
+    partial = operand_def(DTensorType)
+    residual = operand_def(DTensorType)
+    full_result = result_def(DTensorType)
+    shard_result = result_def(DTensorType)
+    mesh_axis = prop_def(StringAttr)
+    dimension = prop_def(StringAttr)
+
+    def __init__(
+        self,
+        partial: SSAValue | IRDLOperation,
+        residual: SSAValue | IRDLOperation,
+        full_result_type: DTensorType,
+        shard_result_type: DTensorType,
+        *,
+        mesh_axis: str,
+        dimension: str,
+    ) -> None:
+        super().__init__(
+            operands=[partial, residual],
+            result_types=[full_result_type, shard_result_type],
+            properties={
+                "mesh_axis": StringAttr(mesh_axis),
+                "dimension": StringAttr(dimension),
+            },
+        )
+
+    def verify_(self) -> None:
+        partial = self.partial.type
+        residual = self.residual.type
+        full_result = self.full_result.type
+        shard_result = self.shard_result.type
+        assert isinstance(partial, DTensorType)
+        assert isinstance(residual, DTensorType)
+        assert isinstance(full_result, DTensorType)
+        assert isinstance(shard_result, DTensorType)
+        axis = self.mesh_axis.data
+        dimension = self.dimension.data
+        if not axis or not dimension:
+            raise VerifyException("residual all-reduce needs a mesh axis and dimension")
+        if not isinstance(partial.element_type, Float32Type):
+            raise VerifyException("residual all-reduce partial must be f32")
+        if not isinstance(residual.element_type, BFloat16Type):
+            raise VerifyException("residual all-reduce residual must be BF16")
+        if not isinstance(full_result.element_type, BFloat16Type):
+            raise VerifyException("residual all-reduce full result must be BF16")
+        if shard_result != residual:
+            raise VerifyException("residual all-reduce shard result must match its residual")
+        logical_shape = partial.logical_shape()
+        if any(value.logical_shape() != logical_shape for value in (residual, full_result)):
+            raise VerifyException("residual all-reduce values must have identical logical shapes")
+        indexes = _dimension_index(partial)
+        if dimension not in indexes:
+            raise VerifyException("residual all-reduce dimension does not exist")
+        dimension_index = indexes[dimension]
+        partial_sharding = partial.sharding_axes()
+        residual_sharding = residual.sharding_axes()
+        full_sharding = full_result.sharding_axes()
+        if full_sharding != partial_sharding:
+            raise VerifyException("residual all-reduce full result must match partial sharding")
+        if axis in {item for axes in partial_sharding for item in axes}:
+            raise VerifyException("residual all-reduce axis cannot shard its partial")
+        expected_residual_sharding = list(partial_sharding)
+        expected_residual_sharding[dimension_index] = (
+            *partial_sharding[dimension_index],
+            axis,
+        )
+        if residual_sharding != tuple(expected_residual_sharding):
+            raise VerifyException(
+                "residual all-reduce residual must add its mesh axis on the declared dimension"
+            )
+        expected_pending = {axis: "sum"}
+        if partial.pending_reductions() != expected_pending:
+            raise VerifyException("residual all-reduce partial must need its declared sum")
+        if residual.pending_reductions():
+            raise VerifyException("residual all-reduce residual must be fully reduced")
+        if full_result.pending_reductions():
+            raise VerifyException("residual all-reduce full result must be fully reduced")
+
+
+@irdl_op_definition
 class CastOp(IRDLOperation):
     name = "dtensor.cast"
     value = operand_def(DTensorType)
@@ -1425,6 +1507,7 @@ DistributedTensor = Dialect(
         EmbeddingLookupOp,
         EinsumLocalOp,
         EinsumOp,
+        ResidualAllReduceOp,
         AllGatherOp,
         ReduceScatterOp,
         AllReduceOp,

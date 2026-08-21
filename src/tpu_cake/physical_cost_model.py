@@ -558,6 +558,13 @@ def _vector_counts(operation: VectorComputeOp) -> tuple[int, int, int, int]:
         assert isinstance(statistics, BufferType)
         scalar = 2 * elements
         special = math.prod(statistics.storage.get_shape())
+    elif function == "residual_inject":
+        residual = operation.inputs[1].type
+        assert isinstance(residual, BufferType)
+        scalar = elements
+        index = math.prod(residual.storage.get_shape())
+    elif function == "shard_extract":
+        index = elements
     elif function == "rotary_embedding":
         scalar = 3 * elements
         special = elements

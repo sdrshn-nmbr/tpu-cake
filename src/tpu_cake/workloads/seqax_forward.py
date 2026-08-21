@@ -72,6 +72,7 @@ class SeqaxFeedForwardFusion(StrEnum):
 class SeqaxResidualNormStrategy(StrEnum):
     STANDARD = "standard"
     SHARDED_RMS = "sharded_rms"
+    RESIDUAL_ALL_REDUCE = "residual_all_reduce"
 
 
 @dataclass(frozen=True)
@@ -363,26 +364,38 @@ def seqax_forward_schedule(
         gather_source: SourceLocation,
         norm_source: SourceLocation,
         gather_value_first: bool = False,
+        full_value: SSAValue | None = None,
     ) -> SSAValue:
         full_model_activation = tensor(
             bf16,
             (("B", batch), ("L", sequence), ("M", model)),
             sharding={"B": ("d",)},
         )
-        if residual_norm_strategy is SeqaxResidualNormStrategy.STANDARD:
+        if residual_norm_strategy in {
+            SeqaxResidualNormStrategy.STANDARD,
+            SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+        }:
             if gather_value_first:
-                gathered_value = program.all_gather(
-                    value,
-                    full_model_activation,
-                    source=gather_source,
+                gathered_value = (
+                    full_value
+                    if full_value is not None
+                    else program.all_gather(
+                        value,
+                        full_model_activation,
+                        source=gather_source,
+                    )
                 )
                 gathered_scale = gather_norm_scale(program, scale, source=scale_source)
             else:
                 gathered_scale = gather_norm_scale(program, scale, source=scale_source)
-                gathered_value = program.all_gather(
-                    value,
-                    full_model_activation,
-                    source=gather_source,
+                gathered_value = (
+                    full_value
+                    if full_value is not None
+                    else program.all_gather(
+                        value,
+                        full_model_activation,
+                        source=gather_source,
+                    )
                 )
             return program.rms_norm(
                 gathered_value,
@@ -437,8 +450,14 @@ def seqax_forward_schedule(
         body: DistributedProgramBuilder,
         arguments: tuple[SSAValue, ...],
     ) -> tuple[SSAValue, ...]:
+        carry = arguments[0]
+        if residual_norm_strategy is SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE:
+            carry_full = arguments[1]
+            remaining = arguments[2:]
+        else:
+            carry_full = None
+            remaining = arguments[1:]
         (
-            carry,
             layer_ln1,
             layer_ln2,
             layer_wq,
@@ -448,7 +467,7 @@ def seqax_forward_schedule(
             layer_wup,
             layer_wdown,
             mask,
-        ) = arguments
+        ) = remaining
         normalized = normalize_activation(
             body,
             carry,
@@ -456,6 +475,7 @@ def seqax_forward_schedule(
             scale_source=_source(159),
             gather_source=_source(160),
             norm_source=_source(161),
+            full_value=carry_full,
         )
 
         layer_wq = body.cast(
@@ -730,36 +750,63 @@ def seqax_forward_schedule(
             contracting_dimensions=("D", "K", "Q"),
             source=_source(179),
         )
-        attention_output = body.reduce_scatter(
-            attention_partial,
-            tensor(
-                f32,
-                (("B", batch), ("Qlen", sequence), ("M", model)),
-                sharding={"B": ("d",), "M": ("t",)},
-            ),
-            axes=("t",),
-            scatter_dimensions=("M",),
-            source=_source(180),
-        )
-        attention_output = body.rename_dimension(
-            attention_output,
-            tensor(
-                f32,
-                (("B", batch), ("L", sequence), ("M", model)),
-                sharding={"B": ("d",), "M": ("t",)},
-            ),
-            source_dimension="Qlen",
-            destination_dimension="L",
-            source=_source(180),
-        )
-        attention_output = body.cast(attention_output, activation, source=_source(180))
-        carry = body.elementwise(
-            carry,
-            attention_output,
-            result=activation,
-            function="add",
-            source=_source(181),
-        )
+        if residual_norm_strategy is SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE:
+            attention_partial = body.rename_dimension(
+                attention_partial,
+                tensor(
+                    f32,
+                    (("B", batch), ("L", sequence), ("M", model)),
+                    sharding={"B": ("d",)},
+                    pending_reductions={"t": "sum"},
+                ),
+                source_dimension="Qlen",
+                destination_dimension="L",
+                source=_source(180),
+            )
+            carry_full, carry = body.residual_all_reduce(
+                attention_partial,
+                carry,
+                tensor(
+                    bf16,
+                    (("B", batch), ("L", sequence), ("M", model)),
+                    sharding={"B": ("d",)},
+                ),
+                activation,
+                mesh_axis="t",
+                dimension="M",
+                source=_source(181),
+            )
+        else:
+            attention_output = body.reduce_scatter(
+                attention_partial,
+                tensor(
+                    f32,
+                    (("B", batch), ("Qlen", sequence), ("M", model)),
+                    sharding={"B": ("d",), "M": ("t",)},
+                ),
+                axes=("t",),
+                scatter_dimensions=("M",),
+                source=_source(180),
+            )
+            attention_output = body.rename_dimension(
+                attention_output,
+                tensor(
+                    f32,
+                    (("B", batch), ("L", sequence), ("M", model)),
+                    sharding={"B": ("d",), "M": ("t",)},
+                ),
+                source_dimension="Qlen",
+                destination_dimension="L",
+                source=_source(180),
+            )
+            attention_output = body.cast(attention_output, activation, source=_source(180))
+            carry = body.elementwise(
+                carry,
+                attention_output,
+                result=activation,
+                function="add",
+                source=_source(181),
+            )
 
         normalized = normalize_activation(
             body,
@@ -768,6 +815,7 @@ def seqax_forward_schedule(
             scale_source=_source(184),
             gather_source=_source(185),
             norm_source=_source(186),
+            full_value=carry_full,
         )
         projected = tensor(
             f32,
@@ -886,6 +934,21 @@ def seqax_forward_schedule(
             contracting_dimensions=("F",),
             source=_source(195),
         )
+        if residual_norm_strategy is SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE:
+            carry_full, carry = body.residual_all_reduce(
+                feed_forward_partial,
+                carry,
+                tensor(
+                    bf16,
+                    (("B", batch), ("L", sequence), ("M", model)),
+                    sharding={"B": ("d",)},
+                ),
+                activation,
+                mesh_axis="t",
+                dimension="M",
+                source=_source(198),
+            )
+            return carry, carry_full
         feed_forward_output = body.reduce_scatter(
             feed_forward_partial,
             tensor(
@@ -908,15 +971,31 @@ def seqax_forward_schedule(
             ),
         )
 
-    (x,) = builder.layer_scan(
-        (x, ln1, ln2, wq, wkv, wo, wgate, wup, wdown, causal_mask),
+    scan_carries = (x,)
+    if residual_norm_strategy is SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE:
+        scan_carries = (
+            x,
+            builder.all_gather(
+                x,
+                tensor(
+                    bf16,
+                    (("B", batch), ("L", sequence), ("M", model)),
+                    sharding={"B": ("d",)},
+                ),
+                source=_source(160),
+            ),
+        )
+    scan_results = builder.layer_scan(
+        (*scan_carries, ln1, ln2, wq, wkv, wo, wgate, wup, wdown, causal_mask),
         layer_body,
-        carry_count=1,
+        carry_count=len(scan_carries),
         stacked_count=8,
         layer_dimension="Z",
         trip_count=layers,
         source=_source(200),
     )
+    x = scan_results[0]
+    x_full = scan_results[1] if len(scan_results) == 2 else None
     normalized = normalize_activation(
         builder,
         x,
@@ -925,6 +1004,7 @@ def seqax_forward_schedule(
         gather_source=_source(203),
         norm_source=_source(205),
         gather_value_first=True,
+        full_value=x_full,
     )
     unembed = builder.cast(
         unembed,

@@ -28,6 +28,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceLocalOp,
     ReduceScatterOp,
     RenameDimensionOp,
+    ResidualAllReduceOp,
     ReturnOp,
     RmsNormApplyOp,
     RmsNormOp,
@@ -187,6 +188,32 @@ class DistributedProgramBuilder:
         assert isinstance(operation, CastOp)
         self.block.add_op(operation)
         return operation.result
+
+    def residual_all_reduce(
+        self,
+        partial: SSAValue,
+        residual: SSAValue,
+        full_result: DistributedTensorSpec,
+        shard_result: DistributedTensorSpec,
+        *,
+        mesh_axis: str,
+        dimension: str,
+        source: SourceLocation | None = None,
+    ) -> tuple[SSAValue, SSAValue]:
+        operation = attach_source(
+            ResidualAllReduceOp(
+                partial,
+                residual,
+                full_result.to_type(),
+                shard_result.to_type(),
+                mesh_axis=mesh_axis,
+                dimension=dimension,
+            ),
+            source,
+        )
+        assert isinstance(operation, ResidualAllReduceOp)
+        self.block.add_op(operation)
+        return operation.full_result, operation.shard_result
 
     def rms_norm(
         self,

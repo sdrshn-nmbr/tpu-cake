@@ -83,6 +83,49 @@ def test_sharded_rms_lowers_to_exact_partial_reduce_apply_collectives() -> None:
     physical.verify()
 
 
+def test_residual_all_reduce_lowers_to_one_collective_per_residual_boundary() -> None:
+    distributed = seqax_forward_schedule(
+        **{**SMALL_SEQAX, "model": 256, "sequence": 1, "layers": 1},
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+        residual_norm_strategy=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    vectors = tuple(
+        operation for operation in physical.walk() if isinstance(operation, VectorComputeOp)
+    )
+    collectives = tuple(
+        operation for operation in physical.walk() if isinstance(operation, CollectiveOp)
+    )
+
+    assert sum(operation.function.data == "residual_inject" for operation in vectors) == 2
+    assert sum(operation.function.data == "shard_extract" for operation in vectors) == 2
+    assert sum(operation.kind.data is CollectiveKind.ALL_REDUCE for operation in collectives) == 2
+    assert (
+        sum(operation.kind.data is CollectiveKind.REDUCE_SCATTER for operation in collectives) == 1
+    )
+    physical.verify()
+
+
+def test_residual_all_reduce_physical_schedule_rejects_a_wrong_injection_axis() -> None:
+    distributed = seqax_forward_schedule(
+        **{**SMALL_SEQAX, "model": 256, "sequence": 1, "layers": 1},
+        residual_norm_strategy=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    injection = next(
+        operation
+        for operation in physical.walk()
+        if isinstance(operation, VectorComputeOp) and operation.function.data == "residual_inject"
+    )
+    injection.properties["configuration"] = ArrayAttr(
+        StringAttr("mesh_axis=d" if value.data.startswith("mesh_axis=") else value.data)
+        for value in injection.configuration
+    )
+
+    with pytest.raises(VerifyException, match="incompatible sharding"):
+        physical.verify()
+
+
 def test_sharded_rms_physical_schedule_rejects_wrong_reduction_axis_and_global_size() -> None:
     parameters = {
         **SMALL_SEQAX,

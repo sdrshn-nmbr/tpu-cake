@@ -12,6 +12,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ElementwiseOp,
     ProgramOp,
     RenameDimensionOp,
+    ResidualAllReduceOp,
     RmsNormApplyOp,
     RmsNormPartialOp,
     RotaryEmbeddingOp,
@@ -149,6 +150,48 @@ def test_seqax_sharded_rms_strategy_defers_activation_gathers_until_consumers() 
             residual_norm_strategy=SeqaxResidualNormStrategy.SHARDED_RMS,
             norm_scale_placement=SeqaxNormScalePlacement.REPLICATED,
         )
+
+
+def test_seqax_residual_all_reduce_removes_post_residual_gathers() -> None:
+    parameters = {
+        **SEQAX_PALLAS_SEARCH_PARAMETERS,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    standard = seqax_forward_schedule(**parameters)
+    candidate = seqax_forward_schedule(
+        **parameters,
+        residual_norm_strategy=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+    )
+    residual_reductions = tuple(
+        operation for operation in candidate.walk() if isinstance(operation, ResidualAllReduceOp)
+    )
+
+    assert len(residual_reductions) == 2
+    assert sum(isinstance(operation, AllGatherOp) for operation in candidate.walk()) == 12
+    assert sum(isinstance(operation, AllGatherOp) for operation in standard.walk()) == 14
+    assert schedule_sha256(candidate) != schedule_sha256(standard)
+    candidate.verify()
+
+
+def test_residual_all_reduce_rejects_an_unsharded_residual() -> None:
+    partial = tensor(
+        f32,
+        (("B", 2), ("M", 8)),
+        pending_reductions={"t": "sum"},
+    )
+    residual = tensor(bf16, (("B", 2), ("M", 8)))
+    builder = DistributedProgramBuilder("bad_residual_all_reduce", {"t": 4}, (partial, residual))
+    full, shard = builder.residual_all_reduce(
+        builder.inputs[0],
+        builder.inputs[1],
+        tensor(bf16, (("B", 2), ("M", 8))),
+        residual,
+        mesh_axis="t",
+        dimension="M",
+    )
+
+    with pytest.raises(VerifyException, match="residual must add its mesh axis"):
+        builder.module(full, shard).verify()
 
 
 def test_seqax_fused_silu_multiply_is_an_explicit_canonical_operation() -> None:

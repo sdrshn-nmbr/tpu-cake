@@ -39,6 +39,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceLocalOp,
     ReduceScatterOp,
     RenameDimensionOp,
+    ResidualAllReduceOp,
     ReturnOp,
     RmsNormApplyOp,
     RmsNormOp,
@@ -84,12 +85,13 @@ _SUPPORTED_OPERATIONS = (
     AllGatherOp,
     ReduceScatterOp,
     AllReduceOp,
+    ResidualAllReduceOp,
     LayerScanOp,
     ScanYieldOp,
     ReturnOp,
 )
 _SUPPORTED_ELEMENTWISE_FUNCTIONS = {"add", "multiply", "silu", "silu_multiply", "exp"}
-_COLLECTIVE_OPERATIONS = (AllGatherOp, ReduceScatterOp, AllReduceOp)
+_COLLECTIVE_OPERATIONS = (AllGatherOp, ReduceScatterOp, AllReduceOp, ResidualAllReduceOp)
 
 
 def _reject(operation: Operation, message: str) -> UnsupportedJaxLoweringError:

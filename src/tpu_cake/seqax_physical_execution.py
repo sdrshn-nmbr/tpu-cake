@@ -228,6 +228,28 @@ def _vector_compute(
         if valid is not None:
             aligned_valid = _align_named(valid, indices_names, output_names)
             result = jnp.where(aligned_valid, result, 0)
+    elif function == "residual_inject":
+        partial, residual = values
+        dimension = _names(typed_inputs[0]).index(configuration["dimension"])
+        start = jax.lax.axis_index(configuration["mesh_axis"]) * residual.shape[dimension]
+        contribution = jax.lax.dynamic_update_slice_in_dim(
+            jnp.zeros_like(partial),
+            residual.astype(partial.dtype),
+            start,
+            axis=dimension,
+        )
+        result = partial + contribution
+    elif function == "shard_extract":
+        full = values[0]
+        dimension = _names(typed_inputs[0]).index(configuration["dimension"])
+        shard_size = output_type.storage.get_shape()[dimension]
+        start = jax.lax.axis_index(configuration["mesh_axis"]) * shard_size
+        result = jax.lax.dynamic_slice_in_dim(
+            full,
+            start,
+            shard_size,
+            axis=dimension,
+        )
     elif function == "add":
         result = values[0] + values[1]
     elif function == "multiply":

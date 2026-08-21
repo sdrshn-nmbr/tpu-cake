@@ -26,6 +26,7 @@ from tpu_cake.dialects.distributed_tensor import (
     ProgramOp,
     ReduceScatterOp,
     RenameDimensionOp,
+    ResidualAllReduceOp,
     ReturnOp,
     RmsNormApplyOp,
     RmsNormOp,
@@ -368,11 +369,64 @@ class _LoweringState:
         self.operation_count += 1
         return output
 
+    def residual_all_reduce(self, operation: ResidualAllReduceOp) -> None:
+        partial_type = operation.partial.type
+        full_result_type = operation.full_result.type
+        shard_result_type = operation.shard_result.type
+        assert isinstance(partial_type, DTensorType)
+        assert isinstance(full_result_type, DTensorType)
+        assert isinstance(shard_result_type, DTensorType)
+        axis = operation.mesh_axis.data
+        configuration = _configuration(
+            dimension=operation.dimension.data,
+            group_size=self.mesh[axis],
+            mesh_axis=axis,
+        )
+        contribution = self.vector(
+            operation,
+            (self.environment[operation.partial], self.environment[operation.residual]),
+            partial_type,
+            "residual_inject",
+            configuration,
+        )
+        reduced = self.allocate(partial_type, operation)
+        collective = self.builder.collective(
+            contribution,
+            reduced,
+            stage=self.stage,
+            kind=CollectiveKind.ALL_REDUCE,
+            mesh_axis=axis,
+            group_size=self.mesh[axis],
+            reducer="sum",
+        )
+        collective.location = operation.location
+        self.stage += 1
+        self.operation_count += 1
+        full_result = self.vector(
+            operation,
+            (reduced,),
+            full_result_type,
+            "cast",
+            _configuration(dtype=str(full_result_type.element_type)),
+        )
+        shard_result = self.vector(
+            operation,
+            (full_result,),
+            shard_result_type,
+            "shard_extract",
+            configuration,
+        )
+        self.environment[operation.full_result] = full_result
+        self.environment[operation.shard_result] = shard_result
+
     def lower_operation(self, operation: Operation) -> None:
         if isinstance(operation, (ReturnOp, ScanYieldOp)):
             return
         if isinstance(operation, (AllGatherOp, ReduceScatterOp, AllReduceOp)):
             self.environment[operation.result] = self.collective(operation)
+            return
+        if isinstance(operation, ResidualAllReduceOp):
+            self.residual_all_reduce(operation)
             return
         if isinstance(operation, (EinsumOp, EinsumLocalOp)):
             self.environment[operation.result] = self.einsum(operation)

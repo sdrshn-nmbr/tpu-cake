@@ -1231,6 +1231,8 @@ class VectorComputeOp(IRDLOperation):
             "packed_causal_mask": 1,
             "masked_softmax": 2,
             "embedding_lookup": 2,
+            "residual_inject": 2,
+            "shard_extract": 1,
             "add": 2,
             "multiply": 2,
             "silu": 1,
@@ -1256,6 +1258,8 @@ class VectorComputeOp(IRDLOperation):
             },
             "masked_softmax": {"dimension"},
             "embedding_lookup": {"vocabulary_dimension"},
+            "residual_inject": {"dimension", "group_size", "mesh_axis"},
+            "shard_extract": {"dimension", "group_size", "mesh_axis"},
             "add": set(),
             "multiply": set(),
             "silu": set(),
@@ -1360,6 +1364,63 @@ class VectorComputeOp(IRDLOperation):
                 )
                 if tuple(value.data for value in output.shape.dimensions) != expected_names:
                     raise VerifyException("physical dimension rename has the wrong output names")
+        if function in {"residual_inject", "shard_extract"}:
+            dimension = parsed_configuration["dimension"]
+            mesh_axis = parsed_configuration["mesh_axis"]
+            try:
+                group_size = int(parsed_configuration["group_size"])
+            except ValueError as error:
+                raise VerifyException(
+                    "physical shard transform group size must be an integer"
+                ) from error
+            if group_size <= 1:
+                raise VerifyException("physical shard transform group size must exceed one")
+            if function == "residual_inject":
+                partial, shard = inputs
+                assert isinstance(partial, BufferType) and isinstance(shard, BufferType)
+                full = output
+                if not _same_physical_value_contract(partial, full):
+                    raise VerifyException(
+                        "physical residual injection must preserve its partial contract"
+                    )
+                if not isinstance(partial.storage.element_type, Float32Type) or not isinstance(
+                    shard.storage.element_type, BFloat16Type
+                ):
+                    raise VerifyException(
+                        "physical residual injection requires f32 and BF16 inputs"
+                    )
+            else:
+                (full,) = inputs
+                assert isinstance(full, BufferType)
+                shard = output
+                if full.storage.element_type != shard.storage.element_type:
+                    raise VerifyException("physical shard extraction cannot change element type")
+            full_shape = _named_buffer_shape(full)
+            shard_shape = _named_buffer_shape(shard)
+            if set(full_shape) != set(shard_shape) or dimension not in full_shape:
+                raise VerifyException("physical shard transform has incompatible named shapes")
+            if (
+                any(
+                    full_shape[name] != size
+                    for name, size in shard_shape.items()
+                    if name != dimension
+                )
+                or full_shape[dimension] != shard_shape[dimension] * group_size
+            ):
+                raise VerifyException("physical shard transform has incompatible local extents")
+            full_names = tuple(value.data for value in full.shape.dimensions)
+            shard_names = tuple(value.data for value in shard.shape.dimensions)
+            if full_names != shard_names:
+                raise VerifyException("physical shard transform must preserve dimension order")
+            dimension_index = full_names.index(dimension)
+            full_sharding = tuple(value.data for value in full.sharding.axes)
+            shard_sharding = tuple(value.data for value in shard.sharding.axes)
+            expected_shard = list(full_sharding)
+            expected_shard[dimension_index] = "/".join(
+                filter(None, (full_sharding[dimension_index], mesh_axis))
+            )
+            if shard_sharding != tuple(expected_shard):
+                raise VerifyException("physical shard transform has incompatible sharding")
         if function == "slice":
             source = inputs[0]
             assert isinstance(source, BufferType)
@@ -3104,6 +3165,25 @@ class KernelOp(IRDLOperation):
                         raise VerifyException(
                             "physical RMSNorm apply statistics must come from its matching "
                             "fully reduced partial"
+                        )
+                elif function == "residual_inject":
+                    configuration = dict(
+                        value.data.split("=", 1) for value in operation.configuration
+                    )
+                    expected_pending = frozenset({configuration["mesh_axis"]})
+                    if (
+                        input_pending[0] != expected_pending
+                        or input_pending[1]
+                        or declared_pending != expected_pending
+                    ):
+                        raise VerifyException(
+                            "physical residual injection must preserve its partial reduction"
+                        )
+                elif function == "shard_extract":
+                    require_fully_reduced(operation.inputs[0], operation)
+                    if declared_pending:
+                        raise VerifyException(
+                            "physical shard extraction cannot introduce pending reductions"
                         )
                 else:
                     for value in operation.inputs:
