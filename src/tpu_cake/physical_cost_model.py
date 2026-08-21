@@ -9,7 +9,7 @@ from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from xdsl.dialects.builtin import BFloat16Type, Float16Type, Float32Type, ModuleOp, UnknownLoc
 from xdsl.ir import Block, Operation, SSAValue
 
@@ -54,6 +54,7 @@ from tpu_cake.metrics import (
 from tpu_cake.physical_geometry import mxu_geometry
 
 PHYSICAL_KERNEL_RESOURCE_SCHEMA = "physical-kernel-resource-v1"
+PHYSICAL_COLLECTIVE_LATENCY_SCHEMA = "physical-collective-latency-v1"
 
 
 class UnsupportedPhysicalCostModelError(ValueError):
@@ -312,6 +313,164 @@ class PhysicalKernelResourceReport(BaseModel):
     metrics: tuple[Metric, ...]
 
 
+class PhysicalCollectiveLatencyPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mesh_axis: str = Field(min_length=1)
+    group_size: int = Field(gt=1)
+    kind: CollectiveKind
+    reducer: str = Field(pattern=r"^(none|sum)$")
+    source_dtype_authority: str = Field(pattern=r"^(payload-only|bf16|f32)$")
+    payload_bytes_per_device: int = Field(gt=0)
+    median_latency_ns: Decimal = Field(gt=0)
+    mean_latency_ns: Decimal = Field(gt=0)
+    paired_rounds: int = Field(ge=3)
+    positive_delta_rounds: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def measurement_is_complete(self) -> PhysicalCollectiveLatencyPoint:
+        if self.positive_delta_rounds > self.paired_rounds:
+            raise ValueError("PHYSICAL_COLLECTIVE_LATENCY_ROUND_COUNT_MISMATCH")
+        return self
+
+
+class PhysicalCollectiveLatencyCalibration(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: str = Field(pattern=r"^physical-collective-latency-v1$")
+    target: str = Field(pattern=r"^tpu7x$")
+    device_kind: str = Field(pattern=r"^TPU7x$")
+    device_count: int = Field(gt=0)
+    mesh_axes: tuple[tuple[str, int], ...]
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    python_version: str = Field(min_length=1)
+    jax_version: str = Field(min_length=1)
+    jaxlib_version: str = Field(min_length=1)
+    libtpu_init_args: str = Field(min_length=1)
+    iterations_per_sample: int = Field(gt=0)
+    warmups: int = Field(gt=0)
+    paired_rounds: int = Field(ge=3)
+    points: tuple[PhysicalCollectiveLatencyPoint, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def point_inventory_is_exact(self) -> PhysicalCollectiveLatencyCalibration:
+        keys = tuple(
+            (
+                point.mesh_axis,
+                point.group_size,
+                point.kind.value,
+                point.reducer,
+                point.source_dtype_authority,
+                point.payload_bytes_per_device,
+            )
+            for point in self.points
+        )
+        if keys != tuple(sorted(set(keys))):
+            raise ValueError("PHYSICAL_COLLECTIVE_LATENCY_POINTS_NOT_CANONICAL")
+        if any(point.paired_rounds != self.paired_rounds for point in self.points):
+            raise ValueError("PHYSICAL_COLLECTIVE_LATENCY_PROTOCOL_MISMATCH")
+        mesh = dict(self.mesh_axes)
+        if self.device_count != math.prod(mesh.values()) or any(
+            mesh.get(point.mesh_axis) != point.group_size for point in self.points
+        ):
+            raise ValueError("PHYSICAL_COLLECTIVE_LATENCY_MESH_MISMATCH")
+        return self
+
+    @computed_field
+    @property
+    def calibration_id(self) -> str:
+        payload = self.model_dump(mode="json", exclude_computed_fields=True)
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+
+class PhysicalCollectiveLatencyOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_id: str = Field(min_length=1)
+    mesh_axis: str = Field(min_length=1)
+    group_size: int = Field(gt=1)
+    kind: CollectiveKind
+    reducer: str = Field(pattern=r"^(none|sum)$")
+    source_dtype: str = Field(min_length=1)
+    payload_bytes_per_device: int = Field(gt=0)
+    executions: int = Field(gt=0)
+    measured_latency_ns_per_execution: Decimal = Field(gt=0)
+    measured_latency_ns_total: Decimal = Field(gt=0)
+    advertised_byte_time_ns_per_execution: Decimal = Field(gt=0)
+
+    @model_validator(mode="after")
+    def totals_are_consistent(self) -> PhysicalCollectiveLatencyOperation:
+        if (
+            self.measured_latency_ns_total
+            != self.measured_latency_ns_per_execution * self.executions
+        ):
+            raise ValueError("PHYSICAL_COLLECTIVE_LATENCY_EXECUTION_COUNT_MISMATCH")
+        return self
+
+
+class PhysicalKernelLatencyReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: str = Field(pattern=r"^physical-kernel-latency-v1$")
+    physical_schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    resource_report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    calibration_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    calibration_archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operations: tuple[PhysicalCollectiveLatencyOperation, ...]
+    collective_measured_serial_scenario_ns: Decimal = Field(ge=0)
+    collective_advertised_byte_serial_scenario_ns: Decimal = Field(ge=0)
+    collective_latency_excess_scenario_ns: Decimal = Field(ge=0)
+    remote_dma_serial_scenario_ns: Decimal = Field(ge=0)
+    latency_adjusted_ici_serial_scenario_ns: Decimal = Field(ge=0)
+    latency_adjusted_overlapped_resource_scenario_ns: Decimal = Field(ge=0)
+    latency_adjusted_serial_resource_scenario_ns: Decimal = Field(ge=0)
+    predicted_limiting_priced_resource: str = Field(pattern=r"^(none|compute|hbm|ici)$")
+    assumptions: tuple[str, ...]
+    omissions: tuple[str, ...]
+    metrics: tuple[Metric, ...]
+
+    @model_validator(mode="after")
+    def aggregate_values_are_consistent(self) -> PhysicalKernelLatencyReport:
+        measured = sum(
+            (operation.measured_latency_ns_total for operation in self.operations),
+            Decimal(0),
+        )
+        advertised = sum(
+            (
+                operation.advertised_byte_time_ns_per_execution * operation.executions
+                for operation in self.operations
+            ),
+            Decimal(0),
+        )
+        if (
+            self.collective_measured_serial_scenario_ns != measured
+            or self.collective_advertised_byte_serial_scenario_ns != advertised
+            or self.collective_latency_excess_scenario_ns != measured - advertised
+            or self.latency_adjusted_ici_serial_scenario_ns
+            != measured + self.remote_dma_serial_scenario_ns
+        ):
+            raise ValueError("PHYSICAL_KERNEL_LATENCY_AGGREGATE_MISMATCH")
+        expected_metrics = {
+            "physical_collective_measured_serial_scenario_ns": self.collective_measured_serial_scenario_ns,
+            "physical_collective_advertised_byte_serial_scenario_ns": self.collective_advertised_byte_serial_scenario_ns,
+            "physical_collective_latency_excess_scenario_ns": self.collective_latency_excess_scenario_ns,
+            "physical_remote_dma_serial_scenario_ns": self.remote_dma_serial_scenario_ns,
+            "physical_latency_adjusted_ici_serial_scenario_ns": self.latency_adjusted_ici_serial_scenario_ns,
+            "physical_latency_adjusted_overlapped_resource_scenario_ns": self.latency_adjusted_overlapped_resource_scenario_ns,
+            "physical_latency_adjusted_serial_resource_scenario_ns": self.latency_adjusted_serial_resource_scenario_ns,
+        }
+        observed_metrics = {metric.name: metric for metric in self.metrics}
+        if observed_metrics.keys() != expected_metrics.keys() or any(
+            observed_metrics[name].quantity != Quantity(value=value, unit=Unit.NANOSECOND)
+            for name, value in expected_metrics.items()
+        ):
+            raise ValueError("PHYSICAL_KERNEL_LATENCY_METRIC_MISMATCH")
+        return self
+
+
 def _location(operation: Operation) -> str:
     return "unknown" if isinstance(operation.location, UnknownLoc) else str(operation.location)
 
@@ -338,6 +497,17 @@ def _mxu_input_dtype(operation: MxuMatmulOp | MxuEinsumOp) -> str:
     if isinstance(element_type, Float32Type):
         return "f32"
     raise UnsupportedPhysicalCostModelError(f"unsupported MXU input dtype {element_type}")
+
+
+def _buffer_dtype(buffer: BufferType) -> str:
+    element_type = buffer.storage.element_type
+    if isinstance(element_type, BFloat16Type):
+        return "bf16"
+    if isinstance(element_type, Float16Type):
+        return "f16"
+    if isinstance(element_type, Float32Type):
+        return "f32"
+    return str(element_type)
 
 
 def _wait_stage(start: DmaStartOp | RemoteDmaStartOp) -> int:
@@ -726,6 +896,31 @@ def _metric(
         formula=FormulaIdentity(name=formula_name, version="1", expression=expression),
         numerator=numerator,
         denominator=denominator,
+    )
+
+
+def _latency_metric(
+    name: str,
+    value: Decimal,
+    *,
+    kind: MeasurementKind,
+    sources: tuple[MetricSource, ...],
+    formula_name: str,
+    expression: str,
+) -> Metric:
+    return Metric(
+        name=name,
+        quantity=Quantity(value=value, unit=Unit.NANOSECOND),
+        kind=kind,
+        interval=MeasurementInterval(
+            scope="one serialized physical-kernel collective scenario on one TPU device"
+        ),
+        sources=sources,
+        formula=FormulaIdentity(
+            name=formula_name,
+            version="1",
+            expression=expression,
+        ),
     )
 
 
@@ -1347,6 +1542,415 @@ def analyze_physical_kernel(
         ),
         metrics=metrics,
     )
+
+
+def tpu7x_collective_latency_calibration() -> PhysicalCollectiveLatencyCalibration:
+    values = (
+        (
+            "d",
+            2,
+            CollectiveKind.ALL_GATHER,
+            "none",
+            "payload-only",
+            256,
+            "8045.09375",
+            "8046.754092261905",
+        ),
+        (
+            "d",
+            2,
+            CollectiveKind.ALL_GATHER,
+            "none",
+            "payload-only",
+            2048,
+            "8385.2265625",
+            "8387.668154761905",
+        ),
+        (
+            "d",
+            2,
+            CollectiveKind.ALL_GATHER,
+            "none",
+            "payload-only",
+            4096,
+            "8639.4765625",
+            "8977.073660714286",
+        ),
+        (
+            "t",
+            4,
+            CollectiveKind.ALL_GATHER,
+            "none",
+            "payload-only",
+            128,
+            "7271.8359375",
+            "7273.240327380952",
+        ),
+        (
+            "t",
+            4,
+            CollectiveKind.ALL_GATHER,
+            "none",
+            "payload-only",
+            256,
+            "9455.4765625",
+            "8762.953869047618",
+        ),
+        (
+            "t",
+            4,
+            CollectiveKind.ALL_GATHER,
+            "none",
+            "payload-only",
+            512,
+            "9693.3984375",
+            "9708.854166666666",
+        ),
+        (
+            "t",
+            4,
+            CollectiveKind.ALL_GATHER,
+            "none",
+            "payload-only",
+            1024,
+            "9800.6796875",
+            "9787.4140625",
+        ),
+        ("t", 4, CollectiveKind.ALL_REDUCE, "sum", "f32", 4, "7841.6328125", "8314.733630952382"),
+        (
+            "t",
+            4,
+            CollectiveKind.REDUCE_SCATTER,
+            "sum",
+            "bf16",
+            512,
+            "13891.484375",
+            "13919.12537202381",
+        ),
+        (
+            "t",
+            4,
+            CollectiveKind.REDUCE_SCATTER,
+            "sum",
+            "f32",
+            1024,
+            "14127.671875",
+            "14572.675967261905",
+        ),
+    )
+    return PhysicalCollectiveLatencyCalibration(
+        schema_version=PHYSICAL_COLLECTIVE_LATENCY_SCHEMA,
+        target="tpu7x",
+        device_kind="TPU7x",
+        device_count=8,
+        mesh_axes=(("d", 2), ("t", 4)),
+        source_commit="002d994546ad9bf6bb19edff93779d91ea79ec66",
+        archive_sha256="d413f6967138cd3c314fe3267ae1d1d6c54943cc5cd004cf6104b2f4c446f014",
+        result_sha256="4224e8918c3defdad0da94761d20be359a8150614c30934657c088ea0ae2747f",
+        python_version="3.12.3",
+        jax_version="0.11.0",
+        jaxlib_version="0.11.0",
+        libtpu_init_args=" --xla_tpu_use_enhanced_launch_barrier=true",
+        iterations_per_sample=128,
+        warmups=3,
+        paired_rounds=21,
+        points=tuple(
+            PhysicalCollectiveLatencyPoint(
+                mesh_axis=axis,
+                group_size=group_size,
+                kind=kind,
+                reducer=reducer,
+                source_dtype_authority=dtype,
+                payload_bytes_per_device=payload,
+                median_latency_ns=Decimal(median),
+                mean_latency_ns=Decimal(mean),
+                paired_rounds=21,
+                positive_delta_rounds=21,
+            )
+            for axis, group_size, kind, reducer, dtype, payload, median, mean in values
+        ),
+    )
+
+
+def _model_sha256(value: BaseModel) -> str:
+    payload = value.model_dump(mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _collective_latency_semantics(module: ModuleOp) -> dict[str, tuple[str, str]]:
+    kernel = _kernel(module)
+    operation_ids = _operation_identities(module)
+    semantics: dict[str, tuple[str, str]] = {}
+    for operation, _ in _executed_leaf_operations(kernel.body.block):
+        if not isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp)):
+            continue
+        source = operation.source.type
+        assert isinstance(source, BufferType)
+        semantics[operation_ids[operation]] = (
+            operation.reducer.data,
+            _buffer_dtype(source),
+        )
+    return semantics
+
+
+def analyze_physical_kernel_latency(
+    report: PhysicalKernelResourceReport,
+    *,
+    module: ModuleOp,
+    calibration: PhysicalCollectiveLatencyCalibration,
+) -> PhysicalKernelLatencyReport:
+    validate_physical_kernel_report(
+        report,
+        module=module,
+        hardware=tpu7x_tensorcore_rates(),
+    )
+    if schedule_sha256(module) != report.physical_schedule_sha256:
+        raise UnsupportedPhysicalCostModelError(
+            "physical collective latency module does not match the resource report"
+        )
+    if (
+        report.target != calibration.target
+        or report.device_count != calibration.device_count
+        or report.mesh_axes != calibration.mesh_axes
+    ):
+        raise UnsupportedPhysicalCostModelError(
+            "physical collective latency calibration does not match the kernel target and mesh"
+        )
+    points = {
+        (
+            point.mesh_axis,
+            point.group_size,
+            point.kind,
+            point.reducer,
+            point.source_dtype_authority,
+            point.payload_bytes_per_device,
+        ): point
+        for point in calibration.points
+    }
+    semantics = _collective_latency_semantics(module)
+    operations = []
+    for collective in report.collectives:
+        reducer, source_dtype = semantics[collective.operation_id]
+        exact_key = (
+            collective.mesh_axis,
+            collective.group_size,
+            collective.kind,
+            reducer,
+            source_dtype,
+            collective.payload_bytes_per_device,
+        )
+        wildcard_key = (
+            collective.mesh_axis,
+            collective.group_size,
+            collective.kind,
+            reducer,
+            "payload-only",
+            collective.payload_bytes_per_device,
+        )
+        matches = tuple(
+            point for key in (exact_key, wildcard_key) if (point := points.get(key)) is not None
+        )
+        if len(matches) != 1:
+            raise UnsupportedPhysicalCostModelError(
+                "collective latency calibration must have exactly one matching point for "
+                f"axis={exact_key[0]} group_size={exact_key[1]} "
+                f"kind={exact_key[2].value} reducer={exact_key[3]} "
+                f"source_dtype={exact_key[4]} payload_bytes={exact_key[5]}; "
+                f"matches={len(matches)}"
+            )
+        point = matches[0]
+        advertised = (
+            collective.ring_equivalent_bidirectional_bytes_per_device
+            * Decimal(1_000_000_000)
+            / Decimal(report.hardware.ici_bytes_per_second)
+        )
+        operations.append(
+            PhysicalCollectiveLatencyOperation(
+                operation_id=collective.operation_id,
+                mesh_axis=collective.mesh_axis,
+                group_size=collective.group_size,
+                kind=collective.kind,
+                reducer=reducer,
+                source_dtype=source_dtype,
+                payload_bytes_per_device=collective.payload_bytes_per_device,
+                executions=collective.executions,
+                measured_latency_ns_per_execution=point.median_latency_ns,
+                measured_latency_ns_total=point.median_latency_ns * collective.executions,
+                advertised_byte_time_ns_per_execution=advertised,
+            )
+        )
+    measured = sum((operation.measured_latency_ns_total for operation in operations), Decimal(0))
+    advertised = sum(
+        (
+            operation.advertised_byte_time_ns_per_execution * operation.executions
+            for operation in operations
+        ),
+        Decimal(0),
+    )
+    remote = max(
+        report.remote_dma_exact_endpoint_time_floor_ns,
+        report.remote_dma_exact_link_time_floor_ns,
+    )
+    ici = measured + remote
+    overlapped = max(
+        report.priced_compute_time_floor_ns,
+        report.priced_hbm_time_floor_ns,
+        ici,
+    )
+    serial = report.priced_compute_time_floor_ns + report.priced_hbm_time_floor_ns + ici
+    limiting = (
+        "none"
+        if overlapped == 0
+        else max(
+            (
+                ("compute", report.priced_compute_time_floor_ns),
+                ("hbm", report.priced_hbm_time_floor_ns),
+                ("ici", ici),
+            ),
+            key=lambda value: value[1],
+        )[0]
+    )
+    schedule_source = physical_schedule_source(module)
+    calibration_source = MetricSource(
+        artifact_sha256=calibration.archive_sha256,
+        artifact_path=f"calibration/{calibration.archive_sha256}.tar.zst",
+        tool="tpu-cake",
+        field=f"result:{calibration.result_sha256}:paired-median-delta-ns",
+    )
+    measured_sources = (schedule_source, calibration_source)
+    metrics = (
+        _latency_metric(
+            "physical_collective_measured_serial_scenario_ns",
+            measured,
+            kind=MeasurementKind.DERIVED,
+            sources=measured_sources,
+            formula_name="physical-collective-exact-size-serial-latency",
+            expression="sum(executions * exact_size_paired_median_latency_ns)",
+        ),
+        _latency_metric(
+            "physical_collective_advertised_byte_serial_scenario_ns",
+            advertised,
+            kind=MeasurementKind.ESTIMATED,
+            sources=(schedule_source,),
+            formula_name="physical-collective-advertised-byte-serial-time",
+            expression="sum(executions * ring_equivalent_bytes_per_device / ici_bytes_per_second)",
+        ),
+        _latency_metric(
+            "physical_collective_latency_excess_scenario_ns",
+            measured - advertised,
+            kind=MeasurementKind.DERIVED,
+            sources=measured_sources,
+            formula_name="physical-collective-latency-excess",
+            expression="measured_collective_serial_ns - advertised_byte_serial_ns",
+        ),
+        _latency_metric(
+            "physical_remote_dma_serial_scenario_ns",
+            remote,
+            kind=MeasurementKind.ESTIMATED,
+            sources=(schedule_source,),
+            formula_name="physical-remote-dma-bottleneck-time",
+            expression="max(exact_endpoint_time_ns, exact_link_time_ns)",
+        ),
+        _latency_metric(
+            "physical_latency_adjusted_ici_serial_scenario_ns",
+            ici,
+            kind=MeasurementKind.ESTIMATED,
+            sources=measured_sources,
+            formula_name="physical-latency-adjusted-ici-serial-time",
+            expression="measured_collective_serial_ns + remote_dma_serial_ns",
+        ),
+        _latency_metric(
+            "physical_latency_adjusted_overlapped_resource_scenario_ns",
+            overlapped,
+            kind=MeasurementKind.ESTIMATED,
+            sources=measured_sources,
+            formula_name="physical-latency-adjusted-overlapped-resource-time",
+            expression="max(compute_time_ns, explicit_hbm_time_ns, latency_adjusted_ici_time_ns)",
+        ),
+        _latency_metric(
+            "physical_latency_adjusted_serial_resource_scenario_ns",
+            serial,
+            kind=MeasurementKind.ESTIMATED,
+            sources=measured_sources,
+            formula_name="physical-latency-adjusted-serial-resource-time",
+            expression="compute_time_ns + explicit_hbm_time_ns + latency_adjusted_ici_time_ns",
+        ),
+    )
+    return PhysicalKernelLatencyReport(
+        schema_version="physical-kernel-latency-v1",
+        physical_schedule_sha256=report.physical_schedule_sha256,
+        resource_report_sha256=_model_sha256(report),
+        calibration_id=calibration.calibration_id,
+        calibration_archive_sha256=calibration.archive_sha256,
+        operations=tuple(operations),
+        collective_measured_serial_scenario_ns=measured,
+        collective_advertised_byte_serial_scenario_ns=advertised,
+        collective_latency_excess_scenario_ns=measured - advertised,
+        remote_dma_serial_scenario_ns=remote,
+        latency_adjusted_ici_serial_scenario_ns=ici,
+        latency_adjusted_overlapped_resource_scenario_ns=overlapped,
+        latency_adjusted_serial_resource_scenario_ns=serial,
+        predicted_limiting_priced_resource=limiting,
+        assumptions=(
+            "Each collective executes serially at the exact-size paired-median latency measured by the bound calibration.",
+            "All-gather latency uses an explicit payload-only transport assumption across element types; sum reductions require exact measured dtype and reducer matches.",
+            "Measured collective latency replaces the advertised byte-only collective scenario; exact remote-DMA endpoint and link floors remain separate.",
+            "Compute and explicit-HBM terms retain the advertised-rate conventions of the bound physical resource report.",
+        ),
+        omissions=(
+            "The calibration covers only exact TPU7x d=2 and t=4 collective kinds and payload sizes present in the model256/layers1/sequence1 schedules.",
+            "The calibration is descriptive single-slice evidence without a durable receipt, trace, counters, or predictive holdout.",
+            "Vector and special-function execution remain unpriced, so this report cannot predict the full RSAG timing delta.",
+            "Collective overlap, compiler scheduling, and per-link collective byte schedules remain unmodeled.",
+        ),
+        metrics=metrics,
+    )
+
+
+def validate_physical_kernel_latency_report(
+    latency_report: PhysicalKernelLatencyReport,
+    *,
+    module: ModuleOp,
+    resource_report: PhysicalKernelResourceReport,
+    calibration: PhysicalCollectiveLatencyCalibration,
+) -> None:
+    expected = analyze_physical_kernel_latency(
+        resource_report,
+        module=module,
+        calibration=calibration,
+    )
+    if latency_report != expected:
+        raise ValueError("PHYSICAL_KERNEL_LATENCY_REPORT_REPLAY_MISMATCH")
+
+
+def write_physical_kernel_latency_report(
+    output: Path,
+    *,
+    module: ModuleOp,
+    resource_report: PhysicalKernelResourceReport,
+    calibration: PhysicalCollectiveLatencyCalibration,
+) -> PhysicalKernelLatencyReport:
+    output = output.resolve()
+    if output.exists():
+        raise ValueError("PHYSICAL_KERNEL_LATENCY_OUTPUT_EXISTS")
+    report = analyze_physical_kernel_latency(
+        resource_report,
+        module=module,
+        calibration=calibration,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    payload = json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    try:
+        with temporary.open("x") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return report
 
 
 def validate_physical_kernel_report(

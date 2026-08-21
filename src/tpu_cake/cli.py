@@ -21,8 +21,14 @@ from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
 from tpu_cake.physical_cost_model import (
+    PhysicalCollectiveLatencyCalibration,
+    PhysicalKernelLatencyReport,
     PhysicalKernelResourceReport,
+    analyze_physical_kernel,
+    tpu7x_collective_latency_calibration,
+    validate_physical_kernel_latency_report,
     validate_physical_kernel_report,
+    write_physical_kernel_latency_report,
     write_physical_kernel_report,
 )
 from tpu_cake.physical_fusion import (
@@ -134,6 +140,16 @@ def _parser() -> argparse.ArgumentParser:
     verify_physical_cost = commands.add_parser("verify-physical-cost")
     verify_physical_cost.add_argument("report", type=Path)
     verify_physical_cost.add_argument("--schedule", required=True, type=Path)
+
+    estimate_physical_latency = commands.add_parser("estimate-physical-latency")
+    estimate_physical_latency.add_argument("schedule", type=Path)
+    estimate_physical_latency.add_argument("--calibration", required=True, type=Path)
+    estimate_physical_latency.add_argument("--output", required=True, type=Path)
+
+    verify_physical_latency = commands.add_parser("verify-physical-latency")
+    verify_physical_latency.add_argument("report", type=Path)
+    verify_physical_latency.add_argument("--schedule", required=True, type=Path)
+    verify_physical_latency.add_argument("--calibration", required=True, type=Path)
 
     compare_physical_fusion = commands.add_parser("compare-seqax-silu-fusion")
     compare_physical_fusion.add_argument("contract", type=Path)
@@ -374,6 +390,72 @@ def _verify_physical_cost(report_path: Path, schedule_path: Path) -> int:
     return 0
 
 
+def _load_physical_latency_calibration(
+    calibration_path: Path,
+) -> PhysicalCollectiveLatencyCalibration:
+    calibration = PhysicalCollectiveLatencyCalibration.model_validate_json(
+        calibration_path.read_text()
+    )
+    if calibration != tpu7x_collective_latency_calibration():
+        raise ValueError("PHYSICAL_COLLECTIVE_LATENCY_EXTERNAL_CONTRACT_MISMATCH")
+    return calibration
+
+
+def _estimate_physical_latency(
+    schedule_path: Path,
+    calibration_path: Path,
+    output: Path,
+) -> int:
+    module = _parse_schedule(schedule_path)
+    resource_report = analyze_physical_kernel(
+        module,
+        hardware=tpu7x_tensorcore_rates(),
+    )
+    calibration = _load_physical_latency_calibration(calibration_path)
+    report = write_physical_kernel_latency_report(
+        output,
+        module=module,
+        resource_report=resource_report,
+        calibration=calibration,
+    )
+    print(
+        "PHYSICAL_LATENCY_DERIVED "
+        f"schedule_sha256={report.physical_schedule_sha256} "
+        f"calibration_id={report.calibration_id} "
+        f"collectives={len(report.operations)} "
+        f"collective_serial_ns={report.collective_measured_serial_scenario_ns}"
+    )
+    return 0
+
+
+def _verify_physical_latency(
+    report_path: Path,
+    schedule_path: Path,
+    calibration_path: Path,
+) -> int:
+    module = _parse_schedule(schedule_path)
+    resource_report = analyze_physical_kernel(
+        module,
+        hardware=tpu7x_tensorcore_rates(),
+    )
+    calibration = _load_physical_latency_calibration(calibration_path)
+    report = PhysicalKernelLatencyReport.model_validate_json(report_path.read_text())
+    validate_physical_kernel_latency_report(
+        report,
+        module=module,
+        resource_report=resource_report,
+        calibration=calibration,
+    )
+    print(
+        "PHYSICAL_LATENCY_REPLAYED "
+        f"schedule_sha256={report.physical_schedule_sha256} "
+        f"calibration_id={report.calibration_id} "
+        f"collectives={len(report.operations)} "
+        f"collective_serial_ns={report.collective_measured_serial_scenario_ns}"
+    )
+    return 0
+
+
 def _compare_physical_fusion(contract_path: Path, output: Path) -> int:
     contract = SeqaxSiluMultiplyFusionContract.model_validate_json(contract_path.read_text())
     report = write_seqax_silu_multiply_fusion_report(
@@ -490,6 +572,18 @@ def main() -> None:
         code = _estimate_physical_cost(args.schedule, args.output)
     elif args.command == "verify-physical-cost":
         code = _verify_physical_cost(args.report, args.schedule)
+    elif args.command == "estimate-physical-latency":
+        code = _estimate_physical_latency(
+            args.schedule,
+            args.calibration,
+            args.output,
+        )
+    elif args.command == "verify-physical-latency":
+        code = _verify_physical_latency(
+            args.report,
+            args.schedule,
+            args.calibration,
+        )
     elif args.command == "compare-seqax-silu-fusion":
         code = _compare_physical_fusion(args.contract, args.output)
     elif args.command == "verify-seqax-silu-fusion":

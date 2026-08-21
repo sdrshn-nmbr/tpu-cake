@@ -60,6 +60,12 @@ uv run tpu-cake estimate-physical-cost PHYSICAL_SCHEDULE.xdsl \
   --output PHYSICAL_COST_REPORT.json
 uv run tpu-cake verify-physical-cost PHYSICAL_COST_REPORT.json \
   --schedule PHYSICAL_SCHEDULE.xdsl
+uv run tpu-cake estimate-physical-latency PHYSICAL_SCHEDULE.xdsl \
+  --calibration contracts/tpu7x-collective-latency-v1.json \
+  --output PHYSICAL_LATENCY_REPORT.json
+uv run tpu-cake verify-physical-latency PHYSICAL_LATENCY_REPORT.json \
+  --schedule PHYSICAL_SCHEDULE.xdsl \
+  --calibration contracts/tpu7x-collective-latency-v1.json
 uv run tpu-cake compare-seqax-silu-fusion \
   contracts/seqax-silu-multiply-fusion-v1.json \
   --output SEQAX_SILU_FUSION_REPORT.json
@@ -122,6 +128,8 @@ The Seqax workload-surface experiment compares the unwrapped `shard_map` control
 The first Seqax cost calibration replays the accepted three-shape trace and counter bundle, then fits a fixed residual-overhead term plus a layer-count-associated residual term on top of the IR-derived idealized resource floor. It describes that exact profiler-instrumented surface within a declared residual bound, but has no held-out predictive validation. It therefore quantifies an overhead-dominated gap in the advertised-rate floor; neither coefficient has causal attribution, and the fit has no sampling-uncertainty or coefficient-confidence-interval estimate. It is not a production latency model, a calibrated model-size or sequence-length scaling law, or a calibration of MXU, HBM, or ICI rates.
 
 The generic physical cost report consumes the verified `tpu_schedule.kernel` directly. It binds the exact physical schedule hash and accounts for declared MXU tiles and grids, per-operation vector work, explicit DMA, inclusive buffer lifetimes, view aliases, pipeline trip counts and rotation storage, collective traffic, remote-DMA routes, topology links, and resource concurrency. It can therefore distinguish legal physical schedules that share one distributed program. BF16 MXU compute and explicit-HBM values are advertised-rate analytical floors; F16, F32, vector, and special-function work remain unpriced. Remote-DMA time includes exact declared per-link bandwidth and per-device injection/ejection floors. Collective time is a separate ring-equivalent injection-rate scenario because collective plans do not define an exact per-link byte schedule. The report does not claim compiler execution, measured latency, or predictive calibration.
+
+The TPU7x collective-latency overlay replaces that byte-only collective scenario with exact-size paired medians from one bound `d=2, t=4` slice. It is deliberately fail-closed outside the ten measured axis, operation, reducer, dtype, and payload combinations in the model-256, one-layer, one-token schedules. Sum reductions require the exact measured dtype and reducer; all-gather uses an explicit payload-only transport assumption across element types. On that surface, sharded RMS normalization reduces the modeled serialized collective term by 5.88 microseconds, but the matched whole-forward diagnostic regresses by 1.92%. Vector and special-function execution, overlap, and compiler scheduling remain unpriced, so this is a descriptive localization result rather than a latency predictor or promotion. This matches the [JAX Scaling Book sharding model](https://jax-ml.github.io/scaling-book/sharding/): small-buffer collectives can be dominated by fixed dispatch and hop latency, so byte counts alone are not enough to select the boundary.
 
 The first explicit fusion comparison replaces each legacy unmaterialized `silu` then `multiply` pair with one typed `silu_multiply` operation across the declared tiny, wider, and deeper Seqax surface. Public replay regenerates both distributed and physical schedules from an external contract and verifies exact producer lineage, declared work, traffic, memory deltas, and the full-local Pallas implementation choice. The fused operation executes through an owned Pallas region in CPU interpret tests, but has not yet passed TPU Mosaic compilation. It removes 64, 512, and 1,024 declared VMEM bytes per device respectively, without changing declared peak VMEM. These are schedule-model savings with no measured winner, physical-memory proof, or predictive validation.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,12 @@ from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f32
 from xdsl.ir import Block
 from xdsl.utils.exceptions import VerifyException
 
-from tpu_cake.cli import _estimate_physical_cost, _verify_physical_cost
+from tpu_cake.cli import (
+    _estimate_physical_cost,
+    _estimate_physical_latency,
+    _verify_physical_cost,
+    _verify_physical_latency,
+)
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.tpu_schedule import (
     CollectiveKind,
@@ -27,12 +33,18 @@ from tpu_cake.dialects.tpu_schedule import (
 from tpu_cake.frontend import KernelBuilder, buffer, canonical_module_text, schedule_sha256
 from tpu_cake.metrics import MetricSource
 from tpu_cake.physical_cost_model import (
+    PhysicalCollectiveLatencyCalibration,
     PhysicalImbalanceRecord,
+    PhysicalKernelLatencyReport,
     PhysicalKernelResourceReport,
     UnsupportedPhysicalCostModelError,
     analyze_physical_kernel,
+    analyze_physical_kernel_latency,
     physical_schedule_source,
+    tpu7x_collective_latency_calibration,
+    validate_physical_kernel_latency_report,
     validate_physical_kernel_report,
+    write_physical_kernel_latency_report,
     write_physical_kernel_report,
 )
 from tpu_cake.seqax_cost_model import estimate_seqax_forward
@@ -194,6 +206,341 @@ def test_sharded_rms_physical_collectives_match_distributed_cost_authority() -> 
         )
         == distributed_report.counts.ici_bidirectional_bytes_per_device
     )
+
+
+def test_exact_tpu7x_collective_latency_distinguishes_standard_and_sharded_rms() -> None:
+    parameters = {
+        **SMALL_SEQAX,
+        "model": 256,
+        "sequence": 1,
+        "layers": 1,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    standard_module = lower_seqax_forward_to_physical(seqax_forward_schedule(**parameters)).module
+    candidate_module = lower_seqax_forward_to_physical(
+        seqax_forward_schedule(
+            **parameters,
+            residual_norm_strategy=SeqaxResidualNormStrategy.SHARDED_RMS,
+        )
+    ).module
+    standard = _report(standard_module)
+    candidate = _report(candidate_module)
+    calibration = tpu7x_collective_latency_calibration()
+    standard_latency = analyze_physical_kernel_latency(
+        standard,
+        module=standard_module,
+        calibration=calibration,
+    )
+    candidate_latency = analyze_physical_kernel_latency(
+        candidate,
+        module=candidate_module,
+        calibration=calibration,
+    )
+
+    assert len(calibration.points) == 10
+    assert all(point.positive_delta_rounds == 21 for point in calibration.points)
+    assert len(standard_latency.operations) == 20
+    assert len(candidate_latency.operations) == 20
+    assert standard_latency.collective_measured_serial_scenario_ns == Decimal("192608.9062500")
+    assert candidate_latency.collective_measured_serial_scenario_ns == Decimal("186731.7656250")
+    assert (
+        candidate_latency.collective_measured_serial_scenario_ns
+        - standard_latency.collective_measured_serial_scenario_ns
+        == Decimal("-5877.1406250")
+    )
+    assert standard_latency.collective_latency_excess_scenario_ns > 192_000
+    assert candidate_latency.collective_latency_excess_scenario_ns > 186_000
+    assert standard_latency.predicted_limiting_priced_resource == "ici"
+    assert candidate_latency.predicted_limiting_priced_resource == "ici"
+    assert len(standard_latency.metrics) == 7
+    assert all(metric.quantity.unit.value == "ns" for metric in standard_latency.metrics)
+    assert any(
+        source.artifact_sha256 == calibration.archive_sha256
+        for metric in standard_latency.metrics
+        for source in metric.sources
+    )
+
+    forged = standard.model_copy(
+        update={
+            "priced_compute_time_floor_ns": standard.priced_compute_time_floor_ns + 1,
+        }
+    )
+    with pytest.raises(ValueError, match="PHYSICAL_KERNEL_RESOURCE_REPORT_REPLAY_MISMATCH"):
+        analyze_physical_kernel_latency(
+            forged,
+            module=standard_module,
+            calibration=calibration,
+        )
+
+    wildcard_operation = next(
+        operation
+        for operation in standard_latency.operations
+        if operation.kind is CollectiveKind.ALL_GATHER
+        and any(
+            point.mesh_axis == operation.mesh_axis
+            and point.group_size == operation.group_size
+            and point.kind is operation.kind
+            and point.reducer == operation.reducer
+            and point.source_dtype_authority == "payload-only"
+            and point.payload_bytes_per_device == operation.payload_bytes_per_device
+            for point in calibration.points
+        )
+    )
+    wildcard = next(
+        point
+        for point in calibration.points
+        if point.mesh_axis == wildcard_operation.mesh_axis
+        and point.group_size == wildcard_operation.group_size
+        and point.kind is wildcard_operation.kind
+        and point.reducer == wildcard_operation.reducer
+        and point.source_dtype_authority == "payload-only"
+        and point.payload_bytes_per_device == wildcard_operation.payload_bytes_per_device
+    )
+    exact = wildcard.model_copy(update={"source_dtype_authority": wildcard_operation.source_dtype})
+    ambiguous = PhysicalCollectiveLatencyCalibration.model_validate(
+        calibration.model_copy(
+            update={
+                "points": tuple(
+                    sorted(
+                        (*calibration.points, exact),
+                        key=lambda point: (
+                            point.mesh_axis,
+                            point.group_size,
+                            point.kind.value,
+                            point.reducer,
+                            point.source_dtype_authority,
+                            point.payload_bytes_per_device,
+                        ),
+                    )
+                )
+            }
+        ).model_dump(mode="python", exclude_computed_fields=True)
+    )
+    with pytest.raises(UnsupportedPhysicalCostModelError, match="matches=2"):
+        analyze_physical_kernel_latency(
+            standard,
+            module=standard_module,
+            calibration=ambiguous,
+        )
+
+
+def test_collective_latency_requires_an_exact_measured_point() -> None:
+    module = _small_seqax_physical()
+    report = _report(module)
+
+    with pytest.raises(
+        UnsupportedPhysicalCostModelError,
+        match="exactly one matching point",
+    ):
+        analyze_physical_kernel_latency(
+            report,
+            module=module,
+            calibration=tpu7x_collective_latency_calibration(),
+        )
+
+
+def test_collective_latency_rejects_an_unmeasured_reducer() -> None:
+    external = buffer(
+        (1,),
+        "X",
+        f32,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 1),
+    )
+    builder = KernelBuilder(
+        "unmeasured_reducer",
+        "tpu7x",
+        (external,),
+        vmem_capacity_bytes=1024,
+        smem_capacity_bytes=1024,
+        mesh={"d": 2, "t": 4},
+        interconnect_bandwidth_bytes_per_second={
+            "d": 600_000_000_000,
+            "t": 600_000_000_000,
+        },
+        argument_modes=("input",),
+    )
+    source = builder.alloc(
+        buffer((1,), "X", f32, memory=MemorySpace.VMEM, lifetime=(0, 2)),
+        "source",
+    )
+    destination = builder.alloc(
+        buffer((1,), "X", f32, memory=MemorySpace.VMEM, lifetime=(2, 2)),
+        "destination",
+    )
+    inbound = builder.dma_start(builder.inputs[0], source, builder.semaphore(), stage=0)
+    builder.dma_wait(inbound, stage=1)
+    builder.collective(
+        source,
+        destination,
+        stage=2,
+        kind=CollectiveKind.ALL_REDUCE,
+        mesh_axis="t",
+        group_size=4,
+        reducer="max",
+    )
+    module = builder.module()
+
+    with pytest.raises(UnsupportedPhysicalCostModelError, match="reducer=max"):
+        analyze_physical_kernel_latency(
+            _report(module),
+            module=module,
+            calibration=tpu7x_collective_latency_calibration(),
+        )
+
+
+def test_collective_latency_rejects_an_unmeasured_reduction_dtype() -> None:
+    external = buffer(
+        (2,),
+        "X",
+        bf16,
+        memory=MemorySpace.HBM,
+        ownership=Ownership.EXTERNAL,
+        lifetime=(0, 1),
+    )
+    builder = KernelBuilder(
+        "unmeasured_reduction_dtype",
+        "tpu7x",
+        (external,),
+        vmem_capacity_bytes=1024,
+        smem_capacity_bytes=1024,
+        mesh={"d": 2, "t": 4},
+        interconnect_bandwidth_bytes_per_second={
+            "d": 600_000_000_000,
+            "t": 600_000_000_000,
+        },
+        argument_modes=("input",),
+    )
+    source = builder.alloc(
+        buffer((2,), "X", bf16, memory=MemorySpace.VMEM, lifetime=(0, 2)),
+        "source",
+    )
+    destination = builder.alloc(
+        buffer((2,), "X", bf16, memory=MemorySpace.VMEM, lifetime=(2, 2)),
+        "destination",
+    )
+    inbound = builder.dma_start(builder.inputs[0], source, builder.semaphore(), stage=0)
+    builder.dma_wait(inbound, stage=1)
+    builder.collective(
+        source,
+        destination,
+        stage=2,
+        kind=CollectiveKind.ALL_REDUCE,
+        mesh_axis="t",
+        group_size=4,
+        reducer="sum",
+    )
+    module = builder.module()
+
+    with pytest.raises(UnsupportedPhysicalCostModelError, match="source_dtype=bf16"):
+        analyze_physical_kernel_latency(
+            _report(module),
+            module=module,
+            calibration=tpu7x_collective_latency_calibration(),
+        )
+
+
+def test_collective_latency_report_writes_once_and_replays(tmp_path: Path) -> None:
+    parameters = {
+        **SMALL_SEQAX,
+        "model": 256,
+        "sequence": 1,
+        "layers": 1,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    module = lower_seqax_forward_to_physical(seqax_forward_schedule(**parameters)).module
+    resource = _report(module)
+    calibration = tpu7x_collective_latency_calibration()
+    path = tmp_path / "latency.json"
+    saved = write_physical_kernel_latency_report(
+        path,
+        module=module,
+        resource_report=resource,
+        calibration=calibration,
+    )
+
+    replayed = PhysicalKernelLatencyReport.model_validate_json(path.read_text())
+    assert replayed == saved
+    validate_physical_kernel_latency_report(
+        replayed,
+        module=module,
+        resource_report=resource,
+        calibration=calibration,
+    )
+    with pytest.raises(ValueError, match="OUTPUT_EXISTS"):
+        write_physical_kernel_latency_report(
+            path,
+            module=module,
+            resource_report=resource,
+            calibration=calibration,
+        )
+    with pytest.raises(ValueError, match="REPLAY_MISMATCH"):
+        validate_physical_kernel_latency_report(
+            replayed.model_copy(
+                update={
+                    "collective_measured_serial_scenario_ns": (
+                        replayed.collective_measured_serial_scenario_ns + 1
+                    )
+                }
+            ),
+            module=module,
+            resource_report=resource,
+            calibration=calibration,
+        )
+
+
+def test_tpu7x_collective_latency_external_contract_is_canonical() -> None:
+    path = Path(__file__).parents[1] / "contracts" / "tpu7x-collective-latency-v1.json"
+    saved = PhysicalCollectiveLatencyCalibration.model_validate_json(path.read_text())
+
+    assert saved == tpu7x_collective_latency_calibration()
+    assert saved.calibration_id == (
+        "a1c957efbd5810047c748ad7fc1b8bca5cd2daa80f373279a81e8263a9e299c8"
+    )
+
+
+def test_public_cli_derives_and_replays_physical_latency(tmp_path: Path) -> None:
+    parameters = {
+        **SMALL_SEQAX,
+        "model": 256,
+        "sequence": 1,
+        "layers": 1,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    }
+    module = lower_seqax_forward_to_physical(seqax_forward_schedule(**parameters)).module
+    schedule = tmp_path / "physical.xdsl"
+    report = tmp_path / "physical-latency.json"
+    calibration = Path(__file__).parents[1] / "contracts" / "tpu7x-collective-latency-v1.json"
+    schedule.write_text(canonical_module_text(module))
+
+    assert _estimate_physical_latency(schedule, calibration, report) == 0
+    assert _verify_physical_latency(report, schedule, calibration) == 0
+    relocated = tmp_path / "relocated" / "renamed-schedule.xdsl"
+    relocated.parent.mkdir()
+    relocated.write_text(schedule.read_text())
+    assert _verify_physical_latency(report, relocated, calibration) == 0
+
+    saved = PhysicalKernelLatencyReport.model_validate_json(report.read_text())
+    report.write_text(
+        saved.model_copy(
+            update={
+                "assumptions": (*saved.assumptions, "forged assumption"),
+            }
+        ).model_dump_json()
+    )
+    with pytest.raises(ValueError, match="REPLAY_MISMATCH"):
+        _verify_physical_latency(report, schedule, calibration)
+
+    wrong_calibration = tmp_path / "wrong-calibration.json"
+    canonical = PhysicalCollectiveLatencyCalibration.model_validate_json(calibration.read_text())
+    wrong_calibration.write_text(
+        canonical.model_copy(update={"warmups": canonical.warmups + 1}).model_dump_json(
+            exclude_computed_fields=True
+        )
+    )
+    with pytest.raises(ValueError, match="EXTERNAL_CONTRACT_MISMATCH"):
+        _verify_physical_latency(report, schedule, wrong_calibration)
 
 
 def test_legal_tile_schedule_changes_physical_cost_identity_and_tile_grid() -> None:

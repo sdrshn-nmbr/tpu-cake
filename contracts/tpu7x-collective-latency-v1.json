@@ -1,0 +1,148 @@
+{
+  "archive_sha256": "d413f6967138cd3c314fe3267ae1d1d6c54943cc5cd004cf6104b2f4c446f014",
+  "device_count": 8,
+  "device_kind": "TPU7x",
+  "iterations_per_sample": 128,
+  "jax_version": "0.11.0",
+  "jaxlib_version": "0.11.0",
+  "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true",
+  "mesh_axes": [
+    [
+      "d",
+      2
+    ],
+    [
+      "t",
+      4
+    ]
+  ],
+  "paired_rounds": 21,
+  "points": [
+    {
+      "group_size": 2,
+      "kind": "all_gather",
+      "reducer": "none",
+      "source_dtype_authority": "payload-only",
+      "mean_latency_ns": "8046.754092261905",
+      "median_latency_ns": "8045.09375",
+      "mesh_axis": "d",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 256,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 2,
+      "kind": "all_gather",
+      "reducer": "none",
+      "source_dtype_authority": "payload-only",
+      "mean_latency_ns": "8387.668154761905",
+      "median_latency_ns": "8385.2265625",
+      "mesh_axis": "d",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 2048,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 2,
+      "kind": "all_gather",
+      "reducer": "none",
+      "source_dtype_authority": "payload-only",
+      "mean_latency_ns": "8977.073660714286",
+      "median_latency_ns": "8639.4765625",
+      "mesh_axis": "d",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 4096,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 4,
+      "kind": "all_gather",
+      "reducer": "none",
+      "source_dtype_authority": "payload-only",
+      "mean_latency_ns": "7273.240327380952",
+      "median_latency_ns": "7271.8359375",
+      "mesh_axis": "t",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 128,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 4,
+      "kind": "all_gather",
+      "reducer": "none",
+      "source_dtype_authority": "payload-only",
+      "mean_latency_ns": "8762.953869047618",
+      "median_latency_ns": "9455.4765625",
+      "mesh_axis": "t",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 256,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 4,
+      "kind": "all_gather",
+      "reducer": "none",
+      "source_dtype_authority": "payload-only",
+      "mean_latency_ns": "9708.854166666666",
+      "median_latency_ns": "9693.3984375",
+      "mesh_axis": "t",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 512,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 4,
+      "kind": "all_gather",
+      "reducer": "none",
+      "source_dtype_authority": "payload-only",
+      "mean_latency_ns": "9787.4140625",
+      "median_latency_ns": "9800.6796875",
+      "mesh_axis": "t",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 1024,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 4,
+      "kind": "all_reduce",
+      "reducer": "sum",
+      "source_dtype_authority": "f32",
+      "mean_latency_ns": "8314.733630952382",
+      "median_latency_ns": "7841.6328125",
+      "mesh_axis": "t",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 4,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 4,
+      "kind": "reduce_scatter",
+      "reducer": "sum",
+      "source_dtype_authority": "bf16",
+      "mean_latency_ns": "13919.12537202381",
+      "median_latency_ns": "13891.484375",
+      "mesh_axis": "t",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 512,
+      "positive_delta_rounds": 21
+    },
+    {
+      "group_size": 4,
+      "kind": "reduce_scatter",
+      "reducer": "sum",
+      "source_dtype_authority": "f32",
+      "mean_latency_ns": "14572.675967261905",
+      "median_latency_ns": "14127.671875",
+      "mesh_axis": "t",
+      "paired_rounds": 21,
+      "payload_bytes_per_device": 1024,
+      "positive_delta_rounds": 21
+    }
+  ],
+  "python_version": "3.12.3",
+  "result_sha256": "4224e8918c3defdad0da94761d20be359a8150614c30934657c088ea0ae2747f",
+  "schema_version": "physical-collective-latency-v1",
+  "source_commit": "002d994546ad9bf6bb19edff93779d91ea79ec66",
+  "target": "tpu7x",
+  "warmups": 3
+}
