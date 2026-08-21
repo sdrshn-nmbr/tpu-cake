@@ -4,6 +4,7 @@ import ctypes
 import errno
 import fcntl
 import hashlib
+import importlib.metadata
 import json
 import math
 import os
@@ -214,6 +215,18 @@ def _require_backend_source(contract: InklingShardedRpaSurfaceContract) -> None:
         raise ValueError("INKLING_SHARDED_RPA_BACKEND_REVISION_MISMATCH")
     if _git_output(backend_repository, "status", "--porcelain=v1").splitlines():
         raise ValueError("INKLING_SHARDED_RPA_BACKEND_SOURCE_DIRTY")
+
+
+def _require_backend_runtime(contract: InklingShardedRpaSurfaceContract) -> None:
+    observed = tuple(
+        f"{name}=={importlib.metadata.version(name)}"
+        for name in ("fastapi", "orjson", "psutil", "pyzmq")
+    )
+    if observed != contract.backend_import_packages:
+        raise ValueError(
+            "INKLING_SHARDED_RPA_BACKEND_RUNTIME_MISMATCH "
+            f"expected={contract.backend_import_packages} observed={observed}"
+        )
 
 
 def _source_state(repository: Path) -> dict[str, Any]:
@@ -974,6 +987,7 @@ def run_inkling_sharded_rpa_surface(
     if runtime != contract.runtime:
         raise ValueError("INKLING_SHARDED_RPA_RUNTIME_MISMATCH")
     _require_backend_source(contract)
+    _require_backend_runtime(contract)
     with _exclusive_lock(output_root):
         if output_root.exists():
             return validate_inkling_sharded_rpa_surface(output_root, contract)

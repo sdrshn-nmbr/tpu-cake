@@ -36,7 +36,7 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
     generated = default_inkling_sharded_rpa_surface_contract()
 
     assert saved == generated
-    assert saved.surface_id == ("4767ba7986f82b4729800ef8eb784233920cb636595b0372a6852821590e426e")
+    assert saved.surface_id == ("7b14575747fdc7c79c1ee82c456651c57ebbfde83f0d01d40f2326d6779effb4")
     assert not set(INKLING_SHARDED_RPA_CORRECTNESS_SEEDS) & _CALIBRATION_SEEDS
     assert saved.plan.compiler_hlo_authority == (
         "receipt-bound-raw-bytes-not-reproducible-identity"
@@ -51,6 +51,7 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
         (("plan", "stablehlo_sha256"), "0" * 64),
         (("plan", "mesh_shape"), [1, 8]),
         (("runtime", "jax"), "0.11.1"),
+        (("backend_import_packages",), ["psutil==7.0.0"] * 4),
     ),
 )
 def test_sharded_rpa_surface_contract_rejects_coordinated_policy_drift(
@@ -65,6 +66,20 @@ def test_sharded_rpa_surface_contract_rejects_coordinated_policy_drift(
 
     with pytest.raises((ValidationError, ValueError)):
         InklingShardedRpaSurfaceContract.model_validate_json(json.dumps(payload))
+
+
+def test_sharded_rpa_backend_runtime_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
+    contract = default_inkling_sharded_rpa_surface_contract()
+    surface_runner._require_backend_runtime(contract)
+    observed_version = surface_runner.importlib.metadata.version
+    monkeypatch.setattr(
+        surface_runner.importlib.metadata,
+        "version",
+        lambda name: "0.0.0" if name == "psutil" else observed_version(name),
+    )
+
+    with pytest.raises(ValueError, match="BACKEND_RUNTIME_MISMATCH"):
+        surface_runner._require_backend_runtime(contract)
 
 
 def _repair_receipt(root: Path, *relative_paths: str) -> None:
@@ -142,6 +157,7 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
 
     monkeypatch.setattr(surface_runner, "_require_compilation_root", lambda *_args: None)
     monkeypatch.setattr(surface_runner, "_require_backend_source", lambda *_args: None)
+    monkeypatch.setattr(surface_runner, "_require_backend_runtime", lambda *_args: None)
     monkeypatch.setattr(surface_runner, "_require_clean_repository", lambda *_args: None)
     monkeypatch.setattr(surface_runner, "_git_output", lambda *_args: commit)
     monkeypatch.setattr(surface_runner.subprocess, "run", git_show)

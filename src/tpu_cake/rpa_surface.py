@@ -16,6 +16,12 @@ from tpu_cake.workloads.inkling_rpa import inkling_sharded_fused_rpa_schedule
 INKLING_SHARDED_RPA_SURFACE_SCHEMA = "inkling-sharded-rpa-surface-v1"
 INKLING_SHARDED_RPA_COMPILATION_ROOT = "/home/sudarshan/tpu-cake-main"
 INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH = "/home/sudarshan/inkle/engine/sglang-jax/python"
+INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES = (
+    "fastapi==0.116.1",
+    "orjson==3.11.1",
+    "psutil==7.0.0",
+    "pyzmq==27.0.1",
+)
 INKLING_SHARDED_RPA_CORRECTNESS_SEEDS = tuple(
     semantic_seed(INKLING_SHARDED_RPA_SURFACE_SCHEMA, str(index)) for index in range(5)
 )
@@ -78,6 +84,7 @@ class InklingShardedRpaSurfaceContract(BaseModel):
     identity_schema: Literal[SEMANTIC_IDENTITY_SCHEMA]
     compilation_source_root: Literal[INKLING_SHARDED_RPA_COMPILATION_ROOT]
     backend_python_path: Literal[INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH]
+    backend_import_packages: tuple[str, ...] = Field(min_length=4, max_length=4)
     hlo_identity_status: Literal["pinned"]
     correctness_seeds: tuple[int, ...] = Field(min_length=5, max_length=5)
     timing_seed: int
@@ -109,6 +116,8 @@ class InklingShardedRpaSurfaceContract(BaseModel):
         )
         if self.correctness_seeds != INKLING_SHARDED_RPA_CORRECTNESS_SEEDS:
             raise ValueError("sharded RPA correctness seeds are not canonical")
+        if self.backend_import_packages != INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES:
+            raise ValueError("sharded RPA backend import packages are not canonical")
         if self.timing_seed != self.correctness_seeds[0]:
             raise ValueError("sharded RPA timing seed must be the first checked seed")
         if (
@@ -144,6 +153,7 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
         identity_schema=SEMANTIC_IDENTITY_SCHEMA,
         compilation_source_root=INKLING_SHARDED_RPA_COMPILATION_ROOT,
         backend_python_path=INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH,
+        backend_import_packages=INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES,
         hlo_identity_status="pinned",
         correctness_seeds=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS,
         timing_seed=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS[0],
