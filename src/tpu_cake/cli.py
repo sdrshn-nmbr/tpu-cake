@@ -39,6 +39,10 @@ from tpu_cake.physical_fusion import (
 )
 from tpu_cake.receipt import validate_receipt
 from tpu_cake.rpa_bundle import build_fused_rpa_receipt, validate_fused_rpa_receipt
+from tpu_cake.rpa_donation_confirmation import InklingRpaDonationConfirmationContract
+from tpu_cake.rpa_donation_confirmation_runner import (
+    validate_inkling_rpa_donation_confirmation,
+)
 from tpu_cake.rpa_receipt_search import (
     build_search_bound_fused_rpa_receipt,
     validate_search_bound_fused_rpa_receipt,
@@ -234,6 +238,10 @@ def _parser() -> argparse.ArgumentParser:
     verify_rpa_attestation.add_argument("attestation", type=Path)
     verify_rpa_attestation.add_argument("--archive", type=Path, required=True)
     verify_rpa_attestation.add_argument("--contract", type=Path, required=True)
+
+    verify_rpa_donation = commands.add_parser("verify-inkling-rpa-donation-confirmation")
+    verify_rpa_donation.add_argument("run_root", type=Path)
+    verify_rpa_donation.add_argument("--contract", type=Path, required=True)
 
     run_seqax = commands.add_parser("run-seqax-forward")
     run_seqax.add_argument("--output-dir", required=True, type=Path)
@@ -731,6 +739,18 @@ def main() -> None:
             "INKLING_SHARDED_RPA_ATTESTATION_VERIFIED "
             f"surface_id={attestation.surface_id} observations={len(attestation.observations)} "
             f"scope={attestation.claim_scope}"
+        )
+        code = 0
+    elif args.command == "verify-inkling-rpa-donation-confirmation":
+        contract = InklingRpaDonationConfirmationContract.model_validate_json(
+            args.contract.read_text()
+        )
+        result = validate_inkling_rpa_donation_confirmation(args.run_root, contract)
+        print(
+            "INKLING_RPA_DONATION_CONFIRMATION_VERIFIED "
+            f"confirmation_id={result.confirmation_id} "
+            f"winner={result.winner or 'none'} accepted={str(result.accepted).lower()} "
+            f"scope={result.claim_scope}"
         )
         code = 0
     elif args.command == "run-seqax-forward":

@@ -97,6 +97,15 @@ class InklingRpaDonationHloCaptureResult(BaseModel):
         return self
 
 
+class InklingRpaDonationRunIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[INKLING_RPA_DONATION_CONFIRMATION_SCHEMA]
+    confirmation_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
 class InklingRpaDonationConfirmationContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -301,6 +310,14 @@ class InklingRpaDonationStatistics(BaseModel):
         return self
 
 
+class InklingRpaDonationState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    arm: InklingRpaDonationArm
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cache_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class InklingRpaDonationConfirmationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -309,22 +326,29 @@ class InklingRpaDonationConfirmationResult(BaseModel):
     source_surface_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_surface_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
     runtime: RuntimeIdentity
+    producer_system: Literal["Linux"]
+    producer_machine: Literal["x86_64"]
     devices: tuple[InklingShardedRpaDevice, ...] = Field(min_length=8, max_length=8)
     plan: InklingShardedRpaPlanContract
+    compiled_arms: tuple[InklingRpaDonationHloCapture, InklingRpaDonationHloCapture]
     correctness: tuple[InklingRpaDonationCorrectnessObservation, ...] = Field(
         min_length=10,
         max_length=10,
     )
     timing_input_sha256: tuple[str, ...] = Field(min_length=11, max_length=11)
+    pre_timing_states: tuple[InklingRpaDonationState, InklingRpaDonationState]
+    expected_terminal_states: tuple[InklingRpaDonationState, InklingRpaDonationState]
     execution_orders: tuple[tuple[InklingRpaDonationArm, InklingRpaDonationArm], ...] = Field(
         min_length=32,
         max_length=32,
     )
     rounds: tuple[InklingRpaDonationTimingRound, ...] = Field(min_length=64, max_length=64)
+    post_timing_states: tuple[InklingRpaDonationState, InklingRpaDonationState]
     statistics: InklingRpaDonationStatistics
     winner: InklingRpaDonationArm | None
     accepted: bool
@@ -340,6 +364,20 @@ class InklingRpaDonationConfirmationResult(BaseModel):
         observed = tuple((value.arm, value.seed) for value in self.correctness)
         if observed != expected:
             raise ValueError("RPA donation correctness inventory mismatch")
+        arm_order = (InklingRpaDonationArm.NON_DONATING, InklingRpaDonationArm.DONATING)
+        if tuple(value.arm for value in self.compiled_arms) != arm_order:
+            raise ValueError("RPA donation compiled arm order mismatch")
+        timing_state_groups = (
+            self.pre_timing_states,
+            self.expected_terminal_states,
+            self.post_timing_states,
+        )
+        if any(tuple(value.arm for value in group) != arm_order for group in timing_state_groups):
+            raise ValueError("RPA donation timing state order mismatch")
+        if self.execution_orders != donation_confirmation_orders(
+            default_inkling_rpa_donation_confirmation_contract()
+        ):
+            raise ValueError("RPA donation execution order mismatch")
         if self.statistics.confirmed != (self.winner is InklingRpaDonationArm.DONATING):
             raise ValueError("RPA donation winner contradicts statistics")
         if self.accepted != self.statistics.confirmed:
@@ -455,10 +493,16 @@ def donation_confirmation_orders(
 def donation_confirmation_statistics(
     contract: InklingRpaDonationConfirmationContract,
     rounds: tuple[InklingRpaDonationTimingRound, ...],
+    expected_terminal_states: tuple[InklingRpaDonationState, InklingRpaDonationState],
 ) -> InklingRpaDonationStatistics:
     orders = donation_confirmation_orders(contract)
     if len(rounds) != contract.paired_rounds * 2:
         raise ValueError("RPA donation timing observation count mismatch")
+    expected = {value.arm: value for value in expected_terminal_states}
+    if tuple(expected) != (contract.baseline, contract.candidate):
+        raise ValueError("RPA donation expected terminal state inventory mismatch")
+    if len({(value.output_sha256, value.cache_sha256) for value in expected.values()}) != 1:
+        raise ValueError("RPA donation expected terminal states differ")
     improvements = []
     for round_index, order in enumerate(orders):
         observed = tuple(value for value in rounds if value.round_index == round_index)
@@ -473,6 +517,12 @@ def donation_confirmation_statistics(
             != 1
         ):
             raise ValueError("RPA donation timing terminal states differ")
+        if any(
+            (value.terminal_output_sha256, value.terminal_cache_sha256)
+            != (expected[value.arm].output_sha256, expected[value.arm].cache_sha256)
+            for value in observed
+        ):
+            raise ValueError("RPA donation timing terminal state does not match reference")
         medians = {value.arm: value.median_ns for value in observed}
         improvements.append(1.0 - medians[contract.candidate] / medians[contract.baseline])
     values = np.asarray(improvements, dtype=np.float64)

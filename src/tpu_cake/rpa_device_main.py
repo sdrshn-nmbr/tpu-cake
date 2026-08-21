@@ -19,6 +19,7 @@ from sgl_jax.srt.kernels.ragged_paged_attention.util import get_dtype_packing
 from tpu_cake.rpa_donation_confirmation import InklingRpaDonationConfirmationContract
 from tpu_cake.rpa_donation_confirmation_runner import (
     capture_inkling_rpa_donation_hlo_identities,
+    run_inkling_rpa_donation_confirmation,
 )
 from tpu_cake.rpa_runner import run_fused_rpa
 from tpu_cake.rpa_search import RpaSearchContract, run_rpa_search
@@ -82,12 +83,19 @@ def main() -> None:
         contract = InklingRpaDonationConfirmationContract.model_validate_json(
             args.donation_confirmation_contract.read_text()
         )
-        capture = capture_inkling_rpa_donation_hlo_identities(
-            args.output_dir,
-            contract,
-            ragged_paged_attention,
-        )
-        print(capture.model_dump_json(indent=2))
+        if contract.hlo_identity_status == "pending":
+            result = capture_inkling_rpa_donation_hlo_identities(
+                args.output_dir,
+                contract,
+                ragged_paged_attention,
+            )
+        else:
+            result = run_inkling_rpa_donation_confirmation(
+                args.output_dir,
+                contract,
+                ragged_paged_attention,
+            )
+        print(result.model_dump_json(indent=2))
         return
     if args.surface_contract is not None:
         manual_parameters = (
