@@ -140,9 +140,7 @@ def inkling_rpa_schedule() -> ModuleOp:
 def inkling_fused_rpa_schedule(
     decode_block_sizes: tuple[int, int, int, int] = (8, 128, 8, 128),
 ) -> ModuleOp:
-    query_block_size, kv_block_size, query_cluster_size, kv_cluster_size = (
-        decode_block_sizes
-    )
+    query_block_size, kv_block_size, query_cluster_size, kv_cluster_size = decode_block_sizes
     external = {
         "memory": MemorySpace.HBM,
         "ownership": Ownership.EXTERNAL,
@@ -186,6 +184,73 @@ def inkling_fused_rpa_schedule(
             "engine/sglang-jax/python/sgl_jax/srt/kernels/"
             "ragged_paged_attention/ragged_paged_attention_v3.py",
             1802,
+            1,
+        ),
+    )
+    return builder.module()
+
+
+def inkling_sharded_fused_rpa_schedule() -> ModuleOp:
+    external = {
+        "memory": MemorySpace.HBM,
+        "ownership": Ownership.EXTERNAL,
+        "lifetime": (0, 0),
+    }
+    inputs = (
+        buffer((4, 8, 128), "T Hq D", bf16, sharding=("data", "tensor", ""), **external),
+        buffer((4, 4, 128), "T Hkv D", bf16, sharding=("data", "tensor", ""), **external),
+        buffer((4, 4, 128), "T Hkv D", bf16, sharding=("data", "tensor", ""), **external),
+        buffer(
+            (3712, 1, 4, 2, 128),
+            "P S Hkv2p Pack Dpad",
+            bf16,
+            sharding=("data", "", "tensor", "", ""),
+            **external,
+        ),
+        buffer((4,), "N", i32, sharding=("data",), **external),
+        buffer((8192,), "PI", i32, sharding=("data",), **external),
+        buffer((5,), "N1", i32, sharding=("data",), **external),
+        buffer((5,), "N1", i32, sharding=("data",), **external),
+        buffer((3,), "R3", i32, sharding=("data",), **external),
+        buffer(
+            (4, 8, 16),
+            "T Hq R",
+            bf16,
+            sharding=("data", "tensor", ""),
+            **external,
+        ),
+        buffer((16, 512), "R E", bf16, **external),
+    )
+    builder = KernelBuilder(
+        "inkling_sharded_fused_rpa_decode",
+        "tpu7x",
+        inputs,
+        vmem_capacity_bytes=96 << 20,
+        smem_capacity_bytes=1 << 20,
+        mesh={"data": 2, "tensor": 4},
+        interconnect_bandwidth_bytes_per_second={
+            "data": 600_000_000_000,
+            "tensor": 600_000_000_000,
+        },
+    )
+    builder.fused_ragged_paged_attention(
+        *builder.inputs,
+        builder.inputs[0],
+        builder.inputs[3],
+        stage=0,
+        causal=1,
+        softmax_scale="0.0078125",
+        softmax_dtype="float32",
+        sliding_window=0,
+        query_block_size=8,
+        kv_block_size=128,
+        query_cluster_size=8,
+        kv_cluster_size=128,
+        vmem_limit_bytes=96 << 20,
+        source_location=SourceLocation(
+            "engine/sglang-jax/python/sgl_jax/srt/kernels/"
+            "ragged_paged_attention/ragged_paged_attention_v3.py",
+            1806,
             1,
         ),
     )

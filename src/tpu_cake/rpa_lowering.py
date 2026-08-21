@@ -9,8 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from xdsl.dialects.builtin import BFloat16Type, IntegerType, ModuleOp
 from xdsl.ir import Operation
 
@@ -29,13 +32,25 @@ INKLING_RPA_FILE_REVISION = "e65c204fe42692254b0f7d6f678415dfc6fca401"
 INKLING_RPA_SOURCE_SHA256 = "56d00d027cf921def1908e4815ced12e79210e1ac3cf57bcd727c5e6c6168eaa"
 INKLING_RPA_UTIL_SHA256 = "fe76b20b6791ce3e6a30ff22a0e7de11b9a809113facbedb79b52079191f9562"
 INKLING_RPA_TUNING_SHA256 = "563d74378b319710c8a7c6cd89ec174563462695417f9167d65716d74a4a2d50"
-INKLING_RPA_BASE_TUNING_SHA256 = (
-    "4577624d0ef37726cbcceb5d570530399eb1f9113f8736e621a4e9aba9d3caef"
-)
-INKLING_RPA_MODULE = (
-    "sgl_jax.srt.kernels.ragged_paged_attention.ragged_paged_attention_v3"
-)
+INKLING_RPA_BASE_TUNING_SHA256 = "4577624d0ef37726cbcceb5d570530399eb1f9113f8736e621a4e9aba9d3caef"
+INKLING_RPA_MODULE = "sgl_jax.srt.kernels.ragged_paged_attention.ragged_paged_attention_v3"
 RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-adapter-v2"
+SHARDED_RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-owned-shard-map-v1"
+SHARDED_INKLE_REPOSITORY_REVISION = "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7"
+SHARDED_INKLING_RPA_FILE_REVISION = "ac88a2ecfa905965b43edbbb5e6510eb272d09e5"
+SHARDED_INKLING_RPA_SOURCE_SHA256 = (
+    "12c6aeeade66538d3bb638f048850c3d69095ade4ec42559cd8b3566bfc68897"
+)
+INKLING_RPA_BACKEND_MANIFEST = (
+    ("ragged_paged_attention_v3.py", INKLING_RPA_SOURCE_SHA256),
+    ("tuned_block_sizes.py", INKLING_RPA_BASE_TUNING_SHA256),
+    ("tuned_block_sizes_v3.py", INKLING_RPA_TUNING_SHA256),
+    ("util.py", INKLING_RPA_UTIL_SHA256),
+)
+SHARDED_INKLING_RPA_BACKEND_MANIFEST = (
+    ("ragged_paged_attention_v3.py", SHARDED_INKLING_RPA_SOURCE_SHA256),
+    *INKLING_RPA_BACKEND_MANIFEST[1:],
+)
 
 
 @dataclass(frozen=True)
@@ -67,17 +82,10 @@ class FusedRpaPlan:
     backend_repository_revision: str = INKLE_REPOSITORY_REVISION
     backend_file_revision: str = INKLING_RPA_FILE_REVISION
     backend_sha256: str = INKLING_RPA_SOURCE_SHA256
-    backend_manifest: tuple[tuple[str, str], ...] = (
-        ("ragged_paged_attention_v3.py", INKLING_RPA_SOURCE_SHA256),
-        ("tuned_block_sizes.py", INKLING_RPA_BASE_TUNING_SHA256),
-        ("tuned_block_sizes_v3.py", INKLING_RPA_TUNING_SHA256),
-        ("util.py", INKLING_RPA_UTIL_SHA256),
-    )
+    backend_manifest: tuple[tuple[str, str], ...] = INKLING_RPA_BACKEND_MANIFEST
     execution_scope: str = "local-shard-caller-owned-sharding"
 
-    def validate_backend_callable(
-        self, kernel: Callable[..., tuple[Any, Any]]
-    ) -> tuple[str, str]:
+    def validate_backend_callable(self, kernel: Callable[..., tuple[Any, Any]]) -> tuple[str, str]:
         unwrapped = inspect.unwrap(kernel)
         module = getattr(kernel, "__module__", None)
         qualname = getattr(kernel, "__qualname__", None)
@@ -102,9 +110,7 @@ class FusedRpaPlan:
             dependency = source_path.parent / name
             if not dependency.is_file():
                 raise ValueError(f"fused RPA backend dependency is missing: {name}")
-            live_manifest.append(
-                (name, hashlib.sha256(dependency.read_bytes()).hexdigest())
-            )
+            live_manifest.append((name, hashlib.sha256(dependency.read_bytes()).hexdigest()))
         if (
             source_sha256 != self.backend_sha256
             or (source_path.name, source_sha256) not in self.backend_manifest
@@ -131,9 +137,7 @@ class FusedRpaPlan:
 
     def _validate_signature(self, inputs: tuple[Any, ...]) -> None:
         if len(inputs) != len(self.input_shapes):
-            raise ValueError(
-                f"fused RPA needs {len(self.input_shapes)} inputs, got {len(inputs)}"
-            )
+            raise ValueError(f"fused RPA needs {len(self.input_shapes)} inputs, got {len(inputs)}")
         for index, (value, shape, dtype) in enumerate(
             zip(inputs, self.input_shapes, self.input_dtypes, strict=True)
         ):
@@ -162,9 +166,7 @@ class FusedRpaPlan:
             )
         expected_query_lengths = np.arange(sequence_count + 1, dtype=np.int64)
         if not np.array_equal(cumulative_query_lengths, expected_query_lengths):
-            raise ValueError(
-                "Inkling fused RPA adapter requires one query token per sequence"
-            )
+            raise ValueError("Inkling fused RPA adapter requires one query token per sequence")
         if np.any(kv_lengths <= 0):
             raise ValueError("Inkling fused RPA requires positive KV lengths")
         page_size = self.fused_cache_shape[1]
@@ -190,9 +192,7 @@ class FusedRpaPlan:
             last_page = int(cumulative_kv_lengths[sequence + 1]) // page_size
             sequence_pages = page_indices[first_page:last_page]
             if sequence_pages.size != np.unique(sequence_pages).size:
-                raise ValueError(
-                    "fused RPA page table aliases logical pages within one sequence"
-                )
+                raise ValueError("fused RPA page table aliases logical pages within one sequence")
             sequence_page_sets.append({int(page) for page in sequence_pages})
         write_locations: list[tuple[int, int]] = []
         for sequence, length in enumerate(kv_lengths):
@@ -205,9 +205,7 @@ class FusedRpaPlan:
         for writer, (write_page, _write_offset) in enumerate(write_locations):
             for reader, used_pages in enumerate(sequence_page_sets):
                 if writer != reader and write_page in used_pages:
-                    raise ValueError(
-                        "fused RPA active write page is shared across sequences"
-                    )
+                    raise ValueError("fused RPA active write page is shared across sequences")
 
     def invoke(
         self,
@@ -238,7 +236,12 @@ class FusedRpaPlan:
         if not isinstance(results, tuple) or len(results) != 2:
             raise ValueError("fused RPA kernel must return output and updated cache")
         for index, (value, shape, dtype) in enumerate(
-            zip(results, (self.output_shape, self.fused_cache_shape), self.output_dtypes, strict=True)
+            zip(
+                results,
+                (self.output_shape, self.fused_cache_shape),
+                self.output_dtypes,
+                strict=True,
+            )
         ):
             if tuple(value.shape) != shape or str(value.dtype) != dtype:
                 raise ValueError(
@@ -263,7 +266,7 @@ class FusedRpaPlan:
         )
 
     def render_executable_source(self) -> str:
-        return f'''from __future__ import annotations
+        return f"""from __future__ import annotations
 
 import hashlib
 import inspect
@@ -365,10 +368,184 @@ def run_preflighted(*inputs):
         backend_manifest=_backend_manifest(),
         device_kind=jax.devices()[0].device_kind,
     )
-'''
+"""
 
     def source_sha256(self) -> str:
         return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class ShardedFusedRpaPlan:
+    local_plan: FusedRpaPlan
+    mesh_axes: tuple[str, str]
+    mesh_shape: tuple[int, int]
+    input_partition_specs: tuple[tuple[str, ...], ...]
+    output_partition_specs: tuple[tuple[str, ...], tuple[str, ...]]
+    execution_scope: str = "owned-data-tensor-shard-map"
+
+    def __post_init__(self) -> None:
+        if self.mesh_axes != ("data", "tensor") or self.mesh_shape != (2, 4):
+            raise ValueError("sharded Inkling RPA requires the exact 2x4 data/tensor mesh")
+        if len(self.input_partition_specs) != len(self.local_plan.input_shapes):
+            raise ValueError("sharded RPA needs one partition spec per input")
+        for shape, spec in zip(
+            self.local_plan.input_shapes,
+            self.input_partition_specs,
+            strict=True,
+        ):
+            if len(shape) != len(spec):
+                raise ValueError("sharded RPA partition specs must match input ranks")
+            if any(axis and axis not in self.mesh_axes for axis in spec):
+                raise ValueError("sharded RPA partition specs use an unknown mesh axis")
+        expected_outputs = (
+            self.input_partition_specs[0],
+            self.input_partition_specs[3],
+        )
+        if self.output_partition_specs != expected_outputs:
+            raise ValueError("sharded RPA outputs must preserve query and cache sharding")
+
+    @property
+    def schedule_sha256(self) -> str:
+        return self.local_plan.schedule_sha256
+
+    @property
+    def backend_manifest(self) -> tuple[tuple[str, str], ...]:
+        return self.local_plan.backend_manifest
+
+    @property
+    def global_input_shapes(self) -> tuple[tuple[int, ...], ...]:
+        axis_sizes = dict(zip(self.mesh_axes, self.mesh_shape, strict=True))
+        return tuple(
+            tuple(size * axis_sizes.get(axis, 1) for size, axis in zip(shape, spec, strict=True))
+            for shape, spec in zip(
+                self.local_plan.input_shapes,
+                self.input_partition_specs,
+                strict=True,
+            )
+        )
+
+    @property
+    def global_output_shapes(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        return self.global_input_shapes[0], self.global_input_shapes[3]
+
+    def _validate_global_signature(self, inputs: tuple[Any, ...]) -> None:
+        if len(inputs) != len(self.global_input_shapes):
+            raise ValueError(
+                f"sharded fused RPA needs {len(self.global_input_shapes)} inputs, got {len(inputs)}"
+            )
+        for index, (value, shape, dtype) in enumerate(
+            zip(
+                inputs,
+                self.global_input_shapes,
+                self.local_plan.input_dtypes,
+                strict=True,
+            )
+        ):
+            if tuple(value.shape) != shape or str(value.dtype) != dtype:
+                raise ValueError(
+                    f"sharded fused RPA input {index} has shape/dtype "
+                    f"{tuple(value.shape)}/{value.dtype}, expected {shape}/{dtype}"
+                )
+
+    def _local_host_shard(
+        self,
+        value: Any,
+        spec: tuple[str, ...],
+        coordinates: dict[str, int],
+    ) -> np.ndarray:
+        slices = []
+        for dimension, axis in enumerate(spec):
+            if not axis:
+                slices.append(slice(None))
+                continue
+            axis_size = self.mesh_shape[self.mesh_axes.index(axis)]
+            local_size = value.shape[dimension] // axis_size
+            start = coordinates[axis] * local_size
+            slices.append(slice(start, start + local_size))
+        return np.asarray(value[tuple(slices)])
+
+    def preflight(self, *inputs: Any) -> None:
+        self._validate_global_signature(inputs)
+        for data_index in range(self.mesh_shape[0]):
+            for tensor_index in range(self.mesh_shape[1]):
+                coordinates = {"data": data_index, "tensor": tensor_index}
+                local_inputs = tuple(
+                    self._local_host_shard(value, spec, coordinates)
+                    for value, spec in zip(
+                        inputs,
+                        self.input_partition_specs,
+                        strict=True,
+                    )
+                )
+                self.local_plan.preflight(*local_inputs)
+
+    def mesh(self, devices: tuple[Any, ...]) -> Mesh:
+        expected_devices = self.mesh_shape[0] * self.mesh_shape[1]
+        if len(devices) != expected_devices:
+            raise ValueError(
+                f"sharded Inkling RPA needs {expected_devices} devices, got {len(devices)}"
+            )
+        if any(
+            re.fullmatch(r"tpu(?: v)?7x(?: lite)?", device.device_kind.strip().lower()) is None
+            for device in devices
+        ):
+            raise ValueError("sharded Inkling RPA requires only TPU7x devices")
+        return jax.make_mesh(self.mesh_shape, self.mesh_axes, devices=devices)
+
+    def place_inputs(
+        self,
+        inputs: tuple[Any, ...],
+        *,
+        mesh: Mesh,
+    ) -> tuple[jax.Array, ...]:
+        self.preflight(*inputs)
+        return tuple(
+            jax.device_put(
+                np.array(value, copy=True),
+                NamedSharding(mesh, P(*spec)),
+            )
+            for value, spec in zip(inputs, self.input_partition_specs, strict=True)
+        )
+
+    def build_executable(
+        self,
+        kernel: Callable[..., tuple[Any, Any]],
+        *,
+        backend_manifest: tuple[tuple[str, str], ...],
+        devices: tuple[Any, ...],
+    ) -> tuple[Mesh, Callable[..., tuple[Any, Any]]]:
+        mesh = self.mesh(devices)
+        self.local_plan.validate_backend_callable(kernel)
+        if backend_manifest != self.backend_manifest:
+            raise ValueError("sharded RPA backend source manifest does not match the plan")
+
+        def local(*inputs: Any) -> tuple[Any, Any]:
+            return self.local_plan.invoke(
+                kernel,
+                *inputs,
+                backend_manifest=backend_manifest,
+                device_kind="TPU7x",
+            )
+
+        sharded = jax.shard_map(
+            local,
+            mesh=mesh,
+            in_specs=tuple(P(*spec) for spec in self.input_partition_specs),
+            out_specs=tuple(P(*spec) for spec in self.output_partition_specs),
+        )
+        return mesh, jax.jit(sharded)
+
+    def source_sha256(self) -> str:
+        payload = (
+            SHARDED_RPA_EXECUTION_SCHEMA,
+            self.local_plan.source_sha256(),
+            self.mesh_axes,
+            self.mesh_shape,
+            self.input_partition_specs,
+            self.output_partition_specs,
+            self.execution_scope,
+        )
+        return hashlib.sha256(repr(payload).encode()).hexdigest()
 
 
 def _shape(value) -> tuple[int, ...]:
@@ -396,6 +573,52 @@ def _unsupported(message: str, operation: Operation) -> UnsupportedLoweringError
         return UnsupportedLoweringError(message)
     return UnsupportedLoweringError(
         f"{message}: relevant source site: {operation.name} at {location}"
+    )
+
+
+def _fused_rpa_plan(
+    module: ModuleOp,
+    attention: FusedRaggedPagedAttentionOp,
+    *,
+    backend_repository_revision: str = INKLE_REPOSITORY_REVISION,
+    backend_file_revision: str = INKLING_RPA_FILE_REVISION,
+    backend_sha256: str = INKLING_RPA_SOURCE_SHA256,
+    backend_manifest: tuple[tuple[str, str], ...] = INKLING_RPA_BACKEND_MANIFEST,
+    execution_scope: str = "local-shard-caller-owned-sharding",
+) -> FusedRpaPlan:
+    return FusedRpaPlan(
+        name="kernel",
+        schedule_sha256=schedule_sha256(module),
+        query_shape=_shape(attention.queries),
+        key_shape=_shape(attention.keys),
+        value_shape=_shape(attention.values),
+        fused_cache_shape=_shape(attention.fused_cache),
+        kv_lengths_shape=_shape(attention.kv_lengths),
+        page_indices_shape=_shape(attention.page_indices),
+        cumulative_query_lengths_shape=_shape(attention.cumulative_query_lengths),
+        cumulative_kv_lengths_shape=_shape(attention.cumulative_kv_lengths),
+        distribution_shape=_shape(attention.distribution),
+        relative_states_shape=_shape(attention.relative_states),
+        relative_projection_shape=_shape(attention.relative_projection),
+        output_shape=_shape(attention.output),
+        input_dtypes=tuple(_dtype(value) for value in attention.operands[:11]),
+        output_dtypes=(_dtype(attention.output), _dtype(attention.updated_cache)),
+        decode_block_sizes=(
+            attention.query_block_size.data,
+            attention.kv_block_size.data,
+            attention.query_cluster_size.data,
+            attention.kv_cluster_size.data,
+        ),
+        causal=attention.causal.data,
+        softmax_scale=float(attention.softmax_scale.data),
+        softmax_dtype=attention.softmax_dtype.data,
+        sliding_window=attention.sliding_window.data,
+        vmem_limit_bytes=attention.vmem_limit_bytes.data,
+        backend_repository_revision=backend_repository_revision,
+        backend_file_revision=backend_file_revision,
+        backend_sha256=backend_sha256,
+        backend_manifest=backend_manifest,
+        execution_scope=execution_scope,
     )
 
 
@@ -435,9 +658,11 @@ def lower_inkling_rpa_to_pallas(module: ModuleOp) -> FusedRpaPlan:
             "local-shard fused RPA adapter does not own an outer device mesh"
         )
     operations = tuple(kernel.body.block.ops)
-    if len(operations) != 2 or not isinstance(
-        operations[0], FusedRaggedPagedAttentionOp
-    ) or not isinstance(operations[1], YieldOp):
+    if (
+        len(operations) != 2
+        or not isinstance(operations[0], FusedRaggedPagedAttentionOp)
+        or not isinstance(operations[1], YieldOp)
+    ):
         raise UnsupportedLoweringError(
             "fused RPA lowering requires exactly one fused attention operation and yield"
         )
@@ -446,43 +671,110 @@ def lower_inkling_rpa_to_pallas(module: ModuleOp) -> FusedRpaPlan:
         _require_local_buffer_contract(value, attention)
     arguments = tuple(kernel.body.block.args)
     if len(arguments) != 11 or tuple(attention.operands[:11]) != arguments:
-        raise UnsupportedLoweringError(
-            "fused RPA operation must bind all eleven inputs exactly"
-        )
+        raise UnsupportedLoweringError("fused RPA operation must bind all eleven inputs exactly")
     if attention.output is not arguments[0] or attention.updated_cache is not arguments[3]:
         raise UnsupportedLoweringError(
             "fused RPA results must alias the donated query and fused-cache inputs"
         )
     if attention.vmem_limit_bytes.data > kernel.vmem_capacity_bytes.data:
+        raise UnsupportedLoweringError("fused RPA VMEM limit exceeds the physical kernel capacity")
+    return _fused_rpa_plan(module, attention)
+
+
+_SHARDED_INPUT_PARTITION_SPECS = (
+    ("data", "tensor", ""),
+    ("data", "tensor", ""),
+    ("data", "tensor", ""),
+    ("data", "", "tensor", "", ""),
+    ("data",),
+    ("data",),
+    ("data",),
+    ("data",),
+    ("data",),
+    ("data", "tensor", ""),
+    ("", ""),
+)
+
+
+def lower_inkling_sharded_rpa_to_pallas(module: ModuleOp) -> ShardedFusedRpaPlan:
+    verify_with_sources(module)
+    kernels = tuple(
+        operation for operation in module.body.block.ops if isinstance(operation, KernelOp)
+    )
+    if len(kernels) != 1 or len(tuple(module.body.block.ops)) != 1:
+        raise UnsupportedLoweringError("sharded fused RPA lowering expects one physical kernel")
+    kernel = kernels[0]
+    if kernel.target.data != "tpu7x":
         raise UnsupportedLoweringError(
-            "fused RPA VMEM limit exceeds the physical kernel capacity"
+            f"sharded fused RPA lowering does not support target {kernel.target.data!r}"
         )
-    return FusedRpaPlan(
-        name="kernel",
-        schedule_sha256=schedule_sha256(module),
-        query_shape=_shape(attention.queries),
-        key_shape=_shape(attention.keys),
-        value_shape=_shape(attention.values),
-        fused_cache_shape=_shape(attention.fused_cache),
-        kv_lengths_shape=_shape(attention.kv_lengths),
-        page_indices_shape=_shape(attention.page_indices),
-        cumulative_query_lengths_shape=_shape(attention.cumulative_query_lengths),
-        cumulative_kv_lengths_shape=_shape(attention.cumulative_kv_lengths),
-        distribution_shape=_shape(attention.distribution),
-        relative_states_shape=_shape(attention.relative_states),
-        relative_projection_shape=_shape(attention.relative_projection),
-        output_shape=_shape(attention.output),
-        input_dtypes=tuple(_dtype(value) for value in attention.operands[:11]),
-        output_dtypes=(_dtype(attention.output), _dtype(attention.updated_cache)),
-        decode_block_sizes=(
-            attention.query_block_size.data,
-            attention.kv_block_size.data,
-            attention.query_cluster_size.data,
-            attention.kv_cluster_size.data,
+    mesh_axes = tuple(value.data for value in kernel.mesh_axis_names)
+    mesh_shape = tuple(value.data for value in kernel.mesh_axis_sizes)
+    if mesh_axes != ("data", "tensor") or mesh_shape != (2, 4):
+        raise UnsupportedLoweringError("sharded fused RPA requires the exact 2x4 data/tensor mesh")
+    operations = tuple(kernel.body.block.ops)
+    if (
+        len(operations) != 2
+        or not isinstance(operations[0], FusedRaggedPagedAttentionOp)
+        or not isinstance(operations[1], YieldOp)
+    ):
+        raise UnsupportedLoweringError(
+            "sharded fused RPA lowering requires exactly one fused attention operation and yield"
+        )
+    attention = operations[0]
+    for value, expected_sharding in zip(
+        attention.operands[:11],
+        _SHARDED_INPUT_PARTITION_SPECS,
+        strict=True,
+    ):
+        value_type = value.type
+        if not isinstance(value_type, BufferType):
+            raise UnsupportedLoweringError("sharded fused RPA lowering expects physical buffers")
+        rank = len(value_type.storage.get_shape())
+        layout = tuple(index.data for index in value_type.layout.order)
+        sharding = tuple(axis.data for axis in value_type.sharding.axes)
+        if layout != tuple(range(rank)):
+            raise _unsupported(
+                "sharded fused RPA supports default physical layout only",
+                attention,
+            )
+        if sharding != expected_sharding:
+            raise _unsupported(
+                "sharded fused RPA input does not match the owned partition contract",
+                attention,
+            )
+    if tuple(attention.operands[11:]) != (
+        attention.operands[0],
+        attention.operands[3],
+    ):
+        raise UnsupportedLoweringError(
+            "sharded fused RPA results must alias query and fused-cache inputs"
+        )
+    arguments = tuple(kernel.body.block.args)
+    if len(arguments) != 11 or tuple(attention.operands[:11]) != arguments:
+        raise UnsupportedLoweringError(
+            "sharded fused RPA operation must bind all eleven inputs exactly"
+        )
+    if attention.vmem_limit_bytes.data > kernel.vmem_capacity_bytes.data:
+        raise UnsupportedLoweringError(
+            "sharded fused RPA VMEM limit exceeds the physical kernel capacity"
+        )
+    local_plan = _fused_rpa_plan(
+        module,
+        attention,
+        backend_repository_revision=SHARDED_INKLE_REPOSITORY_REVISION,
+        backend_file_revision=SHARDED_INKLING_RPA_FILE_REVISION,
+        backend_sha256=SHARDED_INKLING_RPA_SOURCE_SHA256,
+        backend_manifest=SHARDED_INKLING_RPA_BACKEND_MANIFEST,
+        execution_scope="local-device-body-of-owned-shard-map",
+    )
+    return ShardedFusedRpaPlan(
+        local_plan=local_plan,
+        mesh_axes=mesh_axes,
+        mesh_shape=mesh_shape,
+        input_partition_specs=_SHARDED_INPUT_PARTITION_SPECS,
+        output_partition_specs=(
+            _SHARDED_INPUT_PARTITION_SPECS[0],
+            _SHARDED_INPUT_PARTITION_SPECS[3],
         ),
-        causal=attention.causal.data,
-        softmax_scale=float(attention.softmax_scale.data),
-        softmax_dtype=attention.softmax_dtype.data,
-        sliding_window=attention.sliding_window.data,
-        vmem_limit_bytes=attention.vmem_limit_bytes.data,
     )

@@ -9,6 +9,7 @@ from tpu_cake.workloads.inkling_rpa import (
     inkling_rpa_inputs,
     inkling_rpa_reference,
     inkling_rpa_schedule,
+    inkling_sharded_fused_rpa_schedule,
 )
 from tpu_cake.workloads.matmul import matmul_inputs, matmul_reference, matmul_schedule
 
@@ -51,7 +52,11 @@ def test_rpa_reference_supports_independent_key_and_value_heads() -> None:
 
 
 def test_schedule_text_and_hash_are_stable() -> None:
-    for build in (matmul_schedule, inkling_rpa_schedule):
+    for build in (
+        matmul_schedule,
+        inkling_rpa_schedule,
+        inkling_sharded_fused_rpa_schedule,
+    ):
         first = build()
         second = build()
         assert canonical_module_text(first) == canonical_module_text(second)
@@ -77,9 +82,10 @@ def test_fused_rpa_experiment_binds_oracle_preflight_and_backend_sources() -> No
         plan.fused_cache_shape,
     )
     assert tuple(tensor.dtype for tensor in contract.outputs) == plan.output_dtypes
-    assert tuple(
-        (source.path, source.sha256) for source in contract.execution.source_manifest
-    ) == plan.backend_manifest
+    assert (
+        tuple((source.path, source.sha256) for source in contract.execution.source_manifest)
+        == plan.backend_manifest
+    )
 
 
 def test_fused_rpa_experiment_materializes_decode_block_sizes() -> None:

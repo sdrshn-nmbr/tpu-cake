@@ -2,6 +2,7 @@ import hashlib
 from dataclasses import replace
 from functools import wraps
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -15,11 +16,19 @@ from tpu_cake.dialects.tpu_schedule import (
     FusedRaggedPagedAttentionOp,
     KernelOp,
     LayoutAttr,
+    ShardingAttr,
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
-from tpu_cake.rpa_lowering import lower_inkling_rpa_to_pallas
-from tpu_cake.workloads.inkling_rpa import inkling_fused_rpa_schedule
+from tpu_cake.rpa_lowering import (
+    ShardedFusedRpaPlan,
+    lower_inkling_rpa_to_pallas,
+    lower_inkling_sharded_rpa_to_pallas,
+)
+from tpu_cake.workloads.inkling_rpa import (
+    inkling_fused_rpa_schedule,
+    inkling_sharded_fused_rpa_schedule,
+)
 
 _OBSERVED: dict[str, object] = {}
 
@@ -34,9 +43,7 @@ def _successful_fake_kernel(*args, **kwargs):
 
 
 def _bad_result_fake_kernel(*args, **_kwargs):
-    return np.zeros((1,), dtype=np.float32), jnp.zeros(
-        args[3].shape, dtype=args[3].dtype
-    )
+    return np.zeros((1,), dtype=np.float32), jnp.zeros(args[3].shape, dtype=args[3].dtype)
 
 
 @wraps(_successful_fake_kernel)
@@ -83,11 +90,97 @@ def test_fused_rpa_lowers_to_a_stable_upstream_plan() -> None:
     assert first.decode_block_sizes == (8, 128, 8, 128)
     assert first.softmax_scale == 0.03125
     assert first.softmax_dtype == "float32"
-    assert first.backend_sha256 == "56d00d027cf921def1908e4815ced12e79210e1ac3cf57bcd727c5e6c6168eaa"
+    assert (
+        first.backend_sha256 == "56d00d027cf921def1908e4815ced12e79210e1ac3cf57bcd727c5e6c6168eaa"
+    )
     source = first.render_executable_source()
     compile(source, "lowered_rpa.py", "exec")
     assert "ragged_paged_attention_v3" in source
     assert first.source_sha256() == second.source_sha256()
+
+
+def test_legacy_fused_rpa_identities_remain_unchanged() -> None:
+    module = inkling_fused_rpa_schedule()
+    plan = lower_inkling_rpa_to_pallas(module)
+
+    assert schedule_sha256(module) == (
+        "e1de39a3dfa8f4c930207fbe5218aa1f956b19b0b933e993fe35ae916e8ecad7"
+    )
+    assert plan.source_sha256() == (
+        "d441631f10bb58ca3efe8c03230508e33eeab13efd511b1dde416c8fd9a4428a"
+    )
+
+
+def test_sharded_fused_rpa_lowers_to_the_production_mesh_contract() -> None:
+    first = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
+    second = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
+
+    assert isinstance(first, ShardedFusedRpaPlan)
+    assert first == second
+    assert first.mesh_axes == ("data", "tensor")
+    assert first.mesh_shape == (2, 4)
+    assert first.local_plan.query_shape == (4, 8, 128)
+    assert first.local_plan.fused_cache_shape == (3712, 1, 4, 2, 128)
+    assert first.local_plan.decode_block_sizes == (8, 128, 8, 128)
+    assert first.global_input_shapes == (
+        (8, 32, 128),
+        (8, 16, 128),
+        (8, 16, 128),
+        (7424, 1, 16, 2, 128),
+        (8,),
+        (16384,),
+        (10,),
+        (10,),
+        (6,),
+        (8, 32, 16),
+        (16, 512),
+    )
+    assert first.global_output_shapes == (
+        (8, 32, 128),
+        (7424, 1, 16, 2, 128),
+    )
+    assert first.local_plan.backend_repository_revision == (
+        "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7"
+    )
+    assert first.local_plan.backend_sha256 == (
+        "12c6aeeade66538d3bb638f048850c3d69095ade4ec42559cd8b3566bfc68897"
+    )
+    assert first.source_sha256() == second.source_sha256()
+
+
+def test_sharded_fused_rpa_rejects_the_wrong_device_inventory() -> None:
+    plan = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
+    tpu_devices = tuple(SimpleNamespace(device_kind="TPU7x") for _ in range(8))
+
+    with pytest.raises(ValueError, match="needs 8 devices"):
+        plan.mesh(tpu_devices[:-1])
+    with pytest.raises(ValueError, match="only TPU7x"):
+        plan.mesh((*tpu_devices[:-1], SimpleNamespace(device_kind="TPU v6e")))
+
+
+def test_sharded_fused_rpa_rejects_a_wrong_mesh_or_partition() -> None:
+    plan = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
+    with pytest.raises(ValueError, match="exact 2x4 data/tensor mesh"):
+        replace(plan, mesh_shape=(1, 8))
+
+    module = inkling_sharded_fused_rpa_schedule()
+    kernel = next(operation for operation in module.walk() if isinstance(operation, KernelOp))
+    query = kernel.body.block.args[0]
+    query_type = query.type
+    assert isinstance(query_type, BufferType)
+    query._type = BufferType(
+        query_type.storage,
+        query_type.shape,
+        query_type.space,
+        ShardingAttr(ArrayAttr(StringAttr(axis) for axis in ("", "tensor", ""))),
+        query_type.layout,
+        query_type.ownership,
+        query_type.lifetime,
+    )
+    with pytest.raises(VerifyException, match="conflicting global sizes"):
+        module.verify()
+    with pytest.raises(VerifyException, match="conflicting global sizes"):
+        lower_inkling_sharded_rpa_to_pallas(module)
 
 
 def test_fused_rpa_plan_invokes_the_exact_serving_contract() -> None:
