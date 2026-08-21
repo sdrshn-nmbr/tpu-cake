@@ -123,6 +123,12 @@ uv run tpu-cake run-seqax-residual-profile \
   --output-dir SEQAX_RESIDUAL_PROFILE_ROOT
 uv run tpu-cake verify-seqax-residual-profile SEQAX_RESIDUAL_PROFILE_ROOT \
   --contract contracts/seqax-residual-all-reduce-profile-v1.json
+
+uv run tpu-cake run-seqax-residual-confirmation \
+  --contract contracts/seqax-residual-all-reduce-confirmation-v1.json \
+  --output-dir SEQAX_RESIDUAL_CONFIRMATION_ROOT
+uv run tpu-cake verify-seqax-residual-confirmation SEQAX_RESIDUAL_CONFIRMATION_ROOT \
+  --contract contracts/seqax-residual-all-reduce-confirmation-v1.json
 ```
 
 ## Current boundary
@@ -140,6 +146,8 @@ The generic physical cost report consumes the verified `tpu_schedule.kernel` dir
 The TPU7x collective-latency overlay replaces that byte-only collective scenario with exact-size paired medians from one bound `d=2, t=4` slice. It is deliberately fail-closed outside the ten measured axis, operation, reducer, dtype, and payload combinations in the model-256, one-layer, one-token schedules. Sum reductions require the exact measured dtype and reducer; all-gather uses an explicit payload-only transport assumption across element types. On that surface, sharded RMS normalization reduces the modeled serialized collective term by 5.88 microseconds, but the matched whole-forward diagnostic regresses by 1.92%. Vector and special-function execution, overlap, and compiler scheduling remain unpriced, so this is a descriptive localization result rather than a latency predictor or promotion. This matches the [JAX Scaling Book sharding model](https://jax-ml.github.io/scaling-book/sharding/): small-buffer collectives can be dominated by fixed dispatch and hop latency, so byte counts alone are not enough to select the boundary.
 
 The optional residual-all-reduce schedule replaces two reduce-scatter, residual, and later all-gather boundaries with two full-width sum all-reduces while retaining a local shard for the next contraction. On the fixed model-256, one-layer, one-token surface it has 15 all-gathers, two all-reduces, and one reduce-scatter, compared with 17, zero, and three for the standard schedule. It moves more ring-equivalent bytes, so its only plausible win is fewer latency-bearing collective boundaries. The profile contract pins exact HLO identities from two matching clean TPU compilation captures; this enables the runner but is not profile or correctness evidence. Its eventual trace/counter receipt is diagnostic only: each schedule must pass the frozen numerical policy independently, and observed XProf rows remain separate from static physical and compiler inventories.
+
+The residual-all-reduce confirmation is a separate unprofiled decision experiment bound to that diagnostic receipt and its exact plan and HLO identities. It keeps both candidates resident, requires both to pass the frozen five-seed numerical contract, and records 32 balanced AB/BA rounds with five synchronized samples per candidate. The candidate wins only when the deterministic 100,000-sample paired-median bootstrap has a 99% lower confidence bound strictly above a 3% practical improvement. The protocol predeclares no early stop or further retry; enforcing that rule across independently chosen output roots is an operational boundary rather than a cryptographically attested one. A passing receipt promotes only the fixed model-256, one-layer, one-token TPU7x workload; it does not establish independent whole-model correctness, larger-shape benefit, memory feasibility, or a general collective rule.
 
 The first explicit fusion comparison replaces each legacy unmaterialized `silu` then `multiply` pair with one typed `silu_multiply` operation across the declared tiny, wider, and deeper Seqax surface. Public replay regenerates both distributed and physical schedules from an external contract and verifies exact producer lineage, declared work, traffic, memory deltas, and the full-local Pallas implementation choice. The fused operation executes through an owned Pallas region in CPU interpret tests, but has not yet passed TPU Mosaic compilation. It removes 64, 512, and 1,024 declared VMEM bytes per device respectively, without changing declared peak VMEM. These are schedule-model savings with no measured winner, physical-memory proof, or predictive validation.
 
