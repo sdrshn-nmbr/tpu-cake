@@ -3,6 +3,7 @@ import json
 import shutil
 import sqlite3
 import subprocess
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,13 +17,26 @@ from tpu_cake.canonical import canonical_text
 from tpu_cake.rpa_lowering import lower_inkling_sharded_rpa_to_pallas
 from tpu_cake.rpa_surface import (
     INKLING_SHARDED_RPA_CORRECTNESS_SEEDS,
+    InklingShardedRpaRelocationRuntime,
     InklingShardedRpaSurfaceContract,
     InklingShardedRpaSurfaceResult,
     default_inkling_sharded_rpa_surface_contract,
 )
 from tpu_cake.workloads.inkling_rpa import inkling_sharded_fused_rpa_schedule
 
-_CALIBRATION_SEEDS = {20260820, 20260821, 20260822, 20260823, 20260824, 20260825}
+_CALIBRATION_SEEDS = {
+    20260820,
+    20260821,
+    20260822,
+    20260823,
+    20260824,
+    20260825,
+    8861363933501065961,
+    1269528214265211801,
+    4209644372387580568,
+    15603344423790358252,
+    7026367813976238475,
+}
 
 
 def _payload() -> dict:
@@ -36,7 +50,7 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
     generated = default_inkling_sharded_rpa_surface_contract()
 
     assert saved == generated
-    assert saved.surface_id == ("297debf7e0aea1106fbd7bce984eade52d7d5f9d7659c58de439360b75c874b9")
+    assert saved.surface_id == ("ce16bf5b065c63d6064b5c9746ed0ae5adde4d51e276aa572c840eb625fc9c2c")
     assert not set(INKLING_SHARDED_RPA_CORRECTNESS_SEEDS) & _CALIBRATION_SEEDS
     assert saved.plan.compiler_hlo_authority == (
         "receipt-bound-raw-bytes-not-reproducible-identity"
@@ -48,6 +62,7 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
     (
         (("hlo_identity_status",), "pending"),
         (("output_relative_l2_error",), 0.007),
+        (("cpu_reference_replay_relative_l2_error",), 0.007),
         (("plan", "stablehlo_sha256"), "0" * 64),
         (("plan", "mesh_shape"), [1, 8]),
         (("runtime", "jax"), "0.11.1"),
@@ -108,6 +123,7 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
         capture_output=True,
         text=True,
     ).stdout.strip()
+    run_command = subprocess.run
     plan = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
     devices = tuple(
         SimpleNamespace(id=index, process_index=0, platform="tpu", device_kind="TPU7x")
@@ -118,7 +134,7 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
 
     def reference(_inputs):
         return (
-            np.zeros(output_shape, dtype=jax.numpy.bfloat16),
+            np.full(output_shape, 0.1, dtype=jax.numpy.bfloat16),
             np.zeros(cache_shape, dtype=jax.numpy.bfloat16),
         )
 
@@ -148,10 +164,12 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
         ):
             raise ValueError("INKLING_SHARDED_RPA_PLAN_REPLAY_MISMATCH")
 
-    def git_show(arguments, *, cwd, check, capture_output):
-        assert arguments[:2] == ["git", "show"]
+    def git_show(arguments, **kwargs):
+        if arguments[:2] != ["git", "show"]:
+            return run_command(arguments, **kwargs)
+        assert kwargs["check"] and kwargs["capture_output"]
+        cwd = kwargs["cwd"]
         assert Path(cwd) == repository
-        assert check and capture_output
         relative = arguments[2].split(":", 1)[1]
         return SimpleNamespace(stdout=(repository / relative).read_bytes())
 
@@ -162,6 +180,8 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
     monkeypatch.setattr(surface_runner, "_git_output", lambda *_args: commit)
     monkeypatch.setattr(surface_runner.subprocess, "run", git_show)
     monkeypatch.setattr(surface_runner, "_runtime_identity", lambda: contract.runtime)
+    monkeypatch.setattr(surface_runner.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(surface_runner.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(surface_runner.jax, "devices", lambda: devices)
     monkeypatch.setattr(surface_runner, "_compile_surface", compile_surface)
     monkeypatch.setattr(surface_runner, "_place_inputs", lambda _compiled, inputs: inputs)
@@ -172,6 +192,7 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
         lambda _executable, inputs: tuple(value.copy() for value in reference(inputs)),
     )
     monkeypatch.setattr(surface_runner, "inkling_sharded_fused_rpa_reference", reference)
+
     monkeypatch.setattr(surface_runner, "_validate_plan_artifacts", validate_plan)
 
     root = tmp_path / "run"
@@ -184,6 +205,99 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
     relocated = tmp_path / "relocated"
     shutil.copytree(root, relocated)
     assert surface_runner.validate_inkling_sharded_rpa_surface(relocated, contract) == result
+
+    def portable_reference(inputs):
+        output, cache = reference(inputs)
+        output.view(np.uint16).reshape(-1)[0] += np.uint16(1)
+        return output, cache
+
+    monkeypatch.setattr(
+        surface_runner,
+        "inkling_sharded_fused_rpa_reference",
+        portable_reference,
+    )
+    assert surface_runner.validate_inkling_sharded_rpa_surface(relocated, contract) == result
+
+    def incompatible_reference(inputs):
+        output, cache = reference(inputs)
+        output.fill(0.2)
+        return output, cache
+
+    monkeypatch.setattr(
+        surface_runner,
+        "inkling_sharded_fused_rpa_reference",
+        incompatible_reference,
+    )
+    with pytest.raises(ValueError, match="ORACLE_REPLAY_MISMATCH"):
+        surface_runner.validate_inkling_sharded_rpa_surface(relocated, contract)
+
+    for nonfinite in (np.nan, np.inf):
+
+        def nonfinite_reference(inputs, value=nonfinite):
+            output, cache = reference(inputs)
+            output.reshape(-1)[0] = value
+            return output, cache
+
+        monkeypatch.setattr(
+            surface_runner,
+            "inkling_sharded_fused_rpa_reference",
+            nonfinite_reference,
+        )
+        with pytest.raises(ValueError, match="OUTPUT_NONFINITE"):
+            surface_runner.validate_inkling_sharded_rpa_surface(relocated, contract)
+    monkeypatch.setattr(surface_runner, "inkling_sharded_fused_rpa_reference", reference)
+
+    archive_tar = tmp_path / "bundle.tar"
+    with tarfile.open(archive_tar, "w") as bundle:
+        bundle.add(root, arcname="bundle")
+    archive = tmp_path / "bundle.tar.zst"
+    with archive.open("wb") as output:
+        subprocess.run(
+            ["zstd", "--compress", "--stdout", str(archive_tar)],
+            check=True,
+            stdout=output,
+        )
+    monkeypatch.setattr(
+        surface_runner,
+        "_relocation_runtime",
+        lambda _contract: InklingShardedRpaRelocationRuntime(
+            python="3.12.11",
+            jax="0.11.0",
+            jaxlib="0.11.0",
+            ml_dtypes="0.6.0",
+            numpy="2.5.2",
+            system="Darwin",
+            machine="arm64",
+        ),
+    )
+    attestation_path = tmp_path / "relocation-attestation.json"
+    attestation = surface_runner.write_inkling_sharded_rpa_relocation_attestation(
+        attestation_path,
+        archive=archive,
+        contract=contract,
+    )
+    assert attestation.status == "portable_accepted"
+    assert len(attestation.observations) == len(contract.correctness_seeds)
+    assert (
+        surface_runner.validate_inkling_sharded_rpa_relocation_attestation(
+            attestation_path,
+            archive=archive,
+            contract=contract,
+        )
+        == attestation
+    )
+    mutated_attestation_path = tmp_path / "mutated-attestation.json"
+    mutated_attestation = json.loads(attestation_path.read_text())
+    mutated_attestation["observations"][0]["verifier_reference_sha256"] = "0" * 64
+    mutated_attestation_path.write_text(
+        json.dumps(mutated_attestation, indent=2, sort_keys=True) + "\n"
+    )
+    with pytest.raises(ValueError, match="ATTESTATION_MISMATCH"):
+        surface_runner.validate_inkling_sharded_rpa_relocation_attestation(
+            mutated_attestation_path,
+            archive=archive,
+            contract=contract,
+        )
 
     changed_output = tmp_path / "changed-output"
     shutil.copytree(root, changed_output)
@@ -206,12 +320,17 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
         (
             "changed-cache",
             f"correctness/seed-{contract.correctness_seeds[0]}/cache.npy",
-            "CORRECTNESS_REPLAY_MISMATCH",
+            "ORACLE_REPLAY_MISMATCH",
         ),
         (
             "changed-timing-cache",
             "timing/post_cache.npy",
             "TIMING_OUTPUT_MISMATCH",
+        ),
+        (
+            "changed-producer-oracle",
+            f"correctness/seed-{contract.correctness_seeds[0]}/oracle_output.npy",
+            "ORACLE_REPLAY_MISMATCH",
         ),
     ):
         changed_array = tmp_path / name
@@ -292,6 +411,8 @@ def test_sharded_rpa_surface_result_rejects_failed_correctness() -> None:
         "source_manifest_sha256": "5" * 64,
         "source_manifest": [{"path": "a.py", "sha256": "6" * 64}],
         "runtime": default_inkling_sharded_rpa_surface_contract().runtime.model_dump(mode="json"),
+        "producer_system": "Linux",
+        "producer_machine": "x86_64",
         "devices": [
             {"id": index, "process_index": 0, "platform": "tpu", "device_kind": "TPU7x"}
             for index in range(8)

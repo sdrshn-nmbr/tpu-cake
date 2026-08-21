@@ -13,7 +13,15 @@ from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_seed
 from tpu_cake.rpa_lowering import lower_inkling_sharded_rpa_to_pallas
 from tpu_cake.workloads.inkling_rpa import inkling_sharded_fused_rpa_schedule
 
-INKLING_SHARDED_RPA_SURFACE_SCHEMA = "inkling-sharded-rpa-surface-v1"
+INKLING_SHARDED_RPA_SURFACE_SCHEMA = "inkling-sharded-rpa-surface-v2"
+INKLING_SHARDED_RPA_RECEIPT_SCHEMA = "inkling-sharded-rpa-surface-receipt-v2"
+INKLING_SHARDED_RPA_PRODUCER_CLAIM_SCOPE = (
+    "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding-producer-host-only"
+)
+INKLING_SHARDED_RPA_PORTABLE_CLAIM_SCOPE = (
+    "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-"
+    "owned-2x4-sharding-dual-cpu-reference-replay"
+)
 INKLING_SHARDED_RPA_COMPILATION_ROOT = "/home/sudarshan/tpu-cake-main"
 INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH = "/home/sudarshan/inkle/engine/sglang-jax/python"
 INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES = (
@@ -85,6 +93,7 @@ class InklingShardedRpaSurfaceContract(BaseModel):
     compilation_source_root: Literal[INKLING_SHARDED_RPA_COMPILATION_ROOT]
     backend_python_path: Literal[INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH]
     backend_import_packages: tuple[str, ...] = Field(min_length=4, max_length=4)
+    cpu_reference_packages: tuple[str, ...] = Field(min_length=4, max_length=4)
     hlo_identity_status: Literal["pinned"]
     correctness_seeds: tuple[int, ...] = Field(min_length=5, max_length=5)
     timing_seed: int
@@ -94,16 +103,24 @@ class InklingShardedRpaSurfaceContract(BaseModel):
     samples_per_round: int = Field(ge=3)
     output_maximum_absolute_error: float = Field(gt=0)
     output_relative_l2_error: float = Field(gt=0)
+    cpu_reference_replay_maximum_absolute_error: float = Field(gt=0)
+    cpu_reference_replay_relative_l2_error: float = Field(gt=0)
     require_exact_cache: bool
     runtime: RuntimeIdentity
     backend: Literal["tpu"]
     device_kind: Literal["TPU7x"]
     device_count: Literal[8]
     process_count: Literal[1]
+    producer_system: Literal["Linux"]
+    producer_machine: Literal["x86_64"]
+    relocation_max_compressed_bytes: Literal[1073741824]
+    relocation_max_expanded_bytes: Literal[2147483648]
+    relocation_max_members: Literal[256]
+    relocation_max_member_name_bytes: Literal[4096]
+    relocation_max_member_bytes: Literal[1073741824]
+    relocation_max_total_bytes: Literal[1073741824]
     plan: InklingShardedRpaPlanContract
-    claim_scope: Literal[
-        "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"
-    ]
+    claim_scope: Literal[INKLING_SHARDED_RPA_PRODUCER_CLAIM_SCOPE]
 
     @model_validator(mode="after")
     def contract_is_canonical(self) -> InklingShardedRpaSurfaceContract:
@@ -118,6 +135,13 @@ class InklingShardedRpaSurfaceContract(BaseModel):
             raise ValueError("sharded RPA correctness seeds are not canonical")
         if self.backend_import_packages != INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES:
             raise ValueError("sharded RPA backend import packages are not canonical")
+        if self.cpu_reference_packages != (
+            "jax==0.11.0",
+            "jaxlib==0.11.0",
+            "ml-dtypes==0.6.0",
+            "numpy==2.5.2",
+        ):
+            raise ValueError("sharded RPA CPU reference packages are not canonical")
         if self.timing_seed != self.correctness_seeds[0]:
             raise ValueError("sharded RPA timing seed must be the first checked seed")
         if (
@@ -130,8 +154,10 @@ class InklingShardedRpaSurfaceContract(BaseModel):
         if (
             self.output_maximum_absolute_error,
             self.output_relative_l2_error,
+            self.cpu_reference_replay_maximum_absolute_error,
+            self.cpu_reference_replay_relative_l2_error,
             self.require_exact_cache,
-        ) != (0.001, 0.006, True):
+        ) != (0.001, 0.006, 0.001, 0.006, True):
             raise ValueError("sharded RPA numerical policy is not canonical")
         if self.runtime != expected_runtime:
             raise ValueError("sharded RPA runtime is not canonical")
@@ -154,6 +180,12 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
         compilation_source_root=INKLING_SHARDED_RPA_COMPILATION_ROOT,
         backend_python_path=INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH,
         backend_import_packages=INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES,
+        cpu_reference_packages=(
+            "jax==0.11.0",
+            "jaxlib==0.11.0",
+            "ml-dtypes==0.6.0",
+            "numpy==2.5.2",
+        ),
         hlo_identity_status="pinned",
         correctness_seeds=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS,
         timing_seed=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS[0],
@@ -163,6 +195,8 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
         samples_per_round=5,
         output_maximum_absolute_error=0.001,
         output_relative_l2_error=0.006,
+        cpu_reference_replay_maximum_absolute_error=0.001,
+        cpu_reference_replay_relative_l2_error=0.006,
         require_exact_cache=True,
         runtime=RuntimeIdentity(
             python="3.12.3",
@@ -175,8 +209,16 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
         device_kind="TPU7x",
         device_count=8,
         process_count=1,
+        producer_system="Linux",
+        producer_machine="x86_64",
+        relocation_max_compressed_bytes=1073741824,
+        relocation_max_expanded_bytes=2147483648,
+        relocation_max_members=256,
+        relocation_max_member_name_bytes=4096,
+        relocation_max_member_bytes=1073741824,
+        relocation_max_total_bytes=1073741824,
         plan=_plan_contract(),
-        claim_scope=("fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"),
+        claim_scope=INKLING_SHARDED_RPA_PRODUCER_CLAIM_SCOPE,
     )
 
 
@@ -242,6 +284,8 @@ class InklingShardedRpaSurfaceResult(BaseModel):
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
     runtime: RuntimeIdentity
+    producer_system: Literal["Linux"]
+    producer_machine: Literal["x86_64"]
     devices: tuple[InklingShardedRpaDevice, ...] = Field(min_length=8, max_length=8)
     plan: InklingShardedRpaPlanContract
     compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -257,9 +301,7 @@ class InklingShardedRpaSurfaceResult(BaseModel):
     p90_round_duration_ns: float = Field(gt=0)
     coefficient_of_variation: float = Field(ge=0)
     accepted: Literal[True]
-    claim_scope: Literal[
-        "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"
-    ]
+    claim_scope: Literal[INKLING_SHARDED_RPA_PRODUCER_CLAIM_SCOPE]
 
     @model_validator(mode="after")
     def result_is_internally_consistent(self) -> InklingShardedRpaSurfaceResult:
@@ -299,16 +341,14 @@ class InklingShardedRpaSurfaceResult(BaseModel):
 class InklingShardedRpaSurfaceReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    receipt_schema: Literal["inkling-sharded-rpa-surface-receipt-v1"]
+    receipt_schema: Literal[INKLING_SHARDED_RPA_RECEIPT_SCHEMA]
     surface_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_count: int = Field(gt=0)
     artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
     accepted: Literal[True]
-    claim_scope: Literal[
-        "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"
-    ]
+    claim_scope: Literal[INKLING_SHARDED_RPA_PRODUCER_CLAIM_SCOPE]
 
     @model_validator(mode="after")
     def artifact_inventory_is_exact(self) -> InklingShardedRpaSurfaceReceipt:
@@ -318,3 +358,65 @@ class InklingShardedRpaSurfaceReceipt(BaseModel):
         if tuple(sorted(paths)) != paths:
             raise ValueError("sharded RPA receipt artifacts must be ordered")
         return self
+
+
+class InklingShardedRpaRelocationRuntime(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    python: str = Field(min_length=1)
+    jax: str = Field(min_length=1)
+    jaxlib: str = Field(min_length=1)
+    ml_dtypes: str = Field(min_length=1)
+    numpy: str = Field(min_length=1)
+    system: str = Field(min_length=1)
+    machine: str = Field(min_length=1)
+
+
+class InklingShardedRpaRelocationObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    seed: int
+    producer_reference_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_reference_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    producer_to_verifier_maximum_absolute_error: float = Field(ge=0)
+    producer_to_verifier_relative_l2_error: float = Field(ge=0)
+    verifier_to_producer_maximum_absolute_error: float = Field(ge=0)
+    verifier_to_producer_relative_l2_error: float = Field(ge=0)
+    output_to_verifier_maximum_absolute_error: float = Field(ge=0)
+    output_to_verifier_relative_l2_error: float = Field(ge=0)
+    verifier_cache_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cache_exact: bool
+
+    @model_validator(mode="after")
+    def metrics_are_finite(self) -> InklingShardedRpaRelocationObservation:
+        metrics = (
+            self.producer_to_verifier_maximum_absolute_error,
+            self.producer_to_verifier_relative_l2_error,
+            self.verifier_to_producer_maximum_absolute_error,
+            self.verifier_to_producer_relative_l2_error,
+            self.output_to_verifier_maximum_absolute_error,
+            self.output_to_verifier_relative_l2_error,
+        )
+        if not all(math.isfinite(value) for value in metrics):
+            raise ValueError("sharded RPA relocation metrics must be finite")
+        return self
+
+
+class InklingShardedRpaRelocationAttestation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["inkling-sharded-rpa-relocation-attestation-v1"]
+    surface_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    producer_result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_runtime: InklingShardedRpaRelocationRuntime
+    verifier_source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
+    observations: tuple[InklingShardedRpaRelocationObservation, ...] = Field(
+        min_length=5,
+        max_length=5,
+    )
+    status: Literal["portable_accepted"]
+    claim_scope: Literal[INKLING_SHARDED_RPA_PORTABLE_CLAIM_SCOPE]

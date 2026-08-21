@@ -45,7 +45,11 @@ from tpu_cake.rpa_receipt_search import (
 )
 from tpu_cake.rpa_search import RpaSearchContract, validate_rpa_search_result
 from tpu_cake.rpa_surface import InklingShardedRpaSurfaceContract
-from tpu_cake.rpa_surface_runner import validate_inkling_sharded_rpa_surface
+from tpu_cake.rpa_surface_runner import (
+    validate_inkling_sharded_rpa_relocation_attestation,
+    validate_inkling_sharded_rpa_surface,
+    write_inkling_sharded_rpa_relocation_attestation,
+)
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
 from tpu_cake.search import MatmulSearchContract, run_matmul_search
@@ -220,6 +224,16 @@ def _parser() -> argparse.ArgumentParser:
     verify_rpa_surface = commands.add_parser("verify-inkling-sharded-rpa-surface")
     verify_rpa_surface.add_argument("run_root", type=Path)
     verify_rpa_surface.add_argument("--contract", type=Path, required=True)
+
+    attest_rpa_surface = commands.add_parser("attest-inkling-sharded-rpa-surface")
+    attest_rpa_surface.add_argument("archive", type=Path)
+    attest_rpa_surface.add_argument("--contract", type=Path, required=True)
+    attest_rpa_surface.add_argument("--output", type=Path, required=True)
+
+    verify_rpa_attestation = commands.add_parser("verify-inkling-sharded-rpa-attestation")
+    verify_rpa_attestation.add_argument("attestation", type=Path)
+    verify_rpa_attestation.add_argument("--archive", type=Path, required=True)
+    verify_rpa_attestation.add_argument("--contract", type=Path, required=True)
 
     run_seqax = commands.add_parser("run-seqax-forward")
     run_seqax.add_argument("--output-dir", required=True, type=Path)
@@ -688,9 +702,35 @@ def main() -> None:
         contract = InklingShardedRpaSurfaceContract.model_validate_json(args.contract.read_text())
         result = validate_inkling_sharded_rpa_surface(args.run_root, contract)
         print(
-            "INKLING_SHARDED_RPA_SURFACE_ACCEPTED "
+            "INKLING_SHARDED_RPA_SURFACE_PRODUCER_ACCEPTED "
             f"surface_id={result.surface_id} observations={len(result.correctness)} "
             f"rounds={len(result.rounds)} scope={result.claim_scope}"
+        )
+        code = 0
+    elif args.command == "attest-inkling-sharded-rpa-surface":
+        contract = InklingShardedRpaSurfaceContract.model_validate_json(args.contract.read_text())
+        attestation = write_inkling_sharded_rpa_relocation_attestation(
+            args.output,
+            archive=args.archive,
+            contract=contract,
+        )
+        print(
+            "INKLING_SHARDED_RPA_SURFACE_PORTABLE_ACCEPTED "
+            f"surface_id={attestation.surface_id} observations={len(attestation.observations)} "
+            f"scope={attestation.claim_scope}"
+        )
+        code = 0
+    elif args.command == "verify-inkling-sharded-rpa-attestation":
+        contract = InklingShardedRpaSurfaceContract.model_validate_json(args.contract.read_text())
+        attestation = validate_inkling_sharded_rpa_relocation_attestation(
+            args.attestation,
+            archive=args.archive,
+            contract=contract,
+        )
+        print(
+            "INKLING_SHARDED_RPA_ATTESTATION_VERIFIED "
+            f"surface_id={attestation.surface_id} observations={len(attestation.observations)} "
+            f"scope={attestation.claim_scope}"
         )
         code = 0
     elif args.command == "run-seqax-forward":

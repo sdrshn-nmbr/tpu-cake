@@ -1,5 +1,5 @@
 {
-  "surface_schema": "inkling-sharded-rpa-surface-v1",
+  "surface_schema": "inkling-sharded-rpa-surface-v2",
   "identity_schema": "length-prefixed-v2",
   "compilation_source_root": "/home/sudarshan/tpu-cake-main",
   "backend_python_path": "/home/sudarshan/inkle/engine/sglang-jax/python",
@@ -9,21 +9,29 @@
     "psutil==7.0.0",
     "pyzmq==27.0.1"
   ],
+  "cpu_reference_packages": [
+    "jax==0.11.0",
+    "jaxlib==0.11.0",
+    "ml-dtypes==0.6.0",
+    "numpy==2.5.2"
+  ],
   "hlo_identity_status": "pinned",
   "correctness_seeds": [
-    8861363933501065961,
-    1269528214265211801,
-    4209644372387580568,
-    15603344423790358252,
-    7026367813976238475
+    9096428414533206234,
+    12145031094770005217,
+    622934234548142313,
+    15696904859270974668,
+    17038534533205655854
   ],
-  "timing_seed": 8861363933501065961,
+  "timing_seed": 9096428414533206234,
   "repeat_executions": 2,
   "warmup_iterations": 5,
   "timing_rounds": 16,
   "samples_per_round": 5,
   "output_maximum_absolute_error": 0.001,
   "output_relative_l2_error": 0.006,
+  "cpu_reference_replay_maximum_absolute_error": 0.001,
+  "cpu_reference_replay_relative_l2_error": 0.006,
   "require_exact_cache": true,
   "runtime": {
     "python": "3.12.3",
@@ -36,6 +44,14 @@
   "device_kind": "TPU7x",
   "device_count": 8,
   "process_count": 1,
+  "producer_system": "Linux",
+  "producer_machine": "x86_64",
+  "relocation_max_compressed_bytes": 1073741824,
+  "relocation_max_expanded_bytes": 2147483648,
+  "relocation_max_members": 256,
+  "relocation_max_member_name_bytes": 4096,
+  "relocation_max_member_bytes": 1073741824,
+  "relocation_max_total_bytes": 1073741824,
   "plan": {
     "schedule_sha256": "12007604b3b6305899bd2f13d311aa77889199fc0398a3615c142f7966572b13",
     "execution_sha256": "7700de42a727acbb3ff1528877ce878ffdeffcc6b1ab6fffab0150cb1636f9f9",
@@ -126,5 +142,5 @@
       }
     ]
   },
-  "claim_scope": "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"
+  "claim_scope": "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding-producer-host-only"
 }

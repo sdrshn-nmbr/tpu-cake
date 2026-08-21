@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 import math
 import os
+import platform
 import stat
 import statistics
 import subprocess
@@ -29,8 +30,13 @@ from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.rpa_lowering import ShardedFusedRpaPlan, lower_inkling_sharded_rpa_to_pallas
 from tpu_cake.rpa_surface import (
+    INKLING_SHARDED_RPA_PORTABLE_CLAIM_SCOPE,
+    INKLING_SHARDED_RPA_RECEIPT_SCHEMA,
     InklingShardedRpaCorrectnessObservation,
     InklingShardedRpaDevice,
+    InklingShardedRpaRelocationAttestation,
+    InklingShardedRpaRelocationObservation,
+    InklingShardedRpaRelocationRuntime,
     InklingShardedRpaSurfaceContract,
     InklingShardedRpaSurfaceReceipt,
     InklingShardedRpaSurfaceResult,
@@ -38,13 +44,19 @@ from tpu_cake.rpa_surface import (
     default_inkling_sharded_rpa_surface_contract,
 )
 from tpu_cake.runner import _runtime_identity
+from tpu_cake.seqax_numerical_runner import (
+    _extract_relocation_archive,
+    _inspect_relocation_archive,
+    _materialize_tar_archive,
+    _staged_relocation_archive,
+)
 from tpu_cake.workloads.inkling_rpa import (
     inkling_sharded_fused_rpa_inputs,
     inkling_sharded_fused_rpa_reference,
     inkling_sharded_fused_rpa_schedule,
 )
 
-_RECEIPT_SCHEMA = "inkling-sharded-rpa-surface-receipt-v1"
+_RECEIPT_SCHEMA = INKLING_SHARDED_RPA_RECEIPT_SCHEMA
 
 
 @dataclass(frozen=True)
@@ -172,6 +184,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         "src/tpu_cake/rpa_surface.py",
         "src/tpu_cake/rpa_surface_runner.py",
         "src/tpu_cake/runner.py",
+        "src/tpu_cake/seqax_numerical_runner.py",
         "src/tpu_cake/source.py",
         "src/tpu_cake/workloads/inkling_rpa.py",
     )
@@ -376,6 +389,8 @@ def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:
             "INKLING_SHARDED_RPA_OUTPUT_ABI_MISMATCH "
             f"actual={actual.shape}/{actual.dtype} expected={expected.shape}/{expected.dtype}"
         )
+    if not np.all(np.isfinite(actual)) or not np.all(np.isfinite(expected)):
+        raise ValueError("INKLING_SHARDED_RPA_OUTPUT_NONFINITE")
     difference = actual.astype(np.float64) - expected.astype(np.float64)
     maximum = max((abs(float(value)) for value in difference.ravel()), default=0.0)
     numerator_squared = math.fsum(float(value) ** 2 for value in difference.ravel())
@@ -383,6 +398,8 @@ def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:
         float(value) ** 2 for value in expected.astype(np.float64).ravel()
     )
     relative_l2 = math.sqrt(numerator_squared / max(denominator_squared, 1e-60))
+    if not math.isfinite(maximum) or not math.isfinite(relative_l2):
+        raise ValueError("INKLING_SHARDED_RPA_ERROR_METRIC_NONFINITE")
     return maximum, round(relative_l2, 15)
 
 
@@ -615,6 +632,7 @@ def _validate_correctness(
     root: Path,
     contract: InklingShardedRpaSurfaceContract,
     saved: tuple[InklingShardedRpaCorrectnessObservation, ...],
+    relocation_observations: list[InklingShardedRpaRelocationObservation] | None = None,
 ) -> None:
     replayed = []
     for seed in contract.correctness_seeds:
@@ -626,20 +644,32 @@ def _validate_correctness(
         cache = _load_bf16(seed_root / "cache.npy")
         repeat_cache = _load_bf16(seed_root / "repeat_cache.npy")
         saved_oracle = _load_bf16(seed_root / "oracle_output.npy")
-        if not np.array_equal(saved_oracle, oracle_output):
-            raise ValueError(f"INKLING_SHARDED_RPA_ORACLE_REPLAY_MISMATCH seed={seed}")
         _validate_output_abi(contract, output, cache)
         _validate_output_abi(contract, repeat_output, repeat_cache)
-        maximum, relative_l2 = _errors(output, oracle_output)
         observation = InklingShardedRpaCorrectnessObservation.model_validate_json(
             (seed_root / "observation.json").read_text()
         )
+        maximum, relative_l2 = _errors(output, saved_oracle)
+        replay_maximum, replay_relative_l2 = _errors(saved_oracle, oracle_output)
+        reverse_maximum, reverse_relative_l2 = _errors(oracle_output, saved_oracle)
+        fresh_maximum, fresh_relative_l2 = _errors(output, oracle_output)
+        if (
+            array_sha256(saved_oracle) != observation.oracle_output_sha256
+            or replay_maximum > contract.cpu_reference_replay_maximum_absolute_error
+            or replay_relative_l2 > contract.cpu_reference_replay_relative_l2_error
+            or reverse_maximum > contract.cpu_reference_replay_maximum_absolute_error
+            or reverse_relative_l2 > contract.cpu_reference_replay_relative_l2_error
+            or fresh_maximum > contract.output_maximum_absolute_error
+            or fresh_relative_l2 > contract.output_relative_l2_error
+            or not np.array_equal(cache, oracle_cache)
+        ):
+            raise ValueError(f"INKLING_SHARDED_RPA_ORACLE_REPLAY_MISMATCH seed={seed}")
         expected = observation.model_copy(
             update={
                 "input_sha256": arrays_sha256(inputs),
                 "output_sha256": array_sha256(output),
                 "repeat_output_sha256": array_sha256(repeat_output),
-                "oracle_output_sha256": array_sha256(oracle_output),
+                "oracle_output_sha256": array_sha256(saved_oracle),
                 "cache_sha256": array_sha256(cache),
                 "repeat_cache_sha256": array_sha256(repeat_cache),
                 "oracle_cache_sha256": array_sha256(oracle_cache),
@@ -659,6 +689,22 @@ def _validate_correctness(
         if observation != expected or not observation.passed:
             raise ValueError(f"INKLING_SHARDED_RPA_CORRECTNESS_REPLAY_MISMATCH seed={seed}")
         replayed.append(observation)
+        if relocation_observations is not None:
+            relocation_observations.append(
+                InklingShardedRpaRelocationObservation(
+                    seed=seed,
+                    producer_reference_sha256=array_sha256(saved_oracle),
+                    verifier_reference_sha256=array_sha256(oracle_output),
+                    producer_to_verifier_maximum_absolute_error=replay_maximum,
+                    producer_to_verifier_relative_l2_error=replay_relative_l2,
+                    verifier_to_producer_maximum_absolute_error=reverse_maximum,
+                    verifier_to_producer_relative_l2_error=reverse_relative_l2,
+                    output_to_verifier_maximum_absolute_error=fresh_maximum,
+                    output_to_verifier_relative_l2_error=fresh_relative_l2,
+                    verifier_cache_sha256=array_sha256(oracle_cache),
+                    cache_exact=np.array_equal(cache, oracle_cache),
+                )
+            )
     if tuple(replayed) != saved:
         raise ValueError("INKLING_SHARDED_RPA_CORRECTNESS_INVENTORY_MISMATCH")
 
@@ -689,6 +735,7 @@ def validate_inkling_sharded_rpa_surface(
     *,
     require_receipt: bool = True,
     require_accepted_ledger: bool = True,
+    relocation_observations: list[InklingShardedRpaRelocationObservation] | None = None,
 ) -> InklingShardedRpaSurfaceResult:
     if root.is_symlink():
         raise ValueError(f"INKLING_SHARDED_RPA_ROOT_INVALID path={root}")
@@ -706,7 +753,7 @@ def validate_inkling_sharded_rpa_surface(
     result = InklingShardedRpaSurfaceResult.model_validate_json((root / "result.json").read_text())
     identity = json.loads((root / "run_identity.json").read_text())
     expected_run_id = semantic_sha256(
-        "inkling-sharded-rpa-surface-run-v1",
+        "inkling-sharded-rpa-surface-run-v2",
         contract.surface_id,
         result.source_commit,
         contract.plan.schedule_sha256,
@@ -721,6 +768,8 @@ def validate_inkling_sharded_rpa_surface(
         raise ValueError("INKLING_SHARDED_RPA_RUN_IDENTITY_MISMATCH")
     if (
         result.runtime != contract.runtime
+        or result.producer_system != contract.producer_system
+        or result.producer_machine != contract.producer_machine
         or result.plan != contract.plan
         or result.claim_scope != contract.claim_scope
         or tuple(value.seed for value in result.correctness) != contract.correctness_seeds
@@ -740,7 +789,12 @@ def validate_inkling_sharded_rpa_surface(
         raise ValueError("INKLING_SHARDED_RPA_RESULT_CONTRACT_MISMATCH")
     _validate_source(root, result)
     _validate_plan_artifacts(root, contract, result)
-    _validate_correctness(root, contract, result.correctness)
+    _validate_correctness(
+        root,
+        contract,
+        result.correctness,
+        relocation_observations,
+    )
     timing_inputs = inkling_sharded_fused_rpa_inputs(contract.timing_seed)
     if result.timing_input_sha256 != arrays_sha256(timing_inputs):
         raise ValueError("INKLING_SHARDED_RPA_TIMING_INPUT_MISMATCH")
@@ -841,7 +895,7 @@ def _run_staged(
 ) -> InklingShardedRpaSurfaceResult:
     source_manifest = _source_manifest()
     run_id = semantic_sha256(
-        "inkling-sharded-rpa-surface-run-v1",
+        "inkling-sharded-rpa-surface-run-v2",
         contract.surface_id,
         source_state["git_commit"],
         contract.plan.schedule_sha256,
@@ -924,6 +978,8 @@ def _run_staged(
         source_manifest_sha256=_sha256(root / "source_manifest.json"),
         source_manifest=source_manifest,
         runtime=runtime,
+        producer_system=platform.system(),
+        producer_machine=platform.machine(),
         devices=_device_inventory(devices),
         plan=contract.plan,
         compiler_hlo_sha256=_sha256(root / "compiler_hlo.txt"),
@@ -986,6 +1042,11 @@ def run_inkling_sharded_rpa_surface(
     runtime = _runtime_identity()
     if runtime != contract.runtime:
         raise ValueError("INKLING_SHARDED_RPA_RUNTIME_MISMATCH")
+    if (platform.system(), platform.machine()) != (
+        contract.producer_system,
+        contract.producer_machine,
+    ):
+        raise ValueError("INKLING_SHARDED_RPA_PRODUCER_HOST_MISMATCH")
     _require_backend_source(contract)
     _require_backend_runtime(contract)
     with _exclusive_lock(output_root):
@@ -1021,3 +1082,138 @@ def run_inkling_sharded_rpa_surface(
                 except OSError:
                     pass
             raise
+
+
+def _relocation_runtime(
+    contract: InklingShardedRpaSurfaceContract,
+) -> InklingShardedRpaRelocationRuntime:
+    versions = {
+        name: importlib.metadata.version(name) for name in ("jax", "jaxlib", "ml-dtypes", "numpy")
+    }
+    packages = tuple(f"{name}=={version}" for name, version in versions.items())
+    if packages != contract.cpu_reference_packages:
+        raise ValueError(
+            "INKLING_SHARDED_RPA_RELOCATION_RUNTIME_MISMATCH "
+            f"expected={contract.cpu_reference_packages} observed={packages}"
+        )
+    runtime = InklingShardedRpaRelocationRuntime(
+        python=platform.python_version(),
+        jax=versions["jax"],
+        jaxlib=versions["jaxlib"],
+        ml_dtypes=versions["ml-dtypes"],
+        numpy=versions["numpy"],
+        system=platform.system(),
+        machine=platform.machine(),
+    )
+    if not runtime.python.startswith("3.12.") or (
+        runtime.system,
+        runtime.machine,
+    ) == (contract.producer_system, contract.producer_machine):
+        raise ValueError("INKLING_SHARDED_RPA_RELOCATION_HOST_MISMATCH")
+    return runtime
+
+
+def _relocation_attestation(
+    archive: Path,
+    contract: InklingShardedRpaSurfaceContract,
+) -> InklingShardedRpaRelocationAttestation:
+    if contract != default_inkling_sharded_rpa_surface_contract():
+        raise ValueError("INKLING_SHARDED_RPA_EXTERNAL_CONTRACT_MISMATCH")
+    repository = _repository_root()
+    _require_clean_repository(repository)
+    verifier_runtime = _relocation_runtime(contract)
+    with tempfile.TemporaryDirectory(prefix="inkling-sharded-rpa-relocation-") as temporary:
+        temporary_root = Path(temporary)
+        staged_archive = temporary_root / "bundle.tar.zst"
+        with _staged_relocation_archive(
+            archive,
+            staged_archive,
+            max_compressed_bytes=contract.relocation_max_compressed_bytes,
+        ) as archive_sha256:
+            tar_archive = _materialize_tar_archive(
+                staged_archive,
+                temporary_root / "expanded.tar",
+                max_expanded_archive_bytes=contract.relocation_max_expanded_bytes,
+            )
+            _listing, top_level = _inspect_relocation_archive(
+                tar_archive,
+                max_members=contract.relocation_max_members,
+                max_member_name_bytes=contract.relocation_max_member_name_bytes,
+                max_member_bytes=contract.relocation_max_member_bytes,
+                max_total_uncompressed_bytes=contract.relocation_max_total_bytes,
+            )
+            extracted = temporary_root / "extracted"
+            extracted.mkdir()
+            _extract_relocation_archive(tar_archive, extracted)
+            root = extracted / top_level
+            observations: list[InklingShardedRpaRelocationObservation] = []
+            result = validate_inkling_sharded_rpa_surface(
+                root,
+                contract,
+                relocation_observations=observations,
+            )
+            return InklingShardedRpaRelocationAttestation(
+                schema_version="inkling-sharded-rpa-relocation-attestation-v1",
+                surface_id=contract.surface_id,
+                run_id=result.run_id,
+                source_commit=result.source_commit,
+                archive_sha256=archive_sha256,
+                receipt_sha256=_sha256(root / "receipt.json"),
+                producer_result_sha256=_sha256(root / "result.json"),
+                verifier_runtime=verifier_runtime,
+                verifier_source_manifest=_source_manifest(),
+                observations=tuple(observations),
+                status="portable_accepted",
+                claim_scope=INKLING_SHARDED_RPA_PORTABLE_CLAIM_SCOPE,
+            )
+
+
+def write_inkling_sharded_rpa_relocation_attestation(
+    output: Path,
+    *,
+    archive: Path,
+    contract: InklingShardedRpaSurfaceContract,
+) -> InklingShardedRpaRelocationAttestation:
+    output = output.absolute()
+    if output.exists() or output.is_symlink():
+        raise ValueError(f"INKLING_SHARDED_RPA_ATTESTATION_EXISTS path={output}")
+    parent = output.parent
+    if parent.is_symlink() or not parent.is_dir() or parent.resolve() != parent:
+        raise ValueError(f"INKLING_SHARDED_RPA_ATTESTATION_PARENT_INVALID path={parent}")
+    attestation = _relocation_attestation(archive, contract)
+    temporary = parent / f".{output.name}.tmp-{os.getpid()}-{time.time_ns()}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(attestation.model_dump_json(indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output)
+        temporary.unlink()
+        directory = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return attestation
+
+
+def validate_inkling_sharded_rpa_relocation_attestation(
+    attestation_path: Path,
+    *,
+    archive: Path,
+    contract: InklingShardedRpaSurfaceContract,
+) -> InklingShardedRpaRelocationAttestation:
+    if (
+        attestation_path.is_symlink()
+        or not attestation_path.is_file()
+        or attestation_path.stat().st_nlink != 1
+    ):
+        raise ValueError(f"INKLING_SHARDED_RPA_ATTESTATION_INVALID path={attestation_path}")
+    saved = InklingShardedRpaRelocationAttestation.model_validate_json(attestation_path.read_text())
+    expected = _relocation_attestation(archive, contract)
+    if saved != expected:
+        raise ValueError("INKLING_SHARDED_RPA_ATTESTATION_MISMATCH")
+    return expected
