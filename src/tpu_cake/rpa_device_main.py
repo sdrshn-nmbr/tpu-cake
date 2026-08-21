@@ -16,6 +16,10 @@ from sgl_jax.srt.kernels.ragged_paged_attention.tuned_block_sizes_v3 import (
 )
 from sgl_jax.srt.kernels.ragged_paged_attention.util import get_dtype_packing
 
+from tpu_cake.rpa_donation_confirmation import InklingRpaDonationConfirmationContract
+from tpu_cake.rpa_donation_confirmation_runner import (
+    capture_inkling_rpa_donation_hlo_identities,
+)
 from tpu_cake.rpa_runner import run_fused_rpa
 from tpu_cake.rpa_search import RpaSearchContract, run_rpa_search
 from tpu_cake.rpa_surface import InklingShardedRpaSurfaceContract
@@ -45,6 +49,7 @@ def main() -> None:
     parser.add_argument("--mode", type=RunMode, choices=tuple(RunMode))
     parser.add_argument("--search-contract", type=Path)
     parser.add_argument("--surface-contract", type=Path)
+    parser.add_argument("--donation-confirmation-contract", type=Path)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--warmup-iterations", type=int)
     parser.add_argument("--measured-iterations", type=int)
@@ -55,6 +60,35 @@ def main() -> None:
         metavar=("BQ", "BKV", "CQ", "CKV"),
     )
     args = parser.parse_args()
+    if args.donation_confirmation_contract is not None:
+        if (
+            args.surface_contract is not None
+            or args.search_contract is not None
+            or args.mode is not None
+        ):
+            parser.error(
+                "--donation-confirmation-contract cannot be combined with another run mode"
+            )
+        manual_parameters = (
+            args.seed,
+            args.warmup_iterations,
+            args.measured_iterations,
+            args.decode_block_sizes,
+        )
+        if any(value is not None for value in manual_parameters):
+            parser.error(
+                "--donation-confirmation-contract cannot be combined with manual run parameters"
+            )
+        contract = InklingRpaDonationConfirmationContract.model_validate_json(
+            args.donation_confirmation_contract.read_text()
+        )
+        capture = capture_inkling_rpa_donation_hlo_identities(
+            args.output_dir,
+            contract,
+            ragged_paged_attention,
+        )
+        print(capture.model_dump_json(indent=2))
+        return
     if args.surface_contract is not None:
         manual_parameters = (
             args.seed,

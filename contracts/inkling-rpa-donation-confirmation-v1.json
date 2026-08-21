@@ -1,0 +1,162 @@
+{
+  "confirmation_schema": "inkling-rpa-donation-confirmation-v1",
+  "identity_schema": "length-prefixed-v2",
+  "source_surface_id": "38abd645484ad1acc3f209d9076a2bdc6ea25533426c19e0b4e8cbf7ee520b17",
+  "source_surface_archive_sha256": "3dfc4204040c9a537694f2bdddfc8daf74efc23b49934a517e5bbe05323ba88b",
+  "source_surface_receipt_sha256": "c641a831d5de098323278cda2e289f98e750ebce0d1c160abcb605086aa8f4b0",
+  "source_surface_result_sha256": "d33fac8c03bf56074498cad2cf906142a61f367ea9fcdc17c609c1b5fbd1cda8",
+  "compilation_source_root": "/home/sudarshan/tpu-cake-main",
+  "backend_python_path": "/home/sudarshan/inkle/engine/sglang-jax/python",
+  "backend_import_packages": [
+    "fastapi==0.116.1",
+    "orjson==3.11.1",
+    "psutil==7.0.0",
+    "pyzmq==27.0.1"
+  ],
+  "hlo_identity_status": "pending",
+  "baseline": "non_donating",
+  "candidate": "donating",
+  "correctness_seeds": [
+    13738023113741656410,
+    16108403502991326808,
+    5676275055607118866,
+    606803514470124530,
+    13129316896374869171
+  ],
+  "timing_seed": 1752050116126552532,
+  "repeat_executions": 2,
+  "warmup_blocks": 5,
+  "calls_per_block": 5,
+  "paired_rounds": 32,
+  "bootstrap_samples": 100000,
+  "confidence_level": 0.99,
+  "minimum_practical_improvement": 0.03,
+  "analysis_index": 2,
+  "allow_early_stopping": false,
+  "allow_further_retry": false,
+  "candidates_resident_together": true,
+  "output_maximum_absolute_error": 0.001,
+  "output_relative_l2_error": 0.006,
+  "require_exact_cache": true,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "process_count": 1,
+  "producer_system": "Linux",
+  "producer_machine": "x86_64",
+  "plan": {
+    "schedule_sha256": "12007604b3b6305899bd2f13d311aa77889199fc0398a3615c142f7966572b13",
+    "execution_sha256": "e0f2aac06b1ab01723399c168ce57fbd6d473a77a6b0232db087e23da9691f4a",
+    "stablehlo_sha256": "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a",
+    "compiler_hlo_authority": "receipt-bound-raw-bytes-not-reproducible-identity",
+    "mesh_axes": ["data", "tensor"],
+    "mesh_shape": [2, 4],
+    "local_input_shapes": [
+      [4, 8, 128],
+      [4, 4, 128],
+      [4, 4, 128],
+      [3712, 1, 4, 2, 128],
+      [4],
+      [8192],
+      [5],
+      [5],
+      [3],
+      [4, 8, 16],
+      [16, 512]
+    ],
+    "global_input_shapes": [
+      [8, 32, 128],
+      [8, 16, 128],
+      [8, 16, 128],
+      [7424, 1, 16, 2, 128],
+      [8],
+      [16384],
+      [10],
+      [10],
+      [6],
+      [8, 32, 16],
+      [16, 512]
+    ],
+    "global_output_shapes": [
+      [8, 32, 128],
+      [7424, 1, 16, 2, 128]
+    ],
+    "input_partition_specs": [
+      ["data", "tensor", ""],
+      ["data", "tensor", ""],
+      ["data", "tensor", ""],
+      ["data", "", "tensor", "", ""],
+      ["data"],
+      ["data"],
+      ["data"],
+      ["data"],
+      ["data"],
+      ["data", "tensor", ""],
+      ["", ""]
+    ],
+    "output_partition_specs": [
+      ["data", "tensor", ""],
+      ["data", "", "tensor", "", ""]
+    ],
+    "external_donate_argnums": [0, 3],
+    "input_dtypes": [
+      "bfloat16",
+      "bfloat16",
+      "bfloat16",
+      "bfloat16",
+      "int32",
+      "int32",
+      "int32",
+      "int32",
+      "int32",
+      "bfloat16",
+      "bfloat16"
+    ],
+    "output_dtypes": ["bfloat16", "bfloat16"],
+    "decode_block_sizes": [8, 128, 8, 128],
+    "backend_repository_revision": "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7",
+    "backend_file_revision": "ac88a2ecfa905965b43edbbb5e6510eb272d09e5",
+    "backend_manifest": [
+      {
+        "path": "ragged_paged_attention_v3.py",
+        "sha256": "12c6aeeade66538d3bb638f048850c3d69095ade4ec42559cd8b3566bfc68897"
+      },
+      {
+        "path": "tuned_block_sizes.py",
+        "sha256": "4577624d0ef37726cbcceb5d570530399eb1f9113f8736e621a4e9aba9d3caef"
+      },
+      {
+        "path": "tuned_block_sizes_v3.py",
+        "sha256": "563d74378b319710c8a7c6cd89ec174563462695417f9167d65716d74a4a2d50"
+      },
+      {
+        "path": "util.py",
+        "sha256": "fe76b20b6791ce3e6a30ff22a0e7de11b9a809113facbedb79b52079191f9562"
+      }
+    ]
+  },
+  "arms": [
+    {
+      "arm": "non_donating",
+      "external_donate_argnums": [],
+      "execution_sha256": "a869381037b4c52c22b0af2aa574eeb1e06d091375a1a48bb7c387fab6405398",
+      "stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "compiler_hlo_alias_contract": "no-query-cache-alias"
+    },
+    {
+      "arm": "donating",
+      "external_donate_argnums": [0, 3],
+      "execution_sha256": "251fbc910fe68035dafabea3e5ecdeab058ed51705335596966b797ca917b577",
+      "stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "compiler_hlo_alias_contract": "query-output-aliases-arg0-cache-output-aliases-arg3"
+    }
+  ],
+  "claim_scope": "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-upstream-query-cache-donation-resident-five-call-latency"
+}
