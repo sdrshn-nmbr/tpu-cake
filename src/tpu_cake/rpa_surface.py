@@ -13,14 +13,15 @@ from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_seed
 from tpu_cake.rpa_lowering import lower_inkling_sharded_rpa_to_pallas
 from tpu_cake.workloads.inkling_rpa import inkling_sharded_fused_rpa_schedule
 
-INKLING_SHARDED_RPA_SURFACE_SCHEMA = "inkling-sharded-rpa-surface-v2"
-INKLING_SHARDED_RPA_RECEIPT_SCHEMA = "inkling-sharded-rpa-surface-receipt-v2"
+INKLING_SHARDED_RPA_SURFACE_SCHEMA = "inkling-sharded-rpa-surface-v3"
+INKLING_SHARDED_RPA_RECEIPT_SCHEMA = "inkling-sharded-rpa-surface-receipt-v3"
 INKLING_SHARDED_RPA_PRODUCER_CLAIM_SCOPE = (
-    "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding-producer-host-only"
+    "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-"
+    "owned-2x4-sharding-donated-query-cache-producer-host-only"
 )
 INKLING_SHARDED_RPA_PORTABLE_CLAIM_SCOPE = (
     "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-"
-    "owned-2x4-sharding-dual-cpu-reference-replay"
+    "owned-2x4-sharding-donated-query-cache-dual-cpu-reference-replay"
 )
 INKLING_SHARDED_RPA_COMPILATION_ROOT = "/home/sudarshan/tpu-cake-main"
 INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH = "/home/sudarshan/inkle/engine/sglang-jax/python"
@@ -33,9 +34,7 @@ INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES = (
 INKLING_SHARDED_RPA_CORRECTNESS_SEEDS = tuple(
     semantic_seed(INKLING_SHARDED_RPA_SURFACE_SCHEMA, str(index)) for index in range(5)
 )
-INKLING_SHARDED_RPA_STABLEHLO_SHA256 = (
-    "f5da8c8caa28f42ff79c9bb14cb5cd638d01de85eca4156d6116ec97d14f1c7e"
-)
+INKLING_SHARDED_RPA_STABLEHLO_SHA256 = "0" * 64
 
 
 class InklingShardedRpaPlanContract(BaseModel):
@@ -52,6 +51,7 @@ class InklingShardedRpaPlanContract(BaseModel):
     global_output_shapes: tuple[tuple[int, ...], tuple[int, ...]]
     input_partition_specs: tuple[tuple[str, ...], ...] = Field(min_length=11, max_length=11)
     output_partition_specs: tuple[tuple[str, ...], tuple[str, ...]]
+    external_donate_argnums: tuple[int, int]
     input_dtypes: tuple[str, ...] = Field(min_length=11, max_length=11)
     output_dtypes: tuple[str, str]
     decode_block_sizes: tuple[int, int, int, int]
@@ -74,6 +74,7 @@ def _plan_contract() -> InklingShardedRpaPlanContract:
         global_output_shapes=plan.global_output_shapes,
         input_partition_specs=plan.input_partition_specs,
         output_partition_specs=plan.output_partition_specs,
+        external_donate_argnums=plan.external_donate_argnums,
         input_dtypes=plan.local_plan.input_dtypes,
         output_dtypes=plan.local_plan.output_dtypes,
         decode_block_sizes=plan.local_plan.decode_block_sizes,
@@ -94,7 +95,7 @@ class InklingShardedRpaSurfaceContract(BaseModel):
     backend_python_path: Literal[INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH]
     backend_import_packages: tuple[str, ...] = Field(min_length=4, max_length=4)
     cpu_reference_packages: tuple[str, ...] = Field(min_length=4, max_length=4)
-    hlo_identity_status: Literal["pinned"]
+    hlo_identity_status: Literal["pending", "pinned"]
     correctness_seeds: tuple[int, ...] = Field(min_length=5, max_length=5)
     timing_seed: int
     repeat_executions: int = Field(ge=2)
@@ -163,6 +164,11 @@ class InklingShardedRpaSurfaceContract(BaseModel):
             raise ValueError("sharded RPA runtime is not canonical")
         if self.plan != _plan_contract():
             raise ValueError("sharded RPA plan is not canonical")
+        if self.hlo_identity_status == "pending":
+            if self.plan.stablehlo_sha256 != "0" * 64:
+                raise ValueError("pending sharded RPA HLO identity must be zero")
+        elif self.plan.stablehlo_sha256 == "0" * 64:
+            raise ValueError("pinned sharded RPA HLO identity cannot be zero")
         return self
 
     @computed_field
@@ -186,7 +192,7 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
             "ml-dtypes==0.6.0",
             "numpy==2.5.2",
         ),
-        hlo_identity_status="pinned",
+        hlo_identity_status="pending",
         correctness_seeds=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS,
         timing_seed=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS[0],
         repeat_executions=2,
@@ -405,7 +411,7 @@ class InklingShardedRpaRelocationObservation(BaseModel):
 class InklingShardedRpaRelocationAttestation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: Literal["inkling-sharded-rpa-relocation-attestation-v1"]
+    schema_version: Literal["inkling-sharded-rpa-relocation-attestation-v2"]
     surface_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")

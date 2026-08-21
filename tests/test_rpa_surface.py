@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from tpu_cake import rpa_surface as surface
 from tpu_cake import rpa_surface_runner as surface_runner
 from tpu_cake.canonical import canonical_text
 from tpu_cake.rpa_lowering import lower_inkling_sharded_rpa_to_pallas
@@ -36,6 +37,11 @@ _CALIBRATION_SEEDS = {
     4209644372387580568,
     15603344423790358252,
     7026367813976238475,
+    9096428414533206234,
+    12145031094770005217,
+    622934234548142313,
+    15696904859270974668,
+    17038534533205655854,
 }
 
 
@@ -50,8 +56,9 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
     generated = default_inkling_sharded_rpa_surface_contract()
 
     assert saved == generated
-    assert saved.surface_id == ("ce16bf5b065c63d6064b5c9746ed0ae5adde4d51e276aa572c840eb625fc9c2c")
+    assert saved.surface_id == ("1ce597bd87b25a45d6a95ab57c674babdaa6a18a6f52cc480cc9939792afb585")
     assert not set(INKLING_SHARDED_RPA_CORRECTNESS_SEEDS) & _CALIBRATION_SEEDS
+    assert saved.plan.external_donate_argnums == (0, 3)
     assert saved.plan.compiler_hlo_authority == (
         "receipt-bound-raw-bytes-not-reproducible-identity"
     )
@@ -60,11 +67,12 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
 @pytest.mark.parametrize(
     ("path", "value"),
     (
-        (("hlo_identity_status",), "pending"),
+        (("hlo_identity_status",), "pinned"),
         (("output_relative_l2_error",), 0.007),
         (("cpu_reference_replay_relative_l2_error",), 0.007),
-        (("plan", "stablehlo_sha256"), "0" * 64),
+        (("plan", "stablehlo_sha256"), "1" * 64),
         (("plan", "mesh_shape"), [1, 8]),
+        (("plan", "external_donate_argnums"), [0, 2]),
         (("runtime", "jax"), "0.11.1"),
         (("backend_import_packages",), ["psutil==7.0.0"] * 4),
     ),
@@ -97,6 +105,41 @@ def test_sharded_rpa_backend_runtime_is_exact(monkeypatch: pytest.MonkeyPatch) -
         surface_runner._require_backend_runtime(contract)
 
 
+def test_sharded_rpa_surface_runner_refuses_pending_hlo_before_writes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run"
+    with pytest.raises(ValueError, match="HLO_IDENTITY_PENDING"):
+        surface_runner.run_inkling_sharded_rpa_surface(
+            root,
+            default_inkling_sharded_rpa_surface_contract(),
+            lambda: None,
+        )
+    assert not root.exists()
+
+
+def test_sharded_rpa_attestation_refuses_pending_hlo_before_paths(
+    tmp_path: Path,
+) -> None:
+    contract = default_inkling_sharded_rpa_surface_contract()
+    archive = tmp_path / "missing.tar.zst"
+    attestation = tmp_path / "missing.json"
+
+    with pytest.raises(ValueError, match="HLO_IDENTITY_PENDING"):
+        surface_runner.write_inkling_sharded_rpa_relocation_attestation(
+            attestation,
+            archive=archive,
+            contract=contract,
+        )
+    with pytest.raises(ValueError, match="HLO_IDENTITY_PENDING"):
+        surface_runner.validate_inkling_sharded_rpa_relocation_attestation(
+            attestation,
+            archive=archive,
+            contract=contract,
+        )
+    assert not archive.exists() and not attestation.exists()
+
+
 def _repair_receipt(root: Path, *relative_paths: str) -> None:
     receipt_path = root / "receipt.json"
     receipt = json.loads(receipt_path.read_text())
@@ -114,7 +157,15 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    contract = default_inkling_sharded_rpa_surface_contract()
+    pending_contract = default_inkling_sharded_rpa_surface_contract()
+    contract = pending_contract.model_copy(
+        update={
+            "hlo_identity_status": "pinned",
+            "plan": pending_contract.plan.model_copy(
+                update={"stablehlo_sha256": hashlib.sha256(b"fake-stablehlo\n").hexdigest()}
+            ),
+        }
+    )
     repository = Path(__file__).resolve().parents[1]
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -144,7 +195,7 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
             mesh=None,
             executable=lambda *_values: reference(_values),
             stablehlo="fake-stablehlo\n",
-            compiler_hlo="RPAd tpu_custom_call\n",
+            compiler_hlo=f"RPAd tpu_custom_call {surface_runner._QUERY_CACHE_ALIAS}\n",
         )
 
     def validate_plan(root, _contract, result):
@@ -161,6 +212,7 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
             surface_runner._sha256(compiler_hlo) != result.compiler_hlo_sha256
             or "RPAd" not in compiler_text
             or "tpu_custom_call" not in compiler_text
+            or surface_runner._QUERY_CACHE_ALIAS not in compiler_text
         ):
             raise ValueError("INKLING_SHARDED_RPA_PLAN_REPLAY_MISMATCH")
 
@@ -174,6 +226,12 @@ def test_sharded_rpa_surface_runner_builds_and_replays_a_closed_receipt(
         return SimpleNamespace(stdout=(repository / relative).read_bytes())
 
     monkeypatch.setattr(surface_runner, "_require_compilation_root", lambda *_args: None)
+    monkeypatch.setattr(
+        surface_runner,
+        "default_inkling_sharded_rpa_surface_contract",
+        lambda: contract,
+    )
+    monkeypatch.setattr(surface, "_plan_contract", lambda: contract.plan)
     monkeypatch.setattr(surface_runner, "_require_backend_source", lambda *_args: None)
     monkeypatch.setattr(surface_runner, "_require_backend_runtime", lambda *_args: None)
     monkeypatch.setattr(surface_runner, "_require_clean_repository", lambda *_args: None)
@@ -461,9 +519,55 @@ def test_sharded_rpa_timing_does_not_materialize_device_outputs(
     observed = []
     monkeypatch.setattr(surface_runner.jax, "block_until_ready", observed.append)
 
-    surface_runner._execute_timed(lambda *_inputs: output, ())
+    assert surface_runner._execute_timed(lambda *_inputs: output, ()) is output
 
     assert observed == [output]
+
+
+def test_sharded_rpa_timing_starts_each_round_from_fresh_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = default_inkling_sharded_rpa_surface_contract().model_copy(
+        update={"warmup_iterations": 2, "timing_rounds": 3, "samples_per_round": 3}
+    )
+    compiled = SimpleNamespace(executable=object())
+    placed = []
+    observed = []
+    events = []
+
+    def place_inputs(_compiled, _host_inputs):
+        values = (object(), object(), object(), object(), object())
+        placed.append(values)
+        events.append(("place", values))
+        return values
+
+    def execute_timed(_executable, inputs):
+        observed.append(inputs)
+        events.append(("execute", inputs))
+        return object(), object()
+
+    monkeypatch.setattr(surface_runner, "_place_inputs", place_inputs)
+    monkeypatch.setattr(surface_runner, "_execute_timed", execute_timed)
+    monkeypatch.setattr(
+        surface_runner.jax,
+        "block_until_ready",
+        lambda inputs: events.append(("resident", inputs)),
+    )
+
+    rounds = surface_runner._timing_rounds(contract, compiled, ())
+
+    assert len(placed) == 1 + contract.timing_rounds
+    assert len(rounds) == contract.timing_rounds
+    assert observed[0] is placed[0]
+    assert observed[1][0] is not placed[0][0]
+    for index, (event, inputs) in enumerate(events):
+        if event == "place":
+            assert events[index + 1] == ("resident", inputs)
+            assert events[index + 2] == ("execute", inputs)
+    for round_index in range(contract.timing_rounds):
+        start = contract.warmup_iterations + round_index * contract.samples_per_round
+        assert observed[start] is placed[round_index + 1]
+        assert observed[start + 1][0] is not placed[round_index + 1][0]
 
 
 def test_sharded_rpa_error_metric_requires_exact_output_abi() -> None:

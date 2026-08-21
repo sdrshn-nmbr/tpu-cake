@@ -177,6 +177,7 @@ def test_sharded_fused_rpa_lowers_to_the_production_mesh_contract() -> None:
         (8, 32, 128),
         (7424, 1, 16, 2, 128),
     )
+    assert first.external_donate_argnums == (0, 3)
     assert first.local_plan.backend_repository_revision == (
         "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7"
     )
@@ -184,6 +185,39 @@ def test_sharded_fused_rpa_lowers_to_the_production_mesh_contract() -> None:
         "12c6aeeade66538d3bb638f048850c3d69095ade4ec42559cd8b3566bfc68897"
     )
     assert first.source_sha256() == second.source_sha256()
+
+
+def test_sharded_fused_rpa_donates_the_aliased_query_and_cache(monkeypatch) -> None:
+    plan = lower_inkling_sharded_rpa_to_pallas(inkling_sharded_fused_rpa_schedule())
+    plan = replace(
+        plan,
+        local_plan=_trust_test_callable(plan.local_plan, _successful_fake_kernel),
+    )
+    devices = tuple(SimpleNamespace(device_kind="TPU7x") for _ in range(8))
+    captured = {}
+
+    monkeypatch.setattr(rpa_lowering.jax, "make_mesh", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        rpa_lowering.jax,
+        "shard_map",
+        lambda function, **_kwargs: function,
+    )
+
+    def fake_jit(function, *, donate_argnums):
+        captured["function"] = function
+        captured["donate_argnums"] = donate_argnums
+        return function
+
+    monkeypatch.setattr(rpa_lowering.jax, "jit", fake_jit)
+
+    _mesh, executable = plan.build_executable(
+        _successful_fake_kernel,
+        backend_manifest=plan.backend_manifest,
+        devices=devices,
+    )
+
+    assert callable(executable)
+    assert captured["donate_argnums"] == (0, 3)
 
 
 def test_owned_rpa_decode_core_exposes_the_static_physical_resources() -> None:
@@ -340,10 +374,10 @@ def test_owned_rpa_decode_core_lowers_to_its_owned_pallas_plan() -> None:
         "17b2c99bd4cd76fef29ed17e4e4dd9238a9a1442015083b3995aa251b6342e88"
     )
     assert first.lowering_sha256 == (
-        "067aaa964bb096a9cce4012daa69a616a016ce6dd3a74d84906393bee2fba698"
+        "cf66a37f210a9e0be2b2f06cd895036b481521918a392b0988f36debc228419e"
     )
     assert first.source_sha256() == (
-        "331e31dd32985b8818e1b376ca390339a7aa0023a367b407466a59de2d153b94"
+        "6e97e9cdbc481fa6abfc3ce1fe95cc252efcc55edd16a5226c2721f94f3469df"
     )
     assert first.source_sha256() == second.source_sha256()
     with pytest.raises(ValueError, match="interpret mode does not support"):

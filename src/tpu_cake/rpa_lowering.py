@@ -47,7 +47,7 @@ INKLING_RPA_TUNING_SHA256 = "563d74378b319710c8a7c6cd89ec174563462695417f9167d65
 INKLING_RPA_BASE_TUNING_SHA256 = "4577624d0ef37726cbcceb5d570530399eb1f9113f8736e621a4e9aba9d3caef"
 INKLING_RPA_MODULE = "sgl_jax.srt.kernels.ragged_paged_attention.ragged_paged_attention_v3"
 RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-adapter-v2"
-SHARDED_RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-owned-shard-map-v1"
+SHARDED_RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-owned-shard-map-v2"
 OWNED_RPA_DECODE_CORE_EXECUTION_SCHEMA = "tpu-cake-owned-rpa-decode-core-v1"
 SHARDED_INKLE_REPOSITORY_REVISION = "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7"
 SHARDED_INKLING_RPA_FILE_REVISION = "ac88a2ecfa905965b43edbbb5e6510eb272d09e5"
@@ -448,6 +448,10 @@ class ShardedFusedRpaPlan:
     def global_output_shapes(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
         return self.global_input_shapes[0], self.global_input_shapes[3]
 
+    @property
+    def external_donate_argnums(self) -> tuple[int, int]:
+        return 0, 3
+
     def _validate_global_signature(self, inputs: tuple[Any, ...]) -> None:
         if len(inputs) != len(self.global_input_shapes):
             raise ValueError(
@@ -553,7 +557,7 @@ class ShardedFusedRpaPlan:
             in_specs=tuple(P(*spec) for spec in self.input_partition_specs),
             out_specs=tuple(P(*spec) for spec in self.output_partition_specs),
         )
-        return mesh, jax.jit(sharded)
+        return mesh, jax.jit(sharded, donate_argnums=self.external_donate_argnums)
 
     def source_sha256(self) -> str:
         payload = (
@@ -563,6 +567,7 @@ class ShardedFusedRpaPlan:
             self.mesh_shape,
             self.input_partition_specs,
             self.output_partition_specs,
+            self.external_donate_argnums,
             self.execution_scope,
         )
         return hashlib.sha256(repr(payload).encode()).hexdigest()

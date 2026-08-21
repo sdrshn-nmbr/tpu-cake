@@ -57,6 +57,7 @@ from tpu_cake.workloads.inkling_rpa import (
 )
 
 _RECEIPT_SCHEMA = INKLING_SHARDED_RPA_RECEIPT_SCHEMA
+_QUERY_CACHE_ALIAS = "input_output_alias={ {0}: (0, {}, may-alias), {1}: (3, {}, may-alias) }"
 
 
 @dataclass(frozen=True)
@@ -353,7 +354,11 @@ def _compile_surface(
     compiler_hlo = compiled.as_text().rstrip("\n") + "\n"
     if hashlib.sha256(stablehlo.encode()).hexdigest() != contract.plan.stablehlo_sha256:
         raise ValueError("INKLING_SHARDED_RPA_STABLEHLO_IDENTITY_MISMATCH")
-    if "tpu_custom_call" not in compiler_hlo or "RPAd" not in compiler_hlo:
+    if (
+        "tpu_custom_call" not in compiler_hlo
+        or "RPAd" not in compiler_hlo
+        or _QUERY_CACHE_ALIAS not in compiler_hlo
+    ):
         raise ValueError("INKLING_SHARDED_RPA_COMPILER_HLO_MARKERS_MISSING")
     return _CompiledSurface(
         plan=plan,
@@ -379,8 +384,17 @@ def _execute(
     return tuple(np.asarray(value) for value in outputs)
 
 
-def _execute_timed(executable: Callable[..., tuple[Any, Any]], inputs: tuple[Any, ...]) -> None:
-    jax.block_until_ready(executable(*inputs))
+def _execute_timed(
+    executable: Callable[..., tuple[Any, Any]], inputs: tuple[Any, ...]
+) -> tuple[Any, Any]:
+    outputs = executable(*inputs)
+    jax.block_until_ready(outputs)
+    return outputs
+
+
+def _chain_query_and_cache(inputs: tuple[Any, ...], outputs: tuple[Any, Any]) -> tuple[Any, ...]:
+    output, cache = outputs
+    return output, *inputs[1:3], cache, *inputs[4:]
 
 
 def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:
@@ -430,9 +444,12 @@ def _correctness_observation(
 ) -> InklingShardedRpaCorrectnessObservation:
     host_inputs = inkling_sharded_fused_rpa_inputs(seed)
     oracle_output, oracle_cache = inkling_sharded_fused_rpa_reference(host_inputs)
-    placed = _place_inputs(compiled, host_inputs)
     executions = tuple(
-        _execute(compiled.executable, placed) for _ in range(contract.repeat_executions)
+        _execute(
+            compiled.executable,
+            _place_inputs(compiled, host_inputs),
+        )
+        for _ in range(contract.repeat_executions)
     )
     (first_output, first_cache), (second_output, second_cache) = executions
     _validate_output_abi(contract, first_output, first_cache)
@@ -479,17 +496,23 @@ def _correctness_observation(
 def _timing_rounds(
     contract: InklingShardedRpaSurfaceContract,
     compiled: _CompiledSurface,
-    placed: tuple[Any, ...],
+    host_inputs: tuple[np.ndarray, ...],
 ) -> tuple[InklingShardedRpaTimingRound, ...]:
+    warmup_inputs = _place_inputs(compiled, host_inputs)
+    jax.block_until_ready(warmup_inputs)
     for _ in range(contract.warmup_iterations):
-        _execute_timed(compiled.executable, placed)
+        outputs = _execute_timed(compiled.executable, warmup_inputs)
+        warmup_inputs = _chain_query_and_cache(warmup_inputs, outputs)
     rounds = []
     for round_index in range(contract.timing_rounds):
+        round_inputs = _place_inputs(compiled, host_inputs)
+        jax.block_until_ready(round_inputs)
         samples = []
         for _ in range(contract.samples_per_round):
             started = time.perf_counter_ns()
-            _execute_timed(compiled.executable, placed)
+            outputs = _execute_timed(compiled.executable, round_inputs)
             samples.append(time.perf_counter_ns() - started)
+            round_inputs = _chain_query_and_cache(round_inputs, outputs)
         rounds.append(
             InklingShardedRpaTimingRound(
                 round_index=round_index,
@@ -725,8 +748,17 @@ def _validate_plan_artifacts(
     ):
         raise ValueError("INKLING_SHARDED_RPA_PLAN_REPLAY_MISMATCH")
     compiler_hlo = (root / "compiler_hlo.txt").read_text()
-    if "tpu_custom_call" not in compiler_hlo or "RPAd" not in compiler_hlo:
+    if (
+        "tpu_custom_call" not in compiler_hlo
+        or "RPAd" not in compiler_hlo
+        or _QUERY_CACHE_ALIAS not in compiler_hlo
+    ):
         raise ValueError("INKLING_SHARDED_RPA_COMPILER_HLO_REPLAY_MISMATCH")
+
+
+def _require_pinned_hlo(contract: InklingShardedRpaSurfaceContract) -> None:
+    if contract.hlo_identity_status != "pinned":
+        raise ValueError("INKLING_SHARDED_RPA_HLO_IDENTITY_PENDING")
 
 
 def validate_inkling_sharded_rpa_surface(
@@ -737,6 +769,7 @@ def validate_inkling_sharded_rpa_surface(
     require_accepted_ledger: bool = True,
     relocation_observations: list[InklingShardedRpaRelocationObservation] | None = None,
 ) -> InklingShardedRpaSurfaceResult:
+    _require_pinned_hlo(expected_contract)
     if root.is_symlink():
         raise ValueError(f"INKLING_SHARDED_RPA_ROOT_INVALID path={root}")
     root = root.resolve()
@@ -753,7 +786,7 @@ def validate_inkling_sharded_rpa_surface(
     result = InklingShardedRpaSurfaceResult.model_validate_json((root / "result.json").read_text())
     identity = json.loads((root / "run_identity.json").read_text())
     expected_run_id = semantic_sha256(
-        "inkling-sharded-rpa-surface-run-v2",
+        "inkling-sharded-rpa-surface-run-v3",
         contract.surface_id,
         result.source_commit,
         contract.plan.schedule_sha256,
@@ -895,7 +928,7 @@ def _run_staged(
 ) -> InklingShardedRpaSurfaceResult:
     source_manifest = _source_manifest()
     run_id = semantic_sha256(
-        "inkling-sharded-rpa-surface-run-v2",
+        "inkling-sharded-rpa-surface-run-v3",
         contract.surface_id,
         source_state["git_commit"],
         contract.plan.schedule_sha256,
@@ -951,10 +984,15 @@ def _run_staged(
     )
 
     timing_inputs = inkling_sharded_fused_rpa_inputs(contract.timing_seed)
-    timing_placed = _place_inputs(compiled, timing_inputs)
-    pre_timing = _execute(compiled.executable, timing_placed)
-    rounds = _timing_rounds(contract, compiled, timing_placed)
-    post_timing = _execute(compiled.executable, timing_placed)
+    pre_timing = _execute(
+        compiled.executable,
+        _place_inputs(compiled, timing_inputs),
+    )
+    rounds = _timing_rounds(contract, compiled, timing_inputs)
+    post_timing = _execute(
+        compiled.executable,
+        _place_inputs(compiled, timing_inputs),
+    )
     _validate_output_abi(contract, *pre_timing)
     _validate_output_abi(contract, *post_timing)
     _save_bf16(root / "timing" / "pre_output.npy", pre_timing[0])
@@ -1036,6 +1074,7 @@ def run_inkling_sharded_rpa_surface(
     canonical_contract = default_inkling_sharded_rpa_surface_contract()
     if contract != canonical_contract:
         raise ValueError("INKLING_SHARDED_RPA_EXTERNAL_CONTRACT_MISMATCH")
+    _require_pinned_hlo(contract)
     _require_compilation_root(repository, contract)
     _require_safe_output_root(output_root)
     _require_clean_repository(repository)
@@ -1119,6 +1158,7 @@ def _relocation_attestation(
 ) -> InklingShardedRpaRelocationAttestation:
     if contract != default_inkling_sharded_rpa_surface_contract():
         raise ValueError("INKLING_SHARDED_RPA_EXTERNAL_CONTRACT_MISMATCH")
+    _require_pinned_hlo(contract)
     repository = _repository_root()
     _require_clean_repository(repository)
     verifier_runtime = _relocation_runtime(contract)
@@ -1153,7 +1193,7 @@ def _relocation_attestation(
                 relocation_observations=observations,
             )
             return InklingShardedRpaRelocationAttestation(
-                schema_version="inkling-sharded-rpa-relocation-attestation-v1",
+                schema_version="inkling-sharded-rpa-relocation-attestation-v2",
                 surface_id=contract.surface_id,
                 run_id=result.run_id,
                 source_commit=result.source_commit,
@@ -1174,6 +1214,7 @@ def write_inkling_sharded_rpa_relocation_attestation(
     archive: Path,
     contract: InklingShardedRpaSurfaceContract,
 ) -> InklingShardedRpaRelocationAttestation:
+    _require_pinned_hlo(contract)
     output = output.absolute()
     if output.exists() or output.is_symlink():
         raise ValueError(f"INKLING_SHARDED_RPA_ATTESTATION_EXISTS path={output}")
@@ -1206,6 +1247,7 @@ def validate_inkling_sharded_rpa_relocation_attestation(
     archive: Path,
     contract: InklingShardedRpaSurfaceContract,
 ) -> InklingShardedRpaRelocationAttestation:
+    _require_pinned_hlo(contract)
     if (
         attestation_path.is_symlink()
         or not attestation_path.is_file()
