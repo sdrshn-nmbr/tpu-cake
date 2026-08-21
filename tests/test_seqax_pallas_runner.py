@@ -236,6 +236,48 @@ def test_seqax_pallas_compiled_program_requires_exact_regions_and_collectives() 
         )
 
 
+def test_seqax_pallas_compiled_program_requires_exact_entry_reachable_all_reduces() -> None:
+    stablehlo = _stablehlo_pallas_chain(einsum_count=9, vector_count=0)
+    compiler_hlo = "\n".join(
+        (
+            "HloModule jit_physical_call",
+            "dead.0 {",
+            "ROOT all_reduce.dead = f32[] all-reduce()",
+            "}",
+            "ENTRY main.1 {",
+            *(
+                f'pallas_call.{index} = f32[] custom-call(), custom_call_target="tpu_custom_call"'
+                for index in range(9)
+            ),
+            "all_gather.0 = f32[] all-gather(pallas_call.0)",
+            "all_reduce.0 = f32[] all-reduce(all_gather.0)",
+            "ROOT reduce_scatter.0 = f32[] reduce-scatter(all_reduce.0)",
+            "}",
+        )
+    )
+
+    _validate_compiled_program(
+        stablehlo,
+        compiler_hlo,
+        pallas_region_count=9,
+        pallas_vector_region_count=0,
+        all_gather_count=1,
+        all_reduce_count=1,
+        reduce_scatter_count=1,
+    )
+
+    with pytest.raises(ValueError, match="COLLECTIVE_COUNT_MISMATCH"):
+        _validate_compiled_program(
+            stablehlo,
+            compiler_hlo.replace("all_reduce.0 = f32[] all-reduce", "all_reduce.0 = f32[] add"),
+            pallas_region_count=9,
+            pallas_vector_region_count=0,
+            all_gather_count=1,
+            all_reduce_count=1,
+            reduce_scatter_count=1,
+        )
+
+
 def test_seqax_pallas_compiled_program_binds_owned_vector_regions() -> None:
     stablehlo = _stablehlo_pallas_chain(einsum_count=17, vector_count=2)
     compiler_hlo = "\n".join(

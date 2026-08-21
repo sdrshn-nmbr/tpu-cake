@@ -410,6 +410,7 @@ def _validate_compiled_program(
     pallas_vector_region_count: int,
     all_gather_count: int,
     reduce_scatter_count: int,
+    all_reduce_count: int = 0,
 ) -> None:
     stable_einsum_regions, stable_vector_regions = _stablehlo_pallas_region_counts(stablehlo)
     if re.search(r"(?m)^HloModule\s+\S+", compiler_hlo) is None:
@@ -438,6 +439,7 @@ def _validate_compiled_program(
         )
     expected_collectives = {
         "all-gather": all_gather_count,
+        "all-reduce": all_reduce_count,
         "reduce-scatter": reduce_scatter_count,
     }
     for opcode, expected_count in expected_collectives.items():
@@ -456,11 +458,17 @@ def _validate_compiled_program(
 
 
 def _physical_collective_counts(physical: Any) -> tuple[int, int]:
+    all_gathers, _all_reduces, reduce_scatters = _physical_collective_inventory(physical)
+    return all_gathers, reduce_scatters
+
+
+def _physical_collective_inventory(physical: Any) -> tuple[int, int, int]:
     kinds = tuple(
         operation.kind.data for operation in physical.walk() if isinstance(operation, CollectiveOp)
     )
     return (
         kinds.count(CollectiveKind.ALL_GATHER),
+        kinds.count(CollectiveKind.ALL_REDUCE),
         kinds.count(CollectiveKind.REDUCE_SCATTER),
     )
 

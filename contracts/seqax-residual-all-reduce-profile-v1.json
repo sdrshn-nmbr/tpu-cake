@@ -1,0 +1,113 @@
+{
+  "profile_schema": "seqax-residual-all-reduce-profile-v1",
+  "identity_schema": "length-prefixed-v2",
+  "numerical_contract_id": "861cc164be5ed7a322cca351902cfc1400a49c4cebd3ab8bcf09c2a10ee6e905",
+  "compilation_source_root": "/home/sudarshan/tpu-cake-main",
+  "hlo_identity_status": "pending",
+  "timing_seed": 16669898698845158318,
+  "correctness_seeds": [
+    12655767603698703491,
+    16669898698845158318,
+    9762931224767261018,
+    8742091806033755611,
+    16432226195980612678
+  ],
+  "warmup_iterations": 5,
+  "measured_iterations": 50,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "parameters": {
+    "batch": 2,
+    "data_mesh": 2,
+    "feed_forward": 16,
+    "head": 4,
+    "key_value_heads": 4,
+    "layers": 1,
+    "model": 256,
+    "numerical_semantics": "typed_bf16_hidden_v2",
+    "query_groups": 2,
+    "rope_max_timescale": 256,
+    "sequence": 1,
+    "tensor_mesh": 4,
+    "vocabulary": 16
+  },
+  "trace_profiler_config": {
+    "mode": "trace",
+    "raise_error_on_start_failure": true,
+    "enable_hlo_proto": true,
+    "host_tracer_level": 1,
+    "python_tracer_level": 0,
+    "advanced_configuration": {
+      "tpu_num_chips_to_profile_per_task": 4
+    },
+    "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "counter_profiler_config": {
+    "mode": "counters",
+    "raise_error_on_start_failure": true,
+    "enable_hlo_proto": true,
+    "host_tracer_level": 1,
+    "python_tracer_level": 0,
+    "advanced_configuration": {
+      "tpu_num_chips_to_profile_per_task": 4,
+      "tpu_enable_periodic_counter_sampling": true,
+      "tpu_tc_perf_counter_sampling_options": "interval_us:1 scaling:0 counter_size_bits:1 indices:1 indices:3 indices:4 indices:10 indices:11 indices:31 indices:32 indices:33 indices:34 indices:35 indices:37 indices:38 indices:56 indices:57 indices:58 indices:73 indices:74 indices:75 indices:105",
+      "num_tensor_cores_to_trace_per_device": 1
+    },
+    "libtpu_init_args": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "candidates": [
+    {
+      "candidate": "standard",
+      "distributed_schedule_sha256": "c96e1c08df86f0722c3464f470790f9a1bee1f47dfd78e2e8cc262cc20bb4e39",
+      "physical_schedule_sha256": "a9910167578c14c0d0a0a944a64477dfa471282024134d961e3994eb24e39cc5",
+      "pallas_source_sha256": "2a68cd7c25a02f306bbbee11acc3845ce60d57bab9b5149cb5c04cf24905a2c7",
+      "pallas_manifest_sha256": "eaaf2c271d6aa58d55379c026e70e370e1b34296371ff987bfc101a8f01c6228",
+      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "pallas_compiler_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_compiler_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_pallas_regions": 9,
+      "expected_all_gathers": 17,
+      "expected_all_reduces": 0,
+      "expected_reduce_scatters": 3,
+      "expected_semantic_all_gather_rows": 8,
+      "expected_semantic_all_reduce_rows": 5,
+      "expected_semantic_reduce_scatter_rows": 3,
+      "expected_async_collective_completion_rows": 11,
+      "expected_ring_equivalent_ici_bytes_per_device": 34048,
+      "trace_step_event": "seqax_residual_profile_standard_trace",
+      "counter_step_event": "seqax_residual_profile_standard_counters"
+    },
+    {
+      "candidate": "residual_all_reduce",
+      "distributed_schedule_sha256": "e1f3f82306357b67d72f9739a36b0feb68c1a31a3a09b32ae5f6af2625a1c83e",
+      "physical_schedule_sha256": "e9e2c0006672bab2a5981b109dc5eff67c30cb53664ed521175752f3ca748701",
+      "pallas_source_sha256": "565900d77461b23e889603ca5beeb85aff0b3ce045dbeb508988308d77a4eac1",
+      "pallas_manifest_sha256": "4b29f8cd1d0ff96de8d910c1e8bad0f6fc4f409a13e738cf080f6ea3ec58a453",
+      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "pallas_compiler_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_compiler_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_pallas_regions": 9,
+      "expected_all_gathers": 15,
+      "expected_all_reduces": 2,
+      "expected_reduce_scatters": 1,
+      "expected_semantic_all_gather_rows": 8,
+      "expected_semantic_all_reduce_rows": 5,
+      "expected_semantic_reduce_scatter_rows": 1,
+      "expected_async_collective_completion_rows": 9,
+      "expected_ring_equivalent_ici_bytes_per_device": 35584,
+      "trace_step_event": "seqax_residual_profile_residual_all_reduce_trace",
+      "counter_step_event": "seqax_residual_profile_residual_all_reduce_counters"
+    }
+  ]
+}

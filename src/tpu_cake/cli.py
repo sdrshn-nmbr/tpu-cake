@@ -78,6 +78,12 @@ from tpu_cake.seqax_pallas_search_runner import (
     run_seqax_pallas_search,
     validate_seqax_pallas_search,
 )
+from tpu_cake.seqax_residual_profile import SeqaxResidualProfileContract
+from tpu_cake.seqax_residual_profile_runner import (
+    capture_seqax_residual_profile_hlo_identities,
+    run_seqax_residual_profile,
+    validate_seqax_residual_profile,
+)
 from tpu_cake.seqax_runner import run_seqax_forward
 from tpu_cake.seqax_surface import (
     SeqaxSurfaceReceipt,
@@ -287,6 +293,17 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         choices=tuple(SeqaxWeightPlacementName),
     )
+
+    capture_residual_profile_hlo = commands.add_parser("capture-seqax-residual-profile-hlo")
+    capture_residual_profile_hlo.add_argument("--contract", required=True, type=Path)
+
+    run_residual_profile = commands.add_parser("run-seqax-residual-profile")
+    run_residual_profile.add_argument("--contract", required=True, type=Path)
+    run_residual_profile.add_argument("--output-dir", required=True, type=Path)
+
+    verify_residual_profile = commands.add_parser("verify-seqax-residual-profile")
+    verify_residual_profile.add_argument("run_root", type=Path)
+    verify_residual_profile.add_argument("--contract", required=True, type=Path)
 
     diagnose_seqax_pallas = commands.add_parser("diagnose-seqax-physical-pallas")
     diagnose_seqax_pallas.add_argument("--search-root", required=True, type=Path)
@@ -796,6 +813,25 @@ def main() -> None:
     elif args.command == "probe-seqax-weight-placement-memory":
         observation = probe_weight_placement_memory(SeqaxWeightPlacementName(args.candidate))
         print("SEQAX_WEIGHT_PLACEMENT_MEMORY_JSON=" + observation.model_dump_json())
+        code = 0
+    elif args.command == "capture-seqax-residual-profile-hlo":
+        contract = SeqaxResidualProfileContract.model_validate_json(args.contract.read_text())
+        identities = capture_seqax_residual_profile_hlo_identities(contract)
+        print(json.dumps(identities, indent=2, sort_keys=True))
+        code = 0
+    elif args.command == "run-seqax-residual-profile":
+        contract = SeqaxResidualProfileContract.model_validate_json(args.contract.read_text())
+        result = run_seqax_residual_profile(args.output_dir, contract)
+        print(result.model_dump_json(indent=2))
+        code = 0
+    elif args.command == "verify-seqax-residual-profile":
+        contract = SeqaxResidualProfileContract.model_validate_json(args.contract.read_text())
+        result = validate_seqax_residual_profile(args.run_root, contract)
+        print(
+            "SEQAX_RESIDUAL_PROFILE_DIAGNOSTIC_PASSED "
+            f"candidates={len(result.candidates)} accepted=false "
+            f"scope={result.correctness_scope}"
+        )
         code = 0
     elif args.command == "diagnose-seqax-physical-pallas":
         contract = SeqaxPallasSearchContract.model_validate_json(args.contract.read_text())

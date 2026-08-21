@@ -32,7 +32,7 @@ from tpu_cake.contracts import (
     WorkloadStage,
 )
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
-from tpu_cake.dialects.tpu_schedule import BufferType, MxuEinsumOp
+from tpu_cake.dialects.tpu_schedule import BufferType, CollectiveOp, MxuEinsumOp
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
@@ -535,6 +535,8 @@ def _attribution(
     hlo_stats: Path,
     cost_report: SeqaxCostModelReport,
     iterations: int = SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS,
+    collective_categories: tuple[str, ...] = ("all-gather", "reduce-scatter"),
+    synchronous_collective_categories: tuple[str, ...] = (),
 ) -> SeqaxPallasDiagnosticAttribution:
     rows = tuple(row for row in _gviz_rows(hlo_stats) if str(row["program_id"]) == program_id)
     operations = tuple(
@@ -645,19 +647,47 @@ def _attribution(
     all_gather_count, reduce_scatter_count = _physical_collective_counts(physical)
     if all_gather_count <= 0 or reduce_scatter_count <= 0:
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_PHYSICAL_COLLECTIVES_MISSING")
+    physical_collective_categories = tuple(
+        sorted(
+            {
+                operation.kind.data.value.replace("_", "-")
+                for operation in physical.walk()
+                if isinstance(operation, CollectiveOp)
+            }
+        )
+    )
+    declared_collective_categories = tuple(
+        sorted((*collective_categories, *synchronous_collective_categories))
+    )
+    if declared_collective_categories != physical_collective_categories:
+        raise ValueError(
+            "SEQAX_PALLAS_DIAGNOSTIC_PHYSICAL_COLLECTIVE_CATEGORY_MISMATCH "
+            f"expected={physical_collective_categories} observed={declared_collective_categories}"
+        )
     semantic_collective_rows = tuple(
-        row for row in rows if row.get("category") in {"all-gather", "reduce-scatter"}
+        row for row in rows if row.get("category") in set(collective_categories)
     )
     if not semantic_collective_rows or any(
         int(row["occurrences"]) != iterations or float(row["avg_self_time"]) <= 0
         for row in semantic_collective_rows
     ):
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_COLLECTIVE_ROWS_MISMATCH")
+    synchronous_collective_rows = tuple(
+        row for row in rows if row.get("category") in set(synchronous_collective_categories)
+    )
+    if synchronous_collective_categories and (
+        not synchronous_collective_rows
+        or any(
+            int(row["occurrences"]) != iterations * 8 or float(row["avg_self_time"]) <= 0
+            for row in synchronous_collective_rows
+        )
+    ):
+        raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_SYNCHRONOUS_COLLECTIVE_ROWS_MISMATCH")
     collective_completion_rows = tuple(
         row
         for row in rows
         if row.get("category") == "async-done"
-        and str(row.get("hlo_op_name", "")).startswith(("all-gather", "reduce-scatter"))
+        and str(row.get("hlo_op_name", "")).startswith(collective_categories)
         and "call-done" in str(row.get("hlo_op_name", ""))
     )
     if len(collective_completion_rows) != len(semantic_collective_rows) or any(

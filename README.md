@@ -115,6 +115,14 @@ uv run tpu-cake run-seqax-physical-pallas \
   --output-dir SEQAX_PALLAS_RUN_ROOT/counters --mode counters
 uv run tpu-cake finalize-seqax-physical-pallas SEQAX_PALLAS_RUN_ROOT
 uv run tpu-cake verify-seqax-physical-pallas SEQAX_PALLAS_RUN_ROOT
+
+uv run tpu-cake capture-seqax-residual-profile-hlo \
+  --contract contracts/seqax-residual-all-reduce-profile-v1.json
+uv run tpu-cake run-seqax-residual-profile \
+  --contract contracts/seqax-residual-all-reduce-profile-v1.json \
+  --output-dir SEQAX_RESIDUAL_PROFILE_ROOT
+uv run tpu-cake verify-seqax-residual-profile SEQAX_RESIDUAL_PROFILE_ROOT \
+  --contract contracts/seqax-residual-all-reduce-profile-v1.json
 ```
 
 ## Current boundary
@@ -130,6 +138,8 @@ The first Seqax cost calibration replays the accepted three-shape trace and coun
 The generic physical cost report consumes the verified `tpu_schedule.kernel` directly. It binds the exact physical schedule hash and accounts for declared MXU tiles and grids, per-operation vector work, explicit DMA, inclusive buffer lifetimes, view aliases, pipeline trip counts and rotation storage, collective traffic, remote-DMA routes, topology links, and resource concurrency. It can therefore distinguish legal physical schedules that share one distributed program. BF16 MXU compute and explicit-HBM values are advertised-rate analytical floors; F16, F32, vector, and special-function work remain unpriced. Remote-DMA time includes exact declared per-link bandwidth and per-device injection/ejection floors. Collective time is a separate ring-equivalent injection-rate scenario because collective plans do not define an exact per-link byte schedule. The report does not claim compiler execution, measured latency, or predictive calibration.
 
 The TPU7x collective-latency overlay replaces that byte-only collective scenario with exact-size paired medians from one bound `d=2, t=4` slice. It is deliberately fail-closed outside the ten measured axis, operation, reducer, dtype, and payload combinations in the model-256, one-layer, one-token schedules. Sum reductions require the exact measured dtype and reducer; all-gather uses an explicit payload-only transport assumption across element types. On that surface, sharded RMS normalization reduces the modeled serialized collective term by 5.88 microseconds, but the matched whole-forward diagnostic regresses by 1.92%. Vector and special-function execution, overlap, and compiler scheduling remain unpriced, so this is a descriptive localization result rather than a latency predictor or promotion. This matches the [JAX Scaling Book sharding model](https://jax-ml.github.io/scaling-book/sharding/): small-buffer collectives can be dominated by fixed dispatch and hop latency, so byte counts alone are not enough to select the boundary.
+
+The optional residual-all-reduce schedule replaces two reduce-scatter, residual, and later all-gather boundaries with two full-width sum all-reduces while retaining a local shard for the next contraction. On the fixed model-256, one-layer, one-token surface it has 15 all-gathers, two all-reduces, and one reduce-scatter, compared with 17, zero, and three for the standard schedule. It moves more ring-equivalent bytes, so its only plausible win is fewer latency-bearing collective boundaries. The profile contract remains disabled until exact HLO identities are captured and pinned from the clean TPU compilation path. Its eventual trace/counter receipt is diagnostic only: each schedule must pass the frozen numerical policy independently, and observed XProf rows remain separate from static physical and compiler inventories.
 
 The first explicit fusion comparison replaces each legacy unmaterialized `silu` then `multiply` pair with one typed `silu_multiply` operation across the declared tiny, wider, and deeper Seqax surface. Public replay regenerates both distributed and physical schedules from an external contract and verifies exact producer lineage, declared work, traffic, memory deltas, and the full-local Pallas implementation choice. The fused operation executes through an owned Pallas region in CPU interpret tests, but has not yet passed TPU Mosaic compilation. It removes 64, 512, and 1,024 declared VMEM bytes per device respectively, without changing declared peak VMEM. These are schedule-model savings with no measured winner, physical-memory proof, or predictive validation.
 
