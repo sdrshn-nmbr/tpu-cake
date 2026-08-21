@@ -555,13 +555,13 @@ def test_main_markers_must_be_in_the_model_program(tmp_path) -> None:
     assert "MAIN_PROGRAM_MARKER_MISSING" in {finding.code for finding in assessment.findings}
 
 
-def test_tracked_whole_decode_contract_is_pending_and_source_bound() -> None:
+def test_tracked_whole_decode_contract_is_pinned_and_source_bound() -> None:
     contract = InklingDecodeProfileContract.model_validate_json(
         (REPO_ROOT / "contracts" / "inkling-whole-decode-profile-v1.json").read_text()
     )
-    assert contract.hlo_identity_status is HloIdentityStatus.PENDING
+    assert contract.hlo_identity_status is HloIdentityStatus.PINNED
     assert contract.inkling_git_commit == "5160f27741fd60537ea441b7c986c74d8c8ca8f7"
-    assert contract.capture_git_commit == "0" * 40
+    assert contract.capture_git_commit == "7feb67e98e94f6a44a9676f2e6b1f349e400e045"
     assert contract.hlo_identity_method == "xprof-long-hlo-text-v1"
     assert (
         contract.inkling_uv_lock_sha256
@@ -576,8 +576,11 @@ def test_tracked_whole_decode_contract_is_pending_and_source_bound() -> None:
     assert contract.server.max_total_tokens >= contract.concurrency * (
         1_000 + contract.output_tokens
     )
-    assert all(program.semantic_hlo_sha256 == "0" * 64 for program in contract.programs)
-    assert all(not program.module_events_per_tpu_core for program in contract.programs)
+    assert all(program.semantic_hlo_sha256 != "0" * 64 for program in contract.programs)
+    assert all(
+        set(program.module_events_per_tpu_core) == {f"/device:TPU:{index}" for index in range(8)}
+        for program in contract.programs
+    )
 
 
 def test_server_configuration_ignores_runtime_state_counters() -> None:
