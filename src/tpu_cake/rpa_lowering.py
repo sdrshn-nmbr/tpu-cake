@@ -6,25 +6,37 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import tpu as pltpu
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from xdsl.dialects.builtin import BFloat16Type, IntegerType, ModuleOp
 from xdsl.ir import Operation
 
 from tpu_cake.dialects.tpu_schedule import (
+    AllocOp,
     BufferType,
     FusedRaggedPagedAttentionOp,
     KernelOp,
+    RpaDecodeCoreOp,
+    SemaphoreAllocOp,
     YieldOp,
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
+from tpu_cake.rpa_owned_kernel import (
+    OwnedRpaCase,
+    _owned_rpa_kernel,
+    owned_rpa_has_bank_conflicts,
+    semaphore_kwargs,
+)
 from tpu_cake.source import verify_with_sources
 
 INKLE_REPOSITORY_REVISION = "c3d805516e0f3bc0c6f621f2590489aff12f8a59"
@@ -36,6 +48,7 @@ INKLING_RPA_BASE_TUNING_SHA256 = "4577624d0ef37726cbcceb5d570530399eb1f9113f8736
 INKLING_RPA_MODULE = "sgl_jax.srt.kernels.ragged_paged_attention.ragged_paged_attention_v3"
 RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-adapter-v2"
 SHARDED_RPA_EXECUTION_SCHEMA = "sglang-jax-rpa-v3-owned-shard-map-v1"
+OWNED_RPA_DECODE_CORE_EXECUTION_SCHEMA = "tpu-cake-owned-rpa-decode-core-v1"
 SHARDED_INKLE_REPOSITORY_REVISION = "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7"
 SHARDED_INKLING_RPA_FILE_REVISION = "ac88a2ecfa905965b43edbbb5e6510eb272d09e5"
 SHARDED_INKLING_RPA_SOURCE_SHA256 = (
@@ -51,6 +64,66 @@ SHARDED_INKLING_RPA_BACKEND_MANIFEST = (
     ("ragged_paged_attention_v3.py", SHARDED_INKLING_RPA_SOURCE_SHA256),
     *INKLING_RPA_BACKEND_MANIFEST[1:],
 )
+
+
+def _preflight_decode_metadata(
+    inputs: tuple[Any, ...],
+    input_shapes: tuple[tuple[int, ...], ...],
+) -> None:
+    kv_lengths = np.asarray(inputs[4], dtype=np.int64)
+    page_indices = np.asarray(inputs[5], dtype=np.int64)
+    cumulative_query_lengths = np.asarray(inputs[6], dtype=np.int64)
+    cumulative_kv_lengths = np.asarray(inputs[7], dtype=np.int64)
+    distribution = np.asarray(inputs[8], dtype=np.int64)
+    sequence_count = input_shapes[4][0]
+    expected_distribution = np.full((3,), sequence_count, dtype=np.int64)
+    if not np.array_equal(distribution, expected_distribution):
+        raise ValueError(
+            "Inkling fused RPA adapter accepts decode-only distribution "
+            f"{tuple(expected_distribution)}, got {tuple(distribution)}"
+        )
+    expected_query_lengths = np.arange(sequence_count + 1, dtype=np.int64)
+    if not np.array_equal(cumulative_query_lengths, expected_query_lengths):
+        raise ValueError("Inkling fused RPA adapter requires one query token per sequence")
+    if np.any(kv_lengths <= 0):
+        raise ValueError("Inkling fused RPA requires positive KV lengths")
+    page_size = input_shapes[3][1]
+    maximum_sequence_capacity = input_shapes[3][0] * page_size
+    if np.any(kv_lengths > maximum_sequence_capacity):
+        raise ValueError("fused RPA KV length exceeds total cache capacity")
+    aligned_lengths = ((kv_lengths + page_size - 1) // page_size) * page_size
+    expected_cumulative_kv = np.concatenate(
+        (np.zeros((1,), dtype=np.int64), np.cumsum(aligned_lengths, dtype=np.int64))
+    )
+    if not np.array_equal(cumulative_kv_lengths, expected_cumulative_kv):
+        raise ValueError("fused RPA cumulative KV lengths must be page-aligned")
+    required_pages = int(expected_cumulative_kv[-1]) // page_size
+    if required_pages > page_indices.size:
+        raise ValueError("fused RPA page table cannot cover all KV lengths")
+    referenced_pages = page_indices[:required_pages]
+    total_pages = input_shapes[3][0]
+    if np.any(referenced_pages < 0) or np.any(referenced_pages >= total_pages):
+        raise ValueError("fused RPA page index is outside the fused cache")
+    sequence_page_sets: list[set[int]] = []
+    for sequence in range(sequence_count):
+        first_page = int(cumulative_kv_lengths[sequence]) // page_size
+        last_page = int(cumulative_kv_lengths[sequence + 1]) // page_size
+        sequence_pages = page_indices[first_page:last_page]
+        if sequence_pages.size != np.unique(sequence_pages).size:
+            raise ValueError("fused RPA page table aliases logical pages within one sequence")
+        sequence_page_sets.append({int(page) for page in sequence_pages})
+    write_locations: list[tuple[int, int]] = []
+    for sequence, length in enumerate(kv_lengths):
+        position = int(length) - 1
+        page_offset = int(cumulative_kv_lengths[sequence]) // page_size
+        page = int(page_indices[page_offset + position // page_size])
+        write_locations.append((page, position % page_size))
+    if len(write_locations) != len(set(write_locations)):
+        raise ValueError("fused RPA decode updates collide in the physical cache")
+    for writer, (write_page, _write_offset) in enumerate(write_locations):
+        for reader, used_pages in enumerate(sequence_page_sets):
+            if writer != reader and write_page in used_pages:
+                raise ValueError("fused RPA active write page is shared across sequences")
 
 
 @dataclass(frozen=True)
@@ -152,60 +225,7 @@ class FusedRpaPlan:
 
     def preflight(self, *inputs: Any) -> None:
         self._validate_signature(inputs)
-        kv_lengths = np.asarray(inputs[4], dtype=np.int64)
-        page_indices = np.asarray(inputs[5], dtype=np.int64)
-        cumulative_query_lengths = np.asarray(inputs[6], dtype=np.int64)
-        cumulative_kv_lengths = np.asarray(inputs[7], dtype=np.int64)
-        distribution = np.asarray(inputs[8], dtype=np.int64)
-        sequence_count = self.kv_lengths_shape[0]
-        expected_distribution = np.full((3,), sequence_count, dtype=np.int64)
-        if not np.array_equal(distribution, expected_distribution):
-            raise ValueError(
-                "Inkling fused RPA adapter accepts decode-only distribution "
-                f"{tuple(expected_distribution)}, got {tuple(distribution)}"
-            )
-        expected_query_lengths = np.arange(sequence_count + 1, dtype=np.int64)
-        if not np.array_equal(cumulative_query_lengths, expected_query_lengths):
-            raise ValueError("Inkling fused RPA adapter requires one query token per sequence")
-        if np.any(kv_lengths <= 0):
-            raise ValueError("Inkling fused RPA requires positive KV lengths")
-        page_size = self.fused_cache_shape[1]
-        maximum_sequence_capacity = self.fused_cache_shape[0] * page_size
-        if np.any(kv_lengths > maximum_sequence_capacity):
-            raise ValueError("fused RPA KV length exceeds total cache capacity")
-        aligned_lengths = ((kv_lengths + page_size - 1) // page_size) * page_size
-        expected_cumulative_kv = np.concatenate(
-            (np.zeros((1,), dtype=np.int64), np.cumsum(aligned_lengths, dtype=np.int64))
-        )
-        if not np.array_equal(cumulative_kv_lengths, expected_cumulative_kv):
-            raise ValueError("fused RPA cumulative KV lengths must be page-aligned")
-        required_pages = int(expected_cumulative_kv[-1]) // page_size
-        if required_pages > page_indices.size:
-            raise ValueError("fused RPA page table cannot cover all KV lengths")
-        referenced_pages = page_indices[:required_pages]
-        total_pages = self.fused_cache_shape[0]
-        if np.any(referenced_pages < 0) or np.any(referenced_pages >= total_pages):
-            raise ValueError("fused RPA page index is outside the fused cache")
-        sequence_page_sets: list[set[int]] = []
-        for sequence in range(sequence_count):
-            first_page = int(cumulative_kv_lengths[sequence]) // page_size
-            last_page = int(cumulative_kv_lengths[sequence + 1]) // page_size
-            sequence_pages = page_indices[first_page:last_page]
-            if sequence_pages.size != np.unique(sequence_pages).size:
-                raise ValueError("fused RPA page table aliases logical pages within one sequence")
-            sequence_page_sets.append({int(page) for page in sequence_pages})
-        write_locations: list[tuple[int, int]] = []
-        for sequence, length in enumerate(kv_lengths):
-            position = int(length) - 1
-            page_offset = int(cumulative_kv_lengths[sequence]) // page_size
-            page = int(page_indices[page_offset + position // page_size])
-            write_locations.append((page, position % page_size))
-        if len(write_locations) != len(set(write_locations)):
-            raise ValueError("fused RPA decode updates collide in the physical cache")
-        for writer, (write_page, _write_offset) in enumerate(write_locations):
-            for reader, used_pages in enumerate(sequence_page_sets):
-                if writer != reader and write_page in used_pages:
-                    raise ValueError("fused RPA active write page is shared across sequences")
+        _preflight_decode_metadata(inputs, self.input_shapes)
 
     def invoke(
         self,
@@ -548,6 +568,423 @@ class ShardedFusedRpaPlan:
         return hashlib.sha256(repr(payload).encode()).hexdigest()
 
 
+@dataclass(frozen=True)
+class OwnedRpaDecodeCorePlan:
+    schedule_sha256: str
+    core_input_shapes: tuple[tuple[int, ...], ...]
+    core_output_shapes: tuple[tuple[int, ...], tuple[int, ...]]
+    external_input_shapes: tuple[tuple[int, ...], ...]
+    external_input_dtypes: tuple[str, ...]
+    external_output_shapes: tuple[tuple[int, ...], tuple[int, ...]]
+    block_sizes: tuple[int, int, int, int]
+    relative_extent: int
+    softmax_scale: float
+    vmem_limit_bytes: int
+    backend_repository_revision: str
+    backend_file_revision: str
+    backend_sha256: str
+    implementation_sha256: str
+    lowering_sha256: str
+    execution_schema: str = OWNED_RPA_DECODE_CORE_EXECUTION_SCHEMA
+
+    @property
+    def mesh_axes(self) -> tuple[str, str]:
+        return "data", "tensor"
+
+    @property
+    def mesh_shape(self) -> tuple[int, int]:
+        return 2, 4
+
+    @property
+    def input_partition_specs(self) -> tuple[tuple[str, ...], ...]:
+        return (
+            ("data", "tensor", ""),
+            ("data", "tensor", ""),
+            ("data", "tensor", ""),
+            ("data", "", "tensor", "", ""),
+            ("data",),
+            ("data",),
+            ("data",),
+            ("data",),
+            ("data",),
+            ("data", "tensor", ""),
+            ("", ""),
+        )
+
+    @property
+    def output_partition_specs(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        return self.input_partition_specs[0], self.input_partition_specs[3]
+
+    @property
+    def core_input_output_aliases(self) -> tuple[tuple[int, int], ...]:
+        return (9, 0), (11, 1)
+
+    @property
+    def external_donate_argnums(self) -> tuple[int, ...]:
+        return 0, 3
+
+    @property
+    def global_input_shapes(self) -> tuple[tuple[int, ...], ...]:
+        axis_sizes = dict(zip(self.mesh_axes, self.mesh_shape, strict=True))
+        return tuple(
+            tuple(size * axis_sizes.get(axis, 1) for size, axis in zip(shape, spec, strict=True))
+            for shape, spec in zip(
+                self.external_input_shapes,
+                self.input_partition_specs,
+                strict=True,
+            )
+        )
+
+    def __post_init__(self) -> None:
+        if len(self.core_input_shapes) != 10:
+            raise ValueError("owned RPA decode core requires ten physical inputs")
+        if self.core_output_shapes != (
+            self.core_input_shapes[0],
+            self.core_input_shapes[2],
+        ):
+            raise ValueError("owned RPA decode outputs must alias query and cache shapes")
+        if len(self.external_input_shapes) != 11 or len(self.external_input_dtypes) != 11:
+            raise ValueError("owned RPA executable requires eleven external inputs")
+        if self.external_output_shapes != (
+            self.external_input_shapes[0],
+            self.external_input_shapes[3],
+        ):
+            raise ValueError("owned RPA external outputs must match query and cache")
+        if self.block_sizes != (8, 128, 8, 128):
+            raise ValueError("owned RPA decode core requires the production block sizes")
+        if self.relative_extent != 512 or self.softmax_scale != 1.0 / 128.0:
+            raise ValueError("owned RPA decode core has the wrong relative-bias contract")
+        for name, value in (
+            ("implementation", self.implementation_sha256),
+            ("lowering", self.lowering_sha256),
+        ):
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError(f"owned RPA {name} source identity is not canonical")
+
+    def _validate_signature(self, inputs: tuple[Any, ...]) -> None:
+        if len(inputs) != len(self.core_input_shapes):
+            raise ValueError(
+                f"owned RPA decode core needs {len(self.core_input_shapes)} inputs, "
+                f"got {len(inputs)}"
+            )
+        for index, (value, shape, dtype) in enumerate(
+            zip(
+                inputs,
+                self.core_input_shapes,
+                ("bfloat16",) * 3 + ("int32",) * 5 + ("bfloat16",) * 2,
+                strict=True,
+            )
+        ):
+            if tuple(value.shape) != shape or str(value.dtype) != dtype:
+                raise ValueError(
+                    f"owned RPA input {index} has shape/dtype "
+                    f"{tuple(value.shape)}/{value.dtype}, expected {shape}/{dtype}"
+                )
+
+    def _validate_global_signature(self, inputs: tuple[Any, ...]) -> None:
+        shapes = self.global_input_shapes
+        if len(inputs) != len(shapes):
+            raise ValueError(f"owned RPA executable needs {len(shapes)} inputs, got {len(inputs)}")
+        for index, (value, shape, dtype) in enumerate(
+            zip(
+                inputs,
+                shapes,
+                self.external_input_dtypes,
+                strict=True,
+            )
+        ):
+            if tuple(value.shape) != shape or str(value.dtype) != dtype:
+                raise ValueError(
+                    f"owned RPA external input {index} has shape/dtype "
+                    f"{tuple(value.shape)}/{value.dtype}, expected {shape}/{dtype}"
+                )
+
+    def preflight(self, *inputs: Any) -> None:
+        self._validate_global_signature(inputs)
+        metadata = tuple(np.asarray(inputs[index]) for index in range(4, 9))
+        for data_shard in range(self.mesh_shape[0]):
+            local_inputs = list(inputs)
+            for index, values in zip(range(4, 9), metadata, strict=True):
+                local_inputs[index] = np.split(values, self.mesh_shape[0], axis=0)[data_shard]
+            _preflight_decode_metadata(tuple(local_inputs), self.external_input_shapes)
+
+    def _build_local(self, *, interpret: bool = False) -> Callable[..., tuple[Any, Any]]:
+        if interpret:
+            raise ValueError(
+                "owned RPA decode uses Pallas DMA reshape/bitcast transforms that "
+                "JAX 0.11 interpret mode does not support"
+            )
+        query_shape, _, cache_shape = self.core_input_shapes[:3]
+        query_dtype = jnp.dtype("bfloat16")
+        cache_dtype = jnp.dtype("bfloat16")
+        query_fetch, kv_fetch, query_compute, kv_compute = self.block_sizes
+        kv_heads, _, packed_query_heads, query_packing, head_dimension = query_shape
+        packed_interleaved_heads = cache_shape[2]
+        kv_packing = cache_shape[3]
+        query_heads_per_kv_head = packed_query_heads * query_packing
+        bkv_stride = packed_interleaved_heads + owned_rpa_has_bank_conflicts(
+            packed_interleaved_heads
+        )
+        scalar_prefetch_count = 9
+        input_specs = (
+            pl.BlockSpec(memory_space=pltpu.HBM),
+            pl.BlockSpec(memory_space=pltpu.HBM),
+            pl.BlockSpec(memory_space=pltpu.HBM),
+            None,
+            pl.BlockSpec(memory_space=pltpu.HBM),
+            None,
+            pl.BlockSpec(memory_space=pltpu.VMEM),
+            pl.BlockSpec(memory_space=pltpu.VMEM),
+        )
+        output_specs = (
+            pl.BlockSpec(memory_space=pltpu.HBM),
+            pl.BlockSpec(memory_space=pltpu.HBM),
+        )
+        scratch_shapes = (
+            None,
+            pltpu.VMEM(
+                (2, kv_fetch, bkv_stride, kv_packing, head_dimension),
+                cache_dtype,
+            ),
+            pltpu.VMEM((2, kv_heads, query_fetch, *query_shape[2:]), query_dtype),
+            pltpu.VMEM((2, kv_heads, query_fetch, *query_shape[2:]), query_dtype),
+            pltpu.SemaphoreType.DMA((5, 2)),
+            pltpu.VMEM(
+                (kv_heads, query_fetch * query_heads_per_kv_head, 128),
+                query_dtype,
+            ),
+            pltpu.VMEM(
+                (kv_heads, query_fetch * query_heads_per_kv_head, 128),
+                query_dtype,
+            ),
+            pltpu.VMEM(
+                (kv_heads, query_fetch * query_heads_per_kv_head, head_dimension),
+                query_dtype,
+            ),
+        )
+        output_shapes = (
+            pltpu.HBM(shape=query_shape, dtype=query_dtype),
+            pltpu.HBM(shape=cache_shape, dtype=cache_dtype),
+        )
+        kernel = pl.pallas_call(
+            partial(
+                _owned_rpa_kernel,
+                causal=True,
+                sm_scale=self.softmax_scale,
+                sliding_window=None,
+                soft_cap=None,
+                mask_value=-0.7 * float(jnp.finfo(jnp.float32).max),
+                q_scale=None,
+                k_scale=None,
+                v_scale=None,
+                xai_temperature_len=None,
+                softmax_dtype=jnp.float32,
+                relative_extent=self.relative_extent,
+                static_q_len=None,
+                bq_sz=query_fetch,
+                bkv_sz=kv_fetch,
+                bq_csz=query_compute,
+                bkv_csz=kv_compute,
+                case=OwnedRpaCase.DECODE,
+                skip_kv_mask=False,
+                tpu_version=7,
+                debug_mode=False,
+                mask_aligned_to_cu_kv=False,
+            ),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=scalar_prefetch_count,
+                in_specs=input_specs,
+                out_specs=output_specs,
+                grid=(1,),
+                scratch_shapes=scratch_shapes,
+            ),
+            compiler_params=pltpu.CompilerParams(
+                dimension_semantics=("arbitrary",),
+                vmem_limit_bytes=self.vmem_limit_bytes,
+                disable_bounds_checks=True,
+                **semaphore_kwargs(True),
+            ),
+            out_shape=output_shapes,
+            input_output_aliases=dict(self.core_input_output_aliases),
+            interpret=False,
+            name="inkling_owned_rpa_decode_core",
+            metadata={"schedule_sha256": self.schedule_sha256},
+        )
+        zero_mask = jnp.zeros((kv_fetch, head_dimension), dtype=jnp.int32)
+
+        def run(*inputs: Any) -> tuple[Any, Any]:
+            self._validate_signature(inputs)
+            (
+                queries,
+                merged_kv,
+                fused_cache,
+                kv_lengths,
+                page_indices,
+                cumulative_query_lengths,
+                cumulative_kv_lengths,
+                distribution,
+                relative_states,
+                relative_projection,
+            ) = inputs
+            scalar_prefetches = (
+                kv_lengths,
+                page_indices,
+                cumulative_query_lengths,
+                cumulative_kv_lengths,
+                jnp.zeros((1,), dtype=jnp.int32),
+                distribution,
+                jnp.zeros((3,), dtype=jnp.int32),
+                jnp.full((4,), -1, dtype=jnp.int32),
+                jnp.full((6,), -1, dtype=jnp.int32),
+            )
+            return kernel(
+                *scalar_prefetches,
+                pltpu.with_memory_space_constraint(queries, pltpu.HBM),
+                pltpu.with_memory_space_constraint(merged_kv, pltpu.HBM),
+                pltpu.with_memory_space_constraint(fused_cache, pltpu.HBM),
+                None,
+                zero_mask,
+                None,
+                relative_states,
+                relative_projection,
+            )
+
+        return run
+
+    def mesh(self, devices: tuple[Any, ...]) -> Mesh:
+        expected_devices = self.mesh_shape[0] * self.mesh_shape[1]
+        if len(devices) != expected_devices:
+            raise ValueError(
+                f"owned RPA decode core needs {expected_devices} devices, got {len(devices)}"
+            )
+        if any(
+            re.fullmatch(r"tpu(?: v)?7x(?: lite)?", device.device_kind.strip().lower()) is None
+            for device in devices
+        ):
+            raise ValueError("owned RPA decode core requires only TPU7x devices")
+        return jax.make_mesh(self.mesh_shape, self.mesh_axes, devices=devices)
+
+    def place_inputs(
+        self,
+        inputs: tuple[Any, ...],
+        *,
+        mesh: Mesh,
+    ) -> tuple[jax.Array, ...]:
+        self.preflight(*inputs)
+        placed = []
+        for index, (value, shape, dtype, spec) in enumerate(
+            zip(
+                inputs,
+                self.global_input_shapes,
+                self.external_input_dtypes,
+                self.input_partition_specs,
+                strict=True,
+            )
+        ):
+            if tuple(value.shape) != shape or str(value.dtype) != dtype:
+                raise ValueError(
+                    f"owned RPA global input {index} has shape/dtype "
+                    f"{tuple(value.shape)}/{value.dtype}, expected {shape}/{dtype}"
+                )
+            placed.append(
+                jax.device_put(
+                    np.array(value, copy=True),
+                    NamedSharding(mesh, P(*spec)),
+                )
+            )
+        return tuple(placed)
+
+    def build(
+        self,
+        *,
+        interpret: bool = False,
+        devices: tuple[Any, ...] | None = None,
+    ) -> tuple[Mesh, Callable[..., tuple[Any, Any]]]:
+        selected_devices = tuple(devices or jax.devices())
+        mesh = self.mesh(selected_devices)
+        core_local = self._build_local(interpret=interpret)
+        core_query_shape = self.core_input_shapes[0]
+        core_cache_shape = self.core_input_shapes[2]
+
+        def local(*inputs: Any) -> tuple[Any, Any]:
+            queries, keys, values, fused_cache = inputs[:4]
+            tokens, query_heads, head_dimension = queries.shape
+            kv_heads = keys.shape[1]
+            query_heads_per_kv_head = query_heads // kv_heads
+            prepared_queries = (
+                jnp.pad(
+                    queries.reshape(
+                        tokens,
+                        kv_heads,
+                        query_heads_per_kv_head,
+                        head_dimension,
+                    ),
+                    ((0, 0), (0, 0), (0, 0), (0, 0)),
+                    constant_values=0,
+                )
+                .reshape(tokens, kv_heads, *core_query_shape[2:])
+                .swapaxes(0, 1)
+            )
+            merged_kv = jnp.concatenate((keys, values), axis=-1).reshape(self.core_input_shapes[1])
+            prepared_cache = jnp.pad(
+                fused_cache,
+                ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0)),
+                constant_values=0,
+            ).reshape(core_cache_shape)
+            relative_states = jnp.pad(
+                inputs[9].reshape(tokens, kv_heads, query_heads_per_kv_head, 16),
+                ((0, 0), (0, 0), (0, 0), (0, 112)),
+            ).swapaxes(0, 1)
+            relative_projection = jnp.pad(
+                inputs[10][:, ::-1],
+                ((0, 112), (2048, 2048)),
+            )
+            output, updated_cache = core_local(
+                prepared_queries,
+                merged_kv,
+                prepared_cache,
+                *inputs[4:9],
+                relative_states,
+                relative_projection,
+            )
+            output = output.swapaxes(0, 1).reshape(self.external_output_shapes[0])
+            return output, updated_cache.reshape(self.external_output_shapes[1])
+
+        mapped = jax.shard_map(
+            local,
+            mesh=mesh,
+            in_specs=tuple(P(*spec) for spec in self.input_partition_specs),
+            out_specs=tuple(P(*spec) for spec in self.output_partition_specs),
+            check_vma=False,
+        )
+        return mesh, jax.jit(mapped, donate_argnums=self.external_donate_argnums)
+
+    def source_sha256(self) -> str:
+        payload = (
+            self.execution_schema,
+            self.schedule_sha256,
+            self.core_input_shapes,
+            self.core_output_shapes,
+            self.external_input_shapes,
+            self.external_input_dtypes,
+            self.external_output_shapes,
+            self.block_sizes,
+            self.relative_extent,
+            self.softmax_scale,
+            self.vmem_limit_bytes,
+            self.backend_repository_revision,
+            self.backend_file_revision,
+            self.backend_sha256,
+            self.implementation_sha256,
+            self.lowering_sha256,
+            self.core_input_output_aliases,
+            self.external_donate_argnums,
+            "tpu7x-hbm-output-v1",
+            "decode-metadata-preflight-v1",
+        )
+        return hashlib.sha256(repr(payload).encode()).hexdigest()
+
+
 def _shape(value) -> tuple[int, ...]:
     value_type = value.type
     if not isinstance(value_type, BufferType):
@@ -777,4 +1214,74 @@ def lower_inkling_sharded_rpa_to_pallas(module: ModuleOp) -> ShardedFusedRpaPlan
             _SHARDED_INPUT_PARTITION_SPECS[0],
             _SHARDED_INPUT_PARTITION_SPECS[3],
         ),
+    )
+
+
+def lower_inkling_owned_rpa_decode_core_to_pallas(
+    module: ModuleOp,
+) -> OwnedRpaDecodeCorePlan:
+    verify_with_sources(module)
+    kernels = tuple(
+        operation for operation in module.body.block.ops if isinstance(operation, KernelOp)
+    )
+    if len(kernels) != 1 or len(tuple(module.body.block.ops)) != 1:
+        raise UnsupportedLoweringError("owned RPA lowering expects one physical kernel")
+    kernel = kernels[0]
+    if kernel.target.data != "tpu7x":
+        raise UnsupportedLoweringError("owned RPA lowering requires TPU7x")
+    operations = tuple(kernel.body.block.ops)
+    cores = tuple(operation for operation in operations if isinstance(operation, RpaDecodeCoreOp))
+    if len(cores) != 1 or any(
+        not isinstance(operation, (AllocOp, SemaphoreAllocOp, RpaDecodeCoreOp, YieldOp))
+        for operation in operations
+    ):
+        raise UnsupportedLoweringError(
+            "owned RPA lowering requires allocations, one decode core, and yield"
+        )
+    core = cores[0]
+    if tuple(core.operands[:10]) != tuple(kernel.body.block.args):
+        raise UnsupportedLoweringError("owned RPA core must bind all ten inputs exactly")
+    if (
+        core.backend_repository_revision.data != SHARDED_INKLE_REPOSITORY_REVISION
+        or core.backend_file_revision.data != SHARDED_INKLING_RPA_FILE_REVISION
+        or core.backend_sha256.data != SHARDED_INKLING_RPA_SOURCE_SHA256
+    ):
+        raise UnsupportedLoweringError("owned RPA core backend identity is not pinned")
+    implementation_path = Path(inspect.getsourcefile(_owned_rpa_kernel) or "")
+    if not implementation_path.is_file():
+        raise UnsupportedLoweringError("owned RPA implementation source is missing")
+    lowering_path = Path(__file__)
+    return OwnedRpaDecodeCorePlan(
+        schedule_sha256=schedule_sha256(module),
+        core_input_shapes=tuple(_shape(value) for value in core.operands[:10]),
+        core_output_shapes=(_shape(core.output), _shape(core.updated_cache)),
+        external_input_shapes=(
+            (4, 8, 128),
+            (4, 4, 128),
+            (4, 4, 128),
+            (3712, 1, 4, 2, 128),
+            (4,),
+            (8192,),
+            (5,),
+            (5,),
+            (3,),
+            (4, 8, 16),
+            (16, 512),
+        ),
+        external_input_dtypes=("bfloat16",) * 4 + ("int32",) * 5 + ("bfloat16",) * 2,
+        external_output_shapes=((4, 8, 128), (3712, 1, 4, 2, 128)),
+        block_sizes=(
+            core.query_fetch_size.data,
+            core.kv_fetch_size.data,
+            core.query_compute_size.data,
+            core.kv_compute_size.data,
+        ),
+        relative_extent=core.relative_extent.data,
+        softmax_scale=float(core.softmax_scale.data),
+        vmem_limit_bytes=kernel.vmem_capacity_bytes.data,
+        backend_repository_revision=core.backend_repository_revision.data,
+        backend_file_revision=core.backend_file_revision.data,
+        backend_sha256=core.backend_sha256.data,
+        implementation_sha256=hashlib.sha256(implementation_path.read_bytes()).hexdigest(),
+        lowering_sha256=hashlib.sha256(lowering_path.read_bytes()).hexdigest(),
     )

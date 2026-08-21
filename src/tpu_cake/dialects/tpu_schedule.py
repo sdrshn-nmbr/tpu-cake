@@ -2393,6 +2393,13 @@ class RpaDecodeCoreOp(IRDLOperation):
     softmax_scale = prop_def(StringAttr)
     softmax_dtype = prop_def(StringAttr)
     execution_authority = prop_def(StringAttr)
+    attention_case = prop_def(StringAttr)
+    masking_authority = prop_def(StringAttr)
+    relative_dimension = prop_def(IntAttr)
+    cumulative_mask_initial = prop_def(ArrayAttr[IntAttr])
+    semaphore_ids_initial = prop_def(ArrayAttr[IntAttr])
+    output_ids_initial = prop_def(ArrayAttr[IntAttr])
+    cache_update_ids_initial = prop_def(ArrayAttr[IntAttr])
     backend_repository_revision = prop_def(StringAttr)
     backend_file_revision = prop_def(StringAttr)
     backend_sha256 = prop_def(StringAttr)
@@ -2482,7 +2489,14 @@ class RpaDecodeCoreOp(IRDLOperation):
                 "relative_extent": IntAttr(relative_extent),
                 "softmax_scale": StringAttr(softmax_scale),
                 "softmax_dtype": StringAttr(softmax_dtype),
-                "execution_authority": StringAttr("tpu-cake-static-contract-pending-pallas-v1"),
+                "execution_authority": StringAttr("tpu-cake-owned-pallas-decode-core-v1"),
+                "attention_case": StringAttr("decode"),
+                "masking_authority": StringAttr("decode-kv-length-no-custom-mask-v1"),
+                "relative_dimension": IntAttr(16),
+                "cumulative_mask_initial": ArrayAttr((IntAttr(0),)),
+                "semaphore_ids_initial": ArrayAttr(IntAttr(0) for _ in range(3)),
+                "output_ids_initial": ArrayAttr(IntAttr(-1) for _ in range(4)),
+                "cache_update_ids_initial": ArrayAttr(IntAttr(-1) for _ in range(6)),
                 "backend_repository_revision": StringAttr(backend_repository_revision),
                 "backend_file_revision": StringAttr(backend_file_revision),
                 "backend_sha256": StringAttr(backend_sha256),
@@ -2731,8 +2745,18 @@ class RpaDecodeCoreOp(IRDLOperation):
             raise VerifyException(
                 "owned RPA core requires two buffers, five DMA channels, and one-block prefetch"
             )
-        if self.execution_authority.data != "tpu-cake-static-contract-pending-pallas-v1":
+        if self.execution_authority.data != "tpu-cake-owned-pallas-decode-core-v1":
             raise VerifyException("owned RPA core has the wrong execution authority")
+        if (
+            self.attention_case.data != "decode"
+            or self.masking_authority.data != "decode-kv-length-no-custom-mask-v1"
+            or self.relative_dimension.data != 16
+            or tuple(value.data for value in self.cumulative_mask_initial) != (0,)
+            or tuple(value.data for value in self.semaphore_ids_initial) != (0, 0, 0)
+            or tuple(value.data for value in self.output_ids_initial) != (-1,) * 4
+            or tuple(value.data for value in self.cache_update_ids_initial) != (-1,) * 6
+        ):
+            raise VerifyException("owned RPA core execution semantics are not canonical")
         if (
             len(self.backend_repository_revision.data) != 40
             or len(self.backend_file_revision.data) != 40

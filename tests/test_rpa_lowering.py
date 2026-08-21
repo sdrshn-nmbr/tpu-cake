@@ -11,6 +11,7 @@ import pytest
 from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr
 from xdsl.utils.exceptions import VerifyException
 
+from tpu_cake import rpa_lowering
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.tpu_schedule import (
     BufferType,
@@ -28,7 +29,9 @@ from tpu_cake.physical_cost_model import (
     analyze_physical_kernel,
 )
 from tpu_cake.rpa_lowering import (
+    OwnedRpaDecodeCorePlan,
     ShardedFusedRpaPlan,
+    lower_inkling_owned_rpa_decode_core_to_pallas,
     lower_inkling_rpa_to_pallas,
     lower_inkling_sharded_rpa_to_pallas,
 )
@@ -84,6 +87,33 @@ def _valid_inputs(plan):
         jnp.arange(5, dtype=jnp.int32),
         jnp.asarray((0, 16, 48, 96, 160), dtype=jnp.int32),
         jnp.full((3,), 4, dtype=jnp.int32),
+        *inputs[9:],
+    )
+
+
+def _valid_owned_inputs(plan: OwnedRpaDecodeCorePlan):
+    inputs = tuple(
+        jax.ShapeDtypeStruct(shape, dtype)
+        for shape, dtype in zip(
+            plan.global_input_shapes,
+            plan.external_input_dtypes,
+            strict=True,
+        )
+    )
+    local_kv_lengths = jnp.asarray((1, 17, 33, 49), dtype=jnp.int32)
+    local_cumulative_kv_lengths = jnp.concatenate(
+        (
+            jnp.zeros((1,), dtype=jnp.int32),
+            jnp.cumsum(local_kv_lengths, dtype=jnp.int32),
+        )
+    )
+    return (
+        *inputs[:4],
+        jnp.tile(local_kv_lengths, 2),
+        jnp.tile(jnp.arange(plan.external_input_shapes[5][0], dtype=jnp.int32), 2),
+        jnp.tile(jnp.arange(5, dtype=jnp.int32), 2),
+        jnp.tile(local_cumulative_kv_lengths, 2),
+        jnp.full((6,), 4, dtype=jnp.int32),
         *inputs[9:],
     )
 
@@ -160,13 +190,20 @@ def test_owned_rpa_decode_core_exposes_the_static_physical_resources() -> None:
     module = inkling_owned_rpa_decode_core_schedule()
     module.verify()
     assert schedule_sha256(module) == (
-        "86cf11b120352d115dd04e18845d44c41de1d3539b8169cf618a7d82f9b39559"
+        "41946eb01074fd2ecd2831190321631f09d9c25fb7c3ee68a28ebc272f6d576a"
     )
     operation = next(
         operation for operation in module.walk() if isinstance(operation, RpaDecodeCoreOp)
     )
 
-    assert operation.execution_authority.data == "tpu-cake-static-contract-pending-pallas-v1"
+    assert operation.execution_authority.data == "tpu-cake-owned-pallas-decode-core-v1"
+    assert operation.attention_case.data == "decode"
+    assert operation.masking_authority.data == "decode-kv-length-no-custom-mask-v1"
+    assert operation.relative_dimension.data == 16
+    assert tuple(value.data for value in operation.cumulative_mask_initial) == (0,)
+    assert tuple(value.data for value in operation.semaphore_ids_initial) == (0, 0, 0)
+    assert tuple(value.data for value in operation.output_ids_initial) == (-1,) * 4
+    assert tuple(value.data for value in operation.cache_update_ids_initial) == (-1,) * 6
     assert operation.backend_repository_revision.data == (
         "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7"
     )
@@ -241,6 +278,14 @@ def test_owned_rpa_decode_core_rejects_resource_contract_drift() -> None:
     with pytest.raises(VerifyException, match="requires a TPU7x kernel"):
         wrong_target.verify()
 
+    wrong_semantics = inkling_owned_rpa_decode_core_schedule()
+    operation = next(
+        operation for operation in wrong_semantics.walk() if isinstance(operation, RpaDecodeCoreOp)
+    )
+    operation.properties["attention_case"] = StringAttr("prefill")
+    with pytest.raises(VerifyException, match="execution semantics are not canonical"):
+        wrong_semantics.verify()
+
 
 def test_owned_rpa_decode_core_has_no_unearned_cost_model_claim() -> None:
     with pytest.raises(
@@ -251,6 +296,119 @@ def test_owned_rpa_decode_core_has_no_unearned_cost_model_claim() -> None:
             inkling_owned_rpa_decode_core_schedule(),
             hardware=tpu7x_tensorcore_rates(),
         )
+
+
+def test_owned_rpa_decode_core_lowers_to_its_owned_pallas_plan() -> None:
+    module = inkling_owned_rpa_decode_core_schedule()
+    first = lower_inkling_owned_rpa_decode_core_to_pallas(module)
+    second = lower_inkling_owned_rpa_decode_core_to_pallas(inkling_owned_rpa_decode_core_schedule())
+
+    assert isinstance(first, OwnedRpaDecodeCorePlan)
+    assert first == second
+    assert first.schedule_sha256 == (
+        "41946eb01074fd2ecd2831190321631f09d9c25fb7c3ee68a28ebc272f6d576a"
+    )
+    assert first.core_input_shapes == (
+        (4, 4, 1, 2, 128),
+        (4, 4, 2, 128),
+        (3712, 1, 4, 2, 128),
+        (4,),
+        (8192,),
+        (5,),
+        (5,),
+        (3,),
+        (4, 4, 2, 128),
+        (128, 4608),
+    )
+    assert first.external_input_shapes == (
+        (4, 8, 128),
+        (4, 4, 128),
+        (4, 4, 128),
+        (3712, 1, 4, 2, 128),
+        (4,),
+        (8192,),
+        (5,),
+        (5,),
+        (3,),
+        (4, 8, 16),
+        (16, 512),
+    )
+    assert first.block_sizes == (8, 128, 8, 128)
+    assert first.core_input_output_aliases == ((9, 0), (11, 1))
+    assert first.external_donate_argnums == (0, 3)
+    assert first.implementation_sha256 == (
+        "17b2c99bd4cd76fef29ed17e4e4dd9238a9a1442015083b3995aa251b6342e88"
+    )
+    assert first.lowering_sha256 == (
+        "067aaa964bb096a9cce4012daa69a616a016ce6dd3a74d84906393bee2fba698"
+    )
+    assert first.source_sha256() == (
+        "331e31dd32985b8818e1b376ca390339a7aa0023a367b407466a59de2d153b94"
+    )
+    assert first.source_sha256() == second.source_sha256()
+    with pytest.raises(ValueError, match="interpret mode does not support"):
+        first._build_local(interpret=True)
+    assert callable(first._build_local(interpret=False))
+
+    forged = inkling_owned_rpa_decode_core_schedule()
+    operation = next(
+        operation for operation in forged.walk() if isinstance(operation, RpaDecodeCoreOp)
+    )
+    operation.properties["backend_sha256"] = StringAttr("0" * 64)
+    with pytest.raises(UnsupportedLoweringError, match="backend identity is not pinned"):
+        lower_inkling_owned_rpa_decode_core_to_pallas(forged)
+
+
+def test_owned_rpa_decode_core_preflight_rejects_bad_decode_metadata() -> None:
+    plan = lower_inkling_owned_rpa_decode_core_to_pallas(inkling_owned_rpa_decode_core_schedule())
+    inputs = _valid_owned_inputs(plan)
+    plan.preflight(*inputs)
+
+    wrong_distribution = (*inputs[:8], jnp.zeros((6,), dtype=jnp.int32), *inputs[9:])
+    with pytest.raises(ValueError, match="decode-only distribution"):
+        plan.preflight(*wrong_distribution)
+
+    bad_pages = (
+        *inputs[:5],
+        jnp.full(plan.global_input_shapes[5], 99_999, dtype=jnp.int32),
+        *inputs[6:],
+    )
+    with pytest.raises(ValueError, match="outside the fused cache"):
+        plan.preflight(*bad_pages)
+
+    colliding_pages = inputs[5].at[17].set(inputs[5][0])
+    collisions = (*inputs[:5], colliding_pages, *inputs[6:])
+    with pytest.raises(ValueError, match="updates collide"):
+        plan.preflight(*collisions)
+
+
+def test_owned_rpa_decode_core_places_only_preflighted_global_inputs(monkeypatch) -> None:
+    plan = lower_inkling_owned_rpa_decode_core_to_pallas(inkling_owned_rpa_decode_core_schedule())
+    inputs = _valid_owned_inputs(plan)
+    monkeypatch.setattr(rpa_lowering, "NamedSharding", lambda mesh, spec: (mesh, spec))
+    monkeypatch.setattr(rpa_lowering.np, "array", lambda value, copy: value)
+    monkeypatch.setattr(rpa_lowering.jax, "device_put", lambda value, _sharding: value)
+
+    assert plan.place_inputs(inputs, mesh=object()) == inputs
+
+    wrong_distribution = (*inputs[:8], jnp.zeros((6,), dtype=jnp.int32), *inputs[9:])
+    with pytest.raises(ValueError, match="decode-only distribution"):
+        plan.place_inputs(wrong_distribution, mesh=object())
+
+
+def test_owned_rpa_decode_core_uses_the_exact_tpu7_output_abi(monkeypatch) -> None:
+    plan = lower_inkling_owned_rpa_decode_core_to_pallas(inkling_owned_rpa_decode_core_schedule())
+    captured = {}
+
+    def fake_pallas_call(*_args, **kwargs):
+        captured.update(kwargs)
+        return lambda *_inputs: ()
+
+    monkeypatch.setattr(rpa_lowering.pl, "pallas_call", fake_pallas_call)
+    plan._build_local(interpret=False)
+
+    assert captured["input_output_aliases"] == {9: 0, 11: 1}
+    assert all(output.memory_space == rpa_lowering.pltpu.HBM for output in captured["out_shape"])
 
 
 def test_sharded_fused_rpa_rejects_the_wrong_device_inventory() -> None:
