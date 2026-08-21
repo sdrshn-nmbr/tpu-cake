@@ -400,6 +400,26 @@ def test_serial_batch_and_shared_recurrent_slot_are_rejected(tmp_path) -> None:
     }
 
 
+def test_prefill_chunk_and_multi_token_output_growth_match_server_protocol(tmp_path) -> None:
+    prompts = _prompt_file(tmp_path)
+    contract = _contract(prompts, pinned=True)
+    request = _write_request(tmp_path, prompts, contract)
+    payload = json.loads(request.read_text())
+    for chunks in payload["chunks_by_request"]:
+        chunks[0]["response"]["meta_info"]["server_batch_size"] = 1
+        first = chunks[0]["response"]["output_ids"]
+        second = [*first, 200001, *chunks[1]["response"]["output_ids"][1:]]
+        chunks[1]["response"]["output_ids"] = second
+        chunks[2]["response"]["output_ids"] = [*second, chunks[2]["response"]["output_ids"][-1]]
+    request.write_text(json.dumps(payload))
+    assert _assess(request, prompts, contract).accepted
+
+    payload["chunks_by_request"][0][2]["response"]["output_ids"][0] = 999
+    request.write_text(json.dumps(payload))
+    codes = {finding.code for finding in _assess(request, prompts, contract).findings}
+    assert "CHUNK_OUTPUT_PREFIX_MISMATCH" in codes
+
+
 def test_raw_module_event_inventory_and_counts_are_exact(tmp_path) -> None:
     prompts = _prompt_file(tmp_path)
     contract = _contract(prompts, pinned=True)

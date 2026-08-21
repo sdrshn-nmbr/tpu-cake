@@ -848,7 +848,7 @@ def _validate_chunks(
                         f"completion={completion}",
                     )
                 )
-            if metadata.completion_tokens != completion or len(output_ids) != completion:
+            if metadata.completion_tokens != completion:
                 findings.append(
                     _finding(
                         "CHUNK_COMPLETION_SEQUENCE_MISMATCH",
@@ -857,17 +857,26 @@ def _validate_chunks(
                         f"completion={completion}",
                     )
                 )
-            if metadata.server_batch_size != contract.concurrency:
+            if completion > 1 and metadata.server_batch_size != contract.concurrency:
                 findings.append(
                     _finding(
                         "SERVER_BATCH_SIZE_MISMATCH",
-                        "streamed response was not produced by the full declared batch",
+                        "captured decode response was not produced by the full declared batch",
                         f"request_index={index}",
                         f"completion={completion}",
                         f"observed={metadata.server_batch_size}",
                     )
                 )
-            if output_ids[:-1] != expected_output:
+            if len(output_ids) <= len(expected_output):
+                findings.append(
+                    _finding(
+                        "CHUNK_OUTPUT_GROWTH_MISMATCH",
+                        "streamed output token IDs did not grow",
+                        f"request_index={index}",
+                        f"completion={completion}",
+                    )
+                )
+            if output_ids[: len(expected_output)] != expected_output:
                 findings.append(
                     _finding(
                         "CHUNK_OUTPUT_PREFIX_MISMATCH",
