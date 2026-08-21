@@ -79,11 +79,16 @@ class CollectiveImplementationResources(NamedTuple):
     capacity_semaphore_count: int
     startup_semaphore_count: int
     startup_barrier_phases: int
+    remote_half_output_copy_count: int
+    remote_payload_bytes: int
+    remote_bidirectional_endpoint_bytes: int
 
 
 def pallas_bidirectional_ring_resources(
     destination_bytes: int,
+    group_size: int,
 ) -> CollectiveImplementationResources:
+    remote_half_output_copy_count = 2 * group_size + 1
     return CollectiveImplementationResources(
         hbm_scratch_bytes=2 * destination_bytes,
         vmem_scratch_bytes=destination_bytes // 2,
@@ -91,6 +96,9 @@ def pallas_bidirectional_ring_resources(
         capacity_semaphore_count=2,
         startup_semaphore_count=1,
         startup_barrier_phases=2,
+        remote_half_output_copy_count=remote_half_output_copy_count,
+        remote_payload_bytes=remote_half_output_copy_count * destination_bytes // 2,
+        remote_bidirectional_endpoint_bytes=(remote_half_output_copy_count * destination_bytes),
     )
 
 
@@ -1970,11 +1978,14 @@ def collective_implementation_resources(
         or operation.implementation is None
         or operation.implementation.data is not CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
     ):
-        return CollectiveImplementationResources(0, 0, 0, 0, 0, 0)
+        return CollectiveImplementationResources(0, 0, 0, 0, 0, 0, 0, 0, 0)
     destination = operation.destination.type
     assert isinstance(destination, BufferType)
     destination_bytes = buffer_bytes(destination)
-    return pallas_bidirectional_ring_resources(destination_bytes)
+    return pallas_bidirectional_ring_resources(
+        destination_bytes,
+        operation.group_size.data,
+    )
 
 
 def _is_collective(operation: Operation) -> bool:

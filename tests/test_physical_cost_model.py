@@ -877,6 +877,8 @@ def test_pallas_native_collective_scratch_is_charged_to_vmem_capacity() -> None:
     assert "pallas_collective_hbm_scratch_bytes=1048576" in report.unpriced_work
     assert "pallas_collective_dma_semaphores=5" in report.unpriced_work
     assert "pallas_collective_startup_semaphores=1" in report.unpriced_work
+    assert "pallas_collective_remote_half_output_copies=17" in report.unpriced_work
+    assert "pallas_collective_remote_bidirectional_endpoint_bytes=8912896" in report.unpriced_work
 
 
 def test_nested_einsum_cannot_skip_tpu_tile_legality() -> None:

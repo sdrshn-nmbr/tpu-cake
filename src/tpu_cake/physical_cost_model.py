@@ -1215,6 +1215,23 @@ def analyze_physical_kernel(
     implementation_startup_barrier_phases = sum(
         resource.startup_barrier_phases for resource in implementation_resources
     )
+    implementation_executions = tuple(
+        (collective_implementation_resources(operation), executions)
+        for operation, executions in executed
+        if isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp))
+    )
+    implementation_remote_half_output_copies = sum(
+        resource.remote_half_output_copy_count * executions
+        for resource, executions in implementation_executions
+    )
+    implementation_remote_payload_bytes = sum(
+        resource.remote_payload_bytes * executions
+        for resource, executions in implementation_executions
+    )
+    implementation_remote_endpoint_bytes = sum(
+        resource.remote_bidirectional_endpoint_bytes * executions
+        for resource, executions in implementation_executions
+    )
     allocated_vmem += implementation_vmem_scratch
     allocated_smem = sum(
         buffer_bytes(buffer)
@@ -1575,6 +1592,9 @@ def analyze_physical_kernel(
                     f"pallas_collective_capacity_semaphores={implementation_capacity_semaphores}",
                     f"pallas_collective_startup_semaphores={implementation_startup_semaphores}",
                     f"pallas_collective_startup_barrier_phases={implementation_startup_barrier_phases}",
+                    f"pallas_collective_remote_half_output_copies={implementation_remote_half_output_copies}",
+                    f"pallas_collective_remote_payload_bytes={implementation_remote_payload_bytes}",
+                    f"pallas_collective_remote_bidirectional_endpoint_bytes={implementation_remote_endpoint_bytes}",
                 )
                 if implementation_hbm_scratch
                 else ()

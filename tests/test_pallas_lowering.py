@@ -79,6 +79,9 @@ def test_pallas_native_reduce_scatter_has_a_bound_resource_contract(tmp_path) ->
     assert plan.collective_capacity_semaphore_count == 2
     assert plan.collective_startup_semaphore_count == 1
     assert plan.collective_startup_barrier_phases == 2
+    assert plan.collective_remote_half_output_copy_count == 17
+    assert plan.collective_remote_payload_bytes == 557_056
+    assert plan.collective_remote_bidirectional_endpoint_bytes == 1_114_112
     source = plan.render_executable_source()
     compile(source, "lowered_pallas.py", "exec")
     assert "native-collective-plan-v3" in source

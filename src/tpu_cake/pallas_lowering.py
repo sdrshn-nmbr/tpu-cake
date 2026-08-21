@@ -350,11 +350,26 @@ class PallasMatmulPlan:
         return self._collective_resources.startup_barrier_phases
 
     @property
+    def collective_remote_half_output_copy_count(self) -> int:
+        return self._collective_resources.remote_half_output_copy_count
+
+    @property
+    def collective_remote_payload_bytes(self) -> int:
+        return self._collective_resources.remote_payload_bytes
+
+    @property
+    def collective_remote_bidirectional_endpoint_bytes(self) -> int:
+        return self._collective_resources.remote_bidirectional_endpoint_bytes
+
+    @property
     def _collective_resources(self) -> CollectiveImplementationResources:
         if self.collective_implementation is not CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING:
-            return CollectiveImplementationResources(0, 0, 0, 0, 0, 0)
+            return CollectiveImplementationResources(0, 0, 0, 0, 0, 0, 0, 0, 0)
         rows, columns = self.output_local_shape
-        return pallas_bidirectional_ring_resources(rows * columns * 4)
+        return pallas_bidirectional_ring_resources(
+            rows * columns * 4,
+            self.mesh_size,
+        )
 
     def _global_shape(self, shape: tuple[int, int], sharding: tuple[str, str]) -> tuple[int, int]:
         return tuple(
@@ -588,6 +603,9 @@ COLLECTIVE_DMA_SEMAPHORE_COUNT = {self.collective_dma_semaphore_count}
 COLLECTIVE_CAPACITY_SEMAPHORE_COUNT = {self.collective_capacity_semaphore_count}
 COLLECTIVE_STARTUP_SEMAPHORE_COUNT = {self.collective_startup_semaphore_count}
 COLLECTIVE_STARTUP_BARRIER_PHASES = {self.collective_startup_barrier_phases}
+COLLECTIVE_REMOTE_HALF_OUTPUT_COPY_COUNT = {self.collective_remote_half_output_copy_count}
+COLLECTIVE_REMOTE_PAYLOAD_BYTES = {self.collective_remote_payload_bytes}
+COLLECTIVE_REMOTE_BIDIRECTIONAL_ENDPOINT_BYTES = {self.collective_remote_bidirectional_endpoint_bytes}
 
 PLAN = PallasMatmulPlan(
     name=NAME,
@@ -859,6 +877,13 @@ def validate_saved_pallas_plan(
                 "COLLECTIVE_CAPACITY_SEMAPHORE_COUNT": (plan.collective_capacity_semaphore_count),
                 "COLLECTIVE_STARTUP_SEMAPHORE_COUNT": (plan.collective_startup_semaphore_count),
                 "COLLECTIVE_STARTUP_BARRIER_PHASES": (plan.collective_startup_barrier_phases),
+                "COLLECTIVE_REMOTE_HALF_OUTPUT_COPY_COUNT": (
+                    plan.collective_remote_half_output_copy_count
+                ),
+                "COLLECTIVE_REMOTE_PAYLOAD_BYTES": (plan.collective_remote_payload_bytes),
+                "COLLECTIVE_REMOTE_BIDIRECTIONAL_ENDPOINT_BYTES": (
+                    plan.collective_remote_bidirectional_endpoint_bytes
+                ),
             }
         )
     if any(constants.get(name) != value for name, value in expected.items()):
