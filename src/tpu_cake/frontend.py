@@ -10,6 +10,7 @@ from tpu_cake.canonical import canonical_sha256, canonical_text
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
     BufferType,
+    CollectiveImplementation,
     CollectiveKind,
     CollectiveOp,
     DmaStartOp,
@@ -370,6 +371,7 @@ class KernelBuilder:
         group_size: int,
         scatter_dimension: int,
         reducer: str = "sum",
+        implementation: CollectiveImplementation | None = None,
         source_location: SourceLocation | None = None,
     ) -> CollectiveOp:
         return self.collective(
@@ -381,6 +383,7 @@ class KernelBuilder:
             group_size=group_size,
             split_dimension=scatter_dimension,
             reducer=reducer,
+            implementation=implementation,
             source_location=source_location,
         )
 
@@ -396,6 +399,7 @@ class KernelBuilder:
         split_dimension: int = -1,
         concat_dimension: int = -1,
         reducer: str = "none",
+        implementation: CollectiveImplementation | None = None,
         source_location: SourceLocation | None = None,
     ) -> CollectiveOp:
         operation = attach_source(
@@ -409,6 +413,7 @@ class KernelBuilder:
                 split_dimension=split_dimension,
                 concat_dimension=concat_dimension,
                 reducer=reducer,
+                implementation=implementation,
             ),
             source_location,
         )

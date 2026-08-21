@@ -12,7 +12,11 @@ from tpu_cake.dialects.distributed_tensor import (
     ReduceScatterOp,
     ReturnOp,
 )
-from tpu_cake.dialects.tpu_schedule import MemorySpace, Ownership
+from tpu_cake.dialects.tpu_schedule import (
+    CollectiveImplementation,
+    MemorySpace,
+    Ownership,
+)
 from tpu_cake.frontend import KernelBuilder, buffer
 
 
@@ -75,6 +79,7 @@ def lower_distributed_matmul(
     *,
     target: LoweringTarget = TPU7X_TARGET,
     tile: MatmulTile | None = None,
+    collective_implementation: CollectiveImplementation | None = None,
 ) -> ModuleOp:
     module.verify()
     top_level = list(module.body.block.ops)
@@ -256,6 +261,7 @@ def lower_distributed_matmul(
         mesh_axis=mesh_axis,
         group_size=mesh[mesh_axis],
         scatter_dimension=scatter_index,
+        implementation=collective_implementation,
     )
     physical_collective.location = collective.location
     output_dma = builder.dma_start(reduced, builder.inputs[2], output_semaphore, stage=4)

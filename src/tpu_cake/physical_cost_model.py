@@ -38,6 +38,7 @@ from tpu_cake.dialects.tpu_schedule import (
     ViewOp,
     YieldOp,
     buffer_bytes,
+    collective_implementation_resources,
     mxu_accumulator_scratch_bytes,
     pipeline_resident_memory_bytes,
 )
@@ -778,6 +779,10 @@ def _top_level_stages(
             for operation in scheduled
             if isinstance(operation, (MxuMatmulOp, MxuEinsumOp))
         )
+        live_by_space[MemorySpace.VMEM] += sum(
+            collective_implementation_resources(operation).vmem_scratch_bytes
+            for operation in collectives
+        )
         records.append(
             PhysicalStageRecord(
                 scope="kernel",
@@ -813,6 +818,7 @@ def _pipeline_stages(
             operation_labels: list[str] = []
             active_dma = active_remote = active_mxu = active_vector = active_ici = 0
             accumulator_scratch_bytes = 0
+            collective_scratch_bytes = 0
             link_counts: Counter[str] = Counter()
             for iteration in range(pipeline.trip_count.data):
                 logical_stage = absolute_stage - iteration * pipeline.initiation_interval.data
@@ -838,6 +844,9 @@ def _pipeline_stages(
                     active_vector += isinstance(operation, VectorComputeOp)
                     if isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp)):
                         active_ici += 1
+                        collective_scratch_bytes += collective_implementation_resources(
+                            operation
+                        ).vmem_scratch_bytes
                         link_counts.update(_link_uses(operation, kernel))
             records.append(
                 PhysicalStageRecord(
@@ -850,7 +859,9 @@ def _pipeline_stages(
                     active_vector=active_vector,
                     active_ici=active_ici,
                     live_vmem_bytes_per_device=(
-                        resident_bytes[MemorySpace.VMEM] + accumulator_scratch_bytes
+                        resident_bytes[MemorySpace.VMEM]
+                        + accumulator_scratch_bytes
+                        + collective_scratch_bytes
                     ),
                     live_smem_bytes_per_device=resident_bytes[MemorySpace.SMEM],
                     link_channel_uses=tuple(sorted(link_counts.items())),
@@ -1181,6 +1192,30 @@ def analyze_physical_kernel(
         for buffer in storage
         if buffer.ownership.data is not Ownership.EXTERNAL and buffer.space.data is MemorySpace.VMEM
     )
+    implementation_resources = tuple(
+        collective_implementation_resources(operation)
+        for operation in kernel.walk()
+        if isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp))
+    )
+    implementation_hbm_scratch = sum(
+        resource.hbm_scratch_bytes for resource in implementation_resources
+    )
+    implementation_vmem_scratch = sum(
+        resource.vmem_scratch_bytes for resource in implementation_resources
+    )
+    implementation_dma_semaphores = sum(
+        resource.dma_semaphore_count for resource in implementation_resources
+    )
+    implementation_capacity_semaphores = sum(
+        resource.capacity_semaphore_count for resource in implementation_resources
+    )
+    implementation_startup_semaphores = sum(
+        resource.startup_semaphore_count for resource in implementation_resources
+    )
+    implementation_startup_barrier_phases = sum(
+        resource.startup_barrier_phases for resource in implementation_resources
+    )
+    allocated_vmem += implementation_vmem_scratch
     allocated_smem = sum(
         buffer_bytes(buffer)
         for buffer in storage
@@ -1391,7 +1426,12 @@ def analyze_physical_kernel(
             Unit.BYTE,
             source,
             "physical_inclusive_lifetimes",
-            "max(sum(live_root_allocations+pipeline_rotations+declared_MXU_scratch))",
+            (
+                "max(sum(live_root_allocations+pipeline_rotations+declared_MXU_scratch"
+                "+declared_Pallas_collective_scratch))"
+                if implementation_vmem_scratch
+                else "max(sum(live_root_allocations+pipeline_rotations+declared_MXU_scratch))"
+            ),
         ),
         _metric(
             "physical_peak_vmem_capacity_ratio",
@@ -1528,6 +1568,17 @@ def analyze_physical_kernel(
                 for dtype, flops in sorted(mxu_flops_by_dtype.items())
                 if dtype != "bf16" and flops
             ),
+            *(
+                (
+                    f"pallas_collective_hbm_scratch_bytes={implementation_hbm_scratch}",
+                    f"pallas_collective_dma_semaphores={implementation_dma_semaphores}",
+                    f"pallas_collective_capacity_semaphores={implementation_capacity_semaphores}",
+                    f"pallas_collective_startup_semaphores={implementation_startup_semaphores}",
+                    f"pallas_collective_startup_barrier_phases={implementation_startup_barrier_phases}",
+                )
+                if implementation_hbm_scratch
+                else ()
+            ),
             "kernel launch, synchronization, collective startup, and compiler overhead",
         ),
         assumptions=(
@@ -1538,6 +1589,16 @@ def analyze_physical_kernel(
             "Pipeline work and traffic multiply by trip count; rotation storage does not.",
             "Pipeline loops conservatively co-reside every uncaptured kernel-local allocation because they have no outer absolute stage.",
             "Views alias their allocation roots and never add storage capacity.",
+            *(
+                (
+                    (
+                        "Pallas-native collective VMEM scratch is derived from the typed "
+                        "collective implementation and charged at its scheduled stage."
+                    ),
+                )
+                if implementation_vmem_scratch
+                else ()
+            ),
         ),
         omissions=(
             "Collective plans identify participating links but not an exact per-link byte schedule.",
@@ -1546,6 +1607,16 @@ def analyze_physical_kernel(
             "DMA, vector, and collective execution may be delegated to JAX/XLA rather than owned Mosaic kernels.",
             "Fusion savings require comparison of two verified physical schedules and are not inferred from labels.",
             "No measured calibration or predictive validation is applied to this static report.",
+            *(
+                (
+                    (
+                        "Pallas-native collective HBM scratch and internal semaphore counts "
+                        "are plan-bound but have no physical HBM or semaphore capacity field."
+                    ),
+                )
+                if implementation_hbm_scratch
+                else ()
+            ),
         ),
         metrics=metrics,
     )

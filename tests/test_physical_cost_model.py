@@ -16,6 +16,7 @@ from tpu_cake.cli import (
 )
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.tpu_schedule import (
+    CollectiveImplementation,
     CollectiveKind,
     KernelOp,
     LinkAttr,
@@ -31,6 +32,7 @@ from tpu_cake.dialects.tpu_schedule import (
     rectilinear_topology,
 )
 from tpu_cake.frontend import KernelBuilder, buffer, canonical_module_text, schedule_sha256
+from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.metrics import MetricSource
 from tpu_cake.physical_cost_model import (
     PhysicalCollectiveLatencyCalibration,
@@ -51,6 +53,7 @@ from tpu_cake.seqax_cost_model import estimate_seqax_forward
 from tpu_cake.seqax_pallas_lowering import _einsum_tiles
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads import inkling_rpa_schedule
+from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
 from tpu_cake.workloads.seqax_forward import (
     SeqaxNumericalSemantics,
     SeqaxResidualNormStrategy,
@@ -846,6 +849,34 @@ def test_pipeline_memory_combines_uncaptured_locals_rotations_and_scratch() -> N
         )
     )
     assert report.memory.peak_live_vmem_bytes_per_device == 896
+
+
+def test_pallas_native_collective_scratch_is_charged_to_vmem_capacity() -> None:
+    physical = lower_distributed_matmul(
+        distributed_matmul_schedule(mesh_size=8, m=1024, k=128, n=1024),
+        tile=MatmulTile(128, 128),
+        collective_implementation=(CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING),
+    )
+    kernel = next(operation for operation in physical.walk() if isinstance(operation, KernelOp))
+    kernel.properties["vmem_capacity_bytes"] = IntAttr(4_718_592)
+
+    with pytest.raises(
+        VerifyException,
+        match="VMEM capacity exceeded at stage 3: 4980736 > 4718592",
+    ):
+        physical.verify()
+
+    kernel.properties["vmem_capacity_bytes"] = IntAttr(4_980_736)
+    kernel.properties["argument_modes"] = ArrayAttr(
+        (StringAttr("input"), StringAttr("input"), StringAttr("output"))
+    )
+    physical.verify()
+    report = analyze_physical_kernel(physical, hardware=tpu7x_tensorcore_rates())
+    assert report.memory.allocated_vmem_bytes_per_device == 5_046_272
+    assert report.memory.peak_live_vmem_bytes_per_device == 4_980_736
+    assert "pallas_collective_hbm_scratch_bytes=1048576" in report.unpriced_work
+    assert "pallas_collective_dma_semaphores=5" in report.unpriced_work
+    assert "pallas_collective_startup_semaphores=1" in report.unpriced_work
 
 
 def test_nested_einsum_cannot_skip_tpu_tile_legality() -> None:

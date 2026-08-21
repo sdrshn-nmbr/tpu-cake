@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 import inspect
 from dataclasses import dataclass, replace
@@ -19,6 +20,8 @@ from xdsl.parser import Parser
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
     BufferType,
+    CollectiveImplementation,
+    CollectiveImplementationResources,
     CollectiveKind,
     CollectiveOp,
     CollectiveReduceScatterOp,
@@ -29,12 +32,14 @@ from tpu_cake.dialects.tpu_schedule import (
     SemaphoreAllocOp,
     TPUSchedule,
     YieldOp,
+    pallas_bidirectional_ring_resources,
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.lowering import UnsupportedLoweringError
 
 LEGACY_PALLAS_EXECUTION_SCHEMA = "standalone-rendering-v1"
 PALLAS_EXECUTION_SCHEMA = "delegated-plan-v2"
+PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA = "native-collective-plan-v3"
 
 
 def _matmul_kernel(lhs_ref, rhs_ref, output_ref) -> None:
@@ -44,6 +49,244 @@ def _matmul_kernel(lhs_ref, rhs_ref, output_ref) -> None:
         dimension_numbers=(((1,), (0,)), ((), ())),
         preferred_element_type=jnp.float32,
     )
+
+
+def _ring_mod(value, modulus):
+    return lax.rem(value + modulus, modulus)
+
+
+def _ring_signal(direction, semaphore, *, axis_name: str, group_size: int) -> None:
+    device_id = lax.axis_index(axis_name)
+    neighbor = _ring_mod(device_id - 1, group_size)
+    if direction == 1:
+        neighbor = _ring_mod(device_id + 1, group_size)
+    pl.semaphore_signal(
+        semaphore,
+        inc=1,
+        device_id=(neighbor,),
+        device_id_type=pl.DeviceIdType.MESH,
+    )
+
+
+def _ring_barrier(left_neighbor, right_neighbor) -> None:
+    barrier = pltpu.get_barrier_semaphore()
+    for neighbor in (left_neighbor, right_neighbor):
+        pl.semaphore_signal(
+            barrier,
+            inc=1,
+            device_id=(neighbor,),
+            device_id_type=pl.DeviceIdType.MESH,
+        )
+    pl.semaphore_wait(barrier, 2)
+
+    @functools.partial(pl.run_scoped, second=pltpu.SemaphoreType.REGULAR)
+    def _second_barrier(second):
+        for neighbor in (left_neighbor, right_neighbor):
+            pl.semaphore_signal(
+                second,
+                inc=1,
+                device_id=(neighbor,),
+                device_id_type=pl.DeviceIdType.MESH,
+            )
+        pl.semaphore_wait(second, 2)
+
+
+def _bidirectional_reduce_scatter_kernel(
+    input_ref,
+    output_ref,
+    hbm_scratch,
+    local_copy_sem,
+    left_recv_sem,
+    left_send_sem,
+    right_recv_sem,
+    right_send_sem,
+    left_capacity_sem,
+    right_capacity_sem,
+    accumulator,
+    *,
+    axis_name: str,
+    group_size: int,
+    block_shape: tuple[int, int],
+) -> None:
+    left = 0
+    right = 1
+    outer_step = pl.program_id(0)
+    phase = pl.program_id(1)
+    is_start = jnp.logical_and(outer_step == 0, phase == 0)
+    is_last = outer_step == pl.num_programs(0) - 1
+    working_slot = lax.rem(outer_step, 2)
+    receiving_slot = 1 - working_slot
+    device_id = lax.axis_index(axis_name)
+    right_neighbor = _ring_mod(device_id + 1, group_size)
+    left_neighbor = _ring_mod(device_id - 1, group_size)
+    left_source = _ring_mod(device_id + outer_step + 1, group_size)
+    right_source = _ring_mod(device_id - outer_step - 1, group_size)
+    half_rows = block_shape[0] // 2
+    left_slice = pl.ds(0, half_rows)
+    right_slice = pl.ds(half_rows, half_rows)
+    phase_slice = pl.ds(phase * half_rows, half_rows)
+    signal = functools.partial(
+        _ring_signal,
+        axis_name=axis_name,
+        group_size=group_size,
+    )
+
+    initial_left = pltpu.make_async_remote_copy(
+        input_ref.at[device_id, left_slice],
+        hbm_scratch.at[working_slot, left_slice],
+        left_send_sem,
+        left_recv_sem,
+        device_id=(left_neighbor,),
+        device_id_type=pl.DeviceIdType.MESH,
+    )
+    initial_right = pltpu.make_async_remote_copy(
+        input_ref.at[device_id, right_slice],
+        hbm_scratch.at[working_slot, right_slice],
+        right_send_sem,
+        right_recv_sem,
+        device_id=(right_neighbor,),
+        device_id_type=pl.DeviceIdType.MESH,
+    )
+    left_copy = pltpu.make_async_remote_copy(
+        hbm_scratch.at[working_slot, left_slice],
+        hbm_scratch.at[receiving_slot, left_slice],
+        left_send_sem,
+        left_recv_sem,
+        device_id=(left_neighbor,),
+        device_id_type=pl.DeviceIdType.MESH,
+    )
+    right_copy = pltpu.make_async_remote_copy(
+        hbm_scratch.at[receiving_slot, right_slice],
+        hbm_scratch.at[working_slot, right_slice],
+        right_send_sem,
+        right_recv_sem,
+        device_id=(right_neighbor,),
+        device_id_type=pl.DeviceIdType.MESH,
+    )
+
+    @pl.when(is_start)
+    def _start():
+        _ring_barrier(left_neighbor, right_neighbor)
+        output_ref[...] = jnp.zeros_like(output_ref[...])
+        accumulator[...] = jnp.zeros_like(accumulator[...])
+        initial_left.start()
+        initial_left.wait()
+        initial_right.start()
+        signal(left, right_capacity_sem)
+        signal(right, left_capacity_sem)
+
+    @pl.when(~is_start)
+    def _send():
+        @pl.when(phase == left)
+        def _send_right():
+            pl.semaphore_wait(right_capacity_sem, 1)
+            right_copy.start()
+
+        @pl.when(phase == right)
+        def _send_left():
+            pl.semaphore_wait(left_capacity_sem, 1)
+            left_copy.start()
+
+    local_copy = pltpu.make_async_copy(
+        hbm_scratch.at[working_slot, phase_slice], accumulator, local_copy_sem
+    )
+    local_copy.start()
+    local_copy.wait()
+
+    @pl.when(~is_last)
+    def _accumulate():
+        @pl.when(phase == left)
+        def _add_left():
+            accumulator[...] += input_ref[left_source, left_slice]
+
+        @pl.when(phase == right)
+        def _add_right():
+            accumulator[...] += input_ref[right_source, right_slice]
+
+    local_store = pltpu.make_async_copy(
+        accumulator, hbm_scratch.at[working_slot, phase_slice], local_copy_sem
+    )
+    local_store.start()
+    local_store.wait()
+
+    @pl.when(is_start)
+    def _finish_initial_right():
+        initial_right.wait()
+
+    @pl.when(~is_start)
+    def _finish_send():
+        @pl.when(phase == left)
+        def _finish_right():
+            right_copy.wait()
+            signal(left, right_capacity_sem)
+
+        @pl.when(phase == right)
+        def _finish_left():
+            left_copy.wait()
+            signal(right, left_capacity_sem)
+
+    @pl.when(is_last)
+    def _store_result():
+        @pl.when(phase == left)
+        def _store_left():
+            output_ref[left_slice, ...] = accumulator[...]
+            pl.semaphore_wait(right_capacity_sem, 1)
+
+        @pl.when(phase == right)
+        def _store_right():
+            output_ref[right_slice, ...] = accumulator[...]
+            pl.semaphore_wait(left_capacity_sem, 1)
+
+
+def _pallas_bidirectional_reduce_scatter(
+    partial,
+    *,
+    axis_name: str,
+    group_size: int,
+    scatter_dimension: int,
+    output_shape: tuple[int, int],
+    name: str,
+    interpret,
+):
+    reshaped = partial.reshape(
+        *partial.shape[:scatter_dimension],
+        group_size,
+        output_shape[scatter_dimension],
+        *partial.shape[scatter_dimension + 1 :],
+    )
+    chunks = jnp.moveaxis(reshaped, scatter_dimension, 0)
+    output_spec = (
+        jax.ShapeDtypeStruct(output_shape, jnp.float32),
+        jax.ShapeDtypeStruct((2, *output_shape), jnp.float32),
+    )
+    grid_spec = pltpu.PrefetchScalarGridSpec(
+        num_scalar_prefetch=0,
+        in_specs=[pl.BlockSpec(memory_space=pltpu.VMEM)],
+        out_specs=[
+            pl.BlockSpec(memory_space=pltpu.VMEM),
+            pl.BlockSpec(memory_space=pl.ANY),
+        ],
+        grid=(group_size, 2),
+        scratch_shapes=(
+            [pltpu.SemaphoreType.DMA] * 5
+            + [pltpu.SemaphoreType.REGULAR] * 2
+            + [pltpu.VMEM((output_shape[0] // 2, output_shape[1]), jnp.float32)]
+        ),
+    )
+    kernel = functools.partial(
+        _bidirectional_reduce_scatter_kernel,
+        axis_name=axis_name,
+        group_size=group_size,
+        block_shape=output_shape,
+    )
+    return pl.pallas_call(
+        kernel,
+        out_shape=output_spec,
+        grid_spec=grid_spec,
+        compiler_params=pltpu.CompilerParams(collective_id=0),
+        name=name,
+        interpret=interpret,
+    )(chunks)[0]
 
 
 def _partition_spec(sharding: tuple[str, ...]) -> PartitionSpec:
@@ -68,6 +311,7 @@ class PallasMatmulPlan:
     tile_k: int
     tile_n: int
     collective_link_bandwidths: tuple[tuple[str, int], ...] = ()
+    collective_implementation: CollectiveImplementation | None = None
 
     @property
     def global_lhs_shape(self) -> tuple[int, int]:
@@ -80,6 +324,37 @@ class PallasMatmulPlan:
     @property
     def global_output_shape(self) -> tuple[int, int]:
         return self._global_shape(self.output_local_shape, self.output_sharding)
+
+    @property
+    def collective_hbm_scratch_bytes(self) -> int:
+        return self._collective_resources.hbm_scratch_bytes
+
+    @property
+    def collective_accumulator_vmem_bytes(self) -> int:
+        return self._collective_resources.vmem_scratch_bytes
+
+    @property
+    def collective_dma_semaphore_count(self) -> int:
+        return self._collective_resources.dma_semaphore_count
+
+    @property
+    def collective_capacity_semaphore_count(self) -> int:
+        return self._collective_resources.capacity_semaphore_count
+
+    @property
+    def collective_startup_semaphore_count(self) -> int:
+        return self._collective_resources.startup_semaphore_count
+
+    @property
+    def collective_startup_barrier_phases(self) -> int:
+        return self._collective_resources.startup_barrier_phases
+
+    @property
+    def _collective_resources(self) -> CollectiveImplementationResources:
+        if self.collective_implementation is not CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING:
+            return CollectiveImplementationResources(0, 0, 0, 0, 0, 0)
+        rows, columns = self.output_local_shape
+        return pallas_bidirectional_ring_resources(rows * columns * 4)
 
     def _global_shape(self, shape: tuple[int, int], sharding: tuple[str, str]) -> tuple[int, int]:
         return tuple(
@@ -118,6 +393,16 @@ class PallasMatmulPlan:
 
         def distributed(lhs, rhs):
             partial = local_call(lhs, rhs)
+            if self.collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING:
+                return _pallas_bidirectional_reduce_scatter(
+                    partial,
+                    axis_name=self.mesh_axis,
+                    group_size=self.mesh_size,
+                    scatter_dimension=self.scatter_dimension,
+                    output_shape=self.output_local_shape,
+                    name=f"{self.name}_pallas_reduce_scatter",
+                    interpret=interpret_setting,
+                )
             return lax.psum_scatter(
                 partial,
                 self.mesh_axis,
@@ -139,7 +424,7 @@ class PallasMatmulPlan:
 
     def render_source(self) -> str:
         kernel_source = inspect.getsource(_matmul_kernel).rstrip()
-        return f'''from __future__ import annotations
+        return f"""from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
@@ -211,20 +496,19 @@ def build(*, interpret=False, devices=None):
         check_vma=False,
     )
     return jax.jit(mapped), mesh
-'''
+"""
 
     def render_executable_source(self) -> str:
+        if self.collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING:
+            return self._render_native_collective_source()
         topology_constants = ""
         topology_arguments = ""
         if self.collective_link_bandwidths:
             topology_constants = (
-                "\nCOLLECTIVE_LINK_BANDWIDTHS = "
-                f"{self.collective_link_bandwidths!r}"
+                f"\nCOLLECTIVE_LINK_BANDWIDTHS = {self.collective_link_bandwidths!r}"
             )
-            topology_arguments = (
-                "    collective_link_bandwidths=COLLECTIVE_LINK_BANDWIDTHS,\n"
-            )
-        return f'''from __future__ import annotations
+            topology_arguments = "    collective_link_bandwidths=COLLECTIVE_LINK_BANDWIDTHS,\n"
+        return f"""from __future__ import annotations
 
 from tpu_cake.pallas_lowering import PallasMatmulPlan
 
@@ -266,7 +550,70 @@ PLAN = PallasMatmulPlan(
 
 def build(*, interpret=False, devices=None):
     return PLAN.build(interpret=interpret, devices=devices)
-'''
+"""
+
+    def _render_native_collective_source(self) -> str:
+        topology_constants = ""
+        topology_arguments = ""
+        if self.collective_link_bandwidths:
+            topology_constants = (
+                f"\nCOLLECTIVE_LINK_BANDWIDTHS = {self.collective_link_bandwidths!r}"
+            )
+            topology_arguments = "    collective_link_bandwidths=COLLECTIVE_LINK_BANDWIDTHS,\n"
+        return f"""from __future__ import annotations
+
+from tpu_cake.dialects.tpu_schedule import CollectiveImplementation
+from tpu_cake.pallas_lowering import PallasMatmulPlan
+
+PALLAS_EXECUTION_SCHEMA = {PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA!r}
+NAME = {self.name!r}
+SCHEDULE_SHA256 = {self.schedule_sha256!r}
+MESH_AXIS = {self.mesh_axis!r}
+MESH_SIZE = {self.mesh_size}
+LHS_LOCAL_SHAPE = {self.lhs_local_shape!r}
+RHS_LOCAL_SHAPE = {self.rhs_local_shape!r}
+PARTIAL_LOCAL_SHAPE = {self.partial_local_shape!r}
+OUTPUT_LOCAL_SHAPE = {self.output_local_shape!r}
+OUTPUT_SHARDING = {self.output_sharding!r}
+LHS_SHARDING = {self.lhs_sharding!r}
+RHS_SHARDING = {self.rhs_sharding!r}
+SCATTER_DIMENSION = {self.scatter_dimension}
+TILE_M = {self.tile_m}
+TILE_K = {self.tile_k}
+TILE_N = {self.tile_n}
+COLLECTIVE_IMPLEMENTATION = {self.collective_implementation.value!r}{topology_constants}
+COLLECTIVE_HBM_SCRATCH_BYTES = {self.collective_hbm_scratch_bytes}
+COLLECTIVE_ACCUMULATOR_VMEM_BYTES = {self.collective_accumulator_vmem_bytes}
+COLLECTIVE_DMA_SEMAPHORE_COUNT = {self.collective_dma_semaphore_count}
+COLLECTIVE_CAPACITY_SEMAPHORE_COUNT = {self.collective_capacity_semaphore_count}
+COLLECTIVE_STARTUP_SEMAPHORE_COUNT = {self.collective_startup_semaphore_count}
+COLLECTIVE_STARTUP_BARRIER_PHASES = {self.collective_startup_barrier_phases}
+
+PLAN = PallasMatmulPlan(
+    name=NAME,
+    schedule_sha256=SCHEDULE_SHA256,
+    mesh_axis=MESH_AXIS,
+    mesh_size=MESH_SIZE,
+    lhs_local_shape=LHS_LOCAL_SHAPE,
+    rhs_local_shape=RHS_LOCAL_SHAPE,
+    partial_local_shape=PARTIAL_LOCAL_SHAPE,
+    output_local_shape=OUTPUT_LOCAL_SHAPE,
+    lhs_sharding=LHS_SHARDING,
+    rhs_sharding=RHS_SHARDING,
+    output_sharding=OUTPUT_SHARDING,
+    scatter_dimension=SCATTER_DIMENSION,
+    tile_m=TILE_M,
+    tile_k=TILE_K,
+    tile_n=TILE_N,
+{topology_arguments}    collective_implementation=CollectiveImplementation(
+        COLLECTIVE_IMPLEMENTATION
+    ),
+)
+
+
+def build(*, interpret=False, devices=None):
+    return PLAN.build(interpret=interpret, devices=devices)
+"""
 
     def source_sha256(self) -> str:
         return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
@@ -325,18 +672,14 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
                 for operation, expected in zip(operations, expected_types)
                 if not isinstance(operation, expected)
             ),
-            operations[len(expected_types)]
-            if len(operations) > len(expected_types)
-            else kernel,
+            operations[len(expected_types)] if len(operations) > len(expected_types) else kernel,
         )
         raise UnsupportedLoweringError(
             "Pallas matmul lowering requires the exact supported load, matmul, "
             f"reduce-scatter, and store schedule; found {mismatch.name} "
             f"at {mismatch.location}"
         )
-    matmuls = [
-        operation for operation in operations if isinstance(operation, MxuMatmulOp)
-    ]
+    matmuls = [operation for operation in operations if isinstance(operation, MxuMatmulOp)]
     collectives = [
         operation
         for operation in operations
@@ -365,9 +708,7 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
     assert isinstance(output_wait, DmaWaitOp)
     if len(kernel.body.block.args) != 3:
         raise UnsupportedLoweringError("Pallas matmul lowering expects two inputs and one output")
-    if tuple(operation.source for operation in input_dmas) != tuple(
-        kernel.body.block.args[:2]
-    ):
+    if tuple(operation.source for operation in input_dmas) != tuple(kernel.body.block.args[:2]):
         raise UnsupportedLoweringError("Pallas matmul input DMAs must load the kernel inputs")
     if tuple(operation.destination for operation in input_dmas) != (matmul.lhs, matmul.rhs):
         raise UnsupportedLoweringError("Pallas matmul input DMAs must feed the MXU operands")
@@ -406,21 +747,27 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
     collective_link_bandwidths: tuple[tuple[str, int], ...] = ()
     if kernel.topology is not None:
         if collective.collective_plan is None:
-            raise UnsupportedLoweringError(
-                "structured Pallas matmul needs a collective plan"
-            )
+            raise UnsupportedLoweringError("structured Pallas matmul needs a collective plan")
         topology_plan = kernel.topology.plans_by_id()[collective.collective_plan.data]
         links = kernel.topology.links_by_id()
         used_link_ids = sorted(
-            {
-                link_id.data
-                for group in topology_plan.groups
-                for link_id in group.route_link_ids
-            }
+            {link_id.data for group in topology_plan.groups for link_id in group.route_link_ids}
         )
         collective_link_bandwidths = tuple(
-            (link_id, links[link_id].bandwidth_bytes_per_second.data)
-            for link_id in used_link_ids
+            (link_id, links[link_id].bandwidth_bytes_per_second.data) for link_id in used_link_ids
+        )
+    collective_implementation = (
+        collective.implementation.data
+        if isinstance(collective, CollectiveOp) and collective.implementation is not None
+        else None
+    )
+    output_shape = _shape(output)
+    if collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING and (
+        output_shape[0] % 16 or output_shape[1] % 128 or mesh_sizes[0] < 2
+    ):
+        raise UnsupportedLoweringError(
+            "Pallas bidirectional reduce-scatter needs rank-2 output blocks "
+            "with rows divisible by 16 and columns divisible by 128"
         )
     return PallasMatmulPlan(
         name=kernel.sym_name.data,
@@ -430,7 +777,7 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
         lhs_local_shape=_shape(lhs),
         rhs_local_shape=_shape(rhs),
         partial_local_shape=_shape(partial),
-        output_local_shape=_shape(output),
+        output_local_shape=output_shape,
         lhs_sharding=_sharding(lhs),
         rhs_sharding=_sharding(rhs),
         output_sharding=_sharding(output),
@@ -443,6 +790,7 @@ def lower_physical_matmul_to_pallas(module: ModuleOp) -> PallasMatmulPlan:
         tile_k=matmul.tile_k.data,
         tile_n=matmul.tile_n.data,
         collective_link_bandwidths=collective_link_bandwidths,
+        collective_implementation=collective_implementation,
     )
 
 
@@ -461,9 +809,7 @@ def validate_saved_pallas_plan(
     context.load_dialect(Builtin)
     context.load_dialect(TPUSchedule)
     try:
-        module = Parser(
-            context, physical_path.read_text(), name=str(physical_path)
-        ).parse_module()
+        module = Parser(context, physical_path.read_text(), name=str(physical_path)).parse_module()
         plan = replace(
             lower_physical_matmul_to_pallas(module),
             schedule_sha256=schedule_sha256,
@@ -485,6 +831,7 @@ def validate_saved_pallas_plan(
             constants[target.id] = ast.literal_eval(statement.value)
         except (ValueError, TypeError):
             continue
+    execution_schema = constants.get("PALLAS_EXECUTION_SCHEMA", LEGACY_PALLAS_EXECUTION_SCHEMA)
     expected = {
         "SCHEDULE_SHA256": schedule_sha256,
         "MESH_AXIS": plan.mesh_axis,
@@ -500,25 +847,43 @@ def validate_saved_pallas_plan(
         "TILE_K": plan.tile_k,
         "TILE_N": plan.tile_n,
     }
-    if plan.collective_link_bandwidths:
+    if plan.collective_link_bandwidths and execution_schema != LEGACY_PALLAS_EXECUTION_SCHEMA:
         expected["COLLECTIVE_LINK_BANDWIDTHS"] = plan.collective_link_bandwidths
+    if plan.collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING:
+        expected.update(
+            {
+                "COLLECTIVE_IMPLEMENTATION": plan.collective_implementation.value,
+                "COLLECTIVE_HBM_SCRATCH_BYTES": plan.collective_hbm_scratch_bytes,
+                "COLLECTIVE_ACCUMULATOR_VMEM_BYTES": (plan.collective_accumulator_vmem_bytes),
+                "COLLECTIVE_DMA_SEMAPHORE_COUNT": (plan.collective_dma_semaphore_count),
+                "COLLECTIVE_CAPACITY_SEMAPHORE_COUNT": (plan.collective_capacity_semaphore_count),
+                "COLLECTIVE_STARTUP_SEMAPHORE_COUNT": (plan.collective_startup_semaphore_count),
+                "COLLECTIVE_STARTUP_BARRIER_PHASES": (plan.collective_startup_barrier_phases),
+            }
+        )
     if any(constants.get(name) != value for name, value in expected.items()):
         raise ValueError("SAVED_PALLAS_SOURCE_PLAN_MISMATCH")
     name = constants.get("NAME")
     if not isinstance(name, str):
         raise TypeError("SAVED_PALLAS_SOURCE_PLAN_MISMATCH")
     rendering_plan = replace(plan, name=name)
-    execution_schema = constants.get(
-        "PALLAS_EXECUTION_SCHEMA", LEGACY_PALLAS_EXECUTION_SCHEMA
+    expected_execution_schema = (
+        PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA
+        if plan.collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+        else PALLAS_EXECUTION_SCHEMA
     )
-    expected_source = (
-        rendering_plan.render_source()
-        if execution_schema == LEGACY_PALLAS_EXECUTION_SCHEMA
-        else rendering_plan.render_executable_source()
-        if execution_schema == PALLAS_EXECUTION_SCHEMA
-        else None
-    )
-    if expected_source is None:
+    if execution_schema == LEGACY_PALLAS_EXECUTION_SCHEMA:
+        if plan.collective_implementation is not None:
+            raise ValueError("SAVED_PALLAS_EXECUTION_SCHEMA_MISMATCH")
+        expected_source = rendering_plan.render_source()
+    elif execution_schema == expected_execution_schema:
+        expected_source = rendering_plan.render_executable_source()
+    elif execution_schema in {
+        PALLAS_EXECUTION_SCHEMA,
+        PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA,
+    }:
+        raise ValueError("SAVED_PALLAS_EXECUTION_SCHEMA_MISMATCH")
+    else:
         raise ValueError("SAVED_PALLAS_EXECUTION_SCHEMA_UNSUPPORTED")
     if expected_source != pallas_path.read_text():
         raise ValueError("SAVED_PALLAS_RENDERING_MISMATCH")

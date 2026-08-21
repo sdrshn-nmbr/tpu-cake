@@ -4,6 +4,7 @@ import math
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import pairwise, product
+from typing import NamedTuple
 
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -67,6 +68,32 @@ class CollectiveKind(StrEnum):
     REDUCE_SCATTER = "reduce_scatter"
 
 
+class CollectiveImplementation(StrEnum):
+    PALLAS_BIDIRECTIONAL_RING = "pallas_bidirectional_ring"
+
+
+class CollectiveImplementationResources(NamedTuple):
+    hbm_scratch_bytes: int
+    vmem_scratch_bytes: int
+    dma_semaphore_count: int
+    capacity_semaphore_count: int
+    startup_semaphore_count: int
+    startup_barrier_phases: int
+
+
+def pallas_bidirectional_ring_resources(
+    destination_bytes: int,
+) -> CollectiveImplementationResources:
+    return CollectiveImplementationResources(
+        hbm_scratch_bytes=2 * destination_bytes,
+        vmem_scratch_bytes=destination_bytes // 2,
+        dma_semaphore_count=5,
+        capacity_semaphore_count=2,
+        startup_semaphore_count=1,
+        startup_barrier_phases=2,
+    )
+
+
 class VectorMaterialization(StrEnum):
     STRICT_TYPED = "strict_typed"
 
@@ -88,6 +115,13 @@ class OwnershipAttr(EnumAttribute[Ownership], SpacedOpaqueSyntaxAttribute):
 @irdl_attr_definition
 class CollectiveKindAttr(EnumAttribute[CollectiveKind], SpacedOpaqueSyntaxAttribute):
     name = "tpu_schedule.collective_kind"
+
+
+@irdl_attr_definition
+class CollectiveImplementationAttr(
+    EnumAttribute[CollectiveImplementation], SpacedOpaqueSyntaxAttribute
+):
+    name = "tpu_schedule.collective_implementation"
 
 
 @irdl_attr_definition
@@ -1783,6 +1817,7 @@ class CollectiveOp(IRDLOperation):
     concat_dimension = prop_def(IntAttr)
     reducer = prop_def(StringAttr)
     collective_plan = prop_def(StringAttr)
+    implementation = opt_prop_def(CollectiveImplementationAttr)
 
     def __init__(
         self,
@@ -1797,19 +1832,23 @@ class CollectiveOp(IRDLOperation):
         concat_dimension: int = -1,
         reducer: str = "none",
         collective_plan: str | None = None,
+        implementation: CollectiveImplementation | None = None,
     ) -> None:
+        properties = {
+            "stage": IntAttr(stage),
+            "kind": CollectiveKindAttr(kind),
+            "mesh_axis": StringAttr(mesh_axis),
+            "group_size": IntAttr(group_size),
+            "split_dimension": IntAttr(split_dimension),
+            "concat_dimension": IntAttr(concat_dimension),
+            "reducer": StringAttr(reducer),
+            "collective_plan": StringAttr(collective_plan or f"axis:{mesh_axis}"),
+        }
+        if implementation is not None:
+            properties["implementation"] = CollectiveImplementationAttr(implementation)
         super().__init__(
             operands=[source, destination],
-            properties={
-                "stage": IntAttr(stage),
-                "kind": CollectiveKindAttr(kind),
-                "mesh_axis": StringAttr(mesh_axis),
-                "group_size": IntAttr(group_size),
-                "split_dimension": IntAttr(split_dimension),
-                "concat_dimension": IntAttr(concat_dimension),
-                "reducer": StringAttr(reducer),
-                "collective_plan": StringAttr(collective_plan or f"axis:{mesh_axis}"),
-            },
+            properties=properties,
         )
 
     def verify_(self) -> None:
@@ -1896,9 +1935,46 @@ class CollectiveOp(IRDLOperation):
             tuple(value) for value in destination_sharding
         ):
             raise VerifyException("collective destination has the wrong sharding")
+        if self.implementation is not None and (
+            self.implementation.data is not CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+            or self.kind.data is not CollectiveKind.REDUCE_SCATTER
+            or self.reducer.data != "sum"
+            or not isinstance(source.storage.element_type, Float32Type)
+        ):
+            raise VerifyException(
+                "Pallas bidirectional ring implementation requires f32 sum reduce-scatter"
+            )
+        if (
+            self.implementation is not None
+            and self.implementation.data is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+            and (
+                len(destination_shape) != 2
+                or destination_shape[0] % 16
+                or destination_shape[1] % 128
+            )
+        ):
+            raise VerifyException(
+                "Pallas bidirectional ring requires rank-2 output blocks with rows "
+                "divisible by 16 and columns divisible by 128"
+            )
 
 
 PhysicalCollectiveOp = CollectiveReduceScatterOp | CollectiveOp
+
+
+def collective_implementation_resources(
+    operation: PhysicalCollectiveOp,
+) -> CollectiveImplementationResources:
+    if (
+        not isinstance(operation, CollectiveOp)
+        or operation.implementation is None
+        or operation.implementation.data is not CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+    ):
+        return CollectiveImplementationResources(0, 0, 0, 0, 0, 0)
+    destination = operation.destination.type
+    assert isinstance(destination, BufferType)
+    destination_bytes = buffer_bytes(destination)
+    return pallas_bidirectional_ring_resources(destination_bytes)
 
 
 def _is_collective(operation: Operation) -> bool:
@@ -2549,6 +2625,7 @@ class PipelineLoopOp(IRDLOperation):
             vector_uses = 0
             ici_uses = 0
             accumulator_scratch_bytes = 0
+            collective_scratch_bytes = 0
             link_uses: dict[str, int] = {}
             semaphore_uses: dict[Operation, int] = {}
             for iteration in range(self.trip_count.data):
@@ -2596,6 +2673,9 @@ class PipelineLoopOp(IRDLOperation):
                         assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
                         if operation.stage.data == logical_stage:
                             ici_uses += 1
+                            collective_scratch_bytes += collective_implementation_resources(
+                                operation
+                            ).vmem_scratch_bytes
                             if operation.collective_plan is not None:
                                 plan = topology_plans.get(operation.collective_plan.data)
                                 if plan is not None:
@@ -2639,7 +2719,11 @@ class PipelineLoopOp(IRDLOperation):
                     raise VerifyException(
                         f"pipeline exceeds semaphore slots at absolute stage {absolute_stage}"
                     )
-            live_vmem_bytes = resident_bytes[MemorySpace.VMEM] + accumulator_scratch_bytes
+            live_vmem_bytes = (
+                resident_bytes[MemorySpace.VMEM]
+                + accumulator_scratch_bytes
+                + collective_scratch_bytes
+            )
             if live_vmem_bytes > kernel.vmem_capacity_bytes.data:
                 raise VerifyException(
                     "pipeline VMEM capacity exceeded at absolute stage "
@@ -3445,6 +3529,11 @@ class KernelOp(IRDLOperation):
                         if isinstance(operation, (MxuMatmulOp, MxuEinsumOp))
                         and operation.stage.data == stage
                     )
+                    live_bytes += sum(
+                        collective_implementation_resources(operation).vmem_scratch_bytes
+                        for operation in operations
+                        if _is_collective(operation) and operation.stage.data == stage
+                    )
                 if live_bytes > capacity:
                     raise VerifyException(
                         f"{label} capacity exceeded at stage {stage}: {live_bytes} > {capacity}"
@@ -3477,6 +3566,7 @@ TPUSchedule = Dialect(
         MemorySpaceAttr,
         OwnershipAttr,
         CollectiveKindAttr,
+        CollectiveImplementationAttr,
         VectorMaterializationAttr,
         VectorImplementationAttr,
         ShapeAttr,

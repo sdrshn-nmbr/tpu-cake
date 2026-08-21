@@ -5,6 +5,7 @@ from xdsl.utils.exceptions import VerifyException
 
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
+    CollectiveImplementation,
     CollectiveKind,
     CollectiveOp,
     CollectivePlanAttr,
@@ -234,9 +235,7 @@ def test_collectives_cannot_overbook_one_physical_link() -> None:
     module = lower_distributed_matmul(distributed_matmul_schedule())
     kernel = next(operation for operation in module.walk() if isinstance(operation, KernelOp))
     collective = next(
-        operation
-        for operation in module.walk()
-        if isinstance(operation, CollectiveOp)
+        operation for operation in module.walk() if isinstance(operation, CollectiveOp)
     )
     duplicate = CollectiveOp(
         collective.source,
@@ -257,7 +256,16 @@ def test_collectives_cannot_overbook_one_physical_link() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "source_shape", "source_sharding", "destination_shape", "destination_sharding", "split", "concat", "reducer"),
+    (
+        "kind",
+        "source_shape",
+        "source_sharding",
+        "destination_shape",
+        "destination_sharding",
+        "split",
+        "concat",
+        "reducer",
+    ),
     (
         (CollectiveKind.ALL_REDUCE, (8, 8), ("", "t"), (8, 8), ("", "t"), -1, -1, "sum"),
         (CollectiveKind.REDUCE_SCATTER, (8, 8), ("", ""), (8, 2), ("", "t"), 1, -1, "sum"),
@@ -307,6 +315,58 @@ def test_collective_kinds_verify_exact_local_shape_and_sharding_transitions(
         concat_dimension=concat,
         reducer=reducer,
     ).verify_()
+
+
+@pytest.mark.parametrize(
+    ("kind", "reducer", "element_type"),
+    (
+        (CollectiveKind.ALL_REDUCE, "sum", f32),
+        (CollectiveKind.REDUCE_SCATTER, "max", f32),
+        (CollectiveKind.REDUCE_SCATTER, "sum", bf16),
+    ),
+)
+def test_pallas_ring_requires_f32_sum_reduce_scatter(
+    kind: CollectiveKind,
+    reducer: str,
+    element_type,
+) -> None:
+    is_reduce_scatter = kind is CollectiveKind.REDUCE_SCATTER
+    source = AllocOp(
+        buffer(
+            (8, 8),
+            "X Y",
+            element_type,
+            memory=MemorySpace.VMEM,
+            sharding=("", "") if is_reduce_scatter else ("", "t"),
+        ).to_type(),
+        "source",
+    )
+    destination = AllocOp(
+        buffer(
+            (8, 2) if is_reduce_scatter else (8, 8),
+            "X Y",
+            element_type,
+            memory=MemorySpace.VMEM,
+            sharding=("", "t"),
+        ).to_type(),
+        "destination",
+    )
+
+    with pytest.raises(
+        VerifyException,
+        match="Pallas bidirectional ring implementation requires f32 sum reduce-scatter",
+    ):
+        CollectiveOp(
+            source,
+            destination,
+            stage=0,
+            kind=kind,
+            mesh_axis="t",
+            group_size=4,
+            split_dimension=1 if is_reduce_scatter else -1,
+            reducer=reducer,
+            implementation=CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING,
+        ).verify_()
 
 
 def test_collective_rejects_a_shape_correct_but_wrong_sharding_transition() -> None:
@@ -880,13 +940,9 @@ def _pipeline_matmul_kernel(
     )
     captures = []
     transfers = []
-    for index, (source, spec) in enumerate(
-        zip(builder.inputs, local_specs, strict=True)
-    ):
+    for index, (source, spec) in enumerate(zip(builder.inputs, local_specs, strict=True)):
         destination = builder.alloc(spec, f"capture_{index}")
-        transfers.append(
-            builder.dma_start(source, destination, builder.semaphore(), stage=0)
-        )
+        transfers.append(builder.dma_start(source, destination, builder.semaphore(), stage=0))
         captures.append(destination)
     for transfer in transfers:
         builder.dma_wait(transfer, stage=1)
