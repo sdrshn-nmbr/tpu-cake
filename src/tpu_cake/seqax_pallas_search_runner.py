@@ -4,7 +4,6 @@ import hashlib
 import json
 import math
 import re
-import sqlite3
 import statistics
 import subprocess
 import time
@@ -23,7 +22,7 @@ from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContra
 from tpu_cake.dialects.tpu_schedule import BufferType, MxuEinsumOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.jax_lowering import JaxTensorContract
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_pallas_lowering import (
     SeqaxPallasPlan,
@@ -96,6 +95,7 @@ def _search_source_manifest() -> tuple[SourceFileContract, ...]:
         package / "runner.py",
         package / "seqax_pallas_lowering.py",
         package / "seqax_pallas_runner.py",
+        package / "stablehlo.py",
         package / "seqax_pallas_search.py",
         package / "seqax_pallas_search_runner.py",
         package / "seqax_physical_lowering.py",
@@ -155,15 +155,9 @@ def _load_primitive_input(path: Path, dtype_name: str) -> np.ndarray:
 
 
 def _close_ledger(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
-    for sidecar in (
-        path.with_name(f"{path.name}-shm"),
-        path.with_name(f"{path.name}-wal"),
-    ):
-        if sidecar.exists():
-            raise ValueError(f"SEQAX_PALLAS_SEARCH_LEDGER_SIDECAR path={sidecar}")
+    present = finalize_ledger(path)
+    if present:
+        raise ValueError(f"SEQAX_PALLAS_SEARCH_LEDGER_SIDECAR path={present[0]}")
 
 
 def _require_safe_new_root(root: Path) -> None:

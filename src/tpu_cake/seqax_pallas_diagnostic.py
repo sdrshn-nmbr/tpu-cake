@@ -6,7 +6,6 @@ import math
 import os
 import re
 import shutil
-import sqlite3
 import statistics
 import subprocess
 import sys
@@ -35,7 +34,7 @@ from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.tpu_schedule import BufferType, CollectiveOp, MxuEinsumOp
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
 from tpu_cake.metrics import MetricSource
 from tpu_cake.runner import (
     RunMode,
@@ -278,6 +277,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "seqax_pallas_diagnostic.py",
         package / "seqax_pallas_lowering.py",
         package / "seqax_pallas_runner.py",
+        package / "stablehlo.py",
         package / "seqax_pallas_search.py",
         package / "seqax_pallas_search_runner.py",
         package / "seqax_physical_execution.py",
@@ -321,10 +321,7 @@ def _require_clean_repository(repository_root: Path) -> None:
 
 
 def _close_ledger(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
-    if path.with_name(f"{path.name}-shm").exists() or path.with_name(f"{path.name}-wal").exists():
+    if finalize_ledger(path):
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_LEDGER_SIDECAR")
 
 

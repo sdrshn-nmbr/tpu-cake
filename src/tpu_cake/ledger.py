@@ -183,6 +183,17 @@ class ExperimentLedger:
         )
 
 
+def finalize_ledger(path: Path) -> tuple[Path, ...]:
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.execute("PRAGMA journal_mode=DELETE")
+    sidecars = (
+        path.with_name(f"{path.name}-shm"),
+        path.with_name(f"{path.name}-wal"),
+    )
+    return tuple(sidecar for sidecar in sidecars if sidecar.exists())
+
+
 def read_ledger_history(path: Path, run_id: str) -> tuple[LedgerEvent, ...]:
     sidecars = (
         path.with_name(f"{path.name}-shm"),

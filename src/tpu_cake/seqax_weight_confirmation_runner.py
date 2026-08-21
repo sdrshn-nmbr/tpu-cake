@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import statistics
 import subprocess
 import time
@@ -11,11 +10,23 @@ from pathlib import Path
 import jax
 import numpy as np
 
+from tpu_cake.artifacts import (
+    build_artifact_manifest,
+)
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import (
+    write_json as _write_json,
+)
+from tpu_cake.artifacts import (
+    write_text as _write_text,
+)
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.distributed_tensor import AllGatherOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_pallas_runner import (
     _physical_collective_counts,
@@ -57,23 +68,17 @@ from tpu_cake.seqax_weight_placement_runner import (
     _require_clean_repository,
     _require_safe_new_root,
     _resident_inputs,
-    _sha256,
     _source_manifest,
     _validate_correctness,
     _validate_devices,
-    _write_json,
-    _write_text,
     prepare_weight_placement_candidates,
 )
+from tpu_cake.stablehlo import StableHloInspector
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
 
 
 def _close_ledger(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
-    sidecars = (path.with_name(f"{path.name}-shm"), path.with_name(f"{path.name}-wal"))
-    if any(value.exists() for value in sidecars):
+    if finalize_ledger(path):
         raise ValueError("SEQAX_WEIGHT_CONFIRMATION_LEDGER_SIDECARS")
 
 
@@ -225,16 +230,7 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 
 def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
-    return tuple(
-        ArtifactReference(
-            path=path.relative_to(root).as_posix(),
-            size_bytes=path.stat().st_size,
-            sha256=_sha256(path),
-            role=_artifact_role(path.relative_to(root)),
-        )
-        for path in sorted(value for value in root.rglob("*") if value.is_file())
-        if path.name != "receipt.json"
-    )
+    return build_artifact_manifest(root, role_for_path=_artifact_role)
 
 
 def _save_array(path: Path, value: np.ndarray) -> None:
@@ -427,10 +423,10 @@ def _validate_plans(
             all_gather_count=all_gathers,
             reduce_scatter_count=reduce_scatters,
         )
-        if (
-            stablehlo.count("stablehlo.all_gather")
-            != expected.candidate.expected_stablehlo_all_gathers
-        ):
+        stablehlo_all_gathers = StableHloInspector.parse(
+            stablehlo
+        ).live_public_main_operation_count("stablehlo.all_gather")
+        if stablehlo_all_gathers != expected.candidate.expected_stablehlo_all_gathers:
             raise ValueError(
                 "SEQAX_WEIGHT_CONFIRMATION_STABLEHLO_GATHER_MISMATCH "
                 f"candidate={expected.candidate.name}"
@@ -455,7 +451,7 @@ def _validate_plans(
                 isinstance(operation, AllGatherOp) for operation in expected.distributed.walk()
             ),
             physical_collectives=all_gathers + reduce_scatters,
-            stablehlo_all_gathers=stablehlo.count("stablehlo.all_gather"),
+            stablehlo_all_gathers=stablehlo_all_gathers,
             pallas_regions=expected.plan.pallas_region_count,
             parameter_bytes_per_device=parameter_residency_bytes_per_device(
                 expected.plan.input_contracts,

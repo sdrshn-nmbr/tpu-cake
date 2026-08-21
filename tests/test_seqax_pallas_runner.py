@@ -9,6 +9,7 @@ from tpu_cake.runner import RunMode
 from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
 from tpu_cake.seqax_pallas_runner import (
     SeqaxPallasInvocation,
+    _stablehlo_pallas_region_counts,
     _validate_compiled_program,
     run_seqax_physical_pallas,
     seqax_physical_pallas_experiment,
@@ -98,6 +99,17 @@ def _stablehlo_pallas_chain(
         )
     functions.append("}")
     return "\n".join(functions)
+
+
+def test_stablehlo_pallas_region_counts_preserves_runner_diagnostic_identity() -> None:
+    stablehlo = """module {
+  func.func private @not_main() {
+    return
+  }
+}"""
+
+    with pytest.raises(ValueError, match="^SEQAX_PALLAS_STABLEHLO_MAIN_MISSING$"):
+        _stablehlo_pallas_region_counts(stablehlo)
 
 
 def test_seqax_pallas_invocation_binds_both_ir_levels_and_source() -> None:

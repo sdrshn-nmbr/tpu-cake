@@ -32,7 +32,7 @@ from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity, SourceFileContract
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.jax_lowering import JaxDistributedMeshPlan, lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_numerical import (
     SeqaxBf16CpuReferenceReplayAssessment,
@@ -397,6 +397,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "seqax_numerical_runner.py",
         package / "seqax_pallas_lowering.py",
         package / "seqax_pallas_runner.py",
+        package / "stablehlo.py",
         package / "seqax_physical_execution.py",
         package / "seqax_physical_lowering.py",
         package / "seqax_runner.py",
@@ -574,11 +575,7 @@ def _preflight_existing_root(root: Path) -> None:
 
 
 def _close_ledger(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
-    sidecars = (path.with_name(f"{path.name}-shm"), path.with_name(f"{path.name}-wal"))
-    if any(value.exists() for value in sidecars):
+    if finalize_ledger(path):
         raise ValueError("SEQAX_BF16_LEDGER_SIDECAR_PRESENT")
 
 

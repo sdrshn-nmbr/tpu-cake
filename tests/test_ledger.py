@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
 
 RUN_ID = "1" * 64
 
@@ -99,3 +99,12 @@ def test_evidence_validation_rejects_a_ledger_sidecar(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="LEDGER_SIDECAR_PRESENT"):
         read_ledger_history(path, RUN_ID)
+
+
+def test_finalize_ledger_checkpoints_wal_and_preserves_history(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite"
+    with ExperimentLedger(path) as ledger:
+        ledger.create(RUN_ID, {"schedule": "a"})
+
+    assert finalize_ledger(path) == ()
+    assert read_ledger_history(path, RUN_ID)[0].state is RunState.CREATED

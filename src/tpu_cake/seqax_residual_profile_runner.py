@@ -7,7 +7,6 @@ import math
 import os
 import platform
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -32,7 +31,7 @@ from tpu_cake.contracts import (
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
 from tpu_cake.metrics import MetricSource
 from tpu_cake.runner import RunMode, _runtime_identity, _source_state
 from tpu_cake.seqax_cost_model import SeqaxCostModelReport, estimate_seqax_forward
@@ -188,6 +187,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "seqax_pallas_diagnostic.py",
         package / "seqax_pallas_lowering.py",
         package / "seqax_pallas_runner.py",
+        package / "stablehlo.py",
         package / "seqax_pallas_search.py",
         package / "seqax_physical_execution.py",
         package / "seqax_physical_lowering.py",
@@ -261,11 +261,7 @@ def _preflight_root(root: Path) -> None:
 
 
 def _close_ledger(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
-    sidecars = (path.with_name(f"{path.name}-shm"), path.with_name(f"{path.name}-wal"))
-    if any(path.exists() for path in sidecars):
+    if finalize_ledger(path):
         raise ValueError("SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS")
 
 

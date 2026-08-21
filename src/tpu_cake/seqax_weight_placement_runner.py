@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import sqlite3
 import statistics
 import subprocess
 import sys
@@ -17,11 +15,26 @@ import numpy as np
 from jax.sharding import NamedSharding
 from xdsl.dialects.builtin import ModuleOp
 
+from tpu_cake.artifacts import (
+    build_artifact_manifest,
+)
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import (
+    text_file_sha256 as _text_sha256,
+)
+from tpu_cake.artifacts import (
+    write_json as _write_json,
+)
+from tpu_cake.artifacts import (
+    write_text as _write_text,
+)
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.distributed_tensor import AllGatherOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_pallas_lowering import (
     SeqaxPallasPlan,
@@ -59,6 +72,7 @@ from tpu_cake.seqax_weight_placement import (
     default_seqax_weight_placement_contract,
     parameter_residency_bytes_per_device,
 )
+from tpu_cake.stablehlo import StableHloInspector
 from tpu_cake.workloads.seqax_forward import seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_canonical_reference,
@@ -83,28 +97,6 @@ class CompiledPlacement:
     compiler_hlo: str
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _text_sha256(value: str) -> str:
-    return hashlib.sha256((value + "\n").encode()).hexdigest()
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-
-def _write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value)
-
-
 def _save_array(path: Path, value: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, value, allow_pickle=False)
@@ -119,6 +111,7 @@ def _load_array(path: Path) -> np.ndarray:
 def _source_manifest() -> tuple[SourceFileContract, ...]:
     package = Path(__file__).resolve().parent
     paths = (
+        package / "artifacts.py",
         package / "canonical.py",
         package / "cli.py",
         package / "contracts.py",
@@ -136,6 +129,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
         package / "seqax_physical_execution.py",
         package / "seqax_physical_lowering.py",
         package / "seqax_runner.py",
+        package / "stablehlo.py",
         package / "seqax_weight_confirmation.py",
         package / "seqax_weight_confirmation_runner.py",
         package / "seqax_weight_placement.py",
@@ -186,14 +180,7 @@ def _preflight_existing_root(root: Path) -> None:
 
 
 def _close_ledger(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
-    sidecars = (
-        path.with_name(f"{path.name}-shm"),
-        path.with_name(f"{path.name}-wal"),
-    )
-    present = tuple(value for value in sidecars if value.exists())
+    present = finalize_ledger(path)
     if present:
         raise ValueError(f"SEQAX_WEIGHT_PLACEMENT_LEDGER_SIDECARS paths={present}")
 
@@ -289,7 +276,10 @@ def _compile(
         all_gather_count=all_gathers,
         reduce_scatter_count=reduce_scatters,
     )
-    if stablehlo.count("stablehlo.all_gather") != prepared.candidate.expected_stablehlo_all_gathers:
+    stablehlo_all_gathers = StableHloInspector.parse(stablehlo).live_public_main_operation_count(
+        "stablehlo.all_gather"
+    )
+    if stablehlo_all_gathers != prepared.candidate.expected_stablehlo_all_gathers:
         raise ValueError(
             f"SEQAX_WEIGHT_PLACEMENT_STABLEHLO_GATHER_MISMATCH candidate={prepared.candidate.name}"
         )
@@ -575,6 +565,9 @@ def _confirmation_orders(
 
 def _plan_record(root: Path, value: CompiledPlacement) -> SeqaxWeightPlacementPlan:
     plan_root = root / "plans" / value.prepared.candidate.name
+    stablehlo_all_gathers = StableHloInspector.parse(
+        value.stablehlo
+    ).live_public_main_operation_count("stablehlo.all_gather")
     return SeqaxWeightPlacementPlan(
         candidate=value.prepared.candidate.name,
         policy=value.prepared.candidate.policy,
@@ -587,7 +580,7 @@ def _plan_record(root: Path, value: CompiledPlacement) -> SeqaxWeightPlacementPl
             isinstance(operation, AllGatherOp) for operation in value.prepared.distributed.walk()
         ),
         physical_collectives=sum(_physical_collective_counts(value.prepared.physical)),
-        stablehlo_all_gathers=value.stablehlo.count("stablehlo.all_gather"),
+        stablehlo_all_gathers=stablehlo_all_gathers,
         pallas_regions=value.prepared.plan.pallas_region_count,
         parameter_bytes_per_device=parameter_residency_bytes_per_device(
             value.prepared.plan.input_contracts,
@@ -852,16 +845,7 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 
 def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
-    return tuple(
-        ArtifactReference(
-            path=path.relative_to(root).as_posix(),
-            size_bytes=path.stat().st_size,
-            sha256=_sha256(path),
-            role=_artifact_role(path.relative_to(root)),
-        )
-        for path in sorted(value for value in root.rglob("*") if value.is_file())
-        if path.name != "receipt.json"
-    )
+    return build_artifact_manifest(root, role_for_path=_artifact_role)
 
 
 def _build_receipt(
@@ -1041,10 +1025,10 @@ def _validate(
             all_gather_count=all_gathers,
             reduce_scatter_count=reduce_scatters,
         )
-        if (
-            stablehlo.count("stablehlo.all_gather")
-            != expected.candidate.expected_stablehlo_all_gathers
-        ):
+        stablehlo_all_gathers = StableHloInspector.parse(
+            stablehlo
+        ).live_public_main_operation_count("stablehlo.all_gather")
+        if stablehlo_all_gathers != expected.candidate.expected_stablehlo_all_gathers:
             raise ValueError(
                 f"SEQAX_WEIGHT_PLACEMENT_STABLEHLO_GATHER_MISMATCH candidate={record.candidate}"
             )
@@ -1073,7 +1057,7 @@ def _validate(
                 isinstance(operation, AllGatherOp) for operation in expected.distributed.walk()
             ),
             physical_collectives=all_gathers + reduce_scatters,
-            stablehlo_all_gathers=stablehlo.count("stablehlo.all_gather"),
+            stablehlo_all_gathers=stablehlo_all_gathers,
             pallas_regions=expected.plan.pallas_region_count,
             parameter_bytes_per_device=parameter_residency_bytes_per_device(
                 expected.plan.input_contracts,

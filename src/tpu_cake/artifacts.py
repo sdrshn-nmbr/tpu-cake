@@ -1,7 +1,51 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+
+from tpu_cake.contracts import ArtifactReference, ArtifactRole
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def text_file_sha256(value: str) -> str:
+    return hashlib.sha256((value + "\n").encode()).hexdigest()
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value)
+
+
+def build_artifact_manifest(
+    root: Path,
+    *,
+    role_for_path: Callable[[Path], ArtifactRole],
+    excluded_names: tuple[str, ...] = ("receipt.json",),
+) -> tuple[ArtifactReference, ...]:
+    return tuple(
+        ArtifactReference(
+            path=path.relative_to(root).as_posix(),
+            size_bytes=path.stat().st_size,
+            sha256=file_sha256(path),
+            role=role_for_path(path.relative_to(root)),
+        )
+        for path in sorted(value for value in root.rglob("*") if value.is_file())
+        if path.name not in excluded_names
+    )
 
 
 def resolve_bundle_artifact(root: Path, declared_path: str) -> Path:

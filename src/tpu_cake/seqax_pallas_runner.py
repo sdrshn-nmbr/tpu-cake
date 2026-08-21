@@ -11,9 +11,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax._src.interpreters import mlir
 from jax.sharding import NamedSharding
-from jaxlib.mlir import ir
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tpu_cake.canonical import canonical_text
@@ -64,6 +62,7 @@ from tpu_cake.seqax_runner import (
     SEQAX_OUTPUT_RTOL,
     expected_seqax_profiler_contract,
 )
+from tpu_cake.stablehlo import StableHloInspector
 from tpu_cake.workloads.seqax_forward import (
     SEQAX_FORWARD_INPUT_NAMES,
     SEQAX_REVISION,
@@ -248,97 +247,48 @@ def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:
     return float(absolute.max()), float((absolute / denominator).max())
 
 
-def _as_mlir_operation(value: object) -> ir.Operation | None:
-    if isinstance(value, ir.Operation):
-        return value
-    operation = getattr(value, "operation", None)
-    return operation if isinstance(operation, ir.Operation) else None
-
-
-def _mlir_operations(operation: ir.Operation) -> tuple[ir.Operation, ...]:
-    operations: list[ir.Operation] = []
-
-    def visit(current: ir.Operation) -> None:
-        operations.append(current)
-        for region in current.regions:
-            for block in region.blocks:
-                for child in block.operations:
-                    visit(child.operation)
-
-    visit(operation)
-    return tuple(operations)
-
-
-def _mlir_result_reaches_function_return(result: ir.Value) -> bool:
-    pending = deque([result])
-    visited: set[ir.Value] = set()
-    while pending:
-        value = pending.popleft()
-        if value in visited:
-            continue
-        visited.add(value)
-        for use in value.uses:
-            consumer = _as_mlir_operation(use.owner)
-            if consumer is None:
-                raise ValueError("SEQAX_PALLAS_STABLEHLO_INVALID_USE")
-            if consumer.name == "func.return":
-                return True
-            if consumer.name in {"sdy.return", "stablehlo.return"}:
-                parent = _as_mlir_operation(consumer.parent)
-                if parent is not None and use.operand_number < len(parent.results):
-                    pending.append(parent.results[use.operand_number])
-            pending.extend(consumer.results)
-    return False
-
-
 def _stablehlo_pallas_region_counts(stablehlo: str) -> tuple[int, int]:
     try:
-        with mlir.make_ir_context():
-            module = ir.Module.parse(stablehlo)
-            module.operation.verify()
-            functions = tuple(
-                operation.operation
-                for operation in module.body
-                if operation.operation.name == "func.func"
-            )
-            entries = tuple(
-                function
-                for function in functions
-                if str(function.attributes["sym_name"]) == '"main"'
-                and str(function.attributes.get("sym_visibility")) == '"public"'
-            )
-            if len(entries) != 1:
-                raise ValueError("SEQAX_PALLAS_STABLEHLO_MAIN_MISSING")
-            entry = entries[0]
-            kernel_names = {
-                '"seqax_named_einsum"': "einsum",
-                '"seqax_silu_multiply"': "vector",
-            }
-            counts = {"einsum": 0, "vector": 0}
-            for function in functions:
-                for operation in _mlir_operations(function):
-                    if operation.name != "stablehlo.custom_call":
-                        continue
-                    if str(operation.attributes.get("call_target_name")) != '"tpu_custom_call"':
-                        continue
-                    kernel_name = str(operation.attributes.get("kernel_name"))
-                    if function != entry:
-                        if kernel_name in kernel_names:
-                            raise ValueError("SEQAX_PALLAS_STABLEHLO_PALLAS_OUTSIDE_MAIN")
-                        continue
-                    kind = kernel_names.get(kernel_name)
-                    if kind is None:
-                        raise ValueError(
-                            "SEQAX_PALLAS_STABLEHLO_UNKNOWN_TPU_CUSTOM_CALL "
-                            f"kernel_name={kernel_name}"
-                        )
-                    if len(operation.results) != 1 or not _mlir_result_reaches_function_return(
-                        operation.results[0]
-                    ):
-                        raise ValueError("SEQAX_PALLAS_STABLEHLO_PALLAS_NOT_LIVE")
-                    counts[kind] += 1
-            return counts["einsum"], counts["vector"]
-    except ValueError:
+        inspector = StableHloInspector.parse(stablehlo)
+    except ValueError as error:
+        if str(error) in {
+            "STABLEHLO_PUBLIC_MAIN_MISSING",
+            "STABLEHLO_PUBLIC_MAIN_AMBIGUOUS",
+        }:
+            raise ValueError("SEQAX_PALLAS_STABLEHLO_MAIN_MISSING") from error
+        raise ValueError("SEQAX_PALLAS_STABLEHLO_INVALID") from error
+
+    try:
+        kernel_names = {
+            '"seqax_named_einsum"': "einsum",
+            '"seqax_silu_multiply"': "vector",
+        }
+        counts = {"einsum": 0, "vector": 0}
+        for function in inspector.functions:
+            for operation in inspector.operations(function):
+                if operation.name != "stablehlo.custom_call":
+                    continue
+                if str(operation.attributes.get("call_target_name")) != '"tpu_custom_call"':
+                    continue
+                kernel_name = str(operation.attributes.get("kernel_name"))
+                if function != inspector.public_main:
+                    if kernel_name in kernel_names:
+                        raise ValueError("SEQAX_PALLAS_STABLEHLO_PALLAS_OUTSIDE_MAIN")
+                    continue
+                kind = kernel_names.get(kernel_name)
+                if kind is None:
+                    raise ValueError(
+                        f"SEQAX_PALLAS_STABLEHLO_UNKNOWN_TPU_CUSTOM_CALL kernel_name={kernel_name}"
+                    )
+                if len(operation.results) != 1 or not inspector.result_reaches_return(
+                    operation.results[0]
+                ):
+                    raise ValueError("SEQAX_PALLAS_STABLEHLO_PALLAS_NOT_LIVE")
+                counts[kind] += 1
+        return counts["einsum"], counts["vector"]
+    except ValueError as error:
+        if str(error) == "STABLEHLO_INVALID_USE":
+            raise ValueError("SEQAX_PALLAS_STABLEHLO_INVALID_USE") from error
         raise
     except Exception as error:
         raise ValueError("SEQAX_PALLAS_STABLEHLO_INVALID") from error
