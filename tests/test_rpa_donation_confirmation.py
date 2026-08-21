@@ -50,16 +50,19 @@ def _rounds(candidate_ns: int) -> tuple[InklingRpaDonationTimingRound, ...]:
     return tuple(rounds)
 
 
-def test_donation_confirmation_contract_is_external_and_pending() -> None:
+def test_donation_confirmation_contract_is_external_and_pinned() -> None:
     path = Path("contracts/inkling-rpa-donation-confirmation-v1.json")
     saved = InklingRpaDonationConfirmationContract.model_validate_json(path.read_text())
     canonical = default_inkling_rpa_donation_confirmation_contract()
     assert saved == canonical
     assert (
-        saved.confirmation_id == "9feadd331f735242324483aa5256337ba1ac6450018aef434a7415dcc7636604"
+        saved.confirmation_id == "7dfee6b9b857bf5aef6a16745bf5a32a28a130a2131afd3395a35c9f4edecb5a"
     )
-    assert saved.hlo_identity_status == "pending"
-    assert tuple(value.stablehlo_sha256 for value in saved.arms) == ("0" * 64, "0" * 64)
+    assert saved.hlo_identity_status == "pinned"
+    assert tuple(value.stablehlo_sha256 for value in saved.arms) == (
+        "f5da8c8caa28f42ff79c9bb14cb5cd638d01de85eca4156d6116ec97d14f1c7e",
+        "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a",
+    )
 
 
 def test_donation_confirmation_seeds_are_fresh() -> None:
@@ -103,12 +106,7 @@ def test_hlo_capture_rejects_pinned_contract_before_repository_access(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    pending = default_inkling_rpa_donation_confirmation_contract()
-    pinned = pending.model_copy(update={"hlo_identity_status": "pinned"})
-    monkeypatch.setattr(
-        "tpu_cake.rpa_donation_confirmation_runner.default_inkling_rpa_donation_confirmation_contract",
-        lambda: pinned,
-    )
+    pinned = default_inkling_rpa_donation_confirmation_contract()
     monkeypatch.setattr(
         "tpu_cake.rpa_donation_confirmation_runner._repository_root",
         lambda: pytest.fail("repository must not be read for pinned capture"),

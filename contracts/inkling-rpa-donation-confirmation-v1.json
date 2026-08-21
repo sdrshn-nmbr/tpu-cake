@@ -13,7 +13,7 @@
     "psutil==7.0.0",
     "pyzmq==27.0.1"
   ],
-  "hlo_identity_status": "pending",
+  "hlo_identity_status": "pinned",
   "baseline": "non_donating",
   "candidate": "donating",
   "correctness_seeds": [
@@ -147,14 +147,14 @@
       "arm": "non_donating",
       "external_donate_argnums": [],
       "execution_sha256": "a869381037b4c52c22b0af2aa574eeb1e06d091375a1a48bb7c387fab6405398",
-      "stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "stablehlo_sha256": "f5da8c8caa28f42ff79c9bb14cb5cd638d01de85eca4156d6116ec97d14f1c7e",
       "compiler_hlo_alias_contract": "no-query-cache-alias"
     },
     {
       "arm": "donating",
       "external_donate_argnums": [0, 3],
       "execution_sha256": "251fbc910fe68035dafabea3e5ecdeab058ed51705335596966b797ca917b577",
-      "stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "stablehlo_sha256": "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a",
       "compiler_hlo_alias_contract": "query-output-aliases-arg0-cache-output-aliases-arg3"
     }
   ],

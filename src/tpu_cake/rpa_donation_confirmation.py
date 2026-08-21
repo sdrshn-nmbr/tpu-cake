@@ -393,7 +393,7 @@ def default_inkling_rpa_donation_confirmation_contract() -> InklingRpaDonationCo
         compilation_source_root=INKLING_SHARDED_RPA_COMPILATION_ROOT,
         backend_python_path=INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH,
         backend_import_packages=INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES,
-        hlo_identity_status="pending",
+        hlo_identity_status="pinned",
         baseline=InklingRpaDonationArm.NON_DONATING,
         candidate=InklingRpaDonationArm.DONATING,
         correctness_seeds=INKLING_RPA_DONATION_CORRECTNESS_SEEDS,
@@ -425,14 +425,18 @@ def default_inkling_rpa_donation_confirmation_contract() -> InklingRpaDonationCo
                 arm=InklingRpaDonationArm.NON_DONATING,
                 external_donate_argnums=(),
                 execution_sha256=_arm_execution_sha256(surface.plan, ()),
-                stablehlo_sha256="0" * 64,
+                stablehlo_sha256=(
+                    "f5da8c8caa28f42ff79c9bb14cb5cd638d01de85eca4156d6116ec97d14f1c7e"
+                ),
                 compiler_hlo_alias_contract="no-query-cache-alias",
             ),
             InklingRpaDonationArmContract(
                 arm=InklingRpaDonationArm.DONATING,
                 external_donate_argnums=(0, 3),
                 execution_sha256=_arm_execution_sha256(surface.plan, (0, 3)),
-                stablehlo_sha256="0" * 64,
+                stablehlo_sha256=(
+                    "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a"
+                ),
                 compiler_hlo_alias_contract=("query-output-aliases-arg0-cache-output-aliases-arg3"),
             ),
         ),
