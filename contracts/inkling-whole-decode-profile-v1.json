@@ -8,7 +8,7 @@
   "capture_git_commit": "0000000000000000000000000000000000000000",
   "capture_uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
   "capture_source_manifest": [
-    {"path": "src/tpu_cake/inkling_decode_profile.py", "sha256": "29d85b0a25873c9ea1b925d92bd5431fd50cf7af25681202381b5bfb3b50b6ef"},
+    {"path": "src/tpu_cake/inkling_decode_profile.py", "sha256": "09a08d87d98e45a6b7749bae26ac9ac98e5b0b8c5df2cc79aa1b87ad0cb62769"},
     {"path": "src/tpu_cake/xprof_evidence.py", "sha256": "8269ed50c28b668633d26b09996f67a433ae2ada3206e48d0a30bc30ccb6b5d4"},
     {"path": "src/tpu_cake/evidence.py", "sha256": "ba7fd05982596a5d195327e25b2fabda9a628b2fddb6083222cc258d439e4196"},
     {"path": "src/tpu_cake/contracts.py", "sha256": "089fd9838a13bca1a11ec539f65511eba4e18edb9f70e00676349613b09bcf31"},
@@ -125,30 +125,31 @@
     ]
   },
   "main_program_prefix": "jit_jitted_run_model",
+  "hlo_identity_method": "xprof-long-hlo-text-v1",
   "programs": [
     {
       "name_prefix": "jit_jitted_run_model",
-      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit_jitted_sampler",
-      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit_resolve_future_token_ids",
-      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit_set_future_token_ids",
-      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit__lambda",
-      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "module_events_per_tpu_core": {}
     }
   ]

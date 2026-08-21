@@ -21,6 +21,7 @@ import jax
 import psutil
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from xprof import profile_data
+from xprof.cli.xprof_cli import XProfCli
 
 from tpu_cake.contracts import ProfileExpectation, RuntimeIdentity, SourceFileContract
 from tpu_cake.evidence import (
@@ -82,7 +83,7 @@ class InklingDecodeProgramContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name_prefix: str = Field(min_length=1)
-    hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    semantic_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     module_events_per_tpu_core: dict[str, int]
 
 
@@ -113,6 +114,7 @@ class InklingDecodeProfileContract(BaseModel):
     server: InklingDecodeServerContract
     profile: ProfileExpectation
     main_program_prefix: str = Field(min_length=1)
+    hlo_identity_method: Literal["xprof-long-hlo-text-v1"]
     programs: tuple[InklingDecodeProgramContract, ...]
 
     @computed_field
@@ -139,7 +141,7 @@ class InklingDecodeProfileContract(BaseModel):
             raise ValueError("main program must be part of the required program inventory")
         zero = "0" * 64
         zero_commit = "0" * 40
-        hashes = [program.hlo_sha256 for program in self.programs]
+        hashes = [program.semantic_hlo_sha256 for program in self.programs]
         expected_planes = {f"/device:TPU:{index}" for index in range(self.server.tp_size)}
         if self.hlo_identity_status is HloIdentityStatus.PENDING:
             if (
@@ -271,6 +273,7 @@ class InklingDecodeProfileAssessment(BaseModel):
     prompt_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     capture: CaptureAssessment
     required_programs: tuple[ProgramEvidence, ...]
+    semantic_hlo_sha256_by_program: dict[str, str]
     module_events_per_tpu_core: dict[str, dict[str, int]]
     xplane_runtime: dict[str, str]
     findings: tuple[Finding, ...]
@@ -287,6 +290,43 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _semantic_hlo_sha256(text: str) -> str:
+    if "HloModule " not in text[:4096]:
+        raise ValueError("INKLING_PROFILE_SEMANTIC_HLO_INVALID")
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _semantic_hlo_hashes(
+    capture_root: Path,
+    capture: CaptureEvidence,
+    contract: InklingDecodeProfileContract,
+) -> dict[str, str]:
+    hlo_directories = {
+        path.parent.resolve() for path in capture_root.resolve().rglob("*.hlo_proto.pb")
+    }
+    if len(hlo_directories) != 1:
+        raise ValueError(
+            f"INKLING_PROFILE_HLO_DIRECTORY_INVENTORY_MISMATCH observed={len(hlo_directories)}"
+        )
+    hlo_directory = hlo_directories.pop()
+    hashes: dict[str, str] = {}
+    for expected in contract.programs:
+        matching = _matching_programs(capture, expected.name_prefix)
+        if len(matching) != 1 or matching[0].hlo is None:
+            continue
+        program = matching[0]
+        text = XProfCli.get_hlo_module_content(
+            str(hlo_directory.parent),
+            hlo_directory.name,
+            module_name=program.name,
+            max_lines=-1,
+            print_metadata=True,
+            bypass_cache=True,
+        )
+        hashes[program.name] = _semantic_hlo_sha256(text)
+    return hashes
 
 
 def _runtime_identity() -> RuntimeIdentity:
@@ -1034,6 +1074,7 @@ def _validate_request(
 def assess_inkling_decode_profile(
     *,
     capture: CaptureEvidence,
+    semantic_hlo_sha256_by_program: dict[str, str],
     module_events_per_tpu_core: dict[str, dict[str, int]],
     xplane_process_id: int,
     xplane_profile_start_time_ns: int,
@@ -1129,6 +1170,28 @@ def assess_inkling_decode_profile(
         program = matching[0]
         required.append(program)
         required_program_names[expected.name_prefix] = program.name
+        semantic_hlo_sha256 = semantic_hlo_sha256_by_program.get(program.name)
+        if semantic_hlo_sha256 is None:
+            findings.append(
+                _finding(
+                    "REQUIRED_PROGRAM_SEMANTIC_HLO_MISSING",
+                    "required program has no canonical semantic HLO identity",
+                    f"name_prefix={expected.name_prefix}",
+                )
+            )
+        elif (
+            contract.hlo_identity_status is HloIdentityStatus.PINNED
+            and semantic_hlo_sha256 != expected.semantic_hlo_sha256
+        ):
+            findings.append(
+                _finding(
+                    "REQUIRED_PROGRAM_SEMANTIC_HLO_MISMATCH",
+                    "required program semantic HLO does not match the external contract",
+                    f"name_prefix={expected.name_prefix}",
+                    f"expected={expected.semantic_hlo_sha256}",
+                    f"observed={semantic_hlo_sha256}",
+                )
+            )
         if program.program_id not in capture.timed_program_ids or program.timed_self_us <= 0:
             findings.append(
                 _finding(
@@ -1145,19 +1208,16 @@ def assess_inkling_decode_profile(
                     f"name_prefix={expected.name_prefix}",
                 )
             )
-        elif (
-            contract.hlo_identity_status is HloIdentityStatus.PINNED
-            and program.hlo.sha256 != expected.hlo_sha256
-        ):
-            findings.append(
-                _finding(
-                    "REQUIRED_PROGRAM_HLO_MISMATCH",
-                    "required program HLO does not match the external contract",
-                    f"name_prefix={expected.name_prefix}",
-                    f"expected={expected.hlo_sha256}",
-                    f"observed={program.hlo.sha256}",
-                )
+    required_names = {program.name for program in required}
+    if set(semantic_hlo_sha256_by_program) != required_names:
+        findings.append(
+            _finding(
+                "SEMANTIC_HLO_INVENTORY_MISMATCH",
+                "semantic HLO identities must exactly cover the required program inventory",
+                f"expected={sorted(required_names)}",
+                f"observed={sorted(semantic_hlo_sha256_by_program)}",
             )
+        )
     required_program_ids = {program.program_id for program in required}
     if required_program_ids != capture.timed_program_ids:
         findings.append(
@@ -1255,6 +1315,7 @@ def assess_inkling_decode_profile(
         prompt_corpus_sha256=_sha256(prompt_cases_path),
         capture=generic,
         required_programs=tuple(required),
+        semantic_hlo_sha256_by_program=semantic_hlo_sha256_by_program,
         module_events_per_tpu_core=module_events_per_tpu_core,
         xplane_runtime=xplane_runtime,
         findings=tuple(findings),
@@ -1274,8 +1335,10 @@ def inspect_inkling_decode_profile(
     xplane = xplanes[0]
     process_id, profile_start_time, profile_stop_time = _xplane_identity(xplane)
     runtime = _xplane_runtime(xplane)
+    capture = collect_capture(capture_root, contract.profile)
     return assess_inkling_decode_profile(
-        capture=collect_capture(capture_root, contract.profile),
+        capture=capture,
+        semantic_hlo_sha256_by_program=_semantic_hlo_hashes(capture_root, capture, contract),
         module_events_per_tpu_core=_module_event_counts(xplane),
         xplane_process_id=process_id,
         xplane_profile_start_time_ns=profile_start_time,

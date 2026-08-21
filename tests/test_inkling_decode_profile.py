@@ -132,15 +132,16 @@ def _contract(prompt_path: Path, *, pinned: bool) -> InklingDecodeProfileContrac
             required_timed_hlo_markers=("ragged_paged_attention", "gmm_v2"),
         ),
         main_program_prefix="jit_jitted_run_model",
+        hlo_identity_method="xprof-long-hlo-text-v1",
         programs=(
             InklingDecodeProgramContract(
                 name_prefix="jit_jitted_run_model",
-                hlo_sha256="a" * 64 if pinned else "0" * 64,
+                semantic_hlo_sha256="a" * 64 if pinned else "0" * 64,
                 module_events_per_tpu_core=event_counts,
             ),
             InklingDecodeProgramContract(
                 name_prefix="jit_jitted_sampler",
-                hlo_sha256="d" * 64 if pinned else "0" * 64,
+                semantic_hlo_sha256="d" * 64 if pinned else "0" * 64,
                 module_events_per_tpu_core=event_counts,
             ),
         ),
@@ -308,11 +309,17 @@ def _assess(
     contract: InklingDecodeProfileContract,
     *,
     capture: CaptureEvidence | None = None,
+    semantic_hlo: dict[str, str] | None = None,
     module_events: dict[str, dict[str, int]] | None = None,
     xplane_runtime: dict[str, str] | None = None,
 ):
     return assess_inkling_decode_profile(
         capture=_capture() if capture is None else capture,
+        semantic_hlo_sha256_by_program=semantic_hlo
+        or {
+            "jit_jitted_run_model(1)": "a" * 64,
+            "jit_jitted_sampler(2)": "d" * 64,
+        },
         module_events_per_tpu_core=_module_events() if module_events is None else module_events,
         xplane_process_id=123,
         xplane_profile_start_time_ns=XPLANE_START,
@@ -336,6 +343,37 @@ def test_pinned_whole_decode_profile_is_accepted(tmp_path) -> None:
     prompts = _prompt_file(tmp_path)
     contract = _contract(prompts, pinned=True)
     assert _assess(_write_request(tmp_path, prompts, contract), prompts, contract).accepted
+
+
+def test_semantic_hlo_identity_is_separate_from_raw_proto_bytes(tmp_path) -> None:
+    prompts = _prompt_file(tmp_path)
+    contract = _contract(prompts, pinned=True)
+    request = _write_request(tmp_path, prompts, contract)
+    capture = _capture()
+    programs = tuple(
+        program.model_copy(update={"hlo": program.hlo.model_copy(update={"sha256": "f" * 64})})
+        for program in capture.programs
+    )
+    assert _assess(
+        request,
+        prompts,
+        contract,
+        capture=capture.model_copy(update={"programs": programs}),
+    ).accepted
+
+    assessment = _assess(
+        request,
+        prompts,
+        contract,
+        capture=capture,
+        semantic_hlo={
+            "jit_jitted_run_model(1)": "f" * 64,
+            "jit_jitted_sampler(2)": "d" * 64,
+        },
+    )
+    assert "REQUIRED_PROGRAM_SEMANTIC_HLO_MISMATCH" in {
+        finding.code for finding in assessment.findings
+    }
 
 
 def test_pending_hlo_identity_is_descriptive_only(tmp_path) -> None:
