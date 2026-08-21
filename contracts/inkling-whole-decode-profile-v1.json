@@ -1,11 +1,11 @@
 {
   "schema_version": "inkling-whole-decode-profile-v1",
   "name": "inkling-small-v7x-whole-decode-profile",
-  "hlo_identity_status": "pinned",
-  "inkling_git_commit": "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7",
+  "hlo_identity_status": "pending",
+  "inkling_git_commit": "5160f27741fd60537ea441b7c986c74d8c8ca8f7",
   "inkling_uv_lock_sha256": "3c156f97dd4f042c0d58c425a8aaa0a8990ae14fac6ffe1367161f3b16d2f356",
   "inkling_source_root": "/home/sudarshan/inkle",
-  "capture_git_commit": "d42e4933dfd570d64c997e56acea7013193e96f4",
+  "capture_git_commit": "0000000000000000000000000000000000000000",
   "capture_uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
   "capture_source_manifest": [
     {"path": "src/tpu_cake/inkling_decode_profile.py", "sha256": "09a08d87d98e45a6b7749bae26ac9ac98e5b0b8c5df2cc79aa1b87ad0cb62769"},
@@ -129,73 +129,28 @@
   "programs": [
     {
       "name_prefix": "jit_jitted_run_model",
-      "semantic_hlo_sha256": "59b0140305f4e5c9780bbc3c8bdbbd8fbcba84669b9ae7fd3e3baee35602038a",
-      "module_events_per_tpu_core": {
-        "/device:TPU:0": 64,
-        "/device:TPU:1": 64,
-        "/device:TPU:2": 64,
-        "/device:TPU:3": 64,
-        "/device:TPU:4": 64,
-        "/device:TPU:5": 64,
-        "/device:TPU:6": 64,
-        "/device:TPU:7": 64
-      }
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit_jitted_sampler",
-      "semantic_hlo_sha256": "e17f3c3f5269bbc70e3505c99a2da250e1532050cbec820dd1b95f3213bc69c8",
-      "module_events_per_tpu_core": {
-        "/device:TPU:0": 63,
-        "/device:TPU:1": 63,
-        "/device:TPU:2": 63,
-        "/device:TPU:3": 63,
-        "/device:TPU:4": 63,
-        "/device:TPU:5": 63,
-        "/device:TPU:6": 63,
-        "/device:TPU:7": 63
-      }
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit_resolve_future_token_ids",
-      "semantic_hlo_sha256": "f9e8640e651a6bd8fd222bcdb020b026cee690c86926f428fed93cf89e61beca",
-      "module_events_per_tpu_core": {
-        "/device:TPU:0": 64,
-        "/device:TPU:1": 64,
-        "/device:TPU:2": 64,
-        "/device:TPU:3": 64,
-        "/device:TPU:4": 64,
-        "/device:TPU:5": 64,
-        "/device:TPU:6": 64,
-        "/device:TPU:7": 64
-      }
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit_set_future_token_ids",
-      "semantic_hlo_sha256": "cf6fd4497cde2fb6d66211060961c261f7a81a452df17bd0e7c50ad7067c240a",
-      "module_events_per_tpu_core": {
-        "/device:TPU:0": 63,
-        "/device:TPU:1": 63,
-        "/device:TPU:2": 63,
-        "/device:TPU:3": 63,
-        "/device:TPU:4": 63,
-        "/device:TPU:5": 63,
-        "/device:TPU:6": 63,
-        "/device:TPU:7": 63
-      }
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
     },
     {
       "name_prefix": "jit__lambda",
-      "semantic_hlo_sha256": "fd6c5367a8db3192ed9420321aca794401901e5c23cf0cffacac6eaac9ecb28b",
-      "module_events_per_tpu_core": {
-        "/device:TPU:0": 63,
-        "/device:TPU:1": 63,
-        "/device:TPU:2": 63,
-        "/device:TPU:3": 63,
-        "/device:TPU:4": 63,
-        "/device:TPU:5": 63,
-        "/device:TPU:6": 63,
-        "/device:TPU:7": 63
-      }
+      "semantic_hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
     }
   ]
 }
