@@ -71,6 +71,7 @@ def _compiler_analysis(stablehlo: str, compiler_hlo: str):
     executable = SimpleNamespace(
         cost_analysis=lambda: {"bytes accessed": 512.0, "flops": 1024.0},
         memory_analysis=lambda: memory,
+        as_text=lambda: compiler_hlo,
     )
     return capture_compiler_analysis(
         executable,

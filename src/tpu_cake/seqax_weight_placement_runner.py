@@ -274,11 +274,11 @@ def _compile(
     resident = _resident_inputs(host_inputs, prepared, mesh)
     lowered = callable_.lower(*resident)
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
-    compiler_hlo = _compiler_hlo(lowered)
+    pre_optimization_hlo = _compiler_hlo(lowered)
     all_gathers, reduce_scatters = _physical_collective_counts(prepared.physical)
     _validate_compiled_program(
         stablehlo,
-        compiler_hlo,
+        pre_optimization_hlo,
         pallas_region_count=prepared.plan.pallas_region_count,
         pallas_vector_region_count=prepared.plan.pallas_vector_region_count,
         all_gather_count=all_gathers,
@@ -292,6 +292,7 @@ def _compile(
             f"SEQAX_WEIGHT_PLACEMENT_STABLEHLO_GATHER_MISMATCH candidate={prepared.candidate.name}"
         )
     executable = lowered.compile()
+    compiler_hlo = executable.as_text()
     return CompiledPlacement(
         prepared=prepared,
         executable=executable,
