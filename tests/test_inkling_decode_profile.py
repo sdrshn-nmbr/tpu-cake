@@ -506,6 +506,23 @@ def test_tracked_whole_decode_contract_is_pending_and_source_bound() -> None:
     for source in contract.capture_source_manifest:
         assert source.sha256 == _sha256(REPO_ROOT / source.path)
     assert len(contract.prompts.selected_case_ids) == contract.concurrency == 48
+    assert contract.server.max_running_requests >= contract.concurrency
+    assert contract.server.max_total_tokens >= contract.concurrency * (
+        1_000 + contract.output_tokens
+    )
+
+
+def test_contract_rejects_insufficient_request_capacity(tmp_path) -> None:
+    prompts = _prompt_file(tmp_path)
+    contract = _contract(prompts, pinned=False)
+    server = contract.server.model_copy(update={"max_running_requests": 1})
+    with pytest.raises(ValueError, match="server request capacity must cover concurrency"):
+        InklingDecodeProfileContract.model_validate(
+            {
+                **contract.model_dump(mode="python", exclude={"contract_id"}),
+                "server": server,
+            }
+        )
 
 
 def test_public_validation_rejects_pending_before_capture_reads(tmp_path) -> None:

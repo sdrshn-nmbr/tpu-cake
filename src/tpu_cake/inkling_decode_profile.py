@@ -128,6 +128,8 @@ class InklingDecodeProfileContract(BaseModel):
             raise ValueError("profile stop completion must not exceed output tokens")
         if len(self.prompts.selected_case_ids) != self.concurrency:
             raise ValueError("prompt selection must match concurrency")
+        if self.server.max_running_requests < self.concurrency:
+            raise ValueError("server request capacity must cover concurrency")
         if self.server.tp_size != self.device_count:
             raise ValueError("server tensor parallelism must match physical device count")
         prefixes = [program.name_prefix for program in self.programs]
@@ -613,6 +615,13 @@ def capture_inkling_decode_profile_request(
                 f"field={field} expected={expected!r} observed={server_info.get(field)!r}"
             )
     cases = _load_prompt_cases(prompt_cases_path, contract.prompts.selected_case_ids)
+    required_token_capacity = sum(len(case["input_ids"]) + contract.output_tokens for case in cases)
+    if required_token_capacity > contract.server.max_total_tokens:
+        raise ValueError(
+            "INKLING_PROFILE_TOKEN_POOL_INSUFFICIENT "
+            f"required={required_token_capacity} "
+            f"available={contract.server.max_total_tokens}"
+        )
     request_body = {
         "rid": [f"{session_id}:{index}" for index in range(contract.concurrency)],
         "input_ids": [case["input_ids"] for case in cases],
