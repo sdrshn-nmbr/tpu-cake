@@ -526,6 +526,12 @@ def _get_json(url: str, endpoint: str) -> dict[str, Any]:
         return json.loads(response.read())
 
 
+def _declared_server_configuration(
+    server_info: dict[str, Any], contract: InklingDecodeServerContract
+) -> dict[str, Any]:
+    return {field: server_info.get(field) for field in contract.model_dump(mode="python")}
+
+
 def _load_prompt_cases(path: Path, case_ids: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
     payload = json.loads(path.read_text())
     if not isinstance(payload, list):
@@ -608,11 +614,13 @@ def capture_inkling_decode_profile_request(
         raise ValueError("INKLING_PROFILE_PROMPT_CORPUS_MISMATCH")
     server_process = _server_process(url, inkling_repo, contract.server_command_fragments)
     server_info = _get_json(url, "get_server_info")
+    server_configuration = _declared_server_configuration(server_info, contract.server)
     for field, expected in contract.server.model_dump(mode="python").items():
-        if server_info.get(field) != expected:
+        if server_configuration[field] != expected:
             raise ValueError(
                 "INKLING_PROFILE_SERVER_CONFIGURATION_MISMATCH "
-                f"field={field} expected={expected!r} observed={server_info.get(field)!r}"
+                f"field={field} expected={expected!r} "
+                f"observed={server_configuration[field]!r}"
             )
     cases = _load_prompt_cases(prompt_cases_path, contract.prompts.selected_case_ids)
     required_token_capacity = sum(len(case["input_ids"]) + contract.output_tokens for case in cases)
@@ -706,7 +714,7 @@ def capture_inkling_decode_profile_request(
         raise RuntimeError("INKLING_PROFILE_NEVER_STOPPED")
 
     final_server_info = _get_json(url, "get_server_info")
-    if final_server_info != server_info:
+    if _declared_server_configuration(final_server_info, contract.server) != server_configuration:
         raise RuntimeError("INKLING_PROFILE_SERVER_CONFIGURATION_CHANGED_DURING_CAPTURE")
     final_server_process = _server_process(url, inkling_repo, contract.server_command_fragments)
     if final_server_process != server_process:

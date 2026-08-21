@@ -20,6 +20,7 @@ from tpu_cake.inkling_decode_profile import (
     InklingDecodeProgramContract,
     InklingDecodePromptContract,
     InklingDecodeServerContract,
+    _declared_server_configuration,
     _require_new_output,
     _require_outside_repositories,
     assess_inkling_decode_profile,
@@ -513,6 +514,25 @@ def test_tracked_whole_decode_contract_is_pending_and_source_bound() -> None:
     assert contract.server.max_running_requests >= contract.concurrency
     assert contract.server.max_total_tokens >= contract.concurrency * (
         1_000 + contract.output_tokens
+    )
+
+
+def test_server_configuration_ignores_runtime_state_counters() -> None:
+    contract = _server()
+    before = {
+        **contract.model_dump(mode="python"),
+        "internal_states": [{"num_generated_tokens": 0, "forward_ct_decode": 0}],
+    }
+    after = {
+        **contract.model_dump(mode="python"),
+        "internal_states": [{"num_generated_tokens": 768, "forward_ct_decode": 256}],
+    }
+    assert _declared_server_configuration(before, contract) == _declared_server_configuration(
+        after, contract
+    )
+    after["max_total_tokens"] = contract.max_total_tokens + 1
+    assert _declared_server_configuration(before, contract) != _declared_server_configuration(
+        after, contract
     )
 
 
