@@ -15,7 +15,7 @@
     "ml-dtypes==0.6.0",
     "numpy==2.5.2"
   ],
-  "hlo_identity_status": "pending",
+  "hlo_identity_status": "pinned",
   "correctness_seeds": [
     9423267841700844256,
     15922986200921398903,
@@ -55,7 +55,7 @@
   "plan": {
     "schedule_sha256": "12007604b3b6305899bd2f13d311aa77889199fc0398a3615c142f7966572b13",
     "execution_sha256": "e0f2aac06b1ab01723399c168ce57fbd6d473a77a6b0232db087e23da9691f4a",
-    "stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "stablehlo_sha256": "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a",
     "compiler_hlo_authority": "receipt-bound-raw-bytes-not-reproducible-identity",
     "mesh_axes": [
       "data",

@@ -34,7 +34,9 @@ INKLING_SHARDED_RPA_BACKEND_IMPORT_PACKAGES = (
 INKLING_SHARDED_RPA_CORRECTNESS_SEEDS = tuple(
     semantic_seed(INKLING_SHARDED_RPA_SURFACE_SCHEMA, str(index)) for index in range(5)
 )
-INKLING_SHARDED_RPA_STABLEHLO_SHA256 = "0" * 64
+INKLING_SHARDED_RPA_STABLEHLO_SHA256 = (
+    "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a"
+)
 
 
 class InklingShardedRpaPlanContract(BaseModel):
@@ -192,7 +194,7 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
             "ml-dtypes==0.6.0",
             "numpy==2.5.2",
         ),
-        hlo_identity_status="pending",
+        hlo_identity_status="pinned",
         correctness_seeds=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS,
         timing_seed=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS[0],
         repeat_executions=2,

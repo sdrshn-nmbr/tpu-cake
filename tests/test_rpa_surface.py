@@ -56,7 +56,7 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
     generated = default_inkling_sharded_rpa_surface_contract()
 
     assert saved == generated
-    assert saved.surface_id == ("1ce597bd87b25a45d6a95ab57c674babdaa6a18a6f52cc480cc9939792afb585")
+    assert saved.surface_id == ("38abd645484ad1acc3f209d9076a2bdc6ea25533426c19e0b4e8cbf7ee520b17")
     assert not set(INKLING_SHARDED_RPA_CORRECTNESS_SEEDS) & _CALIBRATION_SEEDS
     assert saved.plan.external_donate_argnums == (0, 3)
     assert saved.plan.compiler_hlo_authority == (
@@ -67,10 +67,10 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
 @pytest.mark.parametrize(
     ("path", "value"),
     (
-        (("hlo_identity_status",), "pinned"),
+        (("hlo_identity_status",), "pending"),
         (("output_relative_l2_error",), 0.007),
         (("cpu_reference_replay_relative_l2_error",), 0.007),
-        (("plan", "stablehlo_sha256"), "1" * 64),
+        (("plan", "stablehlo_sha256"), "0" * 64),
         (("plan", "mesh_shape"), [1, 8]),
         (("plan", "external_donate_argnums"), [0, 2]),
         (("runtime", "jax"), "0.11.1"),
@@ -106,13 +106,26 @@ def test_sharded_rpa_backend_runtime_is_exact(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_sharded_rpa_surface_runner_refuses_pending_hlo_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    canonical = default_inkling_sharded_rpa_surface_contract()
+    contract = canonical.model_copy(
+        update={
+            "hlo_identity_status": "pending",
+            "plan": canonical.plan.model_copy(update={"stablehlo_sha256": "0" * 64}),
+        }
+    )
+    monkeypatch.setattr(
+        surface_runner,
+        "default_inkling_sharded_rpa_surface_contract",
+        lambda: contract,
+    )
     root = tmp_path / "run"
     with pytest.raises(ValueError, match="HLO_IDENTITY_PENDING"):
         surface_runner.run_inkling_sharded_rpa_surface(
             root,
-            default_inkling_sharded_rpa_surface_contract(),
+            contract,
             lambda: None,
         )
     assert not root.exists()
@@ -121,7 +134,13 @@ def test_sharded_rpa_surface_runner_refuses_pending_hlo_before_writes(
 def test_sharded_rpa_attestation_refuses_pending_hlo_before_paths(
     tmp_path: Path,
 ) -> None:
-    contract = default_inkling_sharded_rpa_surface_contract()
+    canonical = default_inkling_sharded_rpa_surface_contract()
+    contract = canonical.model_copy(
+        update={
+            "hlo_identity_status": "pending",
+            "plan": canonical.plan.model_copy(update={"stablehlo_sha256": "0" * 64}),
+        }
+    )
     archive = tmp_path / "missing.tar.zst"
     attestation = tmp_path / "missing.json"
 
