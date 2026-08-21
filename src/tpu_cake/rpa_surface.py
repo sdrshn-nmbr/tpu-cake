@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import statistics
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from tpu_cake.contracts import RuntimeIdentity, SourceFileContract
+from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_seed
 from tpu_cake.rpa_lowering import lower_inkling_sharded_rpa_to_pallas
 from tpu_cake.workloads.inkling_rpa import inkling_sharded_fused_rpa_schedule
 
 INKLING_SHARDED_RPA_SURFACE_SCHEMA = "inkling-sharded-rpa-surface-v1"
 INKLING_SHARDED_RPA_COMPILATION_ROOT = "/home/sudarshan/tpu-cake-main"
+INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH = "/home/sudarshan/inkle/engine/sglang-jax/python"
 INKLING_SHARDED_RPA_CORRECTNESS_SEEDS = tuple(
     semantic_seed(INKLING_SHARDED_RPA_SURFACE_SCHEMA, str(index)) for index in range(5)
 )
@@ -74,6 +77,7 @@ class InklingShardedRpaSurfaceContract(BaseModel):
     surface_schema: Literal[INKLING_SHARDED_RPA_SURFACE_SCHEMA]
     identity_schema: Literal[SEMANTIC_IDENTITY_SCHEMA]
     compilation_source_root: Literal[INKLING_SHARDED_RPA_COMPILATION_ROOT]
+    backend_python_path: Literal[INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH]
     hlo_identity_status: Literal["pinned"]
     correctness_seeds: tuple[int, ...] = Field(min_length=5, max_length=5)
     timing_seed: int
@@ -139,6 +143,7 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
         surface_schema=INKLING_SHARDED_RPA_SURFACE_SCHEMA,
         identity_schema=SEMANTIC_IDENTITY_SCHEMA,
         compilation_source_root=INKLING_SHARDED_RPA_COMPILATION_ROOT,
+        backend_python_path=INKLING_SHARDED_RPA_BACKEND_PYTHON_PATH,
         hlo_identity_status="pinned",
         correctness_seeds=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS,
         timing_seed=INKLING_SHARDED_RPA_CORRECTNESS_SEEDS[0],
@@ -163,3 +168,143 @@ def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceCo
         plan=_plan_contract(),
         claim_scope=("fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"),
     )
+
+
+class InklingShardedRpaDevice(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: int = Field(ge=0)
+    process_index: Literal[0]
+    platform: Literal["tpu"]
+    device_kind: Literal["TPU7x"]
+
+
+class InklingShardedRpaCorrectnessObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    seed: int
+    input_sha256: tuple[str, ...] = Field(min_length=11, max_length=11)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    repeat_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    oracle_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cache_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    repeat_cache_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    oracle_cache_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    repeated_output_exact: bool
+    repeated_cache_exact: bool
+    maximum_absolute_error: float = Field(ge=0)
+    relative_l2_error: float = Field(ge=0)
+    passed: bool
+
+    @model_validator(mode="after")
+    def metrics_are_finite(self) -> InklingShardedRpaCorrectnessObservation:
+        if not math.isfinite(self.maximum_absolute_error) or not math.isfinite(
+            self.relative_l2_error
+        ):
+            raise ValueError("sharded RPA correctness metrics must be finite")
+        return self
+
+
+class InklingShardedRpaTimingRound(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    round_index: int = Field(ge=0)
+    samples_ns: tuple[int, ...] = Field(min_length=3)
+    median_ns: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def samples_are_valid(self) -> InklingShardedRpaTimingRound:
+        if any(value <= 0 for value in self.samples_ns):
+            raise ValueError("sharded RPA timing samples must be positive")
+        if self.median_ns != float(statistics.median(self.samples_ns)):
+            raise ValueError("sharded RPA timing median mismatch")
+        return self
+
+
+class InklingShardedRpaSurfaceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    surface_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
+    runtime: RuntimeIdentity
+    devices: tuple[InklingShardedRpaDevice, ...] = Field(min_length=8, max_length=8)
+    plan: InklingShardedRpaPlanContract
+    compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    correctness: tuple[InklingShardedRpaCorrectnessObservation, ...] = Field(
+        min_length=5,
+        max_length=5,
+    )
+    timing_input_sha256: tuple[str, ...] = Field(min_length=11, max_length=11)
+    pre_timing_output_sha256: tuple[str, str]
+    rounds: tuple[InklingShardedRpaTimingRound, ...] = Field(min_length=12)
+    post_timing_output_sha256: tuple[str, str]
+    median_round_duration_ns: float = Field(gt=0)
+    p90_round_duration_ns: float = Field(gt=0)
+    coefficient_of_variation: float = Field(ge=0)
+    accepted: Literal[True]
+    claim_scope: Literal[
+        "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"
+    ]
+
+    @model_validator(mode="after")
+    def result_is_internally_consistent(self) -> InklingShardedRpaSurfaceResult:
+        seeds = tuple(value.seed for value in self.correctness)
+        if len(seeds) != len(set(seeds)):
+            raise ValueError("sharded RPA correctness seeds must be unique")
+        if any(
+            not value.passed
+            or not value.repeated_output_exact
+            or not value.repeated_cache_exact
+            or value.output_sha256 != value.repeat_output_sha256
+            or value.cache_sha256 != value.repeat_cache_sha256
+            or value.cache_sha256 != value.oracle_cache_sha256
+            for value in self.correctness
+        ):
+            raise ValueError("sharded RPA correctness evidence must pass exactly")
+        if tuple(value.round_index for value in self.rounds) != tuple(range(len(self.rounds))):
+            raise ValueError("sharded RPA timing rounds must be ordered")
+        medians = tuple(value.median_ns for value in self.rounds)
+        ordered = sorted(medians)
+        p90 = ordered[min(len(ordered) - 1, round((len(ordered) - 1) * 0.9))]
+        coefficient = statistics.pstdev(medians) / statistics.mean(medians)
+        if (
+            self.median_round_duration_ns != float(statistics.median(medians))
+            or self.p90_round_duration_ns != float(p90)
+            or not math.isclose(
+                self.coefficient_of_variation,
+                coefficient,
+                rel_tol=1e-12,
+                abs_tol=1e-15,
+            )
+        ):
+            raise ValueError("sharded RPA aggregate timing statistics mismatch")
+        return self
+
+
+class InklingShardedRpaSurfaceReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    receipt_schema: Literal["inkling-sharded-rpa-surface-receipt-v1"]
+    surface_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_count: int = Field(gt=0)
+    artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
+    accepted: Literal[True]
+    claim_scope: Literal[
+        "fixed-inkling-hq32-hkv16-d128-contexts128-512-1024-2048-owned-2x4-sharding"
+    ]
+
+    @model_validator(mode="after")
+    def artifact_inventory_is_exact(self) -> InklingShardedRpaSurfaceReceipt:
+        paths = tuple(value.path for value in self.artifacts)
+        if self.artifact_count != len(self.artifacts) or len(paths) != len(set(paths)):
+            raise ValueError("sharded RPA receipt artifact inventory mismatch")
+        if tuple(sorted(paths)) != paths:
+            raise ValueError("sharded RPA receipt artifacts must be ordered")
+        return self

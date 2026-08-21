@@ -28,9 +28,21 @@ def test_rpa_bundle_commands_are_public() -> None:
         ]
     ).search_root == Path("search")
     assert parser.parse_args(["verify-rpa-bundle", "bundle"]).command == "verify-rpa-bundle"
-    assert parser.parse_args(
-        ["verify-rpa-search", "search", "--contract", "contract.json"]
-    ).command == "verify-rpa-search"
+    assert (
+        parser.parse_args(["verify-rpa-search", "search", "--contract", "contract.json"]).command
+        == "verify-rpa-search"
+    )
+    assert (
+        parser.parse_args(
+            [
+                "verify-inkling-sharded-rpa-surface",
+                "run",
+                "--contract",
+                "contract.json",
+            ]
+        ).command
+        == "verify-inkling-sharded-rpa-surface"
+    )
 
 
 def test_public_rpa_verifier_uses_trusted_experiment_and_rejects_rejected_receipt(

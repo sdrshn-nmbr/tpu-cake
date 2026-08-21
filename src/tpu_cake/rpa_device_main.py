@@ -18,6 +18,8 @@ from sgl_jax.srt.kernels.ragged_paged_attention.util import get_dtype_packing
 
 from tpu_cake.rpa_runner import run_fused_rpa
 from tpu_cake.rpa_search import RpaSearchContract, run_rpa_search
+from tpu_cake.rpa_surface import InklingShardedRpaSurfaceContract
+from tpu_cake.rpa_surface_runner import run_inkling_sharded_rpa_surface
 from tpu_cake.runner import RunMode
 
 
@@ -42,23 +44,50 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--mode", type=RunMode, choices=tuple(RunMode))
     parser.add_argument("--search-contract", type=Path)
-    parser.add_argument("--seed", type=int, default=97)
-    parser.add_argument("--warmup-iterations", type=int, default=5)
-    parser.add_argument("--measured-iterations", type=int, default=50)
+    parser.add_argument("--surface-contract", type=Path)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--warmup-iterations", type=int)
+    parser.add_argument("--measured-iterations", type=int)
     parser.add_argument(
         "--decode-block-sizes",
         type=int,
         nargs=4,
         metavar=("BQ", "BKV", "CQ", "CKV"),
-        default=(8, 128, 8, 128),
     )
     args = parser.parse_args()
-    if args.search_contract is not None:
-        if args.mode is not None:
-            parser.error("--mode and --search-contract are mutually exclusive")
-        contract = RpaSearchContract.model_validate_json(
-            args.search_contract.read_text()
+    if args.surface_contract is not None:
+        manual_parameters = (
+            args.seed,
+            args.warmup_iterations,
+            args.measured_iterations,
+            args.decode_block_sizes,
         )
+        if (
+            args.mode is not None
+            or args.search_contract is not None
+            or any(value is not None for value in manual_parameters)
+        ):
+            parser.error("--surface-contract cannot be combined with manual run parameters")
+        contract = InklingShardedRpaSurfaceContract.model_validate_json(
+            args.surface_contract.read_text()
+        )
+        result = run_inkling_sharded_rpa_surface(
+            args.output_dir,
+            contract,
+            ragged_paged_attention,
+        )
+        print(result.model_dump_json(indent=2))
+        return
+    if args.search_contract is not None:
+        manual_parameters = (
+            args.seed,
+            args.warmup_iterations,
+            args.measured_iterations,
+            args.decode_block_sizes,
+        )
+        if args.mode is not None or any(value is not None for value in manual_parameters):
+            parser.error("--search-contract cannot be combined with manual run parameters")
+        contract = RpaSearchContract.model_validate_json(args.search_contract.read_text())
         result = run_rpa_search(
             args.output_dir,
             contract,
@@ -68,16 +97,22 @@ def main() -> None:
         print(result.model_dump_json(indent=2))
         return
     if args.mode is None:
-        parser.error("--mode is required unless --search-contract is used")
+        parser.error("--mode is required unless a contract is supplied")
     result = run_fused_rpa(
         args.output_dir,
         mode=args.mode,
         kernel=ragged_paged_attention,
         backend_manifest=_backend_manifest(),
-        seed=args.seed,
-        warmup_iterations=args.warmup_iterations,
-        measured_iterations=args.measured_iterations,
-        decode_block_sizes=tuple(args.decode_block_sizes),
+        seed=args.seed if args.seed is not None else 97,
+        warmup_iterations=args.warmup_iterations if args.warmup_iterations is not None else 5,
+        measured_iterations=(
+            args.measured_iterations if args.measured_iterations is not None else 50
+        ),
+        decode_block_sizes=(
+            tuple(args.decode_block_sizes)
+            if args.decode_block_sizes is not None
+            else (8, 128, 8, 128)
+        ),
     )
     print(result.model_dump_json(indent=2))
 

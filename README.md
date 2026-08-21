@@ -90,6 +90,11 @@ uv run tpu-cake finalize-rpa-run RPA_RUN_ROOT \
   --search-contract contracts/inkling-fused-rpa-block-search.json
 uv run tpu-cake verify-rpa-bundle RPA_RUN_ROOT \
   --search-contract contracts/inkling-fused-rpa-block-search.json
+PYTHONPATH=/home/sudarshan/inkle/engine/sglang-jax/python \
+uv run python -m tpu_cake.rpa_device_main SHARDED_RPA_SURFACE_ROOT \
+  --surface-contract contracts/inkling-sharded-rpa-surface.json
+uv run tpu-cake verify-inkling-sharded-rpa-surface SHARDED_RPA_SURFACE_ROOT \
+  --contract contracts/inkling-sharded-rpa-surface.json
 
 uv run tpu-cake run-seqax-surface --output-dir SURFACE_RUN_ROOT
 uv run tpu-cake verify-seqax-surface SURFACE_RUN_ROOT
@@ -155,7 +160,7 @@ The first explicit fusion comparison replaces each legacy unmaterialized `silu` 
 
 The Seqax BF16 numerical-v5 run is frozen negative portability evidence: its TPU Pallas and control outputs agreed exactly and passed against both CPU references, but one producer-to-ARM CPU comparison missed the v5 replay bound. Numerical-v6 treats all 41 inspected v5 observations as calibration and reserves three new width, batch/sequence, and depth/sequence surfaces with v6-derived seeds. V6 explicitly uses the already-frozen CPU-facing 3u relative-L2 and 8u row-scaled bounds symmetrically for producer and verifier JAX CPU references, while requiring normal and instrumented TPU outputs to pass independently against both references. Each path is still assessed against the declared RMSNorm scale, fixed-order projection oracles, BF16 conversions, and final-output bounds; cross-path checkpoint distances and top-1 agreement remain reporting only. The producer receipt proves only producer-host validation. Portable acceptance requires a separate relocation attestation that binds the archive and receipt hashes, verifier runtime and architecture, regenerated CPU hashes, metrics, and verdict. Its public archive path enforces contract-bound limits of 1 GiB compressed, 10,000 members, 1 GiB per member, and 4 GiB total uncompressed before extraction. This is bounded agreement with two JAX CPU realizations backed by fixed-order checkpoint oracles, not architecture-independent proof of the whole forward pass. The v6 runner is enabled by two matching TPU compile captures; this pinning is compiler-identity evidence only, not numerical acceptance.
 
-Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution, bounded block-size search, separate timing/trace/counter captures, and a search-bound receipt. It delegates execution to the pinned upstream RPA Pallas wrapper and covers one fixed decode-only local-shard fixture. It does not yet represent the wrapper's internal Pallas schedule, own the outer multi-device `shard_map`, prove full Inkling serving, or establish a global block-size optimum.
+Inkling fused RPA has a complete typed adapter, numerical oracle, TPU execution, bounded block-size search, separate timing/trace/counter captures, and a search-bound receipt. The production-shaped surface runner owns the explicit `2x4` outer `shard_map`, global and local ABIs, deterministic global inputs, reconstruction oracle, exact StableHLO identity, five-seed numerical check, repeated cache equality, and synchronized resident-input wall timing. Raw compiler HLO remains receipt-bound because identical TPU compiles did not produce byte-stable text. The local attention call still delegates to the pinned upstream RPA Pallas wrapper, so its internal Pallas schedule is not yet represented by TPU-cake. The pinned surface is limited to Hq32, Hkv16, D128, contexts 128/512/1024/2048, and decode blocks 8/128/8/128; it is not accepted until a fresh bundle passes public relocated replay, and it is not full Inkling serving, a throughput promotion, or a global block-size optimum. The contract also pins the backend Python path and clean Inkling repository revision that provide `sgl_jax`; compiling rejects a missing, dirty, or different backend checkout before creating an output root, while public receipt replay remains path-relocatable.
 
 ## Ideas and source material
 

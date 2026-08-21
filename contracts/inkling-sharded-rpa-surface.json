@@ -2,6 +2,7 @@
   "surface_schema": "inkling-sharded-rpa-surface-v1",
   "identity_schema": "length-prefixed-v2",
   "compilation_source_root": "/home/sudarshan/tpu-cake-main",
+  "backend_python_path": "/home/sudarshan/inkle/engine/sglang-jax/python",
   "hlo_identity_status": "pinned",
   "correctness_seeds": [
     8861363933501065961,

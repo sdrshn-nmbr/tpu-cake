@@ -44,6 +44,8 @@ from tpu_cake.rpa_receipt_search import (
     validate_search_bound_fused_rpa_receipt,
 )
 from tpu_cake.rpa_search import RpaSearchContract, validate_rpa_search_result
+from tpu_cake.rpa_surface import InklingShardedRpaSurfaceContract
+from tpu_cake.rpa_surface_runner import validate_inkling_sharded_rpa_surface
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
 from tpu_cake.runner import RunMode, run_distributed_matmul
 from tpu_cake.search import MatmulSearchContract, run_matmul_search
@@ -214,6 +216,10 @@ def _parser() -> argparse.ArgumentParser:
     verify_rpa_search = commands.add_parser("verify-rpa-search")
     verify_rpa_search.add_argument("run_root", type=Path)
     verify_rpa_search.add_argument("--contract", type=Path, required=True)
+
+    verify_rpa_surface = commands.add_parser("verify-inkling-sharded-rpa-surface")
+    verify_rpa_surface.add_argument("run_root", type=Path)
+    verify_rpa_surface.add_argument("--contract", type=Path, required=True)
 
     run_seqax = commands.add_parser("run-seqax-forward")
     run_seqax.add_argument("--output-dir", required=True, type=Path)
@@ -677,6 +683,15 @@ def main() -> None:
         contract = RpaSearchContract.model_validate_json(args.contract.read_text())
         result = validate_rpa_search_result(args.run_root, contract)
         print(f"RPA_SEARCH_ACCEPTED winner={result.winner or 'none'} runs={len(result.runs)}")
+        code = 0
+    elif args.command == "verify-inkling-sharded-rpa-surface":
+        contract = InklingShardedRpaSurfaceContract.model_validate_json(args.contract.read_text())
+        result = validate_inkling_sharded_rpa_surface(args.run_root, contract)
+        print(
+            "INKLING_SHARDED_RPA_SURFACE_ACCEPTED "
+            f"surface_id={result.surface_id} observations={len(result.correctness)} "
+            f"rounds={len(result.rounds)} scope={result.claim_scope}"
+        )
         code = 0
     elif args.command == "run-seqax-forward":
         result = run_seqax_forward(args.output_dir, mode=RunMode(args.mode))
