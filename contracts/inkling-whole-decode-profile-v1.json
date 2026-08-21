@@ -1,0 +1,155 @@
+{
+  "schema_version": "inkling-whole-decode-profile-v1",
+  "name": "inkling-small-v7x-whole-decode-profile",
+  "hlo_identity_status": "pending",
+  "inkling_git_commit": "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7",
+  "inkling_uv_lock_sha256": "5acb3722457bf3c38664d58b38e65846b8475119347b1f4ca87015324e6387dc",
+  "inkling_source_root": "/home/sudarshan/inkle",
+  "capture_git_commit": "0000000000000000000000000000000000000000",
+  "capture_uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+  "capture_source_manifest": [
+    {"path": "src/tpu_cake/inkling_decode_profile.py", "sha256": "f8b3a087b8156de0d1563a26518cd11286e27a2edb061e84d657ddbed8f0e763"},
+    {"path": "src/tpu_cake/xprof_evidence.py", "sha256": "8269ed50c28b668633d26b09996f67a433ae2ada3206e48d0a30bc30ccb6b5d4"},
+    {"path": "src/tpu_cake/evidence.py", "sha256": "ba7fd05982596a5d195327e25b2fabda9a628b2fddb6083222cc258d439e4196"},
+    {"path": "src/tpu_cake/contracts.py", "sha256": "089fd9838a13bca1a11ec539f65511eba4e18edb9f70e00676349613b09bcf31"},
+    {"path": "src/tpu_cake/cli.py", "sha256": "ae7bbc3dc3054f27b4126bb5ff945877ca1f0de30dc478865bc1e6cc4dc7716d"}
+  ],
+  "server_command_fragments": ["sgl_jax.launch_server", "thinkingmachines/Inkling-Small"],
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "xplane_device_type": "TPU v7x",
+  "xplane_tpu_version": "PJRT C API\nTFRT TPU7x\nBuilt on Jul 27 2026 15:51:40 (1785192700) cl/954665169",
+  "device_count": 8,
+  "process_count": 1,
+  "concurrency": 48,
+  "output_tokens": 256,
+  "profile_stop_after_minimum_completion_tokens": 65,
+  "host_tracer_level": 0,
+  "python_tracer_level": 0,
+  "prompts": {
+    "corpus_sha256": "8a4205e9c7db38890b8a8efb82f0f8dceef7e3d11f06378bc34dafb0afd8fff6",
+    "selected_case_ids": [
+      "inkle-source-review-000",
+      "inkle-source-review-001",
+      "inkle-source-review-002",
+      "inkle-source-review-003",
+      "inkle-source-review-004",
+      "inkle-source-review-005",
+      "inkle-source-review-006",
+      "inkle-source-review-007",
+      "inkle-source-review-008",
+      "inkle-source-review-009",
+      "inkle-source-review-010",
+      "inkle-source-review-011",
+      "inkle-source-review-012",
+      "inkle-source-review-013",
+      "inkle-source-review-014",
+      "inkle-source-review-015",
+      "inkle-source-review-016",
+      "inkle-source-review-017",
+      "inkle-source-review-018",
+      "inkle-source-review-019",
+      "inkle-source-review-020",
+      "inkle-source-review-021",
+      "inkle-source-review-022",
+      "inkle-source-review-023",
+      "inkle-source-review-024",
+      "inkle-source-review-025",
+      "inkle-source-review-026",
+      "inkle-source-review-027",
+      "inkle-source-review-028",
+      "inkle-source-review-029",
+      "inkle-source-review-030",
+      "inkle-source-review-031",
+      "inkle-source-review-032",
+      "inkle-source-review-033",
+      "inkle-source-review-034",
+      "inkle-source-review-035",
+      "inkle-source-review-036",
+      "inkle-source-review-037",
+      "inkle-source-review-038",
+      "inkle-source-review-039",
+      "inkle-source-review-040",
+      "inkle-source-review-041",
+      "inkle-source-review-042",
+      "inkle-source-review-043",
+      "inkle-source-review-044",
+      "inkle-source-review-045",
+      "inkle-source-review-046",
+      "inkle-source-review-047"
+    ]
+  },
+  "server": {
+    "model_path": "thinkingmachines/Inkling-Small",
+    "revision": "8cc5877b44d343f88b92086aa1fb72897950f06a",
+    "dtype": "bfloat16",
+    "quantization": null,
+    "context_length": 4096,
+    "max_running_requests": 48,
+    "max_total_tokens": 32768,
+    "max_prefill_tokens": 1024,
+    "chunked_prefill_size": 1024,
+    "page_size": 128,
+    "tp_size": 8,
+    "ep_size": 8,
+    "attention_backend": "native",
+    "moe_backend": "epmoe",
+    "disable_overlap_schedule": false,
+    "disable_radix_cache": true,
+    "speculative_algorithm": null,
+    "version": "0.0.0.dev0"
+  },
+  "profile": {
+    "name": "inkling-small-v7x-whole-decode",
+    "stage": "steady_decode",
+    "minimum_tpu_device_planes": 8,
+    "require_tensor_core_activity": true,
+    "require_hbm_read_counters": false,
+    "require_hbm_write_counters": false,
+    "require_cycle_counters": false,
+    "minimum_counter_device_planes": 0,
+    "required_timed_hlo_markers": [
+      "ragged_paged_attention",
+      "gmm_v2",
+      "ragged_causal_conv1d",
+      "reduce-scatter"
+    ],
+    "forbidden_timed_hlo_fragments": [
+      "12582912,16",
+      "native_backend.py:500"
+    ]
+  },
+  "main_program_prefix": "jit_jitted_run_model",
+  "programs": [
+    {
+      "name_prefix": "jit_jitted_run_model",
+      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
+    },
+    {
+      "name_prefix": "jit_jitted_sampler",
+      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
+    },
+    {
+      "name_prefix": "jit_resolve_future_token_ids",
+      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
+    },
+    {
+      "name_prefix": "jit_set_future_token_ids",
+      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
+    },
+    {
+      "name_prefix": "jit__lambda",
+      "hlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "module_events_per_tpu_core": {}
+    }
+  ]
+}

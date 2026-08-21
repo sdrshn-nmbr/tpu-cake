@@ -75,6 +75,17 @@ uv run tpu-cake render-workload inkling-rpa
 uv run tpu-cake experiment inkling-rpa
 uv run tpu-cake inspect-profile CAPTURE_ROOT \
   --contract contracts/inkling-steady-decode.toml
+uv run tpu-cake capture-inkling-decode-profile-request \
+  --contract contracts/inkling-whole-decode-profile-v1.json \
+  --profile-root /home/sudarshan/runs/inkling-whole-decode/profiles \
+  --prompt-cases INKLING_PROMPT_CORPUS.json \
+  --inkling-repo /home/sudarshan/inkle \
+  --output /home/sudarshan/runs/inkling-whole-decode/profile-request.json
+uv run tpu-cake inspect-inkling-decode-profile CAPTURE_ROOT \
+  --request PROFILE_REQUEST.json \
+  --prompt-cases INKLING_PROMPT_CORPUS.json \
+  --contract contracts/inkling-whole-decode-profile-v1.json \
+  --output WHOLE_DECODE_ASSESSMENT.json
 
 uv run tpu-cake run-matmul \
   --output-dir RUN_ROOT/timing \
@@ -169,6 +180,8 @@ The TPU7x collective-latency overlay replaces that byte-only collective scenario
 The optional residual-all-reduce schedule replaces two reduce-scatter, residual, and later all-gather boundaries with two full-width sum all-reduces while retaining a local shard for the next contraction. On the fixed model-256, one-layer, one-token surface it has 15 all-gathers, two all-reduces, and one reduce-scatter, compared with 17, zero, and three for the standard schedule. It moves more ring-equivalent bytes, so its only plausible win is fewer latency-bearing collective boundaries. The profile contract pins exact HLO identities from two matching clean TPU compilation captures; this enables the runner but is not profile or correctness evidence. Its eventual trace/counter receipt is diagnostic only: each schedule must pass the frozen numerical policy independently, and observed XProf rows remain separate from static physical and compiler inventories.
 
 The residual-all-reduce confirmation is a separate unprofiled decision experiment bound to that diagnostic receipt and its exact plan and HLO identities. It keeps both candidates resident, requires both to pass the frozen five-seed numerical contract, and records 32 balanced AB/BA rounds with five synchronized samples per candidate. The candidate wins only when the deterministic 100,000-sample paired-median bootstrap has a 99% lower confidence bound strictly above a 3% practical improvement. The protocol predeclares no early stop or further retry; enforcing that rule across independently chosen output roots is an operational boundary rather than a cryptographically attested one. A passing receipt promotes only the fixed model-256, one-layer, one-token TPU7x workload; it does not establish independent whole-model correctness, larger-shape benefit, memory feasibility, or a general collective rule.
+
+The whole-decode Inkling profile contract is the next operation-selection boundary. It binds the exact Inkling revision, source root, lock, live server process, model revision and server configuration, 48 selected prompt cases, device-only trace settings, complete timed decode-program inventory, and required model markers. The capture driver keeps all 48 requests active for the declared token window and binds their exact streamed IDs, completion counters, output prefixes, and state slots to a session-named raw XPlane, its server-process ID, profile time range, and file hash. Public replay also checks the exact per-core raw module-event inventory rather than treating the requested step count as observed evidence. The contract remains `pending` until a fresh capture pins every required HLO-proto hash and per-core module-event count. Pending inspection may report those observations, but public verification rejects it and no operation-level result may be promoted from it. This profile measures the complete compiled model step plus sampler and token-state programs; it does not prove that no unrelated client sent work to the same server. The isolated RPA harness remains a kernel diagnostic rather than whole-serving evidence.
 
 The first explicit fusion comparison replaces each legacy unmaterialized `silu` then `multiply` pair with one typed `silu_multiply` operation across the declared tiny, wider, and deeper Seqax surface. Public replay regenerates both distributed and physical schedules from an external contract and verifies exact producer lineage, declared work, traffic, memory deltas, and the full-local Pallas implementation choice. The fused operation executes through an owned Pallas region in CPU interpret tests, but has not yet passed TPU Mosaic compilation. It removes 64, 512, and 1,024 declared VMEM bytes per device respectively, without changing declared peak VMEM. These are schedule-model savings with no measured winner, physical-memory proof, or predictive validation.
 

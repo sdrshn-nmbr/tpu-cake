@@ -20,6 +20,13 @@ from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
+from tpu_cake.inkling_decode_profile import (
+    InklingDecodeProfileContract,
+    capture_inkling_decode_profile_request,
+    inspect_inkling_decode_profile,
+    validate_inkling_decode_profile,
+    write_inkling_decode_profile_assessment,
+)
 from tpu_cake.physical_cost_model import (
     PhysicalCollectiveLatencyCalibration,
     PhysicalKernelLatencyReport,
@@ -184,6 +191,22 @@ def _parser() -> argparse.ArgumentParser:
     inspect.add_argument("capture", type=Path)
     inspect.add_argument("--contract", required=True, type=Path)
     inspect.add_argument("--output", type=Path)
+
+    capture_inkling_decode = commands.add_parser("capture-inkling-decode-profile-request")
+    capture_inkling_decode.add_argument("--contract", required=True, type=Path)
+    capture_inkling_decode.add_argument("--url", default="http://127.0.0.1:30000")
+    capture_inkling_decode.add_argument("--output", required=True, type=Path)
+    capture_inkling_decode.add_argument("--profile-root", required=True, type=Path)
+    capture_inkling_decode.add_argument("--prompt-cases", required=True, type=Path)
+    capture_inkling_decode.add_argument("--inkling-repo", required=True, type=Path)
+
+    for name in ("inspect-inkling-decode-profile", "verify-inkling-decode-profile"):
+        command = commands.add_parser(name)
+        command.add_argument("capture", type=Path)
+        command.add_argument("--request", required=True, type=Path)
+        command.add_argument("--prompt-cases", required=True, type=Path)
+        command.add_argument("--contract", required=True, type=Path)
+        command.add_argument("--output", type=Path)
 
     render = commands.add_parser("render-workload")
     render.add_argument("workload", choices=tuple(_WORKLOADS))
@@ -574,6 +597,63 @@ def _inspect_profile(capture: Path, contract_path: Path, output: Path | None) ->
     return 0 if assessment.accepted else 1
 
 
+def _capture_inkling_decode_profile_request(args: argparse.Namespace) -> int:
+    contract = InklingDecodeProfileContract.model_validate_json(args.contract.read_text())
+    record = capture_inkling_decode_profile_request(
+        url=args.url,
+        output_path=args.output,
+        profile_root=args.profile_root,
+        prompt_cases_path=args.prompt_cases,
+        inkling_repo=args.inkling_repo,
+        contract=contract,
+    )
+    print(
+        "INKLING_DECODE_PROFILE_CAPTURED "
+        f"contract_id={contract.contract_id} "
+        f"requests={len(record.request.rid)} "
+        "profile_stop_after_minimum_completion_tokens="
+        f"{record.profile_stop_after_minimum_completion_tokens} "
+        f"profile_session={record.provenance.profile_directory_name}"
+    )
+    return 0
+
+
+def _inspect_inkling_decode_profile(args: argparse.Namespace, *, require_pinned: bool) -> int:
+    contract = InklingDecodeProfileContract.model_validate_json(args.contract.read_text())
+    if require_pinned:
+        assessment = validate_inkling_decode_profile(
+            capture_root=args.capture,
+            request_path=args.request,
+            prompt_cases_path=args.prompt_cases,
+            contract=contract,
+        )
+    else:
+        assessment = inspect_inkling_decode_profile(
+            capture_root=args.capture,
+            request_path=args.request,
+            prompt_cases_path=args.prompt_cases,
+            contract=contract,
+        )
+    if args.output is not None:
+        write_inkling_decode_profile_assessment(args.output, assessment)
+    if assessment.accepted:
+        verdict = "VERIFIED"
+    elif {finding.code for finding in assessment.findings} == {"HLO_IDENTITIES_PENDING"}:
+        verdict = "PENDING"
+    else:
+        verdict = "REJECTED"
+    print(
+        f"INKLING_DECODE_PROFILE_{verdict} "
+        f"contract_id={contract.contract_id} "
+        f"programs={len(assessment.required_programs)}"
+    )
+    for finding in assessment.capture.findings + assessment.findings:
+        print(f"{finding.severity.value.upper()} {finding.code}: {finding.message}")
+    if require_pinned:
+        return 0 if assessment.accepted else 1
+    return 0 if verdict in {"VERIFIED", "PENDING"} else 1
+
+
 def _render_workload(workload: str, output: Path | None) -> int:
     schedule = _WORKLOADS[workload][0]()
     rendered = canonical_module_text(schedule)
@@ -648,6 +728,12 @@ def main() -> None:
         code = _verify_physical_fusion(args.report, args.contract)
     elif args.command == "inspect-profile":
         code = _inspect_profile(args.capture, args.contract, args.output)
+    elif args.command == "capture-inkling-decode-profile-request":
+        code = _capture_inkling_decode_profile_request(args)
+    elif args.command == "inspect-inkling-decode-profile":
+        code = _inspect_inkling_decode_profile(args, require_pinned=False)
+    elif args.command == "verify-inkling-decode-profile":
+        code = _inspect_inkling_decode_profile(args, require_pinned=True)
     elif args.command == "render-workload":
         code = _render_workload(args.workload, args.output)
     elif args.command == "run-matmul":
