@@ -3,7 +3,7 @@
   "name": "inkling-small-v7x-whole-decode-profile",
   "hlo_identity_status": "pending",
   "inkling_git_commit": "9e1a7d39ccdcf9f396e024bfc45935f4f50f70c7",
-  "inkling_uv_lock_sha256": "5acb3722457bf3c38664d58b38e65846b8475119347b1f4ca87015324e6387dc",
+  "inkling_uv_lock_sha256": "3c156f97dd4f042c0d58c425a8aaa0a8990ae14fac6ffe1367161f3b16d2f356",
   "inkling_source_root": "/home/sudarshan/inkle",
   "capture_git_commit": "0000000000000000000000000000000000000000",
   "capture_uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",

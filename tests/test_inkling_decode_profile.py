@@ -501,6 +501,10 @@ def test_tracked_whole_decode_contract_is_pending_and_source_bound() -> None:
         (REPO_ROOT / "contracts" / "inkling-whole-decode-profile-v1.json").read_text()
     )
     assert contract.hlo_identity_status is HloIdentityStatus.PENDING
+    assert (
+        contract.inkling_uv_lock_sha256
+        == "3c156f97dd4f042c0d58c425a8aaa0a8990ae14fac6ffe1367161f3b16d2f356"
+    )
     assert contract.capture_uv_lock_sha256 == _sha256(REPO_ROOT / "uv.lock")
     assert len(contract.capture_source_manifest) >= 4
     for source in contract.capture_source_manifest:
