@@ -228,6 +228,7 @@ def default_seqax_activation_residual_design_contract(
         source_branch="main",
         compiler_environment={
             "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true",
+            "TPU_LIBRARY_PATH": "/home/sudarshan/tpu-cake-main/.venv/lib/python3.12/site-packages/libtpu/libtpu.so",
         },
         compile_input_mode="abstract-only",
         compiler_identity_status="pending",

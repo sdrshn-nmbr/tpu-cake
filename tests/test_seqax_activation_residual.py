@@ -49,7 +49,8 @@ def test_external_activation_residual_design_is_canonical() -> None:
     assert saved.source_remote_url == "https://github.com/sdrshn-nmbr/tpu-cake.git"
     assert saved.source_branch == "main"
     assert saved.compiler_environment == {
-        "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true"
+        "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true",
+        "TPU_LIBRARY_PATH": "/home/sudarshan/tpu-cake-main/.venv/lib/python3.12/site-packages/libtpu/libtpu.so",
     }
     assert saved.compile_input_mode == "abstract-only"
     assert saved.full_activation_bf16_bytes_per_data_shard == 1_048_576
