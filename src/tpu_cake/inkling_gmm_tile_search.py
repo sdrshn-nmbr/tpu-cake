@@ -234,6 +234,9 @@ class GmmSearchProtocol(BaseModel):
 class GmmTargetRuntime(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    project_id: Literal["astral-medley-465922-b2"] = "astral-medley-465922-b2"
+    zone: Literal["us-central1-c"] = "us-central1-c"
+    instance_name: Literal["tpu-cake-v7x-rsag-wx7r"] = "tpu-cake-v7x-rsag-wx7r"
     device_type: Literal["TPU v7x"] = "TPU v7x"
     accelerator_type: Literal["tpu7x-8"] = "tpu7x-8"
     topology: Literal["2x2x1"] = "2x2x1"

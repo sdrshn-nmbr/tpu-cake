@@ -117,6 +117,9 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
     assert contract.production_abi.group_offset_rule == "device_index*32"
     assert contract.production_abi.expert_location == "trivial-identity-no-redundant-experts"
     assert contract.production_abi.lhs_distribution == "same-global-expert-sorted-lhs-per-device"
+    assert contract.target_runtime.project_id == "astral-medley-465922-b2"
+    assert contract.target_runtime.zone == "us-central1-c"
+    assert contract.target_runtime.instance_name == "tpu-cake-v7x-rsag-wx7r"
     assert contract.target_runtime.device_type == "TPU v7x"
     assert contract.target_runtime.accelerator_type == "tpu7x-8"
     assert contract.target_runtime.topology == "2x2x1"
@@ -252,6 +255,7 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
         (("production_abi", "kernels", 2, "zero_initialize"), False),
         (("production_abi", "expert_location"), "dynamic-eplb"),
         (("target_runtime", "device_type"), "TPU v6e"),
+        (("target_runtime", "instance_name"), "some-other-tpu"),
         (("target_runtime", "gmm_tensor_axis_size"), 8),
         (("arms", 1, "tile_m"), 128),
         (("corpus", "groups_are_independent_samples"), True),
