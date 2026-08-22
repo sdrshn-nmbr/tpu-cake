@@ -496,3 +496,42 @@ def test_confirmation_statistics_apply_the_strict_paired_bootstrap_gate() -> Non
     forged[0], forged[1] = forged[1], forged[0]
     with pytest.raises(ValueError, match="(position|execution order)"):
         confirmation_statistics(contract, candidate, tuple(forged))
+
+
+def test_committed_confirmation_retains_the_incumbent_with_immutable_evidence() -> None:
+    contract = InklingGmmTileSearchContract.model_validate_json(
+        Path("contracts/inkling-gmm-tile-search-v1.json").read_bytes()
+    )
+    confirmation = json.loads(
+        Path("evidence/inkling/gmm-tile-search-confirmation-v1.json").read_text()
+    )
+    receipt = json.loads(
+        Path("evidence/inkling/gmm-tile-search-confirmation-receipt-v1.json").read_text()
+    )
+
+    assert contract.search_id == "d2b8a27f500145cc86f2bc803ab2f5622cf980928c8945afef5e07deeccbdbee"
+    assert contract.tpu_cake_git_commit == "82e51d4f2d24cdb24a4b825f9420e0bfafdd6fb6"
+    assert contract.confirmation.warmup_full_corpus_blocks_per_arm == 1
+    assert confirmation["verification_id"] == (
+        "ec9ee340f7ac5342abb54e4e7fd87db8b027a9d0fc3899c17c4f47a32821737e"
+    )
+    statistics = confirmation["confirmation_statistics"]
+    assert statistics["candidate"]["gate_up"] == "sparse-m64-split-n"
+    assert statistics["candidate"]["down"] == "sparse-m64-split-n"
+    assert statistics["median_improvement"] == pytest.approx(0.00909941263516112)
+    assert statistics["confidence_interval"] == pytest.approx(
+        (0.009090670385233257, 0.009109655255769122)
+    )
+    assert statistics["minimum_practical_improvement"] == 0.03
+    assert statistics["confirmed"] is False
+    assert confirmation["claims"]["promotion_authorized"] is False
+    assert receipt["search_id"] == contract.search_id
+    assert receipt["confirmation_verification_id"] == confirmation["verification_id"]
+    assert receipt["selection"] == "baseline-retained-confirmation-below-practical-threshold"
+    assert receipt["promotion_authorized"] is False
+    assert receipt["archive_sha256"] == (
+        "c711ed418c12f1467832abdf6cdb3bf516f889c327af3055ea71dc1f3e3a6d56"
+    )
+    assert receipt["receipt_id"] == _json_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_id"}
+    )

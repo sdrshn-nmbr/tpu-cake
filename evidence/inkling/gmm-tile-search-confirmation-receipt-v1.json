@@ -1,0 +1,20 @@
+{
+  "archive_bytes": 1807625,
+  "archive_path": "/home/sudarshan/tpu-cake-evidence/inkling-gmm-tile-search-confirmation-82e51d4.tar.zst",
+  "archive_sha256": "c711ed418c12f1467832abdf6cdb3bf516f889c327af3055ea71dc1f3e3a6d56",
+  "artifact_manifest_sha256": "577ed9a8acefa32e82dd0533bf572eafa57723294ead51187ed15f9c813b1d48",
+  "candidate_correctness_fresh_replay": true,
+  "candidate_correctness_report_id": "78b0865df2053cb3c89095a31b408dcdaa40f34768a5fcee2c044a0bca381880",
+  "confirmation_verification_id": "ec9ee340f7ac5342abb54e4e7fd87db8b027a9d0fc3899c17c4f47a32821737e",
+  "created_at": "2026-08-22T14:00:57.639601+00:00",
+  "execution_commit": "82e51d4f2d24cdb24a4b825f9420e0bfafdd6fb6",
+  "initial_correctness_report_id": "898cb1da27a9688cecd0e8861330fdcf90e3a5a6446a6fcf8d059d929579b69d",
+  "lifecycle_ledger_sha256": "872d0f88c89a18c42ef7a1e0f70af5e67ac742bac805266caccf5fdfe45f1a02",
+  "promotion_authorized": false,
+  "receipt_id": "11016f2c8b80597f0714ef6cf4f7608528a1b4f07a9bfd4b25f9b475bb3cef0f",
+  "route_report_id": "bde510d60680c94280d0574eb28c93a592ec09d69ed074341f400eb542c2ada0",
+  "schema_version": "inkling-gmm-tile-search-receipt-v1",
+  "screening_verification_id": "c90b00619eb35259679db5fb228cdda933b1a25f82315ebf624c621651ea664e",
+  "search_id": "d2b8a27f500145cc86f2bc803ab2f5622cf980928c8945afef5e07deeccbdbee",
+  "selection": "baseline-retained-confirmation-below-practical-threshold"
+}

@@ -1,0 +1,538 @@
+{
+  "arms": [
+    {
+      "name": "incumbent",
+      "tile_k": "K",
+      "tile_m": 128,
+      "tile_n": "N"
+    },
+    {
+      "name": "sparse-m64",
+      "tile_k": "K",
+      "tile_m": 64,
+      "tile_n": "N"
+    },
+    {
+      "name": "sparse-m32",
+      "tile_k": "K",
+      "tile_m": 32,
+      "tile_n": "N"
+    },
+    {
+      "name": "split-n",
+      "tile_k": "K",
+      "tile_m": 128,
+      "tile_n": "N/2"
+    },
+    {
+      "name": "sparse-m64-split-n",
+      "tile_k": "K",
+      "tile_m": 64,
+      "tile_n": "N/2"
+    }
+  ],
+  "confirmation": {
+    "allow_early_stopping": false,
+    "allow_retry": false,
+    "baseline": "all-incumbent",
+    "bootstrap": "deterministic-paired-median",
+    "bootstrap_samples": 100000,
+    "bootstrap_seed_rule": "semantic-seed(search-id,finalist)",
+    "candidate": "combined-gate-up-and-down-family-finalists",
+    "combined_failure_rule": "no-promotion-no-fallback",
+    "confidence_level": 0.99,
+    "executables_resident": true,
+    "lower_bound_must_exceed_threshold": true,
+    "minimum_practical_improvement": 0.03,
+    "operands_resident": true,
+    "order_balance": "alternating-ab-ba",
+    "paired_rounds": 32,
+    "sample_unit": "one-full-corpus-chain-block",
+    "samples_per_arm_per_round": 5,
+    "samples_synchronized": true,
+    "screening_samples_reused": false,
+    "statistic": "paired-median-improvement",
+    "warmup_full_corpus_blocks_per_arm": 1,
+    "warmup_order": "baseline-then-candidate",
+    "within_round_reduction": "median-of-five-synchronized-full-corpus-blocks"
+  },
+  "confirmation_verifier_source_sha256": "3f24d786c177d4dfb91441142a9ba327676c17d4aa0ec1b25615f20c712fa8fd",
+  "corpus": {
+    "completion_steps": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65
+    ],
+    "groups_are_independent_samples": false,
+    "layer_indices": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41
+    ],
+    "order": "completion-major-layer-minor",
+    "timing_unit": "one-ordered-64-step-by-40-layer-corpus-block"
+  },
+  "correctness": {
+    "absolute_tolerance": 0.02,
+    "compare_complete_active_spans": true,
+    "comparison": "gate-up-intermediates-and-final-down-vs-incumbent",
+    "cpu_oracle": "fixed-fp32-k-order-selected-rows",
+    "cpu_oracle_down_columns": [
+      0,
+      2047,
+      2048,
+      4095
+    ],
+    "cpu_oracle_rows": [
+      {
+        "device_index": 0,
+        "down_columns": [
+          0,
+          409,
+          2047,
+          2048,
+          2434,
+          2679,
+          4086,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 0
+      },
+      {
+        "device_index": 1,
+        "down_columns": [
+          0,
+          2015,
+          2033,
+          2034,
+          2047,
+          2048,
+          3953,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 40
+      },
+      {
+        "device_index": 2,
+        "down_columns": [
+          0,
+          925,
+          1362,
+          2047,
+          2048,
+          2591,
+          3484,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 85
+      },
+      {
+        "device_index": 3,
+        "down_columns": [
+          0,
+          1748,
+          2047,
+          2048,
+          2259,
+          2506,
+          3529,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 88
+      },
+      {
+        "device_index": 4,
+        "down_columns": [
+          0,
+          71,
+          1628,
+          2047,
+          2048,
+          2798,
+          2909,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 99
+      },
+      {
+        "device_index": 5,
+        "down_columns": [
+          0,
+          2047,
+          2048,
+          2949,
+          3123,
+          3664,
+          3982,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 163
+      },
+      {
+        "device_index": 6,
+        "down_columns": [
+          0,
+          738,
+          1049,
+          2047,
+          2048,
+          2984,
+          3910,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 211
+      },
+      {
+        "device_index": 7,
+        "down_columns": [
+          0,
+          34,
+          878,
+          2047,
+          2048,
+          3261,
+          3443,
+          4095
+        ],
+        "profile_index": 0,
+        "row_index": 283
+      }
+    ],
+    "cpu_oracle_rows_per_expert_shard": 1,
+    "cpu_oracle_seeded_interior_columns_per_row": 4,
+    "numerical_contract_id": "a4e59624618faac70a0730a90e94bf1ba75893abeba60137c74782e269ea18b3",
+    "profile_count": 5,
+    "profile_selection": "max-skew-max-nonzero-three-semantic-hash-with-all-shard-coverage",
+    "profiles": [
+      {
+        "completion_step": 24,
+        "corpus_index": 919,
+        "group_sizes_sha256": "c2054595584ffd727f62c127d2bbceadc56266e5efa74acddfc5011e653b7538",
+        "layer_index": 41,
+        "reason": "max-skew"
+      },
+      {
+        "completion_step": 20,
+        "corpus_index": 721,
+        "group_sizes_sha256": "15e69608ac16536c079985882c4b02e03963b1949fcdb6dc0ef036bfbba399bd",
+        "layer_index": 3,
+        "reason": "max-nonzero-experts"
+      },
+      {
+        "completion_step": 58,
+        "corpus_index": 2252,
+        "group_sizes_sha256": "ee60a9521f882b67a24d31fc1ab30717e9c61e05422cc93ddc74ba78b9cf60f4",
+        "layer_index": 14,
+        "reason": "semantic-hash-0"
+      },
+      {
+        "completion_step": 54,
+        "corpus_index": 2103,
+        "group_sizes_sha256": "57856437c76742331988b805d8c6fe295cc653bf3ee8cba818eedf5dce1263bc",
+        "layer_index": 25,
+        "reason": "semantic-hash-1"
+      },
+      {
+        "completion_step": 43,
+        "corpus_index": 1671,
+        "group_sizes_sha256": "3fd4985251fb12e715cc3e8392dcee4cdededa2c14515faa75c60a62ceb65378",
+        "layer_index": 33,
+        "reason": "semantic-hash-2"
+      }
+    ],
+    "relative_tolerance": 0.02,
+    "require_all_expert_shards_covered": true,
+    "require_down_zero_outside_local_spans": true,
+    "require_finite_outputs": true,
+    "seeds": [
+      14841148420675527091,
+      4244733330129395170,
+      2572403182828032875,
+      7443024837893415579,
+      4541593752595685062
+    ],
+    "tolerances_frozen_before_timing": true
+  },
+  "implementation_source_manifest": [
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/models/inkling.py",
+      "sha256": "20ade2d9ffa2a3a031bef67ab0f2d58b9bf8316ac6f93fa5a9507f851c23234f"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/configs/model_config.py",
+      "sha256": "1a6d0e1c37c15df04f6103371d4f90ab9a33f90e9f4662e27a6b33f85e6f86cf"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/server_args.py",
+      "sha256": "d6284bf57d5af36acd2e6fdc330e29642185957233c3f14716f5eb6284fbacf4"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/eplb/eplb_algorithms/__init__.py",
+      "sha256": "31dd7cb068577acdc6067e17cb4fbc0327c483a1cb6777e60ea259723ad5e0a1"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/eplb/eplb_algorithms/deepseek.py",
+      "sha256": "f264e32804a9bff564ab8e1dfa3254756be07081c27175c16bbb691caa96c927"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/eplb/expert_location.py",
+      "sha256": "0d77dd77a6b114a246b6973a7c8946e48d8bc5dd448a8d38e8c43b6cebe76ca5"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/layers/moe.py",
+      "sha256": "282fac6299f895d235662ba081d17d7119cdff0bd8b4f101171e39ed6623fff8"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/kernels/gmm/megablox_gmm_backend.py",
+      "sha256": "f0c161bc139f221d2529c092999d03551eb98d729bd0e9d59a318151d2b7bbd5"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/kernels/gmm/megablox_gmm_kernel/gmm.py",
+      "sha256": "0eb3fcbf7202f5e2bdb603387bf7d8e4c888f9ca0cb7df2c085572c60098e2a5"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/kernels/gmm/megablox_gmm_kernel/gmm_v2.py",
+      "sha256": "4d29cab88bf93e5fb8aae8d17aa6ff319928736562fee5e2f4a76ade022f0273"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/kernels/gmm/megablox_gmm_kernel/common.py",
+      "sha256": "2d828bcce525427d39ed7b7b1e4183c54fb48cdd2bd629110fdbac8c14f852b2"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/kernels/gmm/megablox_gmm_kernel/tuned_block_sizes.py",
+      "sha256": "5850476e50c5d2ac61453254a8f8349503d284546ed4f35e688545a20a336826"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/utils/jax_utils.py",
+      "sha256": "c1c4ce8053146c7c0041d40c1571b11155514212056457d4edb41d8e5e28a44c"
+    },
+    {
+      "path": "engine/sglang-jax/python/sgl_jax/srt/utils/quantization/quantization_utils.py",
+      "sha256": "49a9a22da8d1f86a848d3d826a002e879468d589bc2c4104d4d4623973338c7e"
+    }
+  ],
+  "inkling_git_commit": "5160f27741fd60537ea441b7c986c74d8c8ca8f7",
+  "inkling_uv_lock_sha256": "3c156f97dd4f042c0d58c425a8aaa0a8990ae14fac6ffe1367161f3b16d2f356",
+  "name": "inkling-small-v7x-gmm-tile-search",
+  "production_abi": {
+    "device_count": 8,
+    "expert_location": "trivial-identity-no-redundant-experts",
+    "global_group_count": 256,
+    "group_offset_rule": "device_index*32",
+    "kernels": [
+      {
+        "accumulator_dtype": "fp32",
+        "has_bias": false,
+        "has_scale": false,
+        "k": 4096,
+        "lhs_dtype": "bf16",
+        "n": 2048,
+        "operation": "gate",
+        "output_dtype": "fp32",
+        "quantized": false,
+        "rhs_dtype": "bf16",
+        "zero_initialize": false
+      },
+      {
+        "accumulator_dtype": "fp32",
+        "has_bias": false,
+        "has_scale": false,
+        "k": 4096,
+        "lhs_dtype": "bf16",
+        "n": 2048,
+        "operation": "up",
+        "output_dtype": "fp32",
+        "quantized": false,
+        "rhs_dtype": "bf16",
+        "zero_initialize": false
+      },
+      {
+        "accumulator_dtype": "fp32",
+        "has_bias": false,
+        "has_scale": false,
+        "k": 2048,
+        "lhs_dtype": "fp32",
+        "n": 4096,
+        "operation": "down",
+        "output_dtype": "fp32",
+        "quantized": false,
+        "rhs_dtype": "bf16",
+        "zero_initialize": true
+      }
+    ],
+    "lhs_distribution": "same-global-expert-sorted-lhs-per-device",
+    "local_experts_per_device": 32,
+    "m": 288
+  },
+  "route_corpus": {
+    "cohort_scope": "operational-assumption-no-emitted-step-id",
+    "corpus_sha256": "d3f7db0bdf366c12924e4b6b8e5f4d19a571b86cf2b222be17179a09f93044a4",
+    "report_id": "bde510d60680c94280d0574eb28c93a592ec09d69ed074341f400eb542c2ada0",
+    "report_sha256": "72ed0acdc08996d1d8a777d9b5de0a0c28a7330896feebe9f9f778225c11adf4"
+  },
+  "runner_source_sha256": "319ed7aa91bc8a53a80a0981a80ca7e4d3783b8c61079d3cfe2be3f4831abb43",
+  "schema_version": "inkling-gmm-tile-search-v1",
+  "search": {
+    "can_promote": false,
+    "candidate_intermediates_shared_across_arms": false,
+    "claim_scope": "best-validated-result-from-two-one-factor-screens",
+    "compilation_excluded_from_timing": true,
+    "compiler_preflight": "reachable-exact-gmm-v2-scope-label-per-operation",
+    "dispatch": "64-host-dispatched-completion-executions-with-40-unrolled-layer-chains",
+    "down_screen": "incumbent-gate-up-silu-multiply-candidate-down-full-chain",
+    "executables_resident": true,
+    "external_operands_shared_across_arms": true,
+    "families": [
+      "gate-up",
+      "down"
+    ],
+    "finalist_rule": "lowest-family-median",
+    "free_memory_checked_before_allocation": true,
+    "gate_up_screen": "candidate-gate-up-silu-multiply-incumbent-down-full-chain",
+    "layer_input_banks": 40,
+    "layer_input_banks_are_distinct": true,
+    "layer_inputs_reused_across_completion_steps": true,
+    "layer_weight_bank_order": "moe-layer-order",
+    "layer_weight_banks": 40,
+    "layer_weight_banks_are_distinct": true,
+    "minimum_free_device_bytes": 85899345920,
+    "operand_generation": "jax-stateless-uniform-v1",
+    "operand_seed": 4189870023485679866,
+    "operands_resident": true,
+    "order": "balanced-forward-reverse-latin-square",
+    "output_liveness": "one-down-output-scalar-per-layer",
+    "residency_checked_before_timing": true,
+    "score": "median-full-corpus-duration",
+    "screening_rounds_per_family": 10,
+    "selection_unit": "one-full-corpus-chain-block",
+    "synchronization": "block-until-ready-on-chain-liveness-output",
+    "tie_rule": "incumbent-then-declaration-order",
+    "timer": "host-monotonic-ns-around-one-full-corpus-block",
+    "warmup_full_corpus_blocks_per_arm": 1
+  },
+  "target_runtime": {
+    "accelerator_type": "tpu7x-8",
+    "device_count": 8,
+    "device_type": "TPU v7x",
+    "gmm_expert_axis_size": 8,
+    "gmm_tensor_axis_size": 1,
+    "host_count": 1,
+    "instance_name": "tpu-cake-v7x-rsag-wx7r",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "project_id": "astral-medley-465922-b2",
+    "server_ep_size": 8,
+    "server_tp_size": 8,
+    "topology": "2x2x1",
+    "zone": "us-central1-c"
+  },
+  "tpu_cake_git_commit": "82e51d4f2d24cdb24a4b825f9420e0bfafdd6fb6",
+  "tpu_cake_uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+  "verifier_source_sha256": "f325535571cfe97c7d0d5f287db8438d2d807f7cea89a5d7b9afa54949b4b532"
+}

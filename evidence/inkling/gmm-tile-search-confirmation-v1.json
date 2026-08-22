@@ -1,0 +1,110 @@
+{
+  "candidate_compiled_policy": {
+    "compiler_hlo_sha256": "bc2d7ce6df647393b1f1ae6f78c7ee9af45b63b361db7de197ee76adcc8c77c8",
+    "gmm_custom_call_counts": {
+      "gmm_v2-g_32-m_288-k_2048-n_4096-tm_64-tk_2048-tn_2048": 40,
+      "gmm_v2-g_32-m_288-k_4096-n_2048-tm_64-tk_4096-tn_1024": 80
+    },
+    "gmm_scope_labels": [
+      "gmm_v2-g_32-m_288-k_2048-n_4096-tm_64-tk_2048-tn_2048",
+      "gmm_v2-g_32-m_288-k_4096-n_2048-tm_64-tk_4096-tn_1024"
+    ],
+    "policy": {
+      "down": "sparse-m64-split-n",
+      "gate_up": "sparse-m64-split-n",
+      "name": "gate-up=sparse-m64-split-n,down=sparse-m64-split-n"
+    },
+    "stablehlo_sha256": "6c30116990b263d344ae18eaa88b4ce0dcc7d1782035e3f3efc00cf9f665b24f"
+  },
+  "candidate_correctness": {
+    "report_id": "78b0865df2053cb3c89095a31b408dcdaa40f34768a5fcee2c044a0bca381880",
+    "schema_version": "inkling-gmm-confirmation-correctness-v1",
+    "sha256": "bdaecf1fc1582c03fecf75a2de2193c8d0cdecf604eaffcc5b249289ca73eb01"
+  },
+  "claims": {
+    "candidate_correctness_gate_bound": true,
+    "confirmation_independently_replayed": true,
+    "immutable_receipt_created": false,
+    "promotion_authorized": false,
+    "screening_independently_replayed": true
+  },
+  "confirmation_observations_sha256": "9908b5d06e61d309f387224ac0e333e255ce9efbf7427d9a30b038f6116cba77",
+  "confirmation_statistics": {
+    "baseline": {
+      "down": "incumbent",
+      "gate_up": "incumbent",
+      "name": "gate-up=incumbent,down=incumbent"
+    },
+    "bootstrap_samples": 100000,
+    "bootstrap_seed": 10936615237647055561,
+    "candidate": {
+      "down": "sparse-m64-split-n",
+      "gate_up": "sparse-m64-split-n",
+      "name": "gate-up=sparse-m64-split-n,down=sparse-m64-split-n"
+    },
+    "confidence_interval": [
+      0.009090670385233257,
+      0.009109655255769122
+    ],
+    "confidence_level": 0.99,
+    "confirmed": false,
+    "mean_improvement": 0.009100949530221315,
+    "median_improvement": 0.00909941263516112,
+    "minimum_practical_improvement": 0.03,
+    "paired_improvements": [
+      0.009096642940499722,
+      0.009088694668687669,
+      0.00910185580392453,
+      0.00909478885429571,
+      0.00910681314244599,
+      0.00909250649000759,
+      0.009112285298853107,
+      0.009105789594608837,
+      0.009083176009286986,
+      0.00913021977104822,
+      0.009120783414547251,
+      0.009121815295211166,
+      0.009107017236230086,
+      0.009087800731056195,
+      0.009071754039877922,
+      0.009112898978829165,
+      0.009100124839528378,
+      0.009086288105456197,
+      0.009094194173533854,
+      0.009118961133522618,
+      0.009081464273819506,
+      0.009077698100181664,
+      0.009092447439878248,
+      0.009088893330588266,
+      0.0091054072417327,
+      0.009087298670610755,
+      0.00913133335743277,
+      0.00909564963164411,
+      0.009110497871836376,
+      0.00909870043079386,
+      0.009116928841343519,
+      0.009109655255769122
+    ]
+  },
+  "contract_sha256": "c079c61106fab8220f835e8b0c21eac49f0c102674cf55232b1f810c52cfa132",
+  "limitations": [
+    "This observation file is mutable until an immutable receipt is created.",
+    "The confirmation applies only to the declared route corpus, ABI, runtime, and source revisions."
+  ],
+  "route_report_id": "bde510d60680c94280d0574eb28c93a592ec09d69ed074341f400eb542c2ada0",
+  "route_report_sha256": "72ed0acdc08996d1d8a777d9b5de0a0c28a7330896feebe9f9f778225c11adf4",
+  "schema_version": "inkling-gmm-tile-search-confirmation-verification-v1",
+  "screening_verification_id": "c90b00619eb35259679db5fb228cdda933b1a25f82315ebf624c621651ea664e",
+  "search_id": "d2b8a27f500145cc86f2bc803ab2f5622cf980928c8945afef5e07deeccbdbee",
+  "verification_id": "ec9ee340f7ac5342abb54e4e7fd87db8b027a9d0fc3899c17c4f47a32821737e",
+  "warmup": {
+    "durations_ns": [
+      3229341703,
+      3198121442
+    ],
+    "order": [
+      "gate-up=incumbent,down=incumbent",
+      "gate-up=sparse-m64-split-n,down=sparse-m64-split-n"
+    ]
+  }
+}
