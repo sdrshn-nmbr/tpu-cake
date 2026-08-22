@@ -178,6 +178,14 @@ def test_loaded_source_closure_handles_module_execution_as_main(monkeypatch) -> 
         ).read_bytes()
         for path in CORRECTNESS_EXECUTABLE_DEPENDENCIES
     }
+    expected_modules = {
+        path.removesuffix("/__init__.py").removesuffix(".py").replace("/", ".")
+        for path in CORRECTNESS_EXECUTABLE_DEPENDENCIES
+        if path.startswith("tpu_cake/")
+    }
+    for name in tuple(sys.modules):
+        if name.startswith("tpu_cake.") and name not in expected_modules:
+            monkeypatch.delitem(sys.modules, name)
     monkeypatch.delitem(
         sys.modules,
         "tpu_cake.matmul_collective_surface_correctness_worker",
