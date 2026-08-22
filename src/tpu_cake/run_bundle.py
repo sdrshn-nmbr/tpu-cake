@@ -90,7 +90,13 @@ def build_distributed_matmul_receipt(root: Path, *, search_root: Path | None = N
     for mode, result in (("timing", timing), ("trace", trace), ("counters", counters)):
         _validate_execution_ledger(root / mode / "ledger.sqlite", result)
     identities = {
-        (result.schedule_sha256, result.lhs_sha256, result.rhs_sha256, result.output_sha256)
+        (
+            result.collective_strategy,
+            result.schedule_sha256,
+            result.lhs_sha256,
+            result.rhs_sha256,
+            result.output_sha256,
+        )
         for result in (timing, trace, counters)
     }
     if len(identities) != 1:
@@ -104,6 +110,7 @@ def build_distributed_matmul_receipt(root: Path, *, search_root: Path | None = N
         n=int(model_input["n"]),
         warmup_iterations=timing.warmup_iterations,
         measured_iterations=timing.measured_iterations,
+        collective_strategy=timing.collective_strategy.value,
     )
     experiment_path = root / "timing" / "experiment.json"
     experiment = KernelExperiment.model_validate_json(experiment_path.read_text())

@@ -360,6 +360,7 @@ def run_distributed_matmul(
         n=n,
         warmup_iterations=warmup_iterations,
         measured_iterations=measured_iterations,
+        collective_strategy=collective_strategy.value,
     )
     artifacts = [
         *pre_artifacts,

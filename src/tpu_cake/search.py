@@ -256,6 +256,7 @@ def _validate_saved_run_evidence(
         n=contract.n,
         warmup_iterations=contract.warmup_iterations,
         measured_iterations=contract.measured_iterations,
+        collective_strategy=MatmulCollectiveStrategy.XLA_REDUCE_SCATTER.value,
     )
     if experiment_path.read_text() != experiment_artifact_json(expected_experiment) + "\n":
         raise ValueError(f"SEARCH_EXPERIMENT_MISMATCH candidate={candidate.name}")

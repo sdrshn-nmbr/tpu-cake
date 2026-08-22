@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from xdsl.dialects.builtin import ModuleOp, bf16, f32
 
 from tpu_cake.contracts import (
@@ -53,7 +55,17 @@ def distributed_matmul_experiment(
     n: int,
     warmup_iterations: int,
     measured_iterations: int,
+    collective_strategy: Literal[
+        "xla_reduce_scatter",
+        "pallas_bidirectional_ring",
+    ] = "xla_reduce_scatter",
 ) -> KernelExperiment:
+    if collective_strategy == "xla_reduce_scatter":
+        collective_markers = ("reduce-scatter",)
+        forbidden_fragments = ()
+    else:
+        collective_markers = ("distributed_matmul_physical_pallas_reduce_scatter",)
+        forbidden_fragments = ("reduce-scatter(",)
     return KernelExperiment(
         workload=WorkloadContract(
             name=f"distributed-matmul-{m}x{k}x{n}-mesh{mesh_size}",
@@ -105,16 +117,17 @@ def distributed_matmul_experiment(
         ),
         search=SearchPolicy(objective_metric="median_device_duration_ns"),
         profile=ProfileExpectation(
-            name="distributed-matmul",
+            name=f"distributed-matmul-{collective_strategy}",
             stage=WorkloadStage.CONTROL,
             minimum_tpu_device_planes=mesh_size,
             require_tensor_core_activity=False,
             required_timed_hlo_markers=(
                 "distributed_matmul_physical",
-                "reduce-scatter",
+                *collective_markers,
                 "pallas_call",
                 schedule_sha256,
             ),
+            forbidden_timed_hlo_fragments=forbidden_fragments,
         ),
         schedule_sha256=schedule_sha256,
     )

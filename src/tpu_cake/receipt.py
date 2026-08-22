@@ -263,6 +263,7 @@ def _validate_saved_matmul_phase(
         n=int(invocation["n"]),
         warmup_iterations=result.warmup_iterations,
         measured_iterations=result.measured_iterations,
+        collective_strategy=result.collective_strategy.value,
     )
     saved_experiment = KernelExperiment.model_validate_json(
         artifacts["experiment.json"].read_text()

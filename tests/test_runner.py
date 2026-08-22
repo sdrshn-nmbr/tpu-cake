@@ -31,6 +31,7 @@ from tpu_cake.runner import (
     _profiler_contract,
     validate_profiler_contract,
 )
+from tpu_cake.workloads.distributed_matmul import distributed_matmul_experiment
 
 
 def test_counter_profiler_contract_retains_counter_only_options() -> None:
@@ -122,6 +123,25 @@ def test_trace_contract_rejects_counter_configuration_leakage() -> None:
     contract["advanced_configuration"]["tpu_enable_periodic_counter_sampling"] = True
     with pytest.raises(ValueError, match="MUST_NOT_ENABLE_PERIODIC_COUNTERS"):
         validate_profiler_contract(RunMode.TRACE, contract)
+
+
+def test_owned_collective_profile_requires_its_kernel_and_forbids_xla_reduce_scatter() -> None:
+    experiment = distributed_matmul_experiment(
+        schedule_sha256="a" * 64,
+        mesh_size=8,
+        m=1024,
+        k=65536,
+        n=1024,
+        warmup_iterations=5,
+        measured_iterations=100,
+        collective_strategy="pallas_bidirectional_ring",
+    )
+
+    assert "distributed_matmul_physical_pallas_reduce_scatter" in (
+        experiment.profile.required_timed_hlo_markers
+    )
+    assert "reduce-scatter" not in experiment.profile.required_timed_hlo_markers
+    assert experiment.profile.forbidden_timed_hlo_fragments == ("reduce-scatter(",)
 
 
 def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
