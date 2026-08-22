@@ -165,7 +165,7 @@ def _native_collective_compiler_hlo(
     n: int,
 ) -> str:
     return f"""
-HloModule {scenario.replace("-", "_")}, is_scheduled=true, entry_computation_layout={{(bf16[{m},{k}],bf16[{k},{n}])->f32[{m},{n}]}}
+HloModule {scenario.replace("-", "_")}, is_scheduled=true, entry_computation_layout={{(bf16[{m},{k // 8}],bf16[{k // 8},{n}])->f32[{m},{n // 8}]}}
 
 ENTRY %main {{
   %input = f32[1] parameter(0)
@@ -205,7 +205,7 @@ def _xla_collective_compiler_hlo(
     n: int,
 ) -> str:
     return f"""
-HloModule {scenario.replace("-", "_")}, is_scheduled=true, entry_computation_layout={{(bf16[{m},{k}],bf16[{k},{n}])->f32[{m},{n}]}}
+HloModule {scenario.replace("-", "_")}, is_scheduled=true, entry_computation_layout={{(bf16[{m},{k // 8}],bf16[{k // 8},{n}])->f32[{m},{n // 8}]}}
 
 ENTRY %main {{
   %input = f32[1] parameter(0)
@@ -619,6 +619,40 @@ def test_compile_capture_rejects_strategy_input_and_hlo_substitution(
     captures[other_strategy_index] = unbalanced
     broken = report.model_copy(update={"captures": tuple(captures)})
     with pytest.raises(ValueError, match="COMPILE_INVENTORY_MISMATCH"):
+        validate_compile_capture_report(broken, contract, source, source_blobs)
+
+
+def test_compile_capture_rejects_global_shapes_in_per_device_compiler_abi(
+    contract,
+    source,
+    source_blobs,
+) -> None:
+    report = _compile_report(contract, source)
+    first = report.captures[0]
+    scenario = contract.scenarios[0]
+    local_abi = (
+        f"bf16[{scenario.m},{scenario.k // contract.mesh_size}],"
+        f"bf16[{scenario.k // contract.mesh_size},{scenario.n}])"
+        f"->f32[{scenario.m},{scenario.n // contract.mesh_size}]"
+    )
+    global_abi = (
+        f"bf16[{scenario.m},{scenario.k}],bf16[{scenario.k},{scenario.n}])"
+        f"->f32[{scenario.m},{scenario.n}]"
+    )
+    compiler_hlo = first.compiler_hlo.replace(local_abi, global_abi)
+    assert compiler_hlo != first.compiler_hlo
+    mutated = first.model_copy(
+        update={
+            "compiler_hlo": compiler_hlo,
+            "compiler_hlo_sha256": _sha(compiler_hlo),
+            "semantic_compiler_hlo_sha256": _sha(
+                surface_runner._semantic_compiler_hlo(compiler_hlo)
+            ),
+        }
+    )
+    broken = report.model_copy(update={"captures": (mutated, *report.captures[1:])})
+
+    with pytest.raises(ValueError, match="COMPILER_HLO_STATIC_ABI_MISMATCH"):
         validate_compile_capture_report(broken, contract, source, source_blobs)
 
 

@@ -54,7 +54,7 @@ def _stablehlo(scenario: dict[str, object], strategy: str) -> str:
     )
 
 
-def _compiler_hlo(scenario: dict[str, object], strategy: str) -> str:
+def _compiler_hlo(scenario: dict[str, object], strategy: str, mesh_size: int) -> str:
     collective = (
         f"rs = f32[{scenario['m']},{scenario['n']}] reduce-scatter(x), "
         'backend_config={"reduce_scatter_offload_config":{"device_type":"DEVICE_TYPE_SPARSECORE"}}\n'
@@ -63,8 +63,9 @@ def _compiler_hlo(scenario: dict[str, object], strategy: str) -> str:
     )
     return (
         "HloModule module, entry_computation_layout="
-        f"{{(bf16[{scenario['m']},{scenario['k']}],bf16[{scenario['k']},{scenario['n']}])"
-        f"->f32[{scenario['m']},{scenario['n']}]}}\n"
+        f"{{(bf16[{scenario['m']},{scenario['k'] // mesh_size}],"
+        f"bf16[{scenario['k'] // mesh_size},{scenario['n']}])"
+        f"->f32[{scenario['m']},{scenario['n'] // mesh_size}]}}\n"
         f"{collective}"
     )
 
@@ -246,7 +247,7 @@ def _create_archive(tmp_path: Path) -> tuple[Path, Path]:
                 compiler_path = root / base / "compiler_hlo.txt"
                 stable_path.parent.mkdir(parents=True, exist_ok=True)
                 stable_path.write_text(_stablehlo(scenario, strategy))
-                compiler_path.write_text(_compiler_hlo(scenario, strategy))
+                compiler_path.write_text(_compiler_hlo(scenario, strategy, contract["mesh_size"]))
                 analysis = _analysis(stable_path, compiler_path, strategy)
                 analysis_path = root / base / "compiler_analysis.json"
                 _write_json(analysis_path, analysis)
@@ -498,6 +499,44 @@ def test_independent_verifier_rejects_manifest_rebound_abi_substitution(tmp_path
     _rebind_manifest(root, "repetition-1/result.json")
 
     with pytest.raises(ValueError, match="ABSTRACT_INPUT_ABI_MISMATCH"):
+        verify_surface_compile_independently(root, contract_path)
+
+
+def test_independent_verifier_rejects_global_shapes_in_compiler_abi(tmp_path: Path) -> None:
+    root, contract_path = _create_archive(tmp_path)
+    contract = json.loads(contract_path.read_text())
+    scenario = contract["scenarios"][0]
+    result_path = root / "repetition-1/result.json"
+    result = json.loads(result_path.read_text())
+    envelope = result["captures"][0]
+    capture = envelope["capture"]
+    local_abi = (
+        f"bf16[{scenario['m']},{scenario['k'] // contract['mesh_size']}],"
+        f"bf16[{scenario['k'] // contract['mesh_size']},{scenario['n']}])"
+        f"->f32[{scenario['m']},{scenario['n'] // contract['mesh_size']}]"
+    )
+    global_abi = (
+        f"bf16[{scenario['m']},{scenario['k']}],"
+        f"bf16[{scenario['k']},{scenario['n']}])->f32[{scenario['m']},{scenario['n']}]"
+    )
+    compiler_hlo = capture["compiler_hlo"].replace(local_abi, global_abi)
+    assert compiler_hlo != capture["compiler_hlo"]
+    compiler_path = root / envelope["compiler_hlo_path"]
+    compiler_path.write_text(compiler_hlo)
+    capture["compiler_hlo"] = compiler_hlo
+    capture["compiler_hlo_sha256"] = _hash(compiler_hlo)
+    capture["semantic_compiler_hlo_sha256"] = _hash(_semantic_compiler_hlo(compiler_hlo))
+    analysis_path = root / envelope["compiler_analysis_path"]
+    analysis = json.loads(analysis_path.read_text())
+    analysis["compiler_hlo_sha256"] = _file_sha256(compiler_path)
+    envelope["compiler_analysis"] = analysis
+    _write_json(analysis_path, analysis)
+    _write_json(result_path, result)
+    _rebind_manifest(root, envelope["compiler_hlo_path"])
+    _rebind_manifest(root, envelope["compiler_analysis_path"])
+    _rebind_manifest(root, "repetition-1/result.json")
+
+    with pytest.raises(ValueError, match="COMPILER_HLO_ABI_MISMATCH"):
         verify_surface_compile_independently(root, contract_path)
 
 

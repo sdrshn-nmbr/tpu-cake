@@ -620,9 +620,9 @@ def _validate_compiler_hlo_static_abi(
         for dtype, dimensions in re.findall(r"\b(bf16|f32)\[([0-9,]*)\]", header)
     )
     expected = (
-        ("bf16", (scenario.m, scenario.k)),
-        ("bf16", (scenario.k, scenario.n)),
-        ("f32", (scenario.m, scenario.n)),
+        ("bf16", (scenario.m, scenario.k // contract.mesh_size)),
+        ("bf16", (scenario.k // contract.mesh_size, scenario.n)),
+        ("f32", (scenario.m, scenario.n // contract.mesh_size)),
     )
     if observed != expected:
         raise ValueError(

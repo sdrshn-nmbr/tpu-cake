@@ -36,7 +36,7 @@ _EXPECTED_SOURCE_HASHES = {
     "tpu_cake/ledger.py": "ddeff9309596d5248a1c7b90bf03ea26ee0d3afb93473c0d0b1bf84b4c21da06",
     "tpu_cake/lowering.py": "3615333950614198e0cbdb978342382440717bbfc1b291bcde6d7c4da503f64e",
     "tpu_cake/matmul_collective_surface_prediction.py": "32e94beca6e487bdc76dd7d3ea9932146cfb6d4f7e7c8105cbb0a5852ff5f382",
-    "tpu_cake/matmul_collective_surface_runner.py": "cf7687d700742c3f4d50424e9a9364d8138df643efcf70f6dca7aeead3713d04",
+    "tpu_cake/matmul_collective_surface_runner.py": "dff5d5a6162c8484ae976fcd5ced10b683b886ba575b0038169628e37d8f100e",
     "tpu_cake/metrics.py": "a87f0bbc26f291e6bcec9932c356b866f529224042b0f673b434687d6666ccc0",
     "tpu_cake/pallas_lowering.py": "b40cd73db7cd4c12b6639064e5dd04b8e3b53be68eec72b34a5b3adace061ad5",
     "tpu_cake/receipt.py": "e2f2bf02d38e4af67570fb4bd209cfaf5ecc240d26a1b1d714b1745cc07fb32b",
@@ -745,7 +745,12 @@ def _semantic_compiler_hlo(value: str) -> str:
     return re.sub(r" stack_frame_id=\d+", "", canonical)
 
 
-def _validate_static_abi(stablehlo: str, compiler_hlo: str, scenario: dict[str, Any]) -> None:
+def _validate_static_abi(
+    stablehlo: str,
+    compiler_hlo: str,
+    scenario: dict[str, Any],
+    mesh_size: int,
+) -> None:
     uncommented = "\n".join(
         line for line in stablehlo.splitlines() if not line.lstrip().startswith("//")
     )
@@ -774,9 +779,9 @@ def _validate_static_abi(stablehlo: str, compiler_hlo: str, scenario: dict[str, 
         for dtype, dimensions in re.findall(r"\b(bf16|f32)\[([0-9,]*)\]", headers[0])
     )
     expected_compiler = (
-        ("bf16", (scenario["m"], scenario["k"])),
-        ("bf16", (scenario["k"], scenario["n"])),
-        ("f32", (scenario["m"], scenario["n"])),
+        ("bf16", (scenario["m"], scenario["k"] // mesh_size)),
+        ("bf16", (scenario["k"] // mesh_size, scenario["n"])),
+        ("f32", (scenario["m"], scenario["n"] // mesh_size)),
     )
     if observed != expected_compiler:
         raise ValueError("SURFACE_COMPILE_INDEPENDENT_COMPILER_HLO_ABI_MISMATCH")
@@ -1025,7 +1030,7 @@ def _validate_capture(
         != _sha256_bytes(_semantic_compiler_hlo(compiler_hlo).encode())
     ):
         raise ValueError("SURFACE_COMPILE_INDEPENDENT_HLO_HASH_MISMATCH")
-    _validate_static_abi(stablehlo, compiler_hlo, scenario)
+    _validate_static_abi(stablehlo, compiler_hlo, scenario, contract["mesh_size"])
     recorded_analysis = _read_json(analysis_path)
     if analysis != recorded_analysis:
         raise ValueError("SURFACE_COMPILE_INDEPENDENT_ANALYSIS_ENVELOPE_MISMATCH")
