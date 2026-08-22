@@ -1,0 +1,33 @@
+{
+  "schema_version": "inkling-decode-operation-selection-v1",
+  "profile_contract_id": "9cf382bff0443cd2d2dc91b3871fac1d5759f38ad81f66ea9addc743a375a42c",
+  "profile_request_sha256": "75be93143a0838aaa865bd935c7133bea85c0eaeb1ffa6c607e96db1a56c7073",
+  "prompt_corpus_sha256": "8a4205e9c7db38890b8a8efb82f0f8dceef7e3d11f06378bc34dafb0afd8fff6",
+  "xplane_sha256": "ac03e0594d17e36602e776cd2f3818c3e92c1da011948e82ac3ad2be0a5404cb",
+  "op_profile_sha256": "b828bd1a5b2d7e75c8ba99669029a55ebaec95fea3ddf5b0b81aadab90db3cfa",
+  "hlo_stats_sha256": "bf2ef9aa8cecd73a5b950c2152c69e34644aa6e4d37382eb022c9f3b6e61f363",
+  "producer_source_sha256": "a7b2ac87f5153b600802ac7a3ef1f859aeb19483b1b8b989bf5f3883a39cf2b9",
+  "verifier_source_sha256": "7fdec81d95d14a64f1dc8bd9ada55f4c162875497c9e73a07fcab39c8b57d749",
+  "uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+  "selection_rule": "largest-xprof-device-op-self-time-partition",
+  "required_winner_partition_key": "custom-call-family/gmm_v2-g_32-m_288-k_4096-n_2048-tm_128-tk_4096-tn_2048",
+  "maximum_unattributed_device_op_share_of_main_program": "0.0001",
+  "candidate_hlo_prefix": "gmm_v2-",
+  "expected_candidate_kernel_families": [
+    "gmm_v2-g_32-m_288-k_2048-n_4096-tm_128-tk_2048-tn_4096",
+    "gmm_v2-g_32-m_288-k_4096-n_2048-tm_128-tk_4096-tn_2048"
+  ],
+  "minimum_candidate_device_op_share_of_main_program": "0.3",
+  "expected_bound_by": [
+    "HBM"
+  ],
+  "expected_claim": {
+    "main_program_raw_time_ps": 11930644036307,
+    "winner_raw_time_ps": 2941661857105,
+    "candidate_raw_time_ps": 4437506751497,
+    "candidate_occurrences": 60541,
+    "candidate_hlo_rows": 120,
+    "candidate_operational_intensity_min": "8.88289156626506",
+    "candidate_operational_intensity_max": "8.9215876089061"
+  }
+}
