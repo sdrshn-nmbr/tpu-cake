@@ -71,6 +71,21 @@ def test_artifact_set_excludes_circular_files_and_rejects_links(tmp_path: Path) 
         _manifest_entries(tmp_path)
 
 
+def test_manifest_entries_use_canonical_relative_path_order(tmp_path: Path) -> None:
+    os.chmod(tmp_path, 0o700)
+    (tmp_path / "parent").mkdir()
+    (tmp_path / "parent-extraction").mkdir()
+    (tmp_path / "parent" / "artifact").write_bytes(b"parent")
+    (tmp_path / "parent-extraction" / "artifact").write_bytes(b"extraction")
+
+    entries = _manifest_entries(tmp_path)
+
+    assert tuple(entry.path for entry in entries) == (
+        "parent-extraction/artifact",
+        "parent/artifact",
+    )
+
+
 def test_calibration_receipt_identity_binds_parent_and_seal() -> None:
     receipt = SurfaceCalibrationPhaseReceipt(
         attempt_id="1" * 64,
