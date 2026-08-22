@@ -1,0 +1,103 @@
+{
+  "schema_version": "seqax-large-residual-qualification-v1",
+  "identity_schema": "length-prefixed-v2",
+  "question": "Does the pinned model-4096 Seqax workload compile with the declared native residual boundary and satisfy the frozen BF16 final-output policy before any timing is authorized?",
+  "large_residual_contract_id": "55a9da09cc188d8a582ddad566757d2f94413d3e9449ddc30f8603cb3661d9c1",
+  "compiler_capture_record_id": "da420165c7ea57ac4d5b2830062803942236a2726411c5dc9b3bcc0bb1a63ff6",
+  "compiler_capture_source_commit": "9ccd3705c63ab772f8a4c325eb407ba35037f749",
+  "compiler_capture_uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+  "compiler_capture_invocation_ids": [
+    "4206cd2d9dff42e199aeb04ebb27ef61",
+    "4f85b0144dc249abbe22131b9afa2a3a"
+  ],
+  "compiler_capture_log_sha256": [
+    "81e9fe9e432ac46f961a48d219a470925449a9a8fbd7778f6ce7a118a45cbf6b",
+    "81e9fe9e432ac46f961a48d219a470925449a9a8fbd7778f6ce7a118a45cbf6b"
+  ],
+  "numerical_policy_source_contract_id": "861cc164be5ed7a322cca351902cfc1400a49c4cebd3ab8bcf09c2a10ee6e905",
+  "numerical_policy": {
+    "schema_version": "bf16-forward-numerical-v6",
+    "numerical_semantics": "typed_bf16_hidden_v2",
+    "unit_roundoff": 0.00390625,
+    "cpu_relative_l2_units": 3.0,
+    "cpu_row_scaled_max_units": 8.0,
+    "cross_path_relative_l2_units": 2.0,
+    "cross_path_row_scaled_max_units": 2.0,
+    "depth_scaling": "sqrt_layers",
+    "row_scale_floor": 1.0,
+    "metric_quantization_decimals": 15,
+    "cpu_reference": "jax_cpu_reference_v1",
+    "cpu_reference_quantization_decimals": 6,
+    "cpu_replay_rule": "cpu_facing_numerical_bounds",
+    "checkpoint_storage_dtype": "uint16",
+    "checkpoint_logical_dtype": "bfloat16",
+    "checkpoint_encoding": "bf16-bit-pattern-v1",
+    "require_float32_output": true,
+    "require_finite_output": true,
+    "mathematical_silu_max_ulp": 1,
+    "rms_inverse_relative_error_units": 4.0
+  },
+  "compilation_source_root": "/home/sudarshan/tpu-cake-main",
+  "attempt_registry_root": "/home/sudarshan/tpu-cake-evidence/seqax-large-residual-qualification-attempts-v1",
+  "parameters": {
+    "batch": 2,
+    "data_mesh": 2,
+    "feed_forward": 1024,
+    "head": 64,
+    "key_value_heads": 4,
+    "layers": 1,
+    "model": 4096,
+    "query_groups": 2,
+    "rope_max_timescale": 256,
+    "sequence": 128,
+    "tensor_mesh": 4,
+    "vocabulary": 256
+  },
+  "candidates": [
+    "standard",
+    "residual_all_reduce"
+  ],
+  "correctness_seeds": [
+    12948912269241953413,
+    15621403801627247318,
+    8658431475210851483,
+    6509067647865353228,
+    13042482230828555848
+  ],
+  "repeat_executions": 2,
+  "cpu_oracle_executions_per_seed": 1,
+  "expected_standard_boundary_chains": 2,
+  "inputs_stored_once": true,
+  "candidates_use_shared_resident_inputs": true,
+  "capture_memory_before_and_after_residency": true,
+  "collect_timings": false,
+  "collect_profile": false,
+  "allow_resume": false,
+  "allow_retry": false,
+  "correctness_scope": "final-output-plus-pinned-compiler-boundary-v1",
+  "claim_point": "after-source-device-root-preflight-before-input-materialization-or-compilation-v1",
+  "producer_receipt_status": "producer_passed_independent_replay_pending",
+  "independent_replay_required_for_acceptance": true,
+  "project": "astral-medley-465922-b2",
+  "numeric_project_id": "541760035156",
+  "zone": "us-central1-c",
+  "hostname": "tpu-cake-v7x-rsag-wx7r",
+  "instance_hostname": "tpu-cake-v7x-rsag-wx7r.us-central1-c.c.astral-medley-465922-b2.internal",
+  "machine_type": "tpu7x-standard-4t",
+  "instance_id": "5064039476077763048",
+  "cpu_platform": "Intel Emerald Rapids",
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "mesh": {
+    "d": 2,
+    "t": 4
+  }
+}

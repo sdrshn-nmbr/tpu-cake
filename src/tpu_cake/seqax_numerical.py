@@ -1695,8 +1695,27 @@ def _assess_output_arrays(
     policy: SeqaxBf16NumericalPolicy,
     scenario: SeqaxBf16NumericalScenario,
 ) -> SeqaxBf16OutputAssessment:
+    return assess_seqax_bf16_final_outputs(
+        pallas,
+        control,
+        cpu_reference,
+        policy=policy,
+        expected_shape=scenario.output.shape,
+        layers=scenario.parameters.layers,
+    )
+
+
+def assess_seqax_bf16_final_outputs(
+    pallas: np.ndarray,
+    control: np.ndarray,
+    cpu_reference: np.ndarray,
+    *,
+    policy: SeqaxBf16NumericalPolicy,
+    expected_shape: tuple[int, ...],
+    layers: int,
+) -> SeqaxBf16OutputAssessment:
     arrays = tuple(np.asarray(value) for value in (pallas, control, cpu_reference))
-    if len({value.shape for value in arrays}) != 1 or arrays[0].shape != scenario.output.shape:
+    if len({value.shape for value in arrays}) != 1 or arrays[0].shape != expected_shape:
         raise ValueError("Seqax BF16 numerical output shape does not match the contract")
     if policy.require_float32_output and any(value.dtype != np.float32 for value in arrays):
         raise TypeError("Seqax BF16 numerical outputs must use float32")
@@ -1725,7 +1744,7 @@ def _assess_output_arrays(
         quantization_decimals=metric_decimals,
     )
     unit = policy.unit_roundoff
-    depth_scale = policy.depth_scale(scenario.parameters.layers)
+    depth_scale = policy.depth_scale(layers)
     final_outputs_satisfy_policy = (
         pallas_relative <= policy.cpu_relative_l2_units * unit * depth_scale
         and control_relative <= policy.cpu_relative_l2_units * unit * depth_scale
