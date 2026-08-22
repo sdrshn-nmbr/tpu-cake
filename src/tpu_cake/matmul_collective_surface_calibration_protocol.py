@@ -153,6 +153,9 @@ class MatmulCollectiveSurfaceCalibrationProtocol(BaseModel):
     holdout_authorization_rule: Literal[
         "seal-always-authorize-only-if-all-8-arm-widths-at-most-0.20-v1"
     ] = "seal-always-authorize-only-if-all-8-arm-widths-at-most-0.20-v1"
+    holdout_execution_rule: Literal[
+        "width-gate-pass-and-archived-independent-replay-before-holdout-claim-v1"
+    ] = "width-gate-pass-and-archived-independent-replay-before-holdout-claim-v1"
     strategy_improvement_rule: Literal["xla-median-minus-pallas-median-over-xla-median-v1"] = (
         "xla-median-minus-pallas-median-over-xla-median-v1"
     )
@@ -374,6 +377,9 @@ def default_matmul_collective_surface_calibration_protocol_payload() -> dict[str
         "maximum_holdout_prediction_ci_relative_width": 0.2,
         "holdout_authorization_rule": (
             "seal-always-authorize-only-if-all-8-arm-widths-at-most-0.20-v1"
+        ),
+        "holdout_execution_rule": (
+            "width-gate-pass-and-archived-independent-replay-before-holdout-claim-v1"
         ),
         "strategy_improvement_rule": ("xla-median-minus-pallas-median-over-xla-median-v1"),
         "predictions_sealed_before_holdout": True,
