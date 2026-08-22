@@ -561,7 +561,7 @@ def test_tracked_whole_decode_contract_is_pinned_and_source_bound() -> None:
     )
     assert contract.hlo_identity_status is HloIdentityStatus.PINNED
     assert contract.inkling_git_commit == "5160f27741fd60537ea441b7c986c74d8c8ca8f7"
-    assert contract.capture_git_commit == "7feb67e98e94f6a44a9676f2e6b1f349e400e045"
+    assert contract.capture_git_commit == "051b33f2a8df3d0e24830628bf50f22e5bfd08bc"
     assert contract.hlo_identity_method == "xprof-long-hlo-text-v1"
     assert (
         contract.inkling_uv_lock_sha256

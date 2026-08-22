@@ -5,14 +5,14 @@
   "inkling_git_commit": "5160f27741fd60537ea441b7c986c74d8c8ca8f7",
   "inkling_uv_lock_sha256": "3c156f97dd4f042c0d58c425a8aaa0a8990ae14fac6ffe1367161f3b16d2f356",
   "inkling_source_root": "/home/sudarshan/inkle",
-  "capture_git_commit": "7feb67e98e94f6a44a9676f2e6b1f349e400e045",
+  "capture_git_commit": "051b33f2a8df3d0e24830628bf50f22e5bfd08bc",
   "capture_uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
   "capture_source_manifest": [
-    {"path": "src/tpu_cake/inkling_decode_profile.py", "sha256": "09a08d87d98e45a6b7749bae26ac9ac98e5b0b8c5df2cc79aa1b87ad0cb62769"},
-    {"path": "src/tpu_cake/xprof_evidence.py", "sha256": "8269ed50c28b668633d26b09996f67a433ae2ada3206e48d0a30bc30ccb6b5d4"},
+    {"path": "src/tpu_cake/inkling_decode_profile.py", "sha256": "9badadd59f6eceaa482e543b1c1083edbaa1d2d0ee4df0eafa2d0f7caa7848ff"},
+    {"path": "src/tpu_cake/xprof_evidence.py", "sha256": "1357df464c1ab02e7f6ef4e7c256be72821172ed9b4011810465fb695122da9e"},
     {"path": "src/tpu_cake/evidence.py", "sha256": "ba7fd05982596a5d195327e25b2fabda9a628b2fddb6083222cc258d439e4196"},
-    {"path": "src/tpu_cake/contracts.py", "sha256": "089fd9838a13bca1a11ec539f65511eba4e18edb9f70e00676349613b09bcf31"},
-    {"path": "src/tpu_cake/cli.py", "sha256": "ae7bbc3dc3054f27b4126bb5ff945877ca1f0de30dc478865bc1e6cc4dc7716d"}
+    {"path": "src/tpu_cake/contracts.py", "sha256": "3b3cfeb1e6b1036045d030db3b00967f3ad474ccd48ebf8a5c08bd0e3ef54e5b"},
+    {"path": "src/tpu_cake/cli.py", "sha256": "e5ff3606b1307382f71368f318f22768e757cf5e4013f8f710b845df681b7fdf"}
   ],
   "server_command_fragments": ["sgl_jax.launch_server", "thinkingmachines/Inkling-Small"],
   "runtime": {
