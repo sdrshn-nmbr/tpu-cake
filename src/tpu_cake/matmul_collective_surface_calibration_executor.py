@@ -355,9 +355,12 @@ def _stage_and_verify_parent(
             "--root",
             str(extracted),
             "--protocol",
-            str(extracted / "protocol.json"),
+            str(
+                extracted
+                / "source/committed/contracts/matmul-collective-surface-correctness-v1.json"
+            ),
             "--design",
-            str(extracted / "design.json"),
+            str(extracted / "source/committed/contracts/matmul-collective-surface-design-v1.json"),
         ],
         cwd="/",
         env={

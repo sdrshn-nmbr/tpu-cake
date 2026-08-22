@@ -811,9 +811,12 @@ def _verify_parent(root: Path, protocol: dict[str, Any]) -> dict[str, Any]:
             "--root",
             str(extracted),
             "--protocol",
-            str(extracted / "protocol.json"),
+            str(
+                extracted
+                / "source/committed/contracts/matmul-collective-surface-correctness-v1.json"
+            ),
             "--design",
-            str(extracted / "design.json"),
+            str(extracted / "source/committed/contracts/matmul-collective-surface-design-v1.json"),
         ],
         cwd="/",
         env={"HOME": "/nonexistent", "LC_ALL": "C", "PATH": "/usr/bin:/bin", "PYTHONHASHSEED": "0"},

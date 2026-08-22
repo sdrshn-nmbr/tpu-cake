@@ -121,10 +121,25 @@ def test_parent_is_staged_verified_then_moved_into_final_layout(tmp_path: Path) 
         source = tarfile.TarInfo(f"{root_name}/source")
         source.type = tarfile.DIRTYPE
         stream.addfile(source)
+        committed = tarfile.TarInfo(f"{root_name}/source/committed")
+        committed.type = tarfile.DIRTYPE
+        stream.addfile(committed)
+        contracts = tarfile.TarInfo(f"{root_name}/source/committed/contracts")
+        contracts.type = tarfile.DIRTYPE
+        stream.addfile(contracts)
+        contract_root = f"{root_name}/source/committed/contracts"
         for name, payload in (
             (f"{root_name}/source/verifier.py", script),
             (f"{root_name}/protocol.json", b"{}\n"),
             (f"{root_name}/design.json", b"{}\n"),
+            (
+                f"{contract_root}/matmul-collective-surface-correctness-v1.json",
+                b"{}\n",
+            ),
+            (
+                f"{contract_root}/matmul-collective-surface-design-v1.json",
+                b"{}\n",
+            ),
         ):
             member = tarfile.TarInfo(name)
             member.size = len(payload)
