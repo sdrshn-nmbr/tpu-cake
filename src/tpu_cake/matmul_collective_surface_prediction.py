@@ -213,6 +213,7 @@ class MatmulCollectiveSurfaceDesignReport(BaseModel):
     calibration_condition_number: float = Field(gt=0)
     calibration_compute_hbm_correlation: float = Field(ge=-1, le=1)
     holdouts_inside_calibration_hull: bool
+    holdouts_inside_physical_feature_hull: bool
     physical_authority: str
     measured_performance_winner: None = None
     prospective_validation: bool = False
@@ -469,6 +470,63 @@ def _holdouts_inside_calibration_hull(
     return True
 
 
+def _inside_convex_hull(point: np.ndarray, points: np.ndarray) -> bool:
+    scales = np.maximum(np.max(np.abs(points), axis=0), 1.0)
+    normalized_points = points / scales
+    target = point / scales
+    expected = np.concatenate((target, [1.0]))
+    for count in range(1, min(points.shape[1] + 1, len(points)) + 1):
+        for indices in itertools.combinations(range(len(points)), count):
+            selected = normalized_points[list(indices)].T
+            system = np.vstack((selected, np.ones(count)))
+            weights, *_ = np.linalg.lstsq(system, expected, rcond=None)
+            if np.all(weights >= -1e-10) and np.allclose(
+                system @ weights,
+                expected,
+                rtol=1e-9,
+                atol=1e-9,
+            ):
+                return True
+    return False
+
+
+def _holdouts_inside_physical_feature_hull(
+    contract: MatmulCollectiveSurfaceDesignContract,
+    arms: tuple[MatmulCollectiveSurfaceArmPlan, ...],
+) -> bool:
+    for strategy in contract.strategies:
+        calibration = tuple(
+            value
+            for value in arms
+            if value.strategy is strategy
+            and value.split is MatmulCollectiveSurfaceSplit.CALIBRATION
+        )
+        holdouts = tuple(
+            value
+            for value in arms
+            if value.strategy is strategy and value.split is MatmulCollectiveSurfaceSplit.HOLDOUT
+        )
+        points = np.asarray(
+            [
+                _physical_feature_row(value, contract.feature_scale_divisor_ns)
+                for value in calibration
+            ],
+            dtype=np.float64,
+        )
+        if any(
+            not _inside_convex_hull(
+                np.asarray(
+                    _physical_feature_row(value, contract.feature_scale_divisor_ns),
+                    dtype=np.float64,
+                ),
+                points,
+            )
+            for value in holdouts
+        ):
+            return False
+    return True
+
+
 def derive_matmul_collective_surface_design_report(
     contract: MatmulCollectiveSurfaceDesignContract,
 ) -> MatmulCollectiveSurfaceDesignReport:
@@ -563,6 +621,9 @@ def derive_matmul_collective_surface_design_report(
     inside_hull = _holdouts_inside_calibration_hull(contract)
     if not inside_hull:
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_HOLDOUT_EXTRAPOLATION")
+    inside_physical_hull = _holdouts_inside_physical_feature_hull(contract, arm_tuple)
+    if not inside_physical_hull:
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_PHYSICAL_FEATURE_EXTRAPOLATION")
     return MatmulCollectiveSurfaceDesignReport(
         design_id=contract.design_id,
         arms=arm_tuple,
@@ -570,6 +631,7 @@ def derive_matmul_collective_surface_design_report(
         calibration_condition_number=condition,
         calibration_compute_hbm_correlation=correlation,
         holdouts_inside_calibration_hull=inside_hull,
+        holdouts_inside_physical_feature_hull=inside_physical_hull,
         physical_authority="canonical-xdsl-to-pallas-cost-replay",
     )
 

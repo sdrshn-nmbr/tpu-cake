@@ -54,6 +54,7 @@ def test_surface_design_replays_distinct_plans_and_full_rank_features() -> None:
     assert report.calibration_condition_number < contract.maximum_condition_number
     assert report.calibration_compute_hbm_correlation < contract.maximum_compute_hbm_correlation
     assert report.holdouts_inside_calibration_hull
+    assert report.holdouts_inside_physical_feature_hull
     assert {value.predicted_limiting_resource for value in report.calibration_arms} >= {
         "compute",
         "hbm",
@@ -107,6 +108,19 @@ def test_surface_design_rejects_any_holdout_outside_the_calibration_hull(
     )
 
     with pytest.raises(ValueError, match="HOLDOUT_EXTRAPOLATION"):
+        derive_matmul_collective_surface_design_report(contract)
+
+
+def test_surface_design_rejects_physical_feature_extrapolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = default_matmul_collective_surface_design_contract()
+    monkeypatch.setattr(
+        "tpu_cake.matmul_collective_surface_prediction._holdouts_inside_physical_feature_hull",
+        lambda _contract, _arms: False,
+    )
+
+    with pytest.raises(ValueError, match="PHYSICAL_FEATURE_EXTRAPOLATION"):
         derive_matmul_collective_surface_design_report(contract)
 
 
