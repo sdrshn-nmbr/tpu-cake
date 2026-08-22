@@ -11,8 +11,10 @@ from tpu_cake.runner import _runtime_identity
 from tpu_cake.seqax_large_residual_qualification import (
     SeqaxLargeResidualHost,
     SeqaxLargeResidualQualificationContract,
+    SeqaxLargeResidualQualificationFailureRecord,
     analyze_large_residual_boundary,
     default_seqax_large_residual_qualification_contract,
+    default_seqax_large_residual_qualification_failure_record,
 )
 from tpu_cake.seqax_large_residual_qualification_runner import (
     _record_failure,
@@ -94,6 +96,19 @@ def test_external_qualification_contract_is_canonical() -> None:
     )
 
     assert saved == default_seqax_large_residual_qualification_contract(saved.runtime)
+
+
+def test_failed_model_4096_qualification_record_is_canonical() -> None:
+    saved = SeqaxLargeResidualQualificationFailureRecord.model_validate_json(
+        Path("contracts/seqax-large-residual-qualification-failure-v1.json").read_text()
+    )
+
+    assert saved == default_seqax_large_residual_qualification_failure_record()
+    assert saved.assessment.pallas_top1_matches_control
+    assert saved.assessment.cross_path_relative_l2 < 0.001
+    assert not saved.assessment.final_outputs_satisfy_policy
+    assert not saved.qualification_passed
+    assert not saved.timing_authorized
 
 
 def test_qualification_contract_rejects_relaxed_repeat_policy() -> None:

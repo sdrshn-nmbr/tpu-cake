@@ -53,6 +53,9 @@ _FORENSIC_CAPTURE_PATH = (
     "seqax-large-residual-qualification-failure-forensic-2ac952f.log"
 )
 _FORENSIC_CAPTURE_SHA256 = "1cd8afbe7735f9046b98934621af33306433572c7fc400ed0f481d45feabdc0d"
+SEQAX_LARGE_RESIDUAL_QUALIFICATION_FAILURE_RECORD_SCHEMA = (
+    "seqax-large-residual-qualification-failure-record-v1"
+)
 _CAPTURE_INVOCATION_IDS = (
     "4206cd2d9dff42e199aeb04ebb27ef61",
     "4f85b0144dc249abbe22131b9afa2a3a",
@@ -498,4 +501,93 @@ def default_seqax_large_residual_qualification_contract(
         device_kind="TPU7x",
         device_count=8,
         mesh={"d": 2, "t": 4},
+    )
+
+
+class SeqaxLargeResidualQualificationFailureRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[SEQAX_LARGE_RESIDUAL_QUALIFICATION_FAILURE_RECORD_SCHEMA] = (
+        SEQAX_LARGE_RESIDUAL_QUALIFICATION_FAILURE_RECORD_SCHEMA
+    )
+    large_residual_contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    qualification_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attempt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    failure_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    service_log_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_path: str
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_member_count: int = Field(gt=0)
+    seed: int
+    candidate: Literal[SeqaxResidualNormStrategy.STANDARD]
+    cpu_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_repeat_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_repeat_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    assessment: SeqaxBf16OutputAssessment
+    pallas_repeat_exact: Literal[True]
+    control_repeat_exact: Literal[True]
+    qualification_passed: Literal[False]
+    timing_authorized: Literal[False]
+    conclusion: Literal["model-4096-workload-failed-frozen-cpu-facing-policy-before-timing-v1"]
+
+    @model_validator(mode="after")
+    def record_is_canonical(self) -> SeqaxLargeResidualQualificationFailureRecord:
+        expected = default_seqax_large_residual_qualification_failure_record()
+        if self.model_dump(exclude_computed_fields=True) != expected.model_dump(
+            exclude_computed_fields=True
+        ):
+            raise ValueError("Seqax large residual qualification failure record mismatch")
+        return self
+
+    @computed_field
+    @property
+    def record_id(self) -> str:
+        return model_identity_sha256(self)
+
+
+def default_seqax_large_residual_qualification_failure_record() -> (
+    SeqaxLargeResidualQualificationFailureRecord
+):
+    return SeqaxLargeResidualQualificationFailureRecord.model_construct(
+        large_residual_contract_id=SEQAX_LARGE_RESIDUAL_CONTRACT_ID,
+        qualification_id=("38481a975a61e8c65b06f24020876397f0644fb5953975e4984aaf75e56fe19c"),
+        attempt_id="f040ef497072fbe87a4e7b1e26929c0577ed1f92a979ac8991ade6abe807a825",
+        source_commit="53a60057c47c72548d9dde0170afd194a587ea92",
+        failure_artifact_sha256=(
+            "a4d09f2cb301c353e224c7a3156427ef23352b95edb8a64105537e542f49997f"
+        ),
+        service_log_sha256=("bdc97afc1cc2ba392868a315d0a3d64976d471d58b5c7d6053ec83a7a929ae9d"),
+        archive_path=(
+            "/home/sudarshan/tpu-cake-evidence/"
+            "seqax-large-residual-qualification-53a6005-38481a9.failed.tar.zst"
+        ),
+        archive_sha256=("01a322639e15c4f0a8ac973cf22f12e27463b2c728c44287f7a28f2abb64ba69"),
+        archive_member_count=119,
+        seed=SEQAX_LARGE_RESIDUAL_CORRECTNESS_SEEDS[0],
+        candidate=SeqaxResidualNormStrategy.STANDARD,
+        cpu_output_sha256=("a97e1131ea2e6599523e050e9590def8b1c8a2cf0c21de8d24dfe41c6f7d3df1"),
+        pallas_output_sha256=("61ce2e73bf7fca9745b553db9f71d40ec1a4bf939c127ff868761b7889ce7686"),
+        pallas_repeat_sha256=("61ce2e73bf7fca9745b553db9f71d40ec1a4bf939c127ff868761b7889ce7686"),
+        control_output_sha256=("709aaf1d5743dd4160e0cda752626aa3bf0b57379460d2ead38400f0a6f5e551"),
+        control_repeat_sha256=("709aaf1d5743dd4160e0cda752626aa3bf0b57379460d2ead38400f0a6f5e551"),
+        assessment=SeqaxBf16OutputAssessment(
+            cpu_pallas_relative_l2=0.02887471382092,
+            cpu_control_relative_l2=0.028874912381819,
+            cross_path_relative_l2=0.000676910067889,
+            cpu_pallas_row_scaled_max=0.19160372148691,
+            cpu_control_row_scaled_max=0.191603736483618,
+            cross_path_row_scaled_max=0.004154127070847,
+            pallas_top1_matches_cpu=False,
+            control_top1_matches_cpu=False,
+            pallas_top1_matches_control=True,
+            final_outputs_satisfy_policy=False,
+        ),
+        pallas_repeat_exact=True,
+        control_repeat_exact=True,
+        qualification_passed=False,
+        timing_authorized=False,
+        conclusion="model-4096-workload-failed-frozen-cpu-facing-policy-before-timing-v1",
     )
