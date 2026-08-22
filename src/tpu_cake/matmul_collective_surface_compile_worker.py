@@ -87,10 +87,19 @@ def _validate_loaded_tpu_cake_sources(
         if path.read_bytes() != expected_blobs[relative]:
             raise ValueError("MATMUL_COLLECTIVE_SURFACE_COMPILE_LOADED_SOURCE_HASH_MISMATCH")
         observed_paths.add(relative)
+    worker_relative = WORKER_SOURCE_PATH.removeprefix("src/")
+    running_worker = Path(__file__)
+    if (
+        running_worker.is_symlink()
+        or running_worker.resolve() != (repository_root / WORKER_SOURCE_PATH).resolve()
+        or running_worker.read_bytes() != expected_blobs[worker_relative]
+    ):
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_COMPILE_LOADED_SOURCE_HASH_MISMATCH")
+    observed_paths.add(worker_relative)
     required = {
         "tpu_cake/__init__.py",
         EXECUTOR_SOURCE_PATH.removeprefix("src/"),
-        WORKER_SOURCE_PATH.removeprefix("src/"),
+        worker_relative,
     }
     if not required <= observed_paths:
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_COMPILE_LOADED_SOURCE_INCOMPLETE")
