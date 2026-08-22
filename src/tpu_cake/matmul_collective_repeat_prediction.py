@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -506,3 +507,59 @@ def write_matmul_collective_repeat_prediction(
     )
     write_json(output, report.model_dump(mode="json"))
     return report
+
+
+def _add_evidence_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--diagnostic-root", required=True, type=Path)
+    parser.add_argument("--diagnostic-archive", required=True, type=Path)
+    parser.add_argument("--confirmation-root", required=True, type=Path)
+    parser.add_argument("--confirmation-archive", required=True, type=Path)
+    parser.add_argument("--confirmation-contract", required=True, type=Path)
+    parser.add_argument("--contract", required=True, type=Path)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    evaluate = commands.add_parser("evaluate")
+    _add_evidence_arguments(evaluate)
+    evaluate.add_argument("--output", required=True, type=Path)
+    verify = commands.add_parser("verify")
+    verify.add_argument("report", type=Path)
+    _add_evidence_arguments(verify)
+    return parser
+
+
+def main() -> None:
+    args = _parser().parse_args()
+    confirmation_contract = MatmulCollectiveConfirmationContract.model_validate_json(
+        args.confirmation_contract.read_text()
+    )
+    contract = MatmulCollectiveRepeatPredictionContract.model_validate_json(
+        args.contract.read_text()
+    )
+    common = {
+        "diagnostic_root": args.diagnostic_root,
+        "diagnostic_archive": args.diagnostic_archive,
+        "confirmation_root": args.confirmation_root,
+        "confirmation_archive": args.confirmation_archive,
+        "confirmation_contract": confirmation_contract,
+        "contract": contract,
+    }
+    if args.command == "evaluate":
+        report = write_matmul_collective_repeat_prediction(args.output, **common)
+        action = "EVALUATED"
+    else:
+        report = MatmulCollectiveRepeatPredictionReport.model_validate_json(args.report.read_text())
+        validate_matmul_collective_repeat_prediction(report, **common)
+        action = "REPLAYED"
+    print(
+        f"MATMUL_COLLECTIVE_REPEAT_PREDICTION_{action} "
+        f"contract_id={report.contract_id} "
+        f"ranking_agrees={report.strategy_ranking_agrees} "
+        f"scope={report.status}"
+    )
+
+
+if __name__ == "__main__":
+    main()

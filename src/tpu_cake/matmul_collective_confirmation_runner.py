@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import fcntl
 import gc
 import hashlib
@@ -213,9 +214,7 @@ def _exclusive_run_lock(run_id: str) -> Iterator[None]:
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ValueError(
-                f"MATMUL_COLLECTIVE_CONFIRMATION_LOCK_FILE_INVALID run_id={run_id}"
-            )
+            raise ValueError(f"MATMUL_COLLECTIVE_CONFIRMATION_LOCK_FILE_INVALID run_id={run_id}")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
@@ -260,7 +259,9 @@ def _require_source(
         raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_SERVER_MAIN_UNAVAILABLE")
     server_main = server_main_fields[0]
     if status:
-        raise ValueError(f"MATMUL_COLLECTIVE_CONFIRMATION_SOURCE_DIRTY status={status.splitlines()}")
+        raise ValueError(
+            f"MATMUL_COLLECTIVE_CONFIRMATION_SOURCE_DIRTY status={status.splitlines()}"
+        )
     if branch != contract.source_branch:
         raise ValueError(
             "MATMUL_COLLECTIVE_CONFIRMATION_BRANCH_MISMATCH "
@@ -430,9 +431,7 @@ def _validate_diagnostics(
     receipts = []
     for authority in contract.diagnostics:
         bundle = diagnostic_root / (
-            "xla"
-            if authority.strategy is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER
-            else "pallas"
+            "xla" if authority.strategy is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER else "pallas"
         )
         receipt_path = bundle / "receipt.json"
         if _sha256(receipt_path) != authority.receipt_sha256:
@@ -465,9 +464,7 @@ def _validate_diagnostics(
             or source_state_artifact.sha256 != _sha256(source_state_path)
             or source_state.get("git_commit") != authority.source_commit
             or _text_sha256(
-                _semantic_compiler_hlo(
-                    (bundle / "timing" / "compiler_hlo.txt").read_text()
-                )
+                _semantic_compiler_hlo((bundle / "timing" / "compiler_hlo.txt").read_text())
             )
             != authority.semantic_compiler_hlo_sha256
             or artifact_mismatch
@@ -503,9 +500,7 @@ def _plan_sources(
             or plan.schedule_sha256 != authority.schedule_sha256
             or plan.source_sha256() != authority.pallas_source_sha256
         ):
-            raise ValueError(
-                f"MATMUL_COLLECTIVE_CONFIRMATION_PLAN_MISMATCH strategy={strategy}"
-            )
+            raise ValueError(f"MATMUL_COLLECTIVE_CONFIRMATION_PLAN_MISMATCH strategy={strategy}")
         sources.append(
             MatmulCollectivePlanSource(
                 strategy=strategy,
@@ -597,9 +592,7 @@ def _compile(
             raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_COMPILER_HLO_UNAVAILABLE")
         compiler_hlo = compiler_hlo.rstrip("\n") + "\n"
         authority = next(
-            item
-            for item in contract.diagnostics
-            if item.strategy is value.source.strategy
+            item for item in contract.diagnostics if item.strategy is value.source.strategy
         )
         if (
             _text_sha256(stablehlo) != authority.stablehlo_sha256
@@ -607,8 +600,7 @@ def _compile(
             != authority.semantic_compiler_hlo_sha256
         ):
             raise ValueError(
-                "MATMUL_COLLECTIVE_CONFIRMATION_HLO_MISMATCH "
-                f"strategy={value.source.strategy}"
+                f"MATMUL_COLLECTIVE_CONFIRMATION_HLO_MISMATCH strategy={value.source.strategy}"
             )
         _validate_matmul_compiler_strategy(
             stablehlo,
@@ -980,8 +972,7 @@ def _claim_timing_attempt(
     except FileExistsError as error:
         if claim_path.is_symlink() or json.loads(claim_path.read_text()) != reserved:
             raise ValueError(
-                "MATMUL_COLLECTIVE_CONFIRMATION_TIMING_ATTEMPT_ALREADY_CLAIMED "
-                f"path={claim_path}"
+                f"MATMUL_COLLECTIVE_CONFIRMATION_TIMING_ATTEMPT_ALREADY_CLAIMED path={claim_path}"
             ) from error
     _write_json_atomic(root / "timing_started.json", started)
     _write_json_atomic(claim_path, started)
@@ -1034,9 +1025,7 @@ def _ledger_payloads(
                     value.strategy: {
                         "stablehlo_sha256": value.stablehlo_sha256,
                         "compiler_hlo_sha256": value.compiler_hlo_sha256,
-                        "semantic_compiler_hlo_sha256": (
-                            value.semantic_compiler_hlo_sha256
-                        ),
+                        "semantic_compiler_hlo_sha256": (value.semantic_compiler_hlo_sha256),
                     }
                     for value in result.plans
                 }
@@ -1141,9 +1130,7 @@ def _replay_plans(
         strategy_root = root / "plans" / value.strategy
         stablehlo = (strategy_root / "stablehlo.txt").read_text()
         compiler_hlo = (strategy_root / "compiler_hlo.txt").read_text()
-        authority = next(
-            item for item in contract.diagnostics if item.strategy is value.strategy
-        )
+        authority = next(item for item in contract.diagnostics if item.strategy is value.strategy)
         if (
             (strategy_root / "physical.xdsl").read_text() != value.physical_text
             or (strategy_root / "lowered_pallas.py").read_text()
@@ -1151,8 +1138,7 @@ def _replay_plans(
             or json.loads((strategy_root / "plan_manifest.json").read_text())
             != _plan_manifest(value.plan)
             or _sha256(strategy_root / "physical.xdsl") != authority.schedule_sha256
-            or _sha256(strategy_root / "lowered_pallas.py")
-            != authority.pallas_source_sha256
+            or _sha256(strategy_root / "lowered_pallas.py") != authority.pallas_source_sha256
             or _sha256(strategy_root / "stablehlo.txt") != authority.stablehlo_sha256
             or _text_sha256(_semantic_compiler_hlo(compiler_hlo))
             != authority.semantic_compiler_hlo_sha256
@@ -1188,9 +1174,7 @@ def _replay_correctness(
         seed_root = root / "correctness" / f"seed-{seed}"
         saved_oracle = np.load(seed_root / "oracle.npy", allow_pickle=False)
         if not np.array_equal(saved_oracle, oracle):
-            raise ValueError(
-                f"MATMUL_COLLECTIVE_CONFIRMATION_ORACLE_REPLAY_FAILED seed={seed}"
-            )
+            raise ValueError(f"MATMUL_COLLECTIVE_CONFIRMATION_ORACLE_REPLAY_FAILED seed={seed}")
         for strategy in (contract.baseline, contract.candidate):
             output = np.load(seed_root / f"{strategy}.npy", allow_pickle=False)
             passed, maximum_absolute_error, maximum_relative_error = _assessment(
@@ -1425,9 +1409,7 @@ def _validate(
             (root / "receipt.json").read_text()
         )
         if receipt.verifier_source_manifest != _source_manifest(receipt.verifier_commit):
-            raise ValueError(
-                "MATMUL_COLLECTIVE_CONFIRMATION_VERIFIER_SOURCE_MISMATCH"
-            )
+            raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_VERIFIER_SOURCE_MISMATCH")
         _validate_manifest(root, receipt.artifacts)
         expected_receipt = MatmulCollectiveConfirmationReceipt(
             confirmation_id=contract.confirmation_id,
@@ -1593,9 +1575,7 @@ def _execute_confirmation(
             "confirmation_id": contract.confirmation_id,
             "source_commit": identity.source_commit,
             "diagnostic_archive_sha256": contract.diagnostic_archive_sha256,
-            "diagnostic_receipt_sha256": [
-                value.receipt_sha256 for value in contract.diagnostics
-            ],
+            "diagnostic_receipt_sha256": [value.receipt_sha256 for value in contract.diagnostics],
             "devices": [value.model_dump(mode="json") for value in device_inventory],
         },
     )
@@ -1654,9 +1634,7 @@ def _execute_confirmation(
             pallas_source_sha256=value.prepared.source.plan.source_sha256(),
             stablehlo_sha256=_text_sha256(value.stablehlo),
             compiler_hlo_sha256=_text_sha256(value.compiler_hlo),
-            semantic_compiler_hlo_sha256=_text_sha256(
-                _semantic_compiler_hlo(value.compiler_hlo)
-            ),
+            semantic_compiler_hlo_sha256=_text_sha256(_semantic_compiler_hlo(value.compiler_hlo)),
         )
         for value in compiled_values
     )
@@ -1669,9 +1647,7 @@ def _execute_confirmation(
                 value.strategy: {
                     "stablehlo_sha256": value.stablehlo_sha256,
                     "compiler_hlo_sha256": value.compiler_hlo_sha256,
-                    "semantic_compiler_hlo_sha256": (
-                        value.semantic_compiler_hlo_sha256
-                    ),
+                    "semantic_compiler_hlo_sha256": (value.semantic_compiler_hlo_sha256),
                 }
                 for value in plan_records
             }
@@ -1705,9 +1681,7 @@ def _execute_confirmation(
         RunState.CORRECT,
         {
             "correctness_sha256": _sha256(root / "correctness.json"),
-            "pre_timing_outputs": {
-                value.strategy: value.sha256 for value in pre_outputs
-            },
+            "pre_timing_outputs": {value.strategy: value.sha256 for value in pre_outputs},
         },
     )
     for warmup_index in range(contract.warmup_iterations):
@@ -1745,9 +1719,7 @@ def _execute_confirmation(
         source_commit=identity.source_commit,
         producer_output_root=str(root),
         diagnostic_archive_sha256=contract.diagnostic_archive_sha256,
-        diagnostic_receipt_sha256=tuple(
-            value.receipt_sha256 for value in contract.diagnostics
-        ),
+        diagnostic_receipt_sha256=tuple(value.receipt_sha256 for value in contract.diagnostics),
         runtime=contract.runtime,
         host=host,
         xla_flags=os.environ.get("XLA_FLAGS"),
@@ -1768,8 +1740,7 @@ def _execute_confirmation(
         timing_attempt_sha256=timing_attempt_sha256,
         statistics=statistics_record,
         claim_scope=(
-            "mesh8-m1024-k65536-n1024-bf16-f32-"
-            "tile-mn128-k8192-standalone-matmul-collective"
+            "mesh8-m1024-k65536-n1024-bf16-f32-tile-mn128-k8192-standalone-matmul-collective"
         ),
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
@@ -1943,3 +1914,48 @@ def finalize_matmul_collective_confirmation(
                 "MATMUL_COLLECTIVE_CONFIRMATION_LEDGER_SIDECARS",
             )
         return _publish_receipt(root, contract, result)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    confirm = commands.add_parser("confirm")
+    confirm.add_argument("--output-dir", required=True, type=Path)
+    confirm.add_argument("--diagnostic-root", required=True, type=Path)
+    confirm.add_argument("--diagnostic-archive", required=True, type=Path)
+    confirm.add_argument("--contract", required=True, type=Path)
+    for command in ("verify", "finalize"):
+        replay = commands.add_parser(command)
+        replay.add_argument("run_root", type=Path)
+        replay.add_argument("--contract", required=True, type=Path)
+    return parser
+
+
+def main() -> None:
+    args = _parser().parse_args()
+    contract = MatmulCollectiveConfirmationContract.model_validate_json(args.contract.read_text())
+    if args.command == "confirm":
+        result = run_matmul_collective_confirmation(
+            args.output_dir,
+            args.diagnostic_root,
+            args.diagnostic_archive,
+            contract,
+        )
+        action = "ACCEPTED"
+    elif args.command == "verify":
+        result = validate_matmul_collective_confirmation(args.run_root, contract)
+        action = "REPLAYED"
+    else:
+        result = finalize_matmul_collective_confirmation(args.run_root, contract)
+        action = "FINALIZED"
+    print(
+        f"MATMUL_COLLECTIVE_CONFIRMATION_{action} "
+        f"confirmation_id={result.confirmation_id} "
+        f"decision={result.statistics.decision} "
+        f"selected_strategy={result.statistics.selected_strategy} "
+        f"scope={result.claim_scope}"
+    )
+
+
+if __name__ == "__main__":
+    main()

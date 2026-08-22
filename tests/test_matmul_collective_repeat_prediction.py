@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 import tpu_cake.matmul_collective_repeat_prediction as prediction
-from tpu_cake.cli import _parser
 from tpu_cake.matmul_collective_confirmation import MATMUL_COLLECTIVE_DIAGNOSTICS
 from tpu_cake.matmul_collective_repeat_prediction import (
     MatmulCollectiveRepeatPredictionContract,
@@ -221,10 +220,10 @@ def test_repeat_prediction_writer_rejects_evidence_overlap_and_existing_output(
 
 
 def test_repeat_prediction_cli_requires_both_evidence_archives() -> None:
-    parser = _parser()
+    parser = prediction._parser()
     args = parser.parse_args(
         [
-            "evaluate-matmul-collective-repeat-prediction",
+            "evaluate",
             "--diagnostic-root",
             "diagnostic",
             "--diagnostic-archive",
@@ -242,11 +241,11 @@ def test_repeat_prediction_cli_requires_both_evidence_archives() -> None:
         ]
     )
 
-    assert args.command == "evaluate-matmul-collective-repeat-prediction"
+    assert args.command == "evaluate"
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
-                "evaluate-matmul-collective-repeat-prediction",
+                "evaluate",
                 "--diagnostic-root",
                 "diagnostic",
                 "--confirmation-root",

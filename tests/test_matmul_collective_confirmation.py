@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from tpu_cake.cli import _parser
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.ledger import EvidenceRun, RunState, seal_ledger
 from tpu_cake.matmul_collective_confirmation import (
@@ -21,6 +20,7 @@ from tpu_cake.matmul_collective_confirmation import (
 from tpu_cake.matmul_collective_confirmation_runner import (
     _assessment,
     _host_matches_contract,
+    _parser,
     _plan_manifest,
     _plan_sources,
     _prepare_output_root,
@@ -68,9 +68,7 @@ def _rounds(
 
 
 def test_matmul_collective_confirmation_contract_is_canonical_json() -> None:
-    payload = json.loads(
-        Path("contracts/matmul-collective-confirmation-v1.json").read_text()
-    )
+    payload = json.loads(Path("contracts/matmul-collective-confirmation-v1.json").read_text())
     saved = MatmulCollectiveConfirmationContract.model_validate_json(json.dumps(payload))
     expected = default_matmul_collective_confirmation_contract(
         RuntimeIdentity.model_validate(payload["runtime"])
@@ -149,9 +147,7 @@ def test_matmul_collective_confirmation_threshold_is_strict(
 
 def test_matmul_collective_confirmation_accepts_distinct_oracle_valid_outputs() -> None:
     canonical = default_matmul_collective_confirmation_contract(_runtime())
-    contract = canonical.model_copy(
-        update={"parameters": {**canonical.parameters, "m": 1, "n": 2}}
-    )
+    contract = canonical.model_copy(update={"parameters": {**canonical.parameters, "m": 1, "n": 2}})
     oracle = np.asarray([[1.0, 2.0]], dtype=np.float32)
     baseline = np.asarray([[1.0001, 2.0]], dtype=np.float32)
     candidate = np.asarray([[1.0, 1.9999]], dtype=np.float32)
@@ -197,9 +193,7 @@ def test_matmul_collective_confirmation_rejects_retry_after_timing_marker(
     root = tmp_path / "confirmation"
     root.mkdir()
     canonical = default_matmul_collective_confirmation_contract(_runtime())
-    contract = canonical.model_copy(
-        update={"attempt_registry_root": str(tmp_path / "attempts")}
-    )
+    contract = canonical.model_copy(update={"attempt_registry_root": str(tmp_path / "attempts")})
     identity = MatmulCollectiveConfirmationRunIdentity(
         confirmation_id="1" * 64,
         run_id="2" * 64,
@@ -220,9 +214,7 @@ def test_matmul_collective_confirmation_rejects_second_output_root(
     tmp_path: Path,
 ) -> None:
     canonical = default_matmul_collective_confirmation_contract(_runtime())
-    contract = canonical.model_copy(
-        update={"attempt_registry_root": str(tmp_path / "attempts")}
-    )
+    contract = canonical.model_copy(update={"attempt_registry_root": str(tmp_path / "attempts")})
     identity = MatmulCollectiveConfirmationRunIdentity(
         confirmation_id="1" * 64,
         run_id="2" * 64,
@@ -243,9 +235,7 @@ def test_matmul_collective_confirmation_recovers_reserved_attempt_before_timing(
     tmp_path: Path,
 ) -> None:
     canonical = default_matmul_collective_confirmation_contract(_runtime())
-    contract = canonical.model_copy(
-        update={"attempt_registry_root": str(tmp_path / "attempts")}
-    )
+    contract = canonical.model_copy(update={"attempt_registry_root": str(tmp_path / "attempts")})
     identity = MatmulCollectiveConfirmationRunIdentity(
         confirmation_id="1" * 64,
         run_id="2" * 64,
@@ -351,8 +341,7 @@ def test_matmul_collective_confirmation_rejects_alternate_device_kind(
         lambda: "tpu",
     )
     devices = tuple(
-        SimpleNamespace(platform="tpu", device_kind="TPU v7x")
-        for _ in range(contract.device_count)
+        SimpleNamespace(platform="tpu", device_kind="TPU v7x") for _ in range(contract.device_count)
     )
 
     with pytest.raises(ValueError, match="DEVICE_MISMATCH"):
@@ -362,7 +351,7 @@ def test_matmul_collective_confirmation_rejects_alternate_device_kind(
 def test_matmul_collective_confirmation_cli_is_explicit() -> None:
     run = _parser().parse_args(
         [
-            "confirm-matmul-collective",
+            "confirm",
             "--output-dir",
             "/tmp/output",
             "--diagnostic-root",
@@ -375,7 +364,7 @@ def test_matmul_collective_confirmation_cli_is_explicit() -> None:
     )
     verify = _parser().parse_args(
         [
-            "verify-matmul-collective-confirmation",
+            "verify",
             "/tmp/output",
             "--contract",
             "contract.json",
@@ -383,16 +372,16 @@ def test_matmul_collective_confirmation_cli_is_explicit() -> None:
     )
     finalize = _parser().parse_args(
         [
-            "finalize-matmul-collective-confirmation",
+            "finalize",
             "/tmp/output",
             "--contract",
             "contract.json",
         ]
     )
 
-    assert run.command == "confirm-matmul-collective"
-    assert verify.command == "verify-matmul-collective-confirmation"
-    assert finalize.command == "finalize-matmul-collective-confirmation"
+    assert run.command == "confirm"
+    assert verify.command == "verify"
+    assert finalize.command == "finalize"
 
 
 def test_matmul_collective_confirmation_rejects_changed_diagnostic_authority() -> None:

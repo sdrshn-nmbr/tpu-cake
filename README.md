@@ -172,6 +172,23 @@ uv run tpu-cake run-seqax-residual-confirmation \
   --output-dir SEQAX_RESIDUAL_CONFIRMATION_ROOT
 uv run tpu-cake verify-seqax-residual-confirmation SEQAX_RESIDUAL_CONFIRMATION_ROOT \
   --contract contracts/seqax-residual-all-reduce-confirmation-v1.json
+
+uv run python -m tpu_cake.matmul_collective_repeat_prediction evaluate \
+  --diagnostic-root MATMUL_COLLECTIVE_DIAGNOSTIC_ROOT \
+  --diagnostic-archive MATMUL_COLLECTIVE_DIAGNOSTIC_ARCHIVE \
+  --confirmation-root MATMUL_COLLECTIVE_CONFIRMATION_ROOT \
+  --confirmation-archive MATMUL_COLLECTIVE_CONFIRMATION_ARCHIVE \
+  --confirmation-contract contracts/matmul-collective-confirmation-v1.json \
+  --contract contracts/matmul-collective-repeat-prediction-v1.json \
+  --output MATMUL_COLLECTIVE_REPEAT_PREDICTION.json
+uv run python -m tpu_cake.matmul_collective_repeat_prediction verify \
+  MATMUL_COLLECTIVE_REPEAT_PREDICTION.json \
+  --diagnostic-root MATMUL_COLLECTIVE_DIAGNOSTIC_ROOT \
+  --diagnostic-archive MATMUL_COLLECTIVE_DIAGNOSTIC_ARCHIVE \
+  --confirmation-root MATMUL_COLLECTIVE_CONFIRMATION_ROOT \
+  --confirmation-archive MATMUL_COLLECTIVE_CONFIRMATION_ARCHIVE \
+  --confirmation-contract contracts/matmul-collective-confirmation-v1.json \
+  --contract contracts/matmul-collective-repeat-prediction-v1.json
 ```
 
 ## Current boundary
@@ -181,6 +198,8 @@ The distributed matmul path is complete through verified TPU execution and bound
 This full-forward path now lowers declared contraction tiles into Pallas grids and block indexing. A bounded TPU7x search over global split-K, split-N, and split-KN policies retained the full-tile incumbent for the fixed model-256, one-layer, one-token surface; it did not find a useful improvement. The fused SiLU-multiply candidate has one owned full-local Pallas vector implementation; other vector operations, collectives, DMA annotations, and resource schedules remain implemented or selected by JAX/XLA rather than owned Mosaic kernels. The result is therefore a verified physical-contraction baseline and a narrow negative search result, not a claim that the complete physical schedule is optimal.
 
 The standalone distributed-matmul path also has an opt-in Pallas-owned bidirectional reduce-scatter, adapted from the [JAX distributed Pallas remote-DMA pattern](https://docs.jax.dev/en/latest/pallas/tpu/distributed.html). Its typed physical implementation and saved plan bind the ring choice, two-buffer HBM scratch, VMEM accumulator, five DMA semaphores, two capacity semaphores, one scoped startup semaphore, two startup-barrier phases, and the exact `2g+1` half-output remote-copy count. Physical verification and the static resource report charge the VMEM scratch and retain the exact native endpoint bytes; HBM and semaphore counts remain plan-bound because the kernel schema has no corresponding capacity fields. The generic collective byte scenario is still not a per-link traffic schedule for this implementation. The legacy `lax.psum_scatter` plan and hashes remain the default. CPU interpret and disposable TPU probes establish compilation and numerical parity for the opt-in path, not a performance winner or a general collective replacement.
+
+The standalone matmul repeat-prediction report uses each strategy's raw 200-sample diagnostic median as its exact-shape temporal prediction and reserves the later 32-round confirmation as evaluation-only evidence. It correctly predicts that XLA reduce-scatter beats the Pallas-owned ring, but predicts a 10.003% candidate regression versus the held-out paired result of 12.659% worse; the prediction lies outside the confirmation's already-declared 99% interval of 11.318% to 13.659% worse. The two diagnostic medians are 33.60x and 36.96x their common 14.894-microsecond analytical roofline, while confirmation medians are 12.82% and 10.37% below those diagnostic predictions. This is consistent with the [JAX Scaling Book roofline model](https://jax-ml.github.io/scaling-book/roofline/) and its [collective-latency caveat](https://jax-ml.github.io/scaling-book/inference/#appendix-c-latency-bound-communications): advertised compute, HBM, and ICI rates provide bounds, but fixed collective dispatch, synchronization, compiler scheduling, and imperfect overlap remain unmodeled. Because the prediction rule and no accuracy bound were declared only after confirmation timing, the report is retrospective same-shape repeatability evidence, not prospective validation, a causal resource fit, or support for shape, topology, runtime, or compiler extrapolation. It does not reopen or override the confirmation decision.
 
 The Seqax workload-surface experiment compares the unwrapped `shard_map` control with the canonical whole-program JIT across three forward shapes. Inputs are placed on their declared TPU shards before timing. Each scenario is resampled independently, and promotion requires a confidence interval above the declared practical threshold without a material regression in any scenario. Saved HLO is runner-captured integrity evidence with exact hashes and structural replay checks; it is not independently signed compiler attestation.
 
