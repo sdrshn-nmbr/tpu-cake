@@ -71,6 +71,7 @@ class MatmulCollectiveDiagnosticAuthority(BaseModel):
     pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    semantic_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 MATMUL_COLLECTIVE_DIAGNOSTICS = (
@@ -91,6 +92,9 @@ MATMUL_COLLECTIVE_DIAGNOSTICS = (
         compiler_hlo_sha256=(
             "144cb09030ece96f70880dd1b12cb8324ed6cf255bf9c959f1b51b23b33e92b6"
         ),
+        semantic_compiler_hlo_sha256=(
+            "0183db7b834fd368982221fa8db9d754444677a65e10df439041fa8c9a161a87"
+        ),
     ),
     MatmulCollectiveDiagnosticAuthority(
         strategy=MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING,
@@ -108,6 +112,9 @@ MATMUL_COLLECTIVE_DIAGNOSTICS = (
         stablehlo_sha256="30e88595dd1d061a3b44841d2e295c7e299c3b59a3c766ad853edd9018bc28af",
         compiler_hlo_sha256=(
             "627fdb10965eece6b55fdcf1aad8243280fdc8e3b8e54d3155ce94bcedc22a13"
+        ),
+        semantic_compiler_hlo_sha256=(
+            "8605d8ed61d5ba542971186f740639befec4476ec6f721f9e9458fe2944cf751"
         ),
     ),
 )
@@ -311,6 +318,7 @@ class MatmulCollectivePlan(BaseModel):
     pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    semantic_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class MatmulCollectiveCorrectnessObservation(BaseModel):

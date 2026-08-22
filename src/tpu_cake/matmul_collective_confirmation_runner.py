@@ -5,6 +5,7 @@ import gc
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 import statistics
@@ -97,6 +98,21 @@ def _sha256(path: Path) -> str:
 
 def _text_sha256(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _semantic_compiler_hlo(value: str) -> str:
+    canonical = value.rstrip("\n") + "\n"
+    metadata_start = canonical.find("\nFileNames\n")
+    if metadata_start >= 0:
+        computation_starts = tuple(
+            offset
+            for marker in ("\n%", "\nENTRY ")
+            if (offset := canonical.find(marker, metadata_start)) >= 0
+        )
+        if not computation_starts:
+            raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_COMPILER_HLO_INVALID")
+        canonical = canonical[:metadata_start] + canonical[min(computation_starts) :]
+    return re.sub(r" stack_frame_id=\d+", "", canonical)
 
 
 def _write_text(path: Path, value: str) -> None:
@@ -423,6 +439,12 @@ def _validate_diagnostics(
             or source_state_artifact is None
             or source_state_artifact.sha256 != _sha256(source_state_path)
             or source_state.get("git_commit") != authority.source_commit
+            or _text_sha256(
+                _semantic_compiler_hlo(
+                    (bundle / "timing" / "compiler_hlo.txt").read_text()
+                )
+            )
+            != authority.semantic_compiler_hlo_sha256
             or artifact_mismatch
         ):
             raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_DIAGNOSTIC_IDENTITY_MISMATCH")
@@ -556,7 +578,8 @@ def _compile(
         )
         if (
             _text_sha256(stablehlo) != authority.stablehlo_sha256
-            or _text_sha256(compiler_hlo) != authority.compiler_hlo_sha256
+            or _text_sha256(_semantic_compiler_hlo(compiler_hlo))
+            != authority.semantic_compiler_hlo_sha256
         ):
             raise ValueError(
                 "MATMUL_COLLECTIVE_CONFIRMATION_HLO_MISMATCH "
@@ -986,6 +1009,9 @@ def _ledger_payloads(
                     value.strategy: {
                         "stablehlo_sha256": value.stablehlo_sha256,
                         "compiler_hlo_sha256": value.compiler_hlo_sha256,
+                        "semantic_compiler_hlo_sha256": (
+                            value.semantic_compiler_hlo_sha256
+                        ),
                     }
                     for value in result.plans
                 }
@@ -1099,7 +1125,8 @@ def _replay_plans(
             or _sha256(strategy_root / "lowered_pallas.py")
             != authority.pallas_source_sha256
             or _sha256(strategy_root / "stablehlo.txt") != authority.stablehlo_sha256
-            or _sha256(strategy_root / "compiler_hlo.txt") != authority.compiler_hlo_sha256
+            or _text_sha256(_semantic_compiler_hlo(compiler_hlo))
+            != authority.semantic_compiler_hlo_sha256
         ):
             raise ValueError(
                 f"MATMUL_COLLECTIVE_CONFIRMATION_PLAN_REPLAY_MISMATCH strategy={value.strategy}"
@@ -1111,7 +1138,8 @@ def _replay_plans(
                 schedule_sha256=authority.schedule_sha256,
                 pallas_source_sha256=authority.pallas_source_sha256,
                 stablehlo_sha256=authority.stablehlo_sha256,
-                compiler_hlo_sha256=authority.compiler_hlo_sha256,
+                compiler_hlo_sha256=_sha256(strategy_root / "compiler_hlo.txt"),
+                semantic_compiler_hlo_sha256=authority.semantic_compiler_hlo_sha256,
             )
         )
     return tuple(records)
@@ -1558,35 +1586,17 @@ def _execute_confirmation(
             "timing_rhs_sha256": rhs_sha256,
         },
     )
-    plan_records = tuple(
-        MatmulCollectivePlan(
-            strategy=value.source.strategy,
-            schedule_sha256=value.source.plan.schedule_sha256,
-            pallas_source_sha256=value.source.plan.source_sha256(),
-            stablehlo_sha256=next(
-                item.stablehlo_sha256
-                for item in contract.diagnostics
-                if item.strategy is value.source.strategy
-            ),
-            compiler_hlo_sha256=next(
-                item.compiler_hlo_sha256
-                for item in contract.diagnostics
-                if item.strategy is value.source.strategy
-            ),
-        )
-        for value in prepared
-    )
     _record_state(
         ledger_path,
         identity.run_id,
         RunState.LOWERED,
         {
             "plans": {
-                value.strategy: {
-                    "schedule_sha256": value.schedule_sha256,
-                    "pallas_source_sha256": value.pallas_source_sha256,
+                value.source.strategy: {
+                    "schedule_sha256": value.source.plan.schedule_sha256,
+                    "pallas_source_sha256": value.source.plan.source_sha256(),
                 }
-                for value in plan_records
+                for value in prepared
             }
         },
     )
@@ -1598,6 +1608,19 @@ def _execute_confirmation(
     )
     compiled_values = _compile(root, contract, prepared, resident)
     compiled = {value.strategy: value for value in compiled_values}
+    plan_records = tuple(
+        MatmulCollectivePlan(
+            strategy=value.strategy,
+            schedule_sha256=value.prepared.source.plan.schedule_sha256,
+            pallas_source_sha256=value.prepared.source.plan.source_sha256(),
+            stablehlo_sha256=_text_sha256(value.stablehlo),
+            compiler_hlo_sha256=_text_sha256(value.compiler_hlo),
+            semantic_compiler_hlo_sha256=_text_sha256(
+                _semantic_compiler_hlo(value.compiler_hlo)
+            ),
+        )
+        for value in compiled_values
+    )
     _record_state(
         ledger_path,
         identity.run_id,
@@ -1607,6 +1630,9 @@ def _execute_confirmation(
                 value.strategy: {
                     "stablehlo_sha256": value.stablehlo_sha256,
                     "compiler_hlo_sha256": value.compiler_hlo_sha256,
+                    "semantic_compiler_hlo_sha256": (
+                        value.semantic_compiler_hlo_sha256
+                    ),
                 }
                 for value in plan_records
             }

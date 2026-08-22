@@ -23,6 +23,7 @@ from tpu_cake.matmul_collective_confirmation_runner import (
     _host_matches_contract,
     _plan_sources,
     _prepare_output_root,
+    _semantic_compiler_hlo,
     _source_manifest,
     _timing_attempt_payload,
     _validate_devices,
@@ -282,6 +283,35 @@ def test_matmul_collective_confirmation_manifest_covers_authorities() -> None:
     assert "tpu_cake/contracts.py" in paths
     assert "tpu_cake/ledger.py" in paths
     assert "tpu_cake/matmul_collective_confirmation_runner.py" in paths
+
+
+def test_matmul_collective_confirmation_compiler_identity_ignores_only_stack_metadata() -> None:
+    first = """HloModule test
+
+FileNames
+1 "first.py"
+
+FunctionNames
+1 "first"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=1}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+
+ENTRY %main () -> f32[] {
+  ROOT %value = f32[] constant(1), metadata={op_name="value" stack_frame_id=1}
+}
+"""
+    second = first.replace('1 "first.py"', '1 "second.py"').replace(
+        "stack_frame_id=1",
+        "stack_frame_id=99",
+    )
+    changed_program = second.replace("constant(1)", "constant(2)")
+
+    assert _semantic_compiler_hlo(first) == _semantic_compiler_hlo(second)
+    assert _semantic_compiler_hlo(first) != _semantic_compiler_hlo(changed_program)
 
 
 def test_matmul_collective_confirmation_binds_raw_host_resources() -> None:

@@ -18,7 +18,8 @@
       "schedule_sha256": "9593beb3ad1607b65f12ac02cfe4bf2adbf6279405aa307f46c155e430d40990",
       "pallas_source_sha256": "54e9b0f642b127e84478220ff0ba6e11de184cfcb4a279a8cbbc9b9fac70f833",
       "stablehlo_sha256": "a788751c6ec89c44c907b9a341a2d5ef8a6e749857fcc22091e89a6a82e18220",
-      "compiler_hlo_sha256": "144cb09030ece96f70880dd1b12cb8324ed6cf255bf9c959f1b51b23b33e92b6"
+      "compiler_hlo_sha256": "144cb09030ece96f70880dd1b12cb8324ed6cf255bf9c959f1b51b23b33e92b6",
+      "semantic_compiler_hlo_sha256": "0183db7b834fd368982221fa8db9d754444677a65e10df439041fa8c9a161a87"
     },
     {
       "strategy": "pallas_bidirectional_ring",
@@ -30,7 +31,8 @@
       "schedule_sha256": "23917a172499112cebd52bb26333f11b367f1b67190546e90af847ec8b71fe97",
       "pallas_source_sha256": "bb04aad3790ac0884f7e4481510bedd85e413aaba9981cfc15313ebd1484b09a",
       "stablehlo_sha256": "30e88595dd1d061a3b44841d2e295c7e299c3b59a3c766ad853edd9018bc28af",
-      "compiler_hlo_sha256": "627fdb10965eece6b55fdcf1aad8243280fdc8e3b8e54d3155ce94bcedc22a13"
+      "compiler_hlo_sha256": "627fdb10965eece6b55fdcf1aad8243280fdc8e3b8e54d3155ce94bcedc22a13",
+      "semantic_compiler_hlo_sha256": "8605d8ed61d5ba542971186f740639befec4476ec6f721f9e9458fe2944cf751"
     }
   ],
   "baseline": "xla_reduce_scatter",
