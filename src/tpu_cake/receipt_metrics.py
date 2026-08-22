@@ -46,6 +46,26 @@ def _relocate_metric_source(root: Path, source: MetricSource) -> MetricSource:
     )
 
 
+def _phase_metric_source(root: Path, source: MetricSource, phase: str) -> MetricSource:
+    path = root / phase / Path(source.artifact_path).name
+    if not path.is_file() or _sha256(path) != source.artifact_sha256:
+        raise ValueError(
+            "METRIC_SOURCE_PHASE_MISMATCH "
+            f"phase={phase} path={source.artifact_path} sha256={source.artifact_sha256}"
+        )
+    return source.model_copy(update={"artifact_path": str(path.relative_to(root))})
+
+
+def _phase_metric(root: Path, metric: Metric, phase: str) -> Metric:
+    return metric.model_copy(
+        update={
+            "sources": tuple(
+                _phase_metric_source(root, source, phase) for source in metric.sources
+            )
+        }
+    )
+
+
 def timing_metrics(root: Path, result: MatmulRunResult) -> tuple[Metric, ...]:
     if not result.samples_ns:
         raise ValueError("TIMING_RUN_HAS_NO_SAMPLES")
@@ -176,8 +196,10 @@ def build_receipt_metrics(
 ) -> tuple[Metric, ...]:
     metrics = list(timing_metrics(root, timing))
     metrics.extend(roofline_metrics(root))
-    metrics.extend(cost_report.metrics)
-    metrics.append(three_resource_gap_metric(root, timing, cost_report))
+    cost_metrics = tuple(_phase_metric(root, metric, "timing") for metric in cost_report.metrics)
+    scoped_cost_report = cost_report.model_copy(update={"metrics": cost_metrics})
+    metrics.extend(cost_metrics)
+    metrics.append(three_resource_gap_metric(root, timing, scoped_cost_report))
     metrics.extend(
         metric.model_copy(update={"name": f"timing_trace.{metric.name}"})
         for metric in capture_metrics(trace_assessment.capture)

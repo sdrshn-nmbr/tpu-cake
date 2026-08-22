@@ -1,6 +1,8 @@
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from tpu_cake.contracts import ProfileExpectation
 from tpu_cake.evidence import (
     ArtifactEvidence,
@@ -10,7 +12,7 @@ from tpu_cake.evidence import (
     ProgramEvidence,
 )
 from tpu_cake.metrics import MetricSource
-from tpu_cake.receipt_metrics import _relocate_metric_source
+from tpu_cake.receipt_metrics import _phase_metric_source, _relocate_metric_source
 from tpu_cake.xprof_evidence import _hlo_proto_paths, assess_evidence, capture_metrics
 
 
@@ -35,6 +37,41 @@ def test_metric_source_relocation_uses_content_identity(tmp_path) -> None:
 
     relocated = _relocate_metric_source(tmp_path, source)
     assert relocated.artifact_path == "timing/cost_model_input.json"
+
+
+def test_metric_source_phase_scope_rejects_matching_duplicate_from_other_phase(
+    tmp_path: Path,
+) -> None:
+    timing = tmp_path / "timing" / "cost_model_input.json"
+    timing.parent.mkdir()
+    timing.write_text("timing evidence\n")
+    counters = tmp_path / "counters" / timing.name
+    counters.parent.mkdir()
+    counters.write_text("counter evidence\n")
+    source = MetricSource(
+        artifact_sha256=hashlib.sha256(counters.read_bytes()).hexdigest(),
+        artifact_path=timing.name,
+        tool="tpu-cake",
+        field="cost",
+    )
+
+    with pytest.raises(ValueError, match="METRIC_SOURCE_PHASE_MISMATCH"):
+        _phase_metric_source(tmp_path, source, "timing")
+
+
+def test_metric_source_phase_scope_binds_the_declared_phase(tmp_path: Path) -> None:
+    artifact = tmp_path / "timing" / "cost_model_input.json"
+    artifact.parent.mkdir()
+    artifact.write_text("evidence\n")
+    source = MetricSource(
+        artifact_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        artifact_path=artifact.name,
+        tool="tpu-cake",
+        field="cost",
+    )
+
+    scoped = _phase_metric_source(tmp_path, source, "timing")
+    assert scoped.artifact_path == "timing/cost_model_input.json"
 
 
 def _capture(*, rpa_markers: int, forbidden_hits: int) -> CaptureEvidence:
