@@ -18,7 +18,7 @@ from tpu_cake.seqax_numerical import (
 )
 from tpu_cake.workloads.seqax_forward import SeqaxResidualNormStrategy
 
-SEQAX_LARGE_RESIDUAL_QUALIFICATION_SCHEMA = "seqax-large-residual-qualification-v1"
+SEQAX_LARGE_RESIDUAL_QUALIFICATION_SCHEMA = "seqax-large-residual-qualification-v2"
 SEQAX_LARGE_RESIDUAL_QUALIFICATION_QUESTION = (
     "Does the pinned model-4096 Seqax workload compile with the declared native residual "
     "boundary and satisfy the frozen BF16 final-output policy before any timing is authorized?"
@@ -34,8 +34,25 @@ SEQAX_LARGE_RESIDUAL_COMPILER_CAPTURE_UV_LOCK_SHA256 = (
     "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9"
 )
 SEQAX_LARGE_RESIDUAL_QUALIFICATION_CLAIM_ROOT = (
-    "/home/sudarshan/tpu-cake-evidence/seqax-large-residual-qualification-attempts-v1"
+    "/home/sudarshan/tpu-cake-evidence/seqax-large-residual-qualification-attempts-v2"
 )
+_SUPERSEDED_QUALIFICATION_ID = "5aaac3984ba05fcc995576b533ec82908ddb204f0a8c0ef8a0323a8504e6f341"
+_SUPERSEDED_ATTEMPT_ID = "3478e675d52b0157a4d392dcb5be56f7120e97a857946898524095868009164e"
+_SUPERSEDED_SOURCE_COMMIT = "2ac952f0b2a44f36c5fe283a7bc94aaf00804996"
+_SUPERSEDED_FAILURE_PATH = (
+    "/home/sudarshan/tpu-cake-evidence/"
+    "seqax-large-residual-qualification-2ac952f-5aaac39/failure.json"
+)
+_SUPERSEDED_FAILURE_SHA256 = "85533374507bde0e4671d8896a231905a0d3258dc22c884fa4631f02a1797ff1"
+_SUPERSEDED_LOG_PATH = (
+    "/home/sudarshan/tpu-cake-evidence/seqax-large-residual-qualification-2ac952f.log"
+)
+_SUPERSEDED_LOG_SHA256 = "b9cc14f78f6754281f62a252de1ec16702a3237a4f0cf0200a234b205dc15cd9"
+_FORENSIC_CAPTURE_PATH = (
+    "/home/sudarshan/tpu-cake-evidence/"
+    "seqax-large-residual-qualification-failure-forensic-2ac952f.log"
+)
+_FORENSIC_CAPTURE_SHA256 = "1cd8afbe7735f9046b98934621af33306433572c7fc400ed0f481d45feabdc0d"
 _CAPTURE_INVOCATION_IDS = (
     "4206cd2d9dff42e199aeb04ebb27ef61",
     "4f85b0144dc249abbe22131b9afa2a3a",
@@ -194,6 +211,16 @@ class SeqaxLargeResidualQualificationContract(BaseModel):
     allow_resume: bool
     allow_retry: bool
     correctness_scope: str
+    compiler_hlo_replay_rule: str
+    superseded_qualification_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    superseded_attempt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    superseded_source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    superseded_failure_path: str
+    superseded_failure_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    superseded_log_path: str
+    superseded_log_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    forensic_capture_path: str
+    forensic_capture_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     claim_point: str
     producer_receipt_status: str
     independent_replay_required_for_acceptance: bool
@@ -437,8 +464,23 @@ def default_seqax_large_residual_qualification_contract(
         collect_profile=False,
         allow_resume=False,
         allow_retry=False,
-        correctness_scope="final-output-plus-pinned-compiler-boundary-v1",
-        claim_point="after-source-device-root-preflight-before-input-materialization-or-compilation-v1",
+        correctness_scope="final-output-plus-semantic-compiler-boundary-v2",
+        compiler_hlo_replay_rule=(
+            "stablehlo-exact-compiler-collectives-memory-and-boundary-lineage-v2"
+        ),
+        superseded_qualification_id=_SUPERSEDED_QUALIFICATION_ID,
+        superseded_attempt_id=_SUPERSEDED_ATTEMPT_ID,
+        superseded_source_commit=_SUPERSEDED_SOURCE_COMMIT,
+        superseded_failure_path=_SUPERSEDED_FAILURE_PATH,
+        superseded_failure_sha256=_SUPERSEDED_FAILURE_SHA256,
+        superseded_log_path=_SUPERSEDED_LOG_PATH,
+        superseded_log_sha256=_SUPERSEDED_LOG_SHA256,
+        forensic_capture_path=_FORENSIC_CAPTURE_PATH,
+        forensic_capture_sha256=_FORENSIC_CAPTURE_SHA256,
+        claim_point=(
+            "after-source-device-root-and-superseded-failure-preflight-before-input-"
+            "materialization-or-compilation-v2"
+        ),
         producer_receipt_status="producer_passed_independent_replay_pending",
         independent_replay_required_for_acceptance=True,
         project="astral-medley-465922-b2",

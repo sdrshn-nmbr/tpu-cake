@@ -17,8 +17,10 @@ from tpu_cake.seqax_large_residual_qualification import (
 from tpu_cake.seqax_large_residual_qualification_runner import (
     _record_failure,
     _source_manifest,
+    _validate_forensic_capture,
     _write_exclusive_json,
 )
+from tpu_cake.seqax_large_residual_runner import SeqaxLargeResidualCompilerCaptureRecord
 
 
 def _chain(index: int) -> str:
@@ -75,14 +77,20 @@ def test_qualification_contract_round_trips_and_binds_pinned_sources() -> None:
     assert saved.allow_retry is False
     assert saved.collect_profile is False
     assert saved.collect_timings is False
-    assert saved.correctness_scope == "final-output-plus-pinned-compiler-boundary-v1"
+    assert saved.correctness_scope == "final-output-plus-semantic-compiler-boundary-v2"
+    assert saved.compiler_hlo_replay_rule == (
+        "stablehlo-exact-compiler-collectives-memory-and-boundary-lineage-v2"
+    )
+    assert saved.superseded_qualification_id == (
+        "5aaac3984ba05fcc995576b533ec82908ddb204f0a8c0ef8a0323a8504e6f341"
+    )
     assert saved.hostname == "tpu-cake-v7x-rsag-wx7r"
     assert saved.instance_id == "5064039476077763048"
 
 
 def test_external_qualification_contract_is_canonical() -> None:
     saved = SeqaxLargeResidualQualificationContract.model_validate_json(
-        Path("contracts/seqax-large-residual-qualification-v1.json").read_text()
+        Path("contracts/seqax-large-residual-qualification-v2.json").read_text()
     )
 
     assert saved == default_seqax_large_residual_qualification_contract(saved.runtime)
@@ -144,6 +152,52 @@ def test_source_manifest_explicitly_binds_shared_execution_helpers() -> None:
     assert "tpu_cake/seqax_pallas_search_runner.py" in paths
     assert "tpu_cake/seqax_large_residual_qualification.py" in paths
     assert "tpu_cake/seqax_large_residual_qualification_runner.py" in paths
+
+
+def test_forensic_capture_proves_raw_hlo_is_not_the_semantic_gate() -> None:
+    contract = default_seqax_large_residual_qualification_contract(_runtime_identity())
+    pinned = SeqaxLargeResidualCompilerCaptureRecord.model_validate_json(
+        Path("contracts/seqax-large-residual-compiler-captures-v1.json").read_text()
+    )
+    candidates = tuple(
+        value.model_copy(
+            update={
+                "pallas_compiler_hlo_sha256": "0" * 64,
+                "control_compiler_hlo_sha256": "1" * 64,
+            }
+        )
+        for value in pinned.capture.candidates
+    )
+    forensic = pinned.capture.model_copy(
+        update={
+            "source_commit": contract.superseded_source_commit,
+            "candidates": candidates,
+        }
+    )
+
+    assert (
+        _validate_forensic_capture(
+            (forensic.model_dump_json() + "\n").encode(),
+            contract,
+            pinned,
+        )
+        == forensic
+    )
+
+    changed = forensic.model_copy(
+        update={
+            "candidates": (
+                forensic.candidates[0].model_copy(update={"pallas_stablehlo_sha256": "2" * 64}),
+                forensic.candidates[1],
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="FORENSIC_DIAGNOSIS_MISMATCH"):
+        _validate_forensic_capture(
+            (changed.model_dump_json() + "\n").encode(),
+            contract,
+            pinned,
+        )
 
 
 def test_expected_host_is_exactly_the_assigned_tpu_vm() -> None:

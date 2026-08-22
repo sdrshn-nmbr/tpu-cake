@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -39,7 +40,10 @@ from tpu_cake.seqax_large_residual_qualification import (
     analyze_large_residual_boundary,
     default_seqax_large_residual_qualification_contract,
 )
-from tpu_cake.seqax_large_residual_runner import SeqaxLargeResidualCompilerCaptureRecord
+from tpu_cake.seqax_large_residual_runner import (
+    SeqaxLargeResidualCompilerCapture,
+    SeqaxLargeResidualCompilerCaptureRecord,
+)
 from tpu_cake.seqax_numerical import assess_seqax_bf16_final_outputs
 from tpu_cake.seqax_pallas_search_runner import _validate_output_abi
 from tpu_cake.seqax_residual_profile_runner import (
@@ -58,7 +62,7 @@ from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_inputs,
 )
 
-_CONTRACT_PATH = Path("contracts/seqax-large-residual-qualification-v1.json")
+_CONTRACT_PATH = Path("contracts/seqax-large-residual-qualification-v2.json")
 _COMPILER_CAPTURE_PATH = Path("contracts/seqax-large-residual-compiler-captures-v1.json")
 
 
@@ -265,6 +269,129 @@ def _load_compiler_capture(
     return record
 
 
+def _read_bound_file(path_value: str, expected_sha256: str) -> bytes:
+    path = Path(path_value)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        status = os.fstat(descriptor)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            payload = stream.read((1 << 20) + 1)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_nlink != 1
+        or len(payload) > 1 << 20
+        or hashlib.sha256(payload).hexdigest() != expected_sha256
+    ):
+        raise ValueError(f"SEQAX_LARGE_RESIDUAL_QUALIFICATION_BOUND_FILE_MISMATCH path={path}")
+    return payload
+
+
+def _validate_forensic_capture(
+    payload: bytes,
+    contract: SeqaxLargeResidualQualificationContract,
+    pinned: SeqaxLargeResidualCompilerCaptureRecord,
+) -> SeqaxLargeResidualCompilerCapture:
+    lines = tuple(line for line in payload.decode().splitlines() if line.strip())
+    if not lines:
+        raise ValueError("SEQAX_LARGE_RESIDUAL_QUALIFICATION_FORENSIC_CAPTURE_EMPTY")
+    forensic = SeqaxLargeResidualCompilerCapture.model_validate_json(lines[-1])
+    if (
+        forensic.source_commit != contract.superseded_source_commit
+        or forensic.contract_id != pinned.capture.contract_id
+        or forensic.uv_lock_sha256 != pinned.capture.uv_lock_sha256
+        or forensic.runtime != pinned.capture.runtime
+        or forensic.device_ids != pinned.capture.device_ids
+    ):
+        raise ValueError("SEQAX_LARGE_RESIDUAL_QUALIFICATION_FORENSIC_PROVENANCE_MISMATCH")
+    for observed, expected in zip(
+        forensic.candidates,
+        pinned.capture.candidates,
+        strict=True,
+    ):
+        stable_values = (
+            observed.candidate,
+            observed.distributed_schedule_sha256,
+            observed.physical_schedule_sha256,
+            observed.pallas_source_sha256,
+            observed.pallas_manifest_sha256,
+            observed.pallas_stablehlo_sha256,
+            observed.control_stablehlo_sha256,
+            observed.pallas_compiler_collectives,
+            observed.control_compiler_collectives,
+            observed.pallas_peak_memory_bytes,
+            observed.control_peak_memory_bytes,
+            observed.physical_peak_vmem_bytes_per_device,
+            observed.ring_equivalent_ici_bytes_per_device,
+        )
+        pinned_values = (
+            expected.candidate,
+            expected.distributed_schedule_sha256,
+            expected.physical_schedule_sha256,
+            expected.pallas_source_sha256,
+            expected.pallas_manifest_sha256,
+            expected.pallas_stablehlo_sha256,
+            expected.control_stablehlo_sha256,
+            expected.pallas_compiler_collectives,
+            expected.control_compiler_collectives,
+            expected.pallas_peak_memory_bytes,
+            expected.control_peak_memory_bytes,
+            expected.physical_peak_vmem_bytes_per_device,
+            expected.ring_equivalent_ici_bytes_per_device,
+        )
+        raw_hlo_matches = (
+            observed.pallas_compiler_hlo_sha256 == expected.pallas_compiler_hlo_sha256,
+            observed.control_compiler_hlo_sha256 == expected.control_compiler_hlo_sha256,
+        )
+        if stable_values != pinned_values or any(raw_hlo_matches):
+            raise ValueError(
+                "SEQAX_LARGE_RESIDUAL_QUALIFICATION_FORENSIC_DIAGNOSIS_MISMATCH "
+                f"candidate={expected.candidate}"
+            )
+    return forensic
+
+
+def _validate_superseded_evidence(
+    payloads: tuple[bytes, bytes, bytes],
+    contract: SeqaxLargeResidualQualificationContract,
+    pinned: SeqaxLargeResidualCompilerCaptureRecord,
+) -> None:
+    failure_payload, service_log, forensic_payload = payloads
+    if (
+        hashlib.sha256(failure_payload).hexdigest() != contract.superseded_failure_sha256
+        or hashlib.sha256(service_log).hexdigest() != contract.superseded_log_sha256
+        or hashlib.sha256(forensic_payload).hexdigest() != contract.forensic_capture_sha256
+    ):
+        raise ValueError("SEQAX_LARGE_RESIDUAL_QUALIFICATION_SUPERSEDED_HASH_MISMATCH")
+    failure = SeqaxLargeResidualQualificationFailure.model_validate_json(failure_payload)
+    if (
+        failure.attempt_id != contract.superseded_attempt_id
+        or failure.error_type != "ValueError"
+        or failure.error
+        != "SEQAX_LARGE_RESIDUAL_QUALIFICATION_COMPILER_CAPTURE_MISMATCH candidate=standard"
+        or not failure.claim_consumed
+        or failure.retry_authorized
+    ):
+        raise ValueError("SEQAX_LARGE_RESIDUAL_QUALIFICATION_SUPERSEDED_FAILURE_MISMATCH")
+    _validate_forensic_capture(forensic_payload, contract, pinned)
+
+
+def _load_superseded_evidence(
+    contract: SeqaxLargeResidualQualificationContract,
+    pinned: SeqaxLargeResidualCompilerCaptureRecord,
+) -> tuple[bytes, bytes, bytes]:
+    payloads = (
+        _read_bound_file(contract.superseded_failure_path, contract.superseded_failure_sha256),
+        _read_bound_file(contract.superseded_log_path, contract.superseded_log_sha256),
+        _read_bound_file(contract.forensic_capture_path, contract.forensic_capture_sha256),
+    )
+    _validate_superseded_evidence(payloads, contract, pinned)
+    return payloads
+
+
 def _validate_compiled_against_capture(
     compiled: tuple[Any, ...],
     capture: SeqaxLargeResidualCompilerCaptureRecord,
@@ -277,11 +404,11 @@ def _validate_compiled_against_capture(
             observed.prepared.plan.source_sha256(),
             _json_sha256(observed.prepared.plan.manifest()),
             _text_sha256(observed.pallas_stablehlo),
-            _text_sha256(observed.pallas_compiler_hlo),
             _text_sha256(observed.control_stablehlo),
-            _text_sha256(observed.control_compiler_hlo),
             observed.pallas_compiler_analysis.collectives,
             observed.control_compiler_analysis.collectives,
+            observed.pallas_compiler_analysis.memory.peak_memory_in_bytes,
+            observed.control_compiler_analysis.memory.peak_memory_in_bytes,
         )
         required = (
             expected.candidate,
@@ -290,11 +417,11 @@ def _validate_compiled_against_capture(
             expected.pallas_source_sha256,
             expected.pallas_manifest_sha256,
             expected.pallas_stablehlo_sha256,
-            expected.pallas_compiler_hlo_sha256,
             expected.control_stablehlo_sha256,
-            expected.control_compiler_hlo_sha256,
             expected.pallas_compiler_collectives,
             expected.control_compiler_collectives,
+            expected.pallas_peak_memory_bytes,
+            expected.control_peak_memory_bytes,
         )
         if values != required:
             raise ValueError(
@@ -347,6 +474,8 @@ def _artifact_role(path: Path) -> ArtifactRole:
     }
     if relative in fixed:
         return fixed[relative]
+    if relative.startswith("superseded/"):
+        return ArtifactRole.EXPERIMENT
     if relative.startswith("inputs/") and path.suffix == ".npy":
         return ArtifactRole.CORRECTNESS_INPUT
     if relative.startswith("oracles/") and path.suffix == ".npy":
@@ -544,6 +673,15 @@ def verify_seqax_large_residual_qualification(
     )
     if capture.record_id != contract.compiler_capture_record_id:
         raise ValueError("SEQAX_LARGE_RESIDUAL_QUALIFICATION_CAPTURE_RECORD_MISMATCH")
+    _validate_superseded_evidence(
+        (
+            (root / "superseded" / "failure.json").read_bytes(),
+            (root / "superseded" / "service.log").read_bytes(),
+            (root / "superseded" / "forensic-capture.log").read_bytes(),
+        ),
+        contract,
+        capture,
+    )
     prepared = _prepare_candidates(default_seqax_large_residual_contract(contract.runtime))
     for value, expected in zip(prepared, capture.capture.candidates, strict=True):
         candidate_root = root / "candidates" / value.expected.candidate
@@ -697,6 +835,11 @@ def run_seqax_large_residual_qualification(root: Path) -> SeqaxLargeResidualQual
         root,
         contract,
     )
+    capture = _load_compiler_capture(repository_root, contract)
+    superseded_failure, superseded_log, forensic_capture = _load_superseded_evidence(
+        contract,
+        capture,
+    )
     claim: SeqaxLargeResidualQualificationClaim | None = None
     try:
         claim, _claim_path = _claim_attempt(
@@ -725,7 +868,12 @@ def run_seqax_large_residual_qualification(root: Path) -> SeqaxLargeResidualQual
         write_text(root / "source_diff.patch", diff)
         write_json(root / "source_manifest.json", source_manifest_payload)
         write_json(root / "host.json", host.model_dump(mode="json"))
-        capture = _load_compiler_capture(repository_root, contract)
+        write_text(root / "superseded" / "failure.json", superseded_failure.decode())
+        write_text(root / "superseded" / "service.log", superseded_log.decode())
+        write_text(
+            root / "superseded" / "forensic-capture.log",
+            forensic_capture.decode(),
+        )
         write_json(
             root / "compiler_capture.json",
             capture.model_dump(mode="json", exclude_computed_fields=True),
