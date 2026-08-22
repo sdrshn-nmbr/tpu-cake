@@ -1,7 +1,7 @@
 {
   "schema_version": "inkling-gmm-route-corpus-v1",
   "name": "inkling-small-v7x-gmm-route-corpus",
-  "profile_contract_id": "9cf382bff0443cd2d2dc91b3871fac1d5759f38ad81f66ea9addc743a375a42c",
+  "profile_contract_id": "52d99d36e8fd4e04463c1944e64cbf201e3a6b667ef19143bffbed3ae528f66f",
   "inkling_git_commit": "5160f27741fd60537ea441b7c986c74d8c8ca8f7",
   "inkling_uv_lock_sha256": "3c156f97dd4f042c0d58c425a8aaa0a8990ae14fac6ffe1367161f3b16d2f356",
   "inkling_source_manifest": [

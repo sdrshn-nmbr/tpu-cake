@@ -427,7 +427,48 @@ ENTRY %main {
 """
 
 
+def _xla_collective_stablehlo() -> str:
+    return """
+module @fixture {
+  func.func public @main() -> tensor<1xf32> {
+    %input = stablehlo.constant dense<0.0> : tensor<1xf32>
+    %matmul = stablehlo.custom_call @tpu_custom_call(%input) {
+      backend_config = "", kernel_name = "distributed_matmul_physical"
+    } : (tensor<1xf32>) -> tensor<1xf32>
+    %scatter = "stablehlo.reduce_scatter"(%matmul) <{
+      channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>,
+      replica_groups = dense<[[0]]> : tensor<1x1xi64>,
+      scatter_dimension = 0 : i64,
+      use_global_device_ids
+    }> ({
+      ^bb0(%left: tensor<f32>, %right: tensor<f32>):
+        %sum = stablehlo.add %left, %right : tensor<f32>
+        stablehlo.return %sum : tensor<f32>
+    }) : (tensor<1xf32>) -> tensor<1xf32>
+    return %scatter : tensor<1xf32>
+  }
+}
+"""
+
+
+def _xla_collective_compiler_hlo() -> str:
+    return """
+HloModule fixture, is_scheduled=true
+
+ENTRY %main {
+  %input = f32[1] parameter(0)
+  %pallas_call.1 = f32[1] custom-call(%input), custom_call_target="tpu_custom_call"
+  ROOT %reduce-scatter.1 = f32[1] reduce-scatter(%pallas_call.1), backend_config={"device_type":"DEVICE_TYPE_SPARSECORE","reduce_scatter_offload_config":{}}
+}
+"""
+
+
 def test_owned_collective_compiler_strategy_requires_connected_scheduled_hlo() -> None:
+    _validate_matmul_compiler_strategy(
+        _xla_collective_stablehlo(),
+        _xla_collective_compiler_hlo(),
+        MatmulCollectiveStrategy.XLA_REDUCE_SCATTER,
+    )
     _validate_matmul_compiler_strategy(
         _native_collective_stablehlo(),
         _native_collective_compiler_hlo(),

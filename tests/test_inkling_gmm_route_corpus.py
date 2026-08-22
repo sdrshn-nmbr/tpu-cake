@@ -756,7 +756,7 @@ def test_committed_route_report_binds_the_documented_claim() -> None:
     )
 
     assert report.contract_id == contract.contract_id
-    assert report.report_id == "bde510d60680c94280d0574eb28c93a592ec09d69ed074341f400eb542c2ada0"
+    assert report.report_id == "7d6b21dd9ef7879c5cb7050abf1f2327e504d1ae736913f2e502d6e575c225fa"
     assert (
         report.corpus_sha256 == "d3f7db0bdf366c12924e4b6b8e5f4d19a571b86cf2b222be17179a09f93044a4"
     )
@@ -771,12 +771,12 @@ def test_committed_route_report_binds_the_documented_claim() -> None:
     assert len(report.recurrent_state_slots) == len(set(report.recurrent_state_slots)) == 48
     assert report.cohort_scope == "operational-assumption-no-emitted-step-id"
     assert file_sha256(report_path) == (
-        "72ed0acdc08996d1d8a777d9b5de0a0c28a7330896feebe9f9f778225c11adf4"
+        "010870ad0aedc93708534bd1a3f4e2ffd69addacd69f5314992df1d5fae5ff63"
     )
     assert (
         "The committed replay is report "
-        "`bde510d60680c94280d0574eb28c93a592ec09d69ed074341f400eb542c2ada0` "
+        "`7d6b21dd9ef7879c5cb7050abf1f2327e504d1ae736913f2e502d6e575c225fa` "
         "with file SHA-256 "
-        "`72ed0acdc08996d1d8a777d9b5de0a0c28a7330896feebe9f9f778225c11adf4`."
+        "`010870ad0aedc93708534bd1a3f4e2ffd69addacd69f5314992df1d5fae5ff63`."
         in Path("README.md").read_text()
     )

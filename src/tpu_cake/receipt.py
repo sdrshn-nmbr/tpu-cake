@@ -182,7 +182,7 @@ def _validate_matmul_compiler_strategy(
             compiler_reduce_scatter_count=1,
             compiler_all_reduce_count=0,
             compiler_all_gather_count=0,
-            sparse_core_reduce_scatter_count=0,
+            sparse_core_reduce_scatter_count=1,
             sparse_core_all_gather_count=0,
         )
         if strategy is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER

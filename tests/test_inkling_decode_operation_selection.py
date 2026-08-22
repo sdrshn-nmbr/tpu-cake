@@ -530,12 +530,12 @@ def test_committed_report_binds_the_documented_claim() -> None:
     )
     assert report.uv_lock_sha256 == _sha256(Path("uv.lock"))
     assert (
-        _sha256(report_path) == "963aa9e779d97772a3853be614c514405722829709e63957dd55222646589739"
+        _sha256(report_path) == "1d39166dcddb646a0071348d91576367b52a35cd783901633f698733ff4de34f"
     )
     assert (
         "The committed replay is report "
-        "`3596011de95c59863415556812fa83c55b7d7d8c0c90fe5d4a05e66d55006af5` "
+        "`22d07f2f327f24c8d22e628268d7de96481acda0d1d2df6daf82c068b84766a1` "
         "with file SHA-256 "
-        "`963aa9e779d97772a3853be614c514405722829709e63957dd55222646589739`."
+        "`1d39166dcddb646a0071348d91576367b52a35cd783901633f698733ff4de34f`."
         in Path("README.md").read_text()
     )
