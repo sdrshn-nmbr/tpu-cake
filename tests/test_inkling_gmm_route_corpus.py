@@ -16,6 +16,7 @@ from tpu_cake.inkling_decode_profile import InklingDecodeProfileContract
 from tpu_cake.inkling_gmm_route_corpus import (
     InklingGmmRouteCapture,
     InklingGmmRouteCorpusContract,
+    InklingGmmRouteCorpusReport,
     ModelArtifactEvidence,
     RouteChunkEvidence,
     RouteRequestEvidence,
@@ -744,4 +745,38 @@ def test_committed_route_contract_declares_the_profiled_shape() -> None:
         )
         .command
         == "verify"
+    )
+
+
+def test_committed_route_report_binds_the_documented_claim() -> None:
+    report_path = Path("evidence/inkling/gmm-route-corpus-v1.json")
+    report = InklingGmmRouteCorpusReport.model_validate_json(report_path.read_text())
+    contract = InklingGmmRouteCorpusContract.model_validate_json(
+        Path("contracts/inkling-gmm-route-corpus-v1.json").read_text()
+    )
+
+    assert report.contract_id == contract.contract_id
+    assert report.report_id == "bde510d60680c94280d0574eb28c93a592ec09d69ed074341f400eb542c2ada0"
+    assert (
+        report.corpus_sha256 == "d3f7db0bdf366c12924e4b6b8e5f4d19a571b86cf2b222be17179a09f93044a4"
+    )
+    assert report.producer_source_sha256 == file_sha256(Path(route_corpus_module.__file__))
+    assert report.verifier_source_sha256 == file_sha256(Path(route_verifier.__file__))
+    assert report.selected_completion_steps == tuple(range(2, 66))
+    assert (report.first_moe_layer, report.num_layers) == (2, 42)
+    assert len(report.group_sizes) == 64 * 40
+    assert all(len(group.group_sizes) == 256 for group in report.group_sizes)
+    assert all(sum(group.group_sizes) == 288 for group in report.group_sizes)
+    assert len(report.request_state_slots) == len(set(report.request_state_slots)) == 48
+    assert len(report.recurrent_state_slots) == len(set(report.recurrent_state_slots)) == 48
+    assert report.cohort_scope == "operational-assumption-no-emitted-step-id"
+    assert file_sha256(report_path) == (
+        "72ed0acdc08996d1d8a777d9b5de0a0c28a7330896feebe9f9f778225c11adf4"
+    )
+    assert (
+        "The committed replay is report "
+        "`bde510d60680c94280d0574eb28c93a592ec09d69ed074341f400eb542c2ada0` "
+        "with file SHA-256 "
+        "`72ed0acdc08996d1d8a777d9b5de0a0c28a7330896feebe9f9f778225c11adf4`."
+        in Path("README.md").read_text()
     )
