@@ -92,7 +92,16 @@ def build_distributed_matmul_receipt(root: Path, *, search_root: Path | None = N
     identities = {
         (
             result.collective_strategy,
+            result.backend,
+            result.device_kind,
+            result.device_count,
+            result.hostname,
+            result.xla_flags,
+            result.warmup_iterations,
+            result.measured_iterations,
             result.schedule_sha256,
+            result.stablehlo_sha256,
+            result.compiler_hlo_sha256,
             result.lhs_sha256,
             result.rhs_sha256,
             result.output_sha256,

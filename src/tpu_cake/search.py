@@ -292,6 +292,9 @@ def _validate_saved_run_evidence(
         str(contract.n),
         str(candidate.tile_m),
         str(candidate.tile_n),
+        MatmulCollectiveStrategy.XLA_REDUCE_SCATTER.value,
+        result.hostname,
+        str(result.xla_flags),
         schema=identity_schema,
     )
     if result.run_id != expected_run_id:
@@ -300,6 +303,11 @@ def _validate_saved_run_evidence(
     distributed = _named_artifact(run_path, result, "distributed.xdsl", ArtifactRole.DISTRIBUTED_IR)
     stablehlo = _named_artifact(run_path, result, "stablehlo.txt", ArtifactRole.STABLEHLO)
     compiler_hlo = _named_artifact(run_path, result, "compiler_hlo.txt", ArtifactRole.COMPILER_HLO)
+    if (
+        file_sha256(stablehlo) != result.stablehlo_sha256
+        or file_sha256(compiler_hlo) != result.compiler_hlo_sha256
+    ):
+        raise ValueError(f"SEARCH_COMPILER_ARTIFACT_MISMATCH candidate={candidate.name}")
     ledger = _named_artifact(run_path, result, "ledger.sqlite", ArtifactRole.EXECUTION_LEDGER)
     created_payload = {
         "mode": RunMode.TIMING.value,
@@ -309,6 +317,9 @@ def _validate_saved_run_evidence(
         "n": contract.n,
         "tile_m": candidate.tile_m,
         "tile_n": candidate.tile_n,
+        "collective_strategy": MatmulCollectiveStrategy.XLA_REDUCE_SCATTER.value,
+        "hostname": result.hostname,
+        "xla_flags": result.xla_flags,
     }
     if "identity_schema" in invocation:
         created_payload["identity_schema"] = identity_schema
@@ -382,6 +393,8 @@ def _validate_resumed_result(
         "tile_m": candidate.tile_m,
         "tile_n": candidate.tile_n,
         "collective_strategy": MatmulCollectiveStrategy.XLA_REDUCE_SCATTER.value,
+        "hostname": result.hostname,
+        "xla_flags": result.xla_flags,
         "interpret": interpret,
     }
     identity_schema = invocation.get("identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA)

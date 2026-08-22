@@ -15,13 +15,19 @@ from tpu_cake.contracts import (
     CorrectnessResult,
     KernelExperiment,
     RunReceipt,
+    RunStatus,
     RuntimeIdentity,
 )
 from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.pallas_lowering import (
+    PALLAS_EXECUTION_SCHEMA,
+    PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA,
+)
 from tpu_cake.receipt import (
     _source_identity,
     _validate_cost_model,
     _validate_invocation_schemas,
+    _validate_matmul_compiler_strategy,
     _validate_saved_matmul_phase,
 )
 from tpu_cake.runner import (
@@ -178,7 +184,11 @@ def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
         env=environment,
     )
     result = json.loads((output / "result.json").read_text())
+    invocation = json.loads((output / "invocation.json").read_text())
     assert result["passed"] is True
+    assert invocation["pallas_execution_schema"] == PALLAS_EXECUTION_SCHEMA
+    assert invocation["hostname"] == result["hostname"]
+    assert invocation["xla_flags"] == environment["XLA_FLAGS"]
     assert len(result["samples_ns"]) == 3
     assert result["median_ns"] > 0
     assert (output / "distributed.xdsl").exists()
@@ -186,6 +196,11 @@ def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
     assert (output / "lowered_pallas.py").exists()
     assert (output / "stablehlo.txt").exists()
     assert (output / "compiler_hlo.txt").exists()
+    compiler_hlo = (output / "compiler_hlo.txt").read_text()
+    assert "is_scheduled=true" in compiler_hlo
+    assert result["compiler_hlo_sha256"] == hashlib.sha256(
+        compiler_hlo.encode()
+    ).hexdigest()
     assert (output / "cost_model.json").exists()
     assert (output / "experiment.json").exists()
     assert (output / "invocation.json").exists()
@@ -245,6 +260,10 @@ def test_timing_runner_selects_the_owned_collective_explicitly(tmp_path) -> None
     result = MatmulRunResult.model_validate_json((output / "result.json").read_text())
 
     assert invocation["collective_strategy"] == "pallas_bidirectional_ring"
+    assert (
+        invocation["pallas_execution_schema"]
+        == PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA
+    )
     assert result.collective_strategy is MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING
     assert "pallas_bidirectional_ring" in (output / "physical.xdsl").read_text()
     assert "native-collective-plan-v3" in (output / "lowered_pallas.py").read_text()
@@ -311,6 +330,16 @@ def test_saved_run_replay_recomputes_correctness_and_binds_every_artifact(tmp_pa
         phases=(),
     )
 
+    passed_receipt = receipt.model_copy(update={"status": RunStatus.PASSED})
+    with pytest.raises(ValueError, match="RUN_TPU_EXECUTION_REQUIRED"):
+        _validate_saved_matmul_phase(
+            root,
+            passed_receipt,
+            experiment,
+            "timing",
+            result,
+        )
+
     _, _, saved_plan = _validate_saved_matmul_phase(
         root, receipt, experiment, "timing", result
     )
@@ -334,6 +363,88 @@ def test_saved_run_replay_recomputes_correctness_and_binds_every_artifact(tmp_pa
     incomplete = receipt.model_copy(update={"artifacts": receipt.artifacts[1:]})
     with pytest.raises(ValueError, match="NOT_BOUND_BY_RECEIPT"):
         _validate_saved_matmul_phase(root, incomplete, experiment, "timing", result)
+
+
+def test_owned_collective_compiler_strategy_rejects_latent_xla_collective() -> None:
+    with pytest.raises(ValueError, match="RUN_COMPILER_COLLECTIVE_STRATEGY_MISMATCH"):
+        _validate_matmul_compiler_strategy(
+            '"stablehlo.reduce_scatter"(%arg0)',
+            "%rs = f32[8] reduce-scatter(%arg0)",
+            MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING,
+        )
+
+
+def _native_collective_stablehlo(*, disconnected: bool = False, all_reduce: bool = False) -> str:
+    collective_input = "%input" if disconnected else "%matmul"
+    result = "%combined" if disconnected else "%collective"
+    disconnected_add = (
+        "%combined = stablehlo.add %matmul, %collective : tensor<1xf32>"
+        if disconnected
+        else ""
+    )
+    all_reduce_body = ""
+    if all_reduce:
+        result = "%reduced"
+        all_reduce_body = """
+    %reduced = "stablehlo.all_reduce"(%collective) <{
+      replica_groups = dense<[[0]]> : tensor<1x1xi64>,
+      channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>,
+      use_global_device_ids
+    }> ({
+      ^bb0(%left: tensor<f32>, %right: tensor<f32>):
+        %sum = stablehlo.add %left, %right : tensor<f32>
+        stablehlo.return %sum : tensor<f32>
+    }) : (tensor<1xf32>) -> tensor<1xf32>
+"""
+    return f"""
+module @fixture {{
+  func.func public @main() -> tensor<1xf32> {{
+    %input = stablehlo.constant dense<0.0> : tensor<1xf32>
+    %matmul = stablehlo.custom_call @tpu_custom_call(%input) {{
+      backend_config = "", kernel_name = "distributed_matmul_physical"
+    }} : (tensor<1xf32>) -> tensor<1xf32>
+    %collective = stablehlo.custom_call @tpu_custom_call({collective_input}) {{
+      backend_config = "",
+      kernel_name = "distributed_matmul_physical_pallas_reduce_scatter"
+    }} : (tensor<1xf32>) -> tensor<1xf32>
+    {disconnected_add}
+    {all_reduce_body}
+    return {result} : tensor<1xf32>
+  }}
+}}
+"""
+
+
+def _native_collective_compiler_hlo() -> str:
+    return """
+HloModule fixture, is_scheduled=true
+
+ENTRY %main {
+  %input = f32[1] parameter(0)
+  %pallas_call.1 = f32[1] custom-call(%input), custom_call_target="tpu_custom_call"
+  ROOT %pallas_call.2 = f32[1] custom-call(%pallas_call.1), custom_call_target="tpu_custom_call"
+}
+"""
+
+
+def test_owned_collective_compiler_strategy_requires_connected_scheduled_hlo() -> None:
+    _validate_matmul_compiler_strategy(
+        _native_collective_stablehlo(),
+        _native_collective_compiler_hlo(),
+        MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING,
+    )
+    with pytest.raises(ValueError, match="COLLECTIVE_(DATAFLOW_MISMATCH|BYPASS)"):
+        _validate_matmul_compiler_strategy(
+            _native_collective_stablehlo(disconnected=True),
+            _native_collective_compiler_hlo(),
+            MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING,
+        )
+    with pytest.raises(ValueError, match="LIVE_COLLECTIVE_STRATEGY_MISMATCH"):
+        _validate_matmul_compiler_strategy(
+            _native_collective_stablehlo(all_reduce=True),
+            _native_collective_compiler_hlo(),
+            MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING,
+        )
 
 
 def test_candidates_use_identical_workload_inputs(tmp_path) -> None:

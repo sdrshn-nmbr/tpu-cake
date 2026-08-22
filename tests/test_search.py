@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from tpu_cake.artifacts import file_sha256
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.runner import MatmulCollectiveStrategy, MatmulRunResult, RunMode
 from tpu_cake.search import (
     MatmulSearchCandidate,
     MatmulSearchContract,
     _resolve_artifact,
+    _validate_resumed_result,
     run_matmul_search,
     validate_matmul_search_result,
 )
@@ -47,8 +53,12 @@ def _result(
         device_kind="TPU v7x",
         device_count=4,
         collective_strategy=MatmulCollectiveStrategy.XLA_REDUCE_SCATTER,
+        hostname="tpu-test",
+        xla_flags=None,
         schedule_sha256=("4" if name == "whole" else "5") * 64,
         pallas_source_sha256="6" * 64,
+        stablehlo_sha256="a" * 64,
+        compiler_hlo_sha256="b" * 64,
         lhs_sha256=lhs,
         rhs_sha256="7" * 64,
         output_sha256=output,
@@ -159,6 +169,96 @@ def test_saved_search_contract_round_trips_through_strict_schema() -> None:
     contract = _contract()
     encoded = contract.model_dump_json(indent=2, exclude_computed_fields=True)
     assert MatmulSearchContract.model_validate_json(encoded) == contract
+
+
+def test_real_search_run_replays_its_run_id_and_ledger(tmp_path) -> None:
+    contract = MatmulSearchContract(
+        mesh_size=4,
+        m=16,
+        k=32,
+        n=16,
+        warmup_iterations=0,
+        measured_iterations=1,
+        rounds=5,
+        candidates=(
+            MatmulSearchCandidate(name="tile-8", tile_m=8, tile_n=8),
+            MatmulSearchCandidate(name="tile-16", tile_m=16, tile_n=16),
+        ),
+    )
+    candidate = contract.candidates[0]
+    output = tmp_path / "run"
+    environment = os.environ.copy()
+    environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tpu_cake.cli",
+            "run-matmul",
+            "--output-dir",
+            str(output),
+            "--mode",
+            "timing",
+            "--mesh-size",
+            "4",
+            "--m",
+            "16",
+            "--k",
+            "32",
+            "--n",
+            "16",
+            "--warmup-iterations",
+            "0",
+            "--measured-iterations",
+            "1",
+            "--tile-m",
+            "8",
+            "--tile-n",
+            "8",
+            "--interpret",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    result = MatmulRunResult.model_validate_json((output / "result.json").read_text())
+
+    source_diff = output / "source_diff.patch"
+    source_diff.write_text("")
+    source_state = output / "source_state.json"
+    state = json.loads(source_state.read_text())
+    state.update(
+        git_dirty=False,
+        git_status=[],
+        source_diff_sha256=file_sha256(source_diff),
+    )
+    source_state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    replacements = {
+        "source_diff.patch": source_diff,
+        "source_state.json": source_state,
+    }
+    artifacts = tuple(
+        artifact.model_copy(
+            update={
+                "size_bytes": replacements[Path(artifact.path).name].stat().st_size,
+                "sha256": file_sha256(replacements[Path(artifact.path).name]),
+            }
+        )
+        if Path(artifact.path).name in replacements
+        else artifact
+        for artifact in result.artifacts
+    )
+    result = result.model_copy(update={"artifacts": artifacts})
+
+    _validate_resumed_result(
+        output,
+        contract,
+        candidate,
+        result,
+        interpret=True,
+        recompute_schedule=True,
+    )
 
 
 def test_search_artifact_resolution_is_confined_to_the_run(tmp_path, monkeypatch) -> None:

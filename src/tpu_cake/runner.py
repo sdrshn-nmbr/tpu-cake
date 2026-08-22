@@ -42,6 +42,7 @@ from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.metrics import MetricSource
 from tpu_cake.pallas_lowering import (
     PALLAS_EXECUTION_SCHEMA,
+    PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA,
     lower_physical_matmul_to_pallas,
 )
 from tpu_cake.workloads.distributed_matmul import (
@@ -65,6 +66,11 @@ class MatmulCollectiveStrategy(StrEnum):
             return None
         return CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
 
+    def pallas_execution_schema(self) -> str:
+        if self is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER:
+            return PALLAS_EXECUTION_SCHEMA
+        return PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA
+
 
 class MatmulRunResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -75,8 +81,12 @@ class MatmulRunResult(BaseModel):
     device_kind: str
     device_count: int = Field(gt=0)
     collective_strategy: MatmulCollectiveStrategy
+    hostname: str = Field(min_length=1)
+    xla_flags: str | None
     schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     lhs_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     rhs_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -269,9 +279,12 @@ def run_distributed_matmul(
     if mode is not RunMode.TIMING and jax.default_backend() != "tpu":
         raise ValueError("device traces and hardware counters require a TPU backend")
     output_dir.mkdir(parents=True, exist_ok=False)
+    pallas_execution_schema = collective_strategy.pallas_execution_schema()
+    hostname = platform.node()
+    xla_flags = os.environ.get("XLA_FLAGS")
     invocation = {
         "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
-        "pallas_execution_schema": PALLAS_EXECUTION_SCHEMA,
+        "pallas_execution_schema": pallas_execution_schema,
         "mode": mode.value,
         "mesh_size": mesh_size,
         "m": m,
@@ -282,6 +295,8 @@ def run_distributed_matmul(
         "tile_m": tile_m,
         "tile_n": tile_n,
         "collective_strategy": collective_strategy.value,
+        "hostname": hostname,
+        "xla_flags": xla_flags,
         "interpret": interpret,
     }
     pre_artifacts = [
@@ -303,6 +318,8 @@ def run_distributed_matmul(
         str(tile_m),
         str(tile_n),
         collective_strategy.value,
+        hostname,
+        str(xla_flags),
     )
     ledger_path = output_dir / "ledger.sqlite"
     _record_event(
@@ -311,7 +328,7 @@ def run_distributed_matmul(
         RunState.CREATED,
         {
             "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
-            "pallas_execution_schema": PALLAS_EXECUTION_SCHEMA,
+            "pallas_execution_schema": pallas_execution_schema,
             "mode": mode.value,
             "mesh_size": mesh_size,
             "m": m,
@@ -320,6 +337,8 @@ def run_distributed_matmul(
             "tile_m": tile_m,
             "tile_n": tile_n,
             "collective_strategy": collective_strategy.value,
+            "hostname": hostname,
+            "xla_flags": xla_flags,
         },
     )
     distributed = distributed_matmul_schedule(mesh_size=mesh_size, m=m, k=k, n=n)
@@ -349,7 +368,7 @@ def run_distributed_matmul(
             "physical_ir_sha256": hashlib.sha256(physical_text.encode()).hexdigest(),
             "schedule_sha256": plan.schedule_sha256,
             "pallas_source_sha256": plan.source_sha256(),
-            "pallas_execution_schema": PALLAS_EXECUTION_SCHEMA,
+            "pallas_execution_schema": pallas_execution_schema,
         },
     )
     experiment = distributed_matmul_experiment(
@@ -391,6 +410,7 @@ def run_distributed_matmul(
         tile_k=plan.tile_k,
         tile_n=plan.tile_n,
         collective_link_bandwidths=plan.collective_link_bandwidths,
+        collective_implementation=plan.collective_implementation,
         hardware=tpu7x_tensorcore_rates(),
     )
     model_input_artifact = _write_json(
@@ -437,27 +457,29 @@ def run_distributed_matmul(
     compile_start = time.perf_counter_ns()
     lowered = executable.lower(lhs, rhs)
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
-    hlo_computation = lowered.compiler_ir(dialect="hlo")
-    hlo = (
-        hlo_computation.as_hlo_text()
-        if hasattr(hlo_computation, "as_hlo_text")
-        else str(hlo_computation)
-    )
     compiled = lowered.compile()
+    compiler_hlo = compiled.as_text()
+    if not isinstance(compiler_hlo, str) or not compiler_hlo:
+        raise ValueError("MATMUL_COMPILED_HLO_UNAVAILABLE")
     compile_duration_ns = time.perf_counter_ns() - compile_start
-    artifacts.extend(
-        (
-            _write_text(output_dir / "stablehlo.txt", stablehlo + "\n", ArtifactRole.STABLEHLO),
-            _write_text(output_dir / "compiler_hlo.txt", hlo + "\n", ArtifactRole.COMPILER_HLO),
-        )
+    stablehlo_artifact = _write_text(
+        output_dir / "stablehlo.txt",
+        stablehlo.rstrip("\n") + "\n",
+        ArtifactRole.STABLEHLO,
     )
+    compiler_hlo_artifact = _write_text(
+        output_dir / "compiler_hlo.txt",
+        compiler_hlo.rstrip("\n") + "\n",
+        ArtifactRole.COMPILER_HLO,
+    )
+    artifacts.extend((stablehlo_artifact, compiler_hlo_artifact))
     _record_event(
         ledger_path,
         run_id,
         RunState.COMPILED,
         {
-            "stablehlo_sha256": artifacts[-2].sha256,
-            "compiler_hlo_sha256": artifacts[-1].sha256,
+            "stablehlo_sha256": stablehlo_artifact.sha256,
+            "compiler_hlo_sha256": compiler_hlo_artifact.sha256,
             "compile_duration_ns": compile_duration_ns,
         },
     )
@@ -582,8 +604,12 @@ def run_distributed_matmul(
         device_kind=jax.devices()[0].device_kind,
         device_count=len(jax.devices()),
         collective_strategy=collective_strategy,
+        hostname=hostname,
+        xla_flags=xla_flags,
         schedule_sha256=plan.schedule_sha256,
         pallas_source_sha256=plan.source_sha256(),
+        stablehlo_sha256=stablehlo_artifact.sha256,
+        compiler_hlo_sha256=compiler_hlo_artifact.sha256,
         lhs_sha256=array_sha256(lhs_quantized),
         rhs_sha256=array_sha256(rhs_quantized),
         output_sha256=array_sha256(actual_host),

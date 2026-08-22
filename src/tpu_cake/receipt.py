@@ -4,6 +4,7 @@ import json
 import math
 import re
 import statistics
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,10 @@ from tpu_cake.artifacts import (
 from tpu_cake.artifacts import (
     resolve_bundle_artifact,
     resolve_recorded_artifact,
+)
+from tpu_cake.compiler_analysis import (
+    CompilerCollectiveAnalysis,
+    analyze_compiler_collectives,
 )
 from tpu_cake.contracts import (
     ArtifactReference,
@@ -38,16 +43,23 @@ from tpu_cake.identity import (
 from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.pallas_lowering import (
     PALLAS_EXECUTION_SCHEMA,
+    PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA,
     PallasMatmulPlan,
     validate_saved_pallas_plan,
 )
 from tpu_cake.receipt_metrics import build_receipt_metrics
-from tpu_cake.runner import MatmulRunResult, RunMode, validate_profiler_contract
+from tpu_cake.runner import (
+    MatmulCollectiveStrategy,
+    MatmulRunResult,
+    RunMode,
+    validate_profiler_contract,
+)
 from tpu_cake.search import (
     MatmulSearchContract,
     MatmulSearchResult,
     validate_matmul_search_result,
 )
+from tpu_cake.stablehlo import StableHloInspector
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_experiment
 from tpu_cake.xprof_evidence import assess_capture
 
@@ -151,10 +163,134 @@ def _validate_invocation_schemas(invocation: dict[str, object], phase: str) -> s
         raise ValueError(f"RUN_IDENTITY_SCHEMA_UNSUPPORTED phase={phase}")
     if (
         "pallas_execution_schema" in invocation
-        and invocation["pallas_execution_schema"] != PALLAS_EXECUTION_SCHEMA
+        and invocation["pallas_execution_schema"]
+        not in {PALLAS_EXECUTION_SCHEMA, PALLAS_NATIVE_COLLECTIVE_EXECUTION_SCHEMA}
     ):
         raise ValueError(f"RUN_PALLAS_EXECUTION_SCHEMA_UNSUPPORTED phase={phase}")
     return identity_schema
+
+
+def _validate_matmul_compiler_strategy(
+    stablehlo: str,
+    compiler_hlo: str,
+    strategy: MatmulCollectiveStrategy,
+) -> None:
+    expected_collectives = (
+        CompilerCollectiveAnalysis(
+            stablehlo_reduce_scatter_count=1,
+            stablehlo_all_gather_count=0,
+            compiler_reduce_scatter_count=1,
+            compiler_all_reduce_count=0,
+            compiler_all_gather_count=0,
+            sparse_core_reduce_scatter_count=0,
+            sparse_core_all_gather_count=0,
+        )
+        if strategy is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER
+        else CompilerCollectiveAnalysis(
+            stablehlo_reduce_scatter_count=0,
+            stablehlo_all_gather_count=0,
+            compiler_reduce_scatter_count=0,
+            compiler_all_reduce_count=0,
+            compiler_all_gather_count=0,
+            sparse_core_reduce_scatter_count=0,
+            sparse_core_all_gather_count=0,
+        )
+    )
+    observed_collectives = analyze_compiler_collectives(
+        stablehlo=stablehlo,
+        compiler_hlo=compiler_hlo,
+    )
+    if observed_collectives != expected_collectives:
+        raise ValueError("RUN_COMPILER_COLLECTIVE_STRATEGY_MISMATCH")
+
+    expected_kernel_names = Counter(
+        {
+            "distributed_matmul_physical": 1,
+            **(
+                {"distributed_matmul_physical_pallas_reduce_scatter": 1}
+                if strategy is MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING
+                else {}
+            ),
+        }
+    )
+    try:
+        inspector = StableHloInspector.parse(stablehlo)
+        observed_kernel_names: Counter[str] = Counter()
+        named_custom_calls: dict[str, list[object]] = {}
+        for function in inspector.functions:
+            for operation in inspector.operations(function):
+                if operation.name != "stablehlo.custom_call":
+                    continue
+                if str(operation.attributes.get("call_target_name")) != '"tpu_custom_call"':
+                    continue
+                kernel_name = str(operation.attributes.get("kernel_name")).strip('"')
+                if function != inspector.public_main or not any(
+                    inspector.result_reaches_return(result) for result in operation.results
+                ):
+                    raise ValueError("RUN_PALLAS_CUSTOM_CALL_NOT_LIVE_IN_MAIN")
+                observed_kernel_names[kernel_name] += 1
+                named_custom_calls.setdefault(kernel_name, []).append(operation)
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("RUN_STABLEHLO_INVALID") from error
+    if observed_kernel_names != expected_kernel_names:
+        raise ValueError("RUN_PALLAS_CUSTOM_CALL_STRATEGY_MISMATCH")
+
+    live_collective_counts = {
+        name: inspector.live_public_main_operation_count(f"stablehlo.{name}")
+        for name in (
+            "all_gather",
+            "all_reduce",
+            "all_to_all",
+            "collective_permute",
+            "reduce_scatter",
+        )
+    }
+    expected_live_collective_counts = {
+        "all_gather": 0,
+        "all_reduce": 0,
+        "all_to_all": 0,
+        "collective_permute": 0,
+        "reduce_scatter": (
+            1 if strategy is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER else 0
+        ),
+    }
+    if live_collective_counts != expected_live_collective_counts:
+        raise ValueError("RUN_STABLEHLO_LIVE_COLLECTIVE_STRATEGY_MISMATCH")
+
+    matmul = named_custom_calls["distributed_matmul_physical"][0]
+    expected_collective = (
+        next(
+            operation
+            for operation in inspector.operations(inspector.public_main)
+            if operation.name == "stablehlo.reduce_scatter"
+        )
+        if strategy is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER
+        else named_custom_calls["distributed_matmul_physical_pallas_reduce_scatter"][0]
+    )
+    if not any(
+        inspector.result_reaches_operation(result, expected_collective)
+        for result in matmul.results
+    ) or not any(
+        inspector.result_reaches_return(result) for result in expected_collective.results
+    ):
+        raise ValueError("RUN_STABLEHLO_COLLECTIVE_DATAFLOW_MISMATCH")
+    if any(
+        inspector.result_reaches_return_avoiding(result, (expected_collective,))
+        for result in matmul.results
+    ):
+        raise ValueError("RUN_STABLEHLO_COLLECTIVE_BYPASS")
+
+    compiler_custom_call_count = len(
+        re.findall(
+            r'(?m)^\s*(?:ROOT\s+)?%?[A-Za-z0-9_.$-]+\s*=\s*[^=\n]+?\s+'
+            r'custom-call\([^\n]*\),[^\n]*\bcustom_call_target="tpu_custom_call"',
+            compiler_hlo,
+        )
+    )
+    if compiler_custom_call_count != sum(expected_kernel_names.values()):
+        raise ValueError("RUN_COMPILER_PALLAS_CUSTOM_CALL_COUNT_MISMATCH")
 
 
 def _validate_result_artifact_bindings(
@@ -216,6 +352,11 @@ def _validate_saved_matmul_phase(
         raise ValueError(f"PHYSICAL_IR_SCHEDULE_MISMATCH phase={phase}")
     if _sha256(artifacts["lowered_pallas.py"]) != result.pallas_source_sha256:
         raise ValueError(f"PALLAS_SOURCE_IDENTITY_MISMATCH phase={phase}")
+    if (
+        _sha256(artifacts["stablehlo.txt"]) != result.stablehlo_sha256
+        or _sha256(artifacts["compiler_hlo.txt"]) != result.compiler_hlo_sha256
+    ):
+        raise ValueError(f"COMPILER_ARTIFACT_IDENTITY_MISMATCH phase={phase}")
 
     saved_plan = validate_saved_pallas_plan(
         artifacts["physical.xdsl"],
@@ -232,6 +373,8 @@ def _validate_saved_matmul_phase(
         "mesh_size": result.device_count,
         "warmup_iterations": result.warmup_iterations,
         "measured_iterations": result.measured_iterations,
+        "hostname": result.hostname,
+        "xla_flags": result.xla_flags,
     }
     if any(invocation.get(name) != value for name, value in expected_fields.items()):
         raise ValueError(f"RUN_INVOCATION_RESULT_MISMATCH phase={phase}")
@@ -244,8 +387,17 @@ def _validate_saved_matmul_phase(
         or invocation.get("collective_strategy") != result.collective_strategy.value
         or saved_plan.collective_implementation
         != result.collective_strategy.lowering_implementation()
+        or invocation.get("pallas_execution_schema")
+        != result.collective_strategy.pallas_execution_schema()
     ):
         raise ValueError(f"RUN_INVOCATION_PLAN_MISMATCH phase={phase}")
+    if receipt.status is RunStatus.PASSED and (
+        invocation.get("interpret") is not False
+        or result.backend != "tpu"
+        or result.device_kind not in {"TPU7x", "TPU v7x"}
+        or result.device_count != invocation["mesh_size"]
+    ):
+        raise ValueError(f"RUN_TPU_EXECUTION_REQUIRED phase={phase}")
     validate_profiler_contract(
         result.mode, json.loads(artifacts["profiler_config.json"].read_text())
     )
@@ -272,6 +424,16 @@ def _validate_saved_matmul_phase(
         raise ValueError(f"RUN_EXPERIMENT_MISMATCH phase={phase}")
     if phase == "timing" and saved_experiment != experiment:
         raise ValueError("TIMING_EXPERIMENT_DOES_NOT_MATCH_RECEIPT_EXPERIMENT")
+
+    if result.backend == "tpu":
+        try:
+            _validate_matmul_compiler_strategy(
+                artifacts["stablehlo.txt"].read_text(),
+                artifacts["compiler_hlo.txt"].read_text(),
+                result.collective_strategy,
+            )
+        except ValueError as error:
+            raise ValueError(f"{error} phase={phase}") from error
 
     lhs = np.load(artifacts["lhs.npy"], allow_pickle=False)
     rhs = np.load(artifacts["rhs.npy"], allow_pickle=False)
@@ -321,6 +483,8 @@ def _validate_saved_matmul_phase(
         str(invocation["tile_m"]),
         str(invocation["tile_n"]),
         result.collective_strategy.value,
+        result.hostname,
+        str(result.xla_flags),
         schema=identity_schema,
     )
     if result.run_id != expected_run_id:
@@ -392,6 +556,8 @@ def _validate_saved_matmul_phase(
         "tile_m": invocation["tile_m"],
         "tile_n": invocation["tile_n"],
         "collective_strategy": result.collective_strategy.value,
+        "hostname": result.hostname,
+        "xla_flags": result.xla_flags,
     }
     if "identity_schema" in invocation:
         created_payload["identity_schema"] = identity_schema
@@ -455,6 +621,7 @@ def _validate_cost_model(
         tile_k=saved_plan.tile_k,
         tile_n=saved_plan.tile_n,
         collective_link_bandwidths=saved_plan.collective_link_bandwidths,
+        collective_implementation=saved_plan.collective_implementation,
         hardware=tpu7x_tensorcore_rates(),
     )
     if model_input != expected_input:
@@ -602,6 +769,15 @@ def _validate_distributed_matmul_receipt(
                     result.schedule_sha256,
                     result.pallas_source_sha256,
                     result.collective_strategy,
+                    result.backend,
+                    result.device_kind,
+                    result.device_count,
+                    result.hostname,
+                    result.xla_flags,
+                    result.warmup_iterations,
+                    result.measured_iterations,
+                    result.stablehlo_sha256,
+                    result.compiler_hlo_sha256,
                     result.lhs_sha256,
                     result.rhs_sha256,
                     result.output_sha256,

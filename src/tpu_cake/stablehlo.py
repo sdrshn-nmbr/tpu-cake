@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 
 from jax._src.interpreters import mlir
 from jaxlib.mlir import ir
@@ -27,7 +28,12 @@ def _walk(operation: ir.Operation) -> tuple[ir.Operation, ...]:
     return tuple(operations)
 
 
-def _result_reaches_return(result: ir.Value) -> bool:
+def _result_reaches(
+    result: ir.Value,
+    predicate: Callable[[ir.Operation], bool],
+    *,
+    blocked: tuple[ir.Operation, ...] = (),
+) -> bool:
     pending = deque([result])
     visited: set[ir.Value] = set()
     while pending:
@@ -39,7 +45,9 @@ def _result_reaches_return(result: ir.Value) -> bool:
             consumer = as_operation(use.owner)
             if consumer is None:
                 raise ValueError("STABLEHLO_INVALID_USE")
-            if consumer.name == "func.return":
+            if any(consumer == operation for operation in blocked):
+                continue
+            if predicate(consumer):
                 return True
             if consumer.name in {"sdy.return", "stablehlo.return"}:
                 parent = as_operation(consumer.parent)
@@ -47,6 +55,10 @@ def _result_reaches_return(result: ir.Value) -> bool:
                     pending.append(parent.results[use.operand_number])
             pending.extend(consumer.results)
     return False
+
+
+def _result_reaches_return(result: ir.Value) -> bool:
+    return _result_reaches(result, lambda operation: operation.name == "func.return")
 
 
 class StableHloInspector:
@@ -119,3 +131,17 @@ class StableHloInspector:
 
     def result_reaches_return(self, result: ir.Value) -> bool:
         return _result_reaches_return(result)
+
+    def result_reaches_operation(self, result: ir.Value, target: ir.Operation) -> bool:
+        return _result_reaches(result, lambda operation: operation == target)
+
+    def result_reaches_return_avoiding(
+        self,
+        result: ir.Value,
+        blocked: tuple[ir.Operation, ...],
+    ) -> bool:
+        return _result_reaches(
+            result,
+            lambda operation: operation.name == "func.return",
+            blocked=blocked,
+        )

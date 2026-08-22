@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tpu_cake.dialects.tpu_schedule import CollectiveImplementation
 from tpu_cake.metrics import (
     FormulaIdentity,
     MeasurementInterval,
@@ -38,6 +39,13 @@ class MatmulPhysicalCounts(BaseModel):
     hbm_write_bytes_per_device: int = Field(gt=0)
     ici_bidirectional_bytes_per_device: int = Field(gt=0)
     peak_live_vmem_bytes_per_device: int = Field(gt=0)
+    collective_hbm_scratch_bytes_per_device: int = Field(ge=0)
+    collective_vmem_scratch_bytes_per_device: int = Field(ge=0)
+    collective_dma_semaphore_count: int = Field(ge=0)
+    collective_capacity_semaphore_count: int = Field(ge=0)
+    collective_startup_semaphore_count: int = Field(ge=0)
+    collective_startup_barrier_phases: int = Field(ge=0)
+    collective_remote_half_output_copy_count: int = Field(ge=0)
 
 
 class MatmulCostModelInput(BaseModel):
@@ -51,6 +59,7 @@ class MatmulCostModelInput(BaseModel):
     tile_m: int = Field(gt=0)
     tile_k: int = Field(gt=0)
     tile_n: int = Field(gt=0)
+    collective_implementation: CollectiveImplementation | None = None
     collective_link_bandwidths: tuple[tuple[str, int], ...] = ()
     hardware: HardwareRateModel
 
@@ -129,16 +138,40 @@ def estimate_distributed_matmul(
     partial_bytes = 4 * partial_elements
     hbm_read = 2 * (m * local_k + local_k * n) + partial_bytes
     hbm_write = partial_bytes + 4 * output_elements
-    ici_bidirectional = 2 * partial_bytes * (plan.mesh_size - 1) // plan.mesh_size
+    generic_ici_bidirectional = 2 * partial_bytes * (plan.mesh_size - 1) // plan.mesh_size
+    ici_bidirectional = (
+        plan.collective_remote_bidirectional_endpoint_bytes
+        if plan.collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+        else generic_ici_bidirectional
+    )
     tile_input_bytes = 2 * (plan.tile_m * plan.tile_k + plan.tile_k * plan.tile_n)
     tile_output_bytes = 4 * plan.tile_m * plan.tile_n
-    peak_live_vmem = tile_input_bytes + tile_output_bytes
+    collective_peak_live_vmem = (
+        partial_bytes
+        + 4 * output_elements
+        + plan.collective_accumulator_vmem_bytes
+        if plan.collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+        else 0
+    )
+    peak_live_vmem = max(
+        tile_input_bytes + tile_output_bytes,
+        collective_peak_live_vmem,
+    )
     counts = MatmulPhysicalCounts(
         operations_per_device=operations,
         hbm_read_bytes_per_device=hbm_read,
         hbm_write_bytes_per_device=hbm_write,
         ici_bidirectional_bytes_per_device=ici_bidirectional,
         peak_live_vmem_bytes_per_device=peak_live_vmem,
+        collective_hbm_scratch_bytes_per_device=plan.collective_hbm_scratch_bytes,
+        collective_vmem_scratch_bytes_per_device=plan.collective_accumulator_vmem_bytes,
+        collective_dma_semaphore_count=plan.collective_dma_semaphore_count,
+        collective_capacity_semaphore_count=plan.collective_capacity_semaphore_count,
+        collective_startup_semaphore_count=plan.collective_startup_semaphore_count,
+        collective_startup_barrier_phases=plan.collective_startup_barrier_phases,
+        collective_remote_half_output_copy_count=(
+            plan.collective_remote_half_output_copy_count
+        ),
     )
     hbm_bytes = hbm_read + hbm_write
     compute_ns = (
@@ -191,8 +224,44 @@ def estimate_distributed_matmul(
             ici_bidirectional,
             Unit.BYTE,
             source,
-            "ring_reduce_scatter_bytes",
-            "2*sizeof(partial)*(P-1)/P",
+            (
+                "pallas_remote_dma_endpoint_bytes"
+                if plan.collective_implementation
+                is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+                else "ring_reduce_scatter_bytes"
+            ),
+            (
+                "declared_bidirectional_remote_dma_endpoint_bytes"
+                if plan.collective_implementation
+                is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+                else "2*sizeof(partial)*(P-1)/P"
+            ),
+        ),
+        _metric(
+            "collective_hbm_scratch_bytes_per_device",
+            plan.collective_hbm_scratch_bytes,
+            Unit.BYTE,
+            source,
+            "collective_hbm_scratch_capacity",
+            "typed_collective_plan.hbm_scratch_bytes",
+        ),
+        _metric(
+            "collective_vmem_scratch_bytes_per_device",
+            plan.collective_accumulator_vmem_bytes,
+            Unit.BYTE,
+            source,
+            "collective_vmem_scratch_capacity",
+            "typed_collective_plan.vmem_scratch_bytes",
+        ),
+        _metric(
+            "collective_semaphore_count",
+            plan.collective_dma_semaphore_count
+            + plan.collective_capacity_semaphore_count
+            + plan.collective_startup_semaphore_count,
+            Unit.COUNT,
+            source,
+            "collective_semaphore_count",
+            "dma_semaphores+capacity_semaphores+startup_semaphores",
         ),
         _metric(
             "arithmetic_intensity",
@@ -244,10 +313,16 @@ def estimate_distributed_matmul(
         ),
         *topology_metrics,
     )
+    native_collective = (
+        plan.collective_implementation is CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+    )
     topology_assumptions = (
         (
             (
-                "Declared topology is a static cost-model constraint; XLA selects the "
+                "The typed Pallas plan fixes logical remote-DMA endpoints; hardware maps "
+                "those logical neighbors onto physical links."
+                if native_collective
+                else "Declared topology is a static cost-model constraint; XLA selects the "
                 "executed collective route."
             ),
             (
@@ -266,9 +341,19 @@ def estimate_distributed_matmul(
         assumptions=(
             "A multiply-add counts as two BF16 floating-point operations.",
             "Per-JAX-device rates are one half of advertised per-chip rates.",
-            "HBM bytes include one materialization of the Pallas partial before XLA reduce-scatter.",
+            (
+                "HBM bytes include the materialized partial passed between the matmul and "
+                "owned collective Pallas calls; native scratch traffic is unpriced."
+                if native_collective
+                else "HBM bytes include one materialization of the Pallas partial before "
+                "XLA reduce-scatter."
+            ),
             "HBM bytes exclude additional compiler reloads, padding, and layout conversions.",
-            "Reduce-scatter uses a ring-equivalent bidirectional byte lower bound.",
+            (
+                "ICI bytes use the typed native ring's exact bidirectional endpoint bytes."
+                if native_collective
+                else "Reduce-scatter uses a ring-equivalent bidirectional byte lower bound."
+            ),
             "Launch, synchronization, collective startup, and compiler overhead are omitted.",
             *topology_assumptions,
         ),
@@ -299,5 +384,6 @@ def estimate_distributed_matmul_input(
         tile_k=model_input.tile_k,
         tile_n=model_input.tile_n,
         collective_link_bandwidths=model_input.collective_link_bandwidths,
+        collective_implementation=model_input.collective_implementation,
     )
     return estimate_distributed_matmul(plan, hardware=model_input.hardware, source=source)
