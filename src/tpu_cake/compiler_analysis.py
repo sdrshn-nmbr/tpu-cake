@@ -52,7 +52,7 @@ class CompilerCostMetric(BaseModel):
         if self.available:
             if self.value is None or self.raw_value != self.value:
                 raise ValueError("available compiler metric must preserve its raw value")
-        elif self.name != "optimal_seconds" or self.raw_value >= 0 or self.value is not None:
+        elif self.raw_value >= 0 or self.value is not None:
             raise ValueError("unsupported compiler metric unavailable state")
         return self
 
@@ -230,10 +230,6 @@ def _capture_cost_metrics(value: object) -> tuple[CompilerCostMetric, ...]:
             )
         raw_value = float(metric_value)
         if raw_value < 0:
-            if name != "optimal_seconds":
-                raise ValueError(
-                    f"COMPILER_ANALYSIS_COST_VALUE_INVALID name={name!r} value={metric_value!r}"
-                )
             metrics.append(
                 CompilerCostMetric(
                     name=name,

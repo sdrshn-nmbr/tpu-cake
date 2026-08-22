@@ -81,7 +81,11 @@ def test_compiler_analysis_is_canonical_and_replayable() -> None:
 def test_compiler_analysis_preserves_backend_unavailable_states() -> None:
     analysis = capture_compiler_analysis(
         _Executable(
-            {"flops": 1024.0, "optimal_seconds": -3.99999737739563},
+            {
+                "bytes accessed": -1.0,
+                "flops": -2.0,
+                "optimal_seconds": -3.99999737739563,
+            },
             _memory(serialized_buffer_assignment_proto=b""),
         ),
         stablehlo="module @main {}",
@@ -91,6 +95,16 @@ def test_compiler_analysis_preserves_backend_unavailable_states() -> None:
     optimal_seconds = next(
         metric for metric in analysis.cost_metrics if metric.name == "optimal_seconds"
     )
+    flops = next(metric for metric in analysis.cost_metrics if metric.name == "flops")
+    bytes_accessed = next(
+        metric for metric in analysis.cost_metrics if metric.name == "bytes accessed"
+    )
+    assert bytes_accessed.available is False
+    assert bytes_accessed.value is None
+    assert bytes_accessed.raw_value == -1.0
+    assert flops.available is False
+    assert flops.value is None
+    assert flops.raw_value == -2.0
     assert optimal_seconds.available is False
     assert optimal_seconds.value is None
     assert optimal_seconds.raw_value == -3.99999737739563
@@ -150,7 +164,6 @@ def test_compiler_collectives_do_not_count_metadata_names_as_operations() -> Non
         (None, _memory(), "COST_UNAVAILABLE"),
         ({}, _memory(), "COST_EMPTY"),
         ({"flops": float("nan")}, _memory(), "COST_VALUE_INVALID"),
-        ({"flops": -1.0}, _memory(), "COST_VALUE_INVALID"),
         ({"optimal_seconds": float("-inf")}, _memory(), "COST_VALUE_INVALID"),
         ({"flops": True}, _memory(), "COST_VALUE_INVALID"),
         ({"flops": 1.0}, None, "MEMORY_UNAVAILABLE"),

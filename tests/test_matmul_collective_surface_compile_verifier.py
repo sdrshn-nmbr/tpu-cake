@@ -87,7 +87,7 @@ def _analysis(stable_path: Path, compiler_path: Path, strategy: str) -> dict[str
         "analysis_schema": "compiler-executable-analysis-v2",
         "stablehlo_sha256": _file_sha256(stable_path),
         "compiler_hlo_sha256": _file_sha256(compiler_path),
-        "cost_metrics": [{"name": "flops", "raw_value": 1.0, "value": 1.0, "available": True}],
+        "cost_metrics": [{"name": "flops", "raw_value": -2.0, "value": None, "available": False}],
         "memory": {
             "generated_code_size_in_bytes": 0,
             "argument_size_in_bytes": 0,
@@ -498,6 +498,39 @@ def test_independent_verifier_rejects_manifest_rebound_abi_substitution(tmp_path
     _rebind_manifest(root, "repetition-1/result.json")
 
     with pytest.raises(ValueError, match="ABSTRACT_INPUT_ABI_MISMATCH"):
+        verify_surface_compile_independently(root, contract_path)
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "value", "available"),
+    ((-2.0, -2.0, True), (0.0, None, False)),
+)
+def test_independent_verifier_rejects_compiler_metric_availability_lies(
+    tmp_path: Path,
+    raw_value: float,
+    value: float | None,
+    available: bool,
+) -> None:
+    root, contract_path = _create_archive(tmp_path)
+    result_path = root / "repetition-1/result.json"
+    result = json.loads(result_path.read_text())
+    envelope = result["captures"][0]
+    analysis_path = root / envelope["compiler_analysis_path"]
+    analysis = json.loads(analysis_path.read_text())
+    mutation = {
+        "name": "flops",
+        "raw_value": raw_value,
+        "value": value,
+        "available": available,
+    }
+    analysis["cost_metrics"][0] = mutation
+    envelope["compiler_analysis"]["cost_metrics"][0] = mutation
+    _write_json(analysis_path, analysis)
+    _write_json(result_path, result)
+    _rebind_manifest(root, envelope["compiler_analysis_path"])
+    _rebind_manifest(root, "repetition-1/result.json")
+
+    with pytest.raises(ValueError, match="COMPILER_METRIC_INVALID"):
         verify_surface_compile_independently(root, contract_path)
 
 

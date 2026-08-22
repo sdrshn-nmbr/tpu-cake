@@ -23,7 +23,7 @@ _EXPECTED_SOURCE_HASHES = {
     "tpu_cake/__init__.py": "fadd2bef5381a80e22ede32fca716303ecf6530c32d64776ebda4e498a699433",
     "tpu_cake/artifacts.py": "2c538cd0e4d8c6b50224670c1504a6e14d054c27d2b0aad4acb659464af561dc",
     "tpu_cake/canonical.py": "29d3f0165e1292901e49ebb8551b0b3ee32768b5ac3fca6d889df57c43f77cde",
-    "tpu_cake/compiler_analysis.py": "12383974e0b8d090648820fe9c9dd9d861577d834a520eee0939126a2a1dc091",
+    "tpu_cake/compiler_analysis.py": "3f55c2cee946648430d53e4aa1bdaf21473c547c54603f7644ddb859fc9d98ce",
     "tpu_cake/contracts.py": "3b3cfeb1e6b1036045d030db3b00967f3ad474ccd48ebf8a5c08bd0e3ef54e5b",
     "tpu_cake/cost_model.py": "816e11c0dcc3169dc03234368cfb16e98b497a3c8f08ece23bc0ef91ff482f7d",
     "tpu_cake/dialects/__init__.py": "fadd2bef5381a80e22ede32fca716303ecf6530c32d64776ebda4e498a699433",
@@ -862,8 +862,17 @@ def _validate_analysis(
             or not isinstance(raw, (int, float))
             or not math.isfinite(raw)
             or not isinstance(available, bool)
-            or (available and value != raw)
-            or (not available and (name != "optimal_seconds" or raw >= 0 or value is not None))
+            or (
+                available
+                and (
+                    raw < 0
+                    or isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value != raw
+                )
+            )
+            or (not available and (raw >= 0 or value is not None))
         ):
             raise ValueError("SURFACE_COMPILE_INDEPENDENT_COMPILER_METRIC_INVALID")
         names.append(name)
