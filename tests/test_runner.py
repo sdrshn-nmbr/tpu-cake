@@ -25,6 +25,7 @@ from tpu_cake.receipt import (
     _validate_saved_matmul_phase,
 )
 from tpu_cake.runner import (
+    MatmulCollectiveStrategy,
     MatmulRunResult,
     RunMode,
     _profiler_contract,
@@ -184,6 +185,51 @@ def test_timing_runner_writes_replayable_artifacts(tmp_path) -> None:
     )
 
 
+def test_timing_runner_selects_the_owned_collective_explicitly(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
+    output = tmp_path / "run"
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tpu_cake.cli",
+            "run-matmul",
+            "--output-dir",
+            str(output),
+            "--mode",
+            "timing",
+            "--mesh-size",
+            "8",
+            "--m",
+            "16",
+            "--k",
+            "32",
+            "--n",
+            "1024",
+            "--warmup-iterations",
+            "0",
+            "--measured-iterations",
+            "1",
+            "--collective-strategy",
+            "pallas_bidirectional_ring",
+            "--interpret",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    invocation = json.loads((output / "invocation.json").read_text())
+    result = MatmulRunResult.model_validate_json((output / "result.json").read_text())
+
+    assert invocation["collective_strategy"] == "pallas_bidirectional_ring"
+    assert result.collective_strategy is MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING
+    assert "pallas_bidirectional_ring" in (output / "physical.xdsl").read_text()
+    assert "native-collective-plan-v3" in (output / "lowered_pallas.py").read_text()
+
+
 def test_saved_run_replay_recomputes_correctness_and_binds_every_artifact(tmp_path) -> None:
     environment = os.environ.copy()
     environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
@@ -260,6 +306,11 @@ def test_saved_run_replay_recomputes_correctness_and_binds_every_artifact(tmp_pa
     forged = result.model_copy(update={"maximum_absolute_error": 0.5})
     with pytest.raises(ValueError, match="REPORTED_ERROR_MISMATCH"):
         _validate_saved_matmul_phase(root, receipt, experiment, "timing", forged)
+    forged_strategy = result.model_copy(
+        update={"collective_strategy": MatmulCollectiveStrategy.PALLAS_BIDIRECTIONAL_RING}
+    )
+    with pytest.raises(ValueError, match="RUN_INVOCATION_PLAN_MISMATCH"):
+        _validate_saved_matmul_phase(root, receipt, experiment, "timing", forged_strategy)
     incomplete = receipt.model_copy(update={"artifacts": receipt.artifacts[1:]})
     with pytest.raises(ValueError, match="NOT_BOUND_BY_RECEIPT"):
         _validate_saved_matmul_phase(root, incomplete, experiment, "timing", result)

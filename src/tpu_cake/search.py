@@ -26,6 +26,7 @@ from tpu_cake.pallas_lowering import (
     validate_saved_pallas_plan,
 )
 from tpu_cake.runner import (
+    MatmulCollectiveStrategy,
     MatmulRunResult,
     RunMode,
     run_distributed_matmul,
@@ -379,6 +380,7 @@ def _validate_resumed_result(
         "measured_iterations": contract.measured_iterations,
         "tile_m": candidate.tile_m,
         "tile_n": candidate.tile_n,
+        "collective_strategy": MatmulCollectiveStrategy.XLA_REDUCE_SCATTER.value,
         "interpret": interpret,
     }
     identity_schema = invocation.get("identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA)
@@ -397,6 +399,7 @@ def _validate_resumed_result(
         result.mode is not RunMode.TIMING
         or result.backend != expected_backend
         or result.device_count != contract.mesh_size
+        or result.collective_strategy is not MatmulCollectiveStrategy.XLA_REDUCE_SCATTER
         or result.warmup_iterations != contract.warmup_iterations
         or result.measured_iterations != contract.measured_iterations
         or len(result.samples_ns) != contract.measured_iterations
@@ -412,6 +415,9 @@ def _validate_resumed_result(
                     n=contract.n,
                 ),
                 tile=MatmulTile(candidate.tile_m, candidate.tile_n),
+                collective_implementation=(
+                    MatmulCollectiveStrategy.XLA_REDUCE_SCATTER.lowering_implementation()
+                ),
             )
         )
         if (
@@ -471,6 +477,7 @@ def _load_or_run(
         measured_iterations=contract.measured_iterations,
         tile_m=candidate.tile_m,
         tile_n=candidate.tile_n,
+        collective_strategy=MatmulCollectiveStrategy.XLA_REDUCE_SCATTER,
         interpret=interpret,
     )
 

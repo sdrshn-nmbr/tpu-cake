@@ -241,6 +241,9 @@ def _validate_saved_matmul_phase(
         saved_plan.mesh_size != invocation["mesh_size"]
         or saved_plan.tile_m != invocation_tile_m
         or saved_plan.tile_n != invocation_tile_n
+        or invocation.get("collective_strategy") != result.collective_strategy.value
+        or saved_plan.collective_implementation
+        != result.collective_strategy.lowering_implementation()
     ):
         raise ValueError(f"RUN_INVOCATION_PLAN_MISMATCH phase={phase}")
     validate_profiler_contract(
@@ -316,6 +319,7 @@ def _validate_saved_matmul_phase(
         str(invocation["n"]),
         str(invocation["tile_m"]),
         str(invocation["tile_n"]),
+        result.collective_strategy.value,
         schema=identity_schema,
     )
     if result.run_id != expected_run_id:
@@ -386,6 +390,7 @@ def _validate_saved_matmul_phase(
         "n": invocation["n"],
         "tile_m": invocation["tile_m"],
         "tile_n": invocation["tile_n"],
+        "collective_strategy": result.collective_strategy.value,
     }
     if "identity_schema" in invocation:
         created_payload["identity_schema"] = identity_schema
@@ -595,6 +600,7 @@ def _validate_distributed_matmul_receipt(
                 (
                     result.schedule_sha256,
                     result.pallas_source_sha256,
+                    result.collective_strategy,
                     result.lhs_sha256,
                     result.rhs_sha256,
                     result.output_sha256,

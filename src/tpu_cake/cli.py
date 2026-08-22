@@ -59,7 +59,7 @@ from tpu_cake.rpa_surface_runner import (
     write_inkling_sharded_rpa_relocation_attestation,
 )
 from tpu_cake.run_bundle import build_distributed_matmul_receipt
-from tpu_cake.runner import RunMode, run_distributed_matmul
+from tpu_cake.runner import MatmulCollectiveStrategy, RunMode, run_distributed_matmul
 from tpu_cake.search import MatmulSearchContract, run_matmul_search
 from tpu_cake.seqax_bundle import (
     build_seqax_forward_receipt,
@@ -224,6 +224,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--measured-iterations", type=int, default=100)
     run.add_argument("--tile-m", type=int)
     run.add_argument("--tile-n", type=int)
+    run.add_argument(
+        "--collective-strategy",
+        choices=tuple(MatmulCollectiveStrategy),
+        default=MatmulCollectiveStrategy.XLA_REDUCE_SCATTER,
+    )
     run.add_argument("--interpret", action="store_true")
 
     finalize = commands.add_parser("finalize-matmul-run")
@@ -741,6 +746,7 @@ def main() -> None:
             measured_iterations=args.measured_iterations,
             tile_m=args.tile_m,
             tile_n=args.tile_n,
+            collective_strategy=MatmulCollectiveStrategy(args.collective_strategy),
             interpret=args.interpret,
         )
         print(result.model_dump_json(indent=2))

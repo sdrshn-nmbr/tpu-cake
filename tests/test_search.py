@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
-from tpu_cake.runner import MatmulRunResult, RunMode
+from tpu_cake.runner import MatmulCollectiveStrategy, MatmulRunResult, RunMode
 from tpu_cake.search import (
     MatmulSearchCandidate,
     MatmulSearchContract,
@@ -46,6 +46,7 @@ def _result(
         backend="tpu",
         device_kind="TPU v7x",
         device_count=4,
+        collective_strategy=MatmulCollectiveStrategy.XLA_REDUCE_SCATTER,
         schedule_sha256=("4" if name == "whole" else "5") * 64,
         pallas_source_sha256="6" * 64,
         lhs_sha256=lhs,

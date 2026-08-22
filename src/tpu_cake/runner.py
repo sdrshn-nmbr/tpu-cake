@@ -30,6 +30,7 @@ from tpu_cake.cost_model import (
     estimate_distributed_matmul_input,
     tpu7x_tensorcore_rates,
 )
+from tpu_cake.dialects.tpu_schedule import CollectiveImplementation
 from tpu_cake.identity import (
     SEMANTIC_IDENTITY_SCHEMA,
     array_sha256,
@@ -55,6 +56,16 @@ class RunMode(StrEnum):
     COUNTERS = "counters"
 
 
+class MatmulCollectiveStrategy(StrEnum):
+    XLA_REDUCE_SCATTER = "xla_reduce_scatter"
+    PALLAS_BIDIRECTIONAL_RING = CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING.value
+
+    def lowering_implementation(self) -> CollectiveImplementation | None:
+        if self is MatmulCollectiveStrategy.XLA_REDUCE_SCATTER:
+            return None
+        return CollectiveImplementation.PALLAS_BIDIRECTIONAL_RING
+
+
 class MatmulRunResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -63,6 +74,7 @@ class MatmulRunResult(BaseModel):
     backend: str
     device_kind: str
     device_count: int = Field(gt=0)
+    collective_strategy: MatmulCollectiveStrategy
     schedule_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     lhs_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -251,6 +263,7 @@ def run_distributed_matmul(
     measured_iterations: int,
     tile_m: int | None = None,
     tile_n: int | None = None,
+    collective_strategy: MatmulCollectiveStrategy = MatmulCollectiveStrategy.XLA_REDUCE_SCATTER,
     interpret: bool = False,
 ) -> MatmulRunResult:
     if mode is not RunMode.TIMING and jax.default_backend() != "tpu":
@@ -268,6 +281,7 @@ def run_distributed_matmul(
         "measured_iterations": measured_iterations,
         "tile_m": tile_m,
         "tile_n": tile_n,
+        "collective_strategy": collective_strategy.value,
         "interpret": interpret,
     }
     pre_artifacts = [
@@ -288,6 +302,7 @@ def run_distributed_matmul(
         str(n),
         str(tile_m),
         str(tile_n),
+        collective_strategy.value,
     )
     ledger_path = output_dir / "ledger.sqlite"
     _record_event(
@@ -304,6 +319,7 @@ def run_distributed_matmul(
             "n": n,
             "tile_m": tile_m,
             "tile_n": tile_n,
+            "collective_strategy": collective_strategy.value,
         },
     )
     distributed = distributed_matmul_schedule(mesh_size=mesh_size, m=m, k=k, n=n)
@@ -318,7 +334,11 @@ def run_distributed_matmul(
     tile = MatmulTile(tile_m, tile_n) if tile_m is not None and tile_n is not None else None
     if (tile_m is None) != (tile_n is None):
         raise ValueError("matmul tile needs both tile_m and tile_n")
-    physical = lower_distributed_matmul(distributed, tile=tile)
+    physical = lower_distributed_matmul(
+        distributed,
+        tile=tile,
+        collective_implementation=collective_strategy.lowering_implementation(),
+    )
     plan = lower_physical_matmul_to_pallas(physical)
     physical_text = canonical_text(physical)
     _record_event(
@@ -560,6 +580,7 @@ def run_distributed_matmul(
         backend=jax.default_backend(),
         device_kind=jax.devices()[0].device_kind,
         device_count=len(jax.devices()),
+        collective_strategy=collective_strategy,
         schedule_sha256=plan.schedule_sha256,
         pallas_source_sha256=plan.source_sha256(),
         lhs_sha256=array_sha256(lhs_quantized),
