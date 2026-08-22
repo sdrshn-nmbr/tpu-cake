@@ -12,6 +12,7 @@ from tpu_cake.matmul_collective_surface_correctness_executor import (
     SurfaceCorrectnessSourceAuthority,
     _attempt_claim_path,
     _copy_parent_compile_snapshot,
+    _manifest_entries,
     _write_bytes_exclusive,
     execute_surface_correctness,
 )
@@ -82,6 +83,21 @@ def test_manifest_path_and_exclusive_write_reject_rebinding(tmp_path) -> None:
     with pytest.raises(FileExistsError):
         _write_bytes_exclusive(path, b"second\n")
     assert path.read_bytes() == b"first\n"
+
+
+def test_manifest_entries_use_canonical_relative_path_order(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    (tmp_path / "parent").mkdir()
+    (tmp_path / "parent-extraction").mkdir()
+    (tmp_path / "parent" / "artifact").write_bytes(b"parent")
+    (tmp_path / "parent-extraction" / "artifact").write_bytes(b"extraction")
+
+    entries = _manifest_entries(tmp_path)
+
+    assert tuple(entry.path for entry in entries) == (
+        "parent-extraction/artifact",
+        "parent/artifact",
+    )
 
 
 def test_parent_copy_requires_verified_source_before_writing(tmp_path, monkeypatch) -> None:

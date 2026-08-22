@@ -919,9 +919,12 @@ def _manifest_entries(
     _preflight_existing_root(root)
     paths = tuple(
         sorted(
-            path
-            for path in root.rglob("*")
-            if path.is_file() and path.relative_to(root).as_posix() not in excluded
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.relative_to(root).as_posix() not in excluded
+            ),
+            key=lambda path: path.relative_to(root).as_posix(),
         )
     )
     return tuple(

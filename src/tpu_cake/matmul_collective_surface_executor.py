@@ -859,7 +859,10 @@ def _canonical_captures(
 def _manifest_entries(root: Path) -> tuple[SurfaceCompileManifestEntry, ...]:
     _preflight_existing_root(root)
     paths = tuple(
-        sorted(path for path in root.rglob("*") if path.is_file() and path.name != "manifest.json")
+        sorted(
+            (path for path in root.rglob("*") if path.is_file() and path.name != "manifest.json"),
+            key=lambda path: path.relative_to(root).as_posix(),
+        )
     )
     return tuple(
         SurfaceCompileManifestEntry(

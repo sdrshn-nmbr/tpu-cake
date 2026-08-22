@@ -30,6 +30,7 @@ from tpu_cake.matmul_collective_surface_executor import (
     _canonical_subprocess_environment,
     _compiler_environment,
     _launch_worker,
+    _manifest_entries,
     _validate_ledger_closed_world,
     _validate_source_bundle_offline,
     _validate_worker_results,
@@ -50,6 +51,21 @@ from tpu_cake.matmul_collective_surface_runner import (
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def test_manifest_entries_use_canonical_relative_path_order(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    (tmp_path / "parent").mkdir()
+    (tmp_path / "parent-extraction").mkdir()
+    (tmp_path / "parent" / "artifact").write_bytes(b"parent")
+    (tmp_path / "parent-extraction" / "artifact").write_bytes(b"extraction")
+
+    entries = _manifest_entries(tmp_path)
+
+    assert tuple(entry.path for entry in entries) == (
+        "parent-extraction/artifact",
+        "parent/artifact",
+    )
 
 
 def _analysis(stablehlo: str, compiler_hlo: str) -> CompilerExecutableAnalysis:
