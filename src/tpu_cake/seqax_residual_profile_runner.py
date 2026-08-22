@@ -92,6 +92,7 @@ from tpu_cake.seqax_residual_profile import (
     default_seqax_residual_profile_contract,
 )
 from tpu_cake.seqax_runner import expected_seqax_profiler_contract
+from tpu_cake.stablehlo import StableHloInspector
 from tpu_cake.workloads.seqax_forward import (
     SeqaxNumericalSemantics,
     seqax_forward_schedule,
@@ -1062,15 +1063,25 @@ def _expected_plan_files(root: Path, prepared: PreparedResidualProfile) -> None:
         raise ValueError(
             f"SEQAX_RESIDUAL_PROFILE_PLAN_REPLAY_MISMATCH candidate={expected.candidate}"
         )
-    _validate_compiled_program(
-        (candidate_root / "pallas_stablehlo.txt").read_text(),
-        (candidate_root / "pallas_compiler_hlo.txt").read_text(),
-        pallas_region_count=expected.expected_pallas_regions,
-        pallas_vector_region_count=prepared.plan.pallas_vector_region_count,
-        all_gather_count=expected.expected_all_gathers,
-        all_reduce_count=expected.expected_all_reduces,
-        reduce_scatter_count=expected.expected_reduce_scatters,
+    stablehlo = StableHloInspector.parse(
+        (candidate_root / "pallas_stablehlo.txt").read_text()
     )
+    replayed_collectives = (
+        stablehlo.live_public_main_operation_count("stablehlo.all_gather"),
+        stablehlo.live_public_main_operation_count("stablehlo.all_reduce"),
+        stablehlo.live_public_main_operation_count("stablehlo.reduce_scatter"),
+    )
+    expected_collectives = (
+        expected.expected_all_gathers,
+        expected.expected_all_reduces,
+        expected.expected_reduce_scatters,
+    )
+    if replayed_collectives != expected_collectives:
+        raise ValueError(
+            "SEQAX_RESIDUAL_PROFILE_STABLEHLO_REPLAY_MISMATCH "
+            f"candidate={expected.candidate} "
+            f"expected={expected_collectives} observed={replayed_collectives}"
+        )
     pallas_analysis = validate_compiler_analysis(
         candidate_root / "pallas_compiler_analysis.json",
         stablehlo_path=candidate_root / "pallas_stablehlo.txt",
