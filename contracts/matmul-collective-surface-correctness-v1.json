@@ -55,7 +55,7 @@
   "mismatch_rule": "abs(candidate-oracle)>atol+rtol*abs(oracle)-v1",
   "normalized_error_rule": "abs(candidate-oracle)/(atol+rtol*abs(oracle))-v1",
   "shard_identity_schema": "logical-dtype-global-shape-sharding-device-slice-payload-v1",
-  "sentinel_rule": "32-semantic-coordinates-per-device-shard-v1",
+  "sentinel_rule": "pattern-support-plus-32-semantic-coordinates-per-device-shard-v1",
   "sentinel_count_per_shard": 32,
   "strategy_order_rule": "pattern-parity-abba-baab-v1",
   "correctness_repetitions_per_strategy": 2,

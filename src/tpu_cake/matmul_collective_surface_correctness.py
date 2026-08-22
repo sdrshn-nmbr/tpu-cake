@@ -5,6 +5,8 @@ from typing import Literal
 import ml_dtypes
 import numpy as np
 
+from tpu_cake.identity import semantic_seed
+
 SurfaceCorrectnessPattern = Literal[
     "constant",
     "one-hot-stripes",
@@ -89,6 +91,85 @@ def make_correctness_operand_shard(
             return np.ascontiguousarray((_low_rank_lhs_factors(m) @ q).astype(_BF16))
         return np.ascontiguousarray((q.T @ _low_rank_rhs_factors(n) * 2.0**-17).astype(_BF16))
     raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_PATTERN_INVALID")
+
+
+def correctness_sentinel_coordinates(
+    pattern: SurfaceCorrectnessPattern,
+    role: SurfaceOperandRole,
+    *,
+    protocol_id: str,
+    scenario_name: str,
+    m: int,
+    k: int,
+    n: int,
+    device_id: int,
+    mesh_size: int = 8,
+    count: int = 32,
+) -> tuple[tuple[int, int], ...]:
+    _validate_problem(pattern, m=m, k=k, n=n, mesh_size=mesh_size)
+    if role not in {"lhs", "rhs"} or not 0 <= device_id < mesh_size or count != 32:
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_SENTINEL_REQUEST_INVALID")
+    local_k = k // mesh_size
+    k_start = device_id * local_k
+    k_stop = (device_id + 1) * local_k
+    first_bounds = (0, m) if role == "lhs" else (k_start, k_stop)
+    second_bounds = (k_start, k_stop) if role == "lhs" else (0, n)
+    coordinates: set[tuple[int, int]] = set()
+
+    def add(first: int, second: int) -> None:
+        if (
+            first_bounds[0] <= first < first_bounds[1]
+            and second_bounds[0] <= second < second_bounds[1]
+        ):
+            coordinates.add((first, second))
+
+    for first_fraction, second_fraction in (
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (1, 3),
+        (3, 1),
+    ):
+        first = first_bounds[0] + (first_bounds[1] - first_bounds[0] - 1) * first_fraction // 3
+        second = second_bounds[0] + (second_bounds[1] - second_bounds[0] - 1) * second_fraction // 3
+        add(first, second)
+    if pattern == "one-hot-stripes" and role == "lhs":
+        matching_rows = tuple(row for row in range(m) if row % mesh_size == device_id)
+        for row in (*matching_rows[:4], *matching_rows[-4:]):
+            add(row, device_id * local_k + ((257 * row + 17) % local_k))
+    elif pattern == "one-hot-stripes":
+        for column in (0, min(15, n - 1), min(16, n - 1), n - 1):
+            add(k_start, column)
+            add(k_stop - 1, column)
+    elif pattern == "block-diagonal":
+        for block in (device_id * 2, device_id * 2 + 1):
+            reduction = block * k // 16
+            if role == "lhs":
+                add(block * m // 16, reduction)
+                add(((block + 1) % 16) * m // 16, reduction)
+            else:
+                add(reduction, block * n // 16)
+                add(reduction, ((block + 1) % 16) * n // 16)
+    seed = semantic_seed(
+        protocol_id,
+        scenario_name,
+        pattern,
+        role,
+        str(device_id),
+        "surface-correctness-sentinels-v1",
+    )
+    first_size = first_bounds[1] - first_bounds[0]
+    second_size = second_bounds[1] - second_bounds[0]
+    flat_size = first_size * second_size
+    counter = 0
+    while len(coordinates) < count:
+        flat = (seed + counter * 0x9E3779B97F4A7C15) % flat_size
+        add(first_bounds[0] + flat // second_size, second_bounds[0] + flat % second_size)
+        counter += 1
+    return tuple(sorted(coordinates)[:count])
 
 
 def _low_rank_reduction_factors(reduction: np.ndarray) -> np.ndarray:

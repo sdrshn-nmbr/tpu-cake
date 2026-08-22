@@ -6,6 +6,7 @@ import pytest
 from tpu_cake.identity import array_sha256
 from tpu_cake.matmul_collective_surface_correctness import (
     CORRECTNESS_PATTERNS,
+    correctness_sentinel_coordinates,
     make_correctness_operand_shard,
 )
 from tpu_cake.matmul_collective_surface_correctness_oracle import make_correctness_oracle
@@ -94,6 +95,49 @@ def test_signed_periodic_has_distinct_simultaneous_device_contributions() -> Non
     np.testing.assert_array_equal(
         sum(partials), make_correctness_oracle("signed-periodic", **dimensions)
     )
+
+
+@pytest.mark.parametrize("pattern", CORRECTNESS_PATTERNS)
+@pytest.mark.parametrize("role", ("lhs", "rhs"))
+def test_sentinels_are_canonical_and_pattern_support_aware(pattern: str, role: str) -> None:
+    dimensions = {"m": 16, "k": 16384, "n": 32}
+    device = 3
+    coordinates = correctness_sentinel_coordinates(
+        pattern,
+        role,
+        protocol_id="a" * 64,
+        scenario_name="calibration-0",
+        device_id=device,
+        **dimensions,
+    )
+
+    assert len(coordinates) == len(set(coordinates)) == 32
+    assert coordinates == tuple(sorted(coordinates))
+    local_k = dimensions["k"] // 8
+    if role == "lhs":
+        assert all(0 <= row < dimensions["m"] for row, _ in coordinates)
+        assert all(
+            device * local_k <= reduction < (device + 1) * local_k for _, reduction in coordinates
+        )
+    else:
+        assert all(
+            device * local_k <= reduction < (device + 1) * local_k for reduction, _ in coordinates
+        )
+        assert all(0 <= column < dimensions["n"] for _, column in coordinates)
+    shard = make_correctness_operand_shard(
+        pattern,
+        role,
+        **dimensions,
+        k_start=device * local_k,
+        k_stop=(device + 1) * local_k,
+    )
+    if pattern in {"one-hot-stripes", "block-diagonal"}:
+        local_coordinates = (
+            tuple((first, second - device * local_k) for first, second in coordinates)
+            if role == "lhs"
+            else tuple((first - device * local_k, second) for first, second in coordinates)
+        )
+        assert any(shard[value] != 0 for value in local_coordinates)
 
 
 @pytest.mark.parametrize(
