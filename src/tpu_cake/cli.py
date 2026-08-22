@@ -24,6 +24,11 @@ from tpu_cake.inkling_decode_profile import (
     validate_inkling_decode_profile,
     write_inkling_decode_profile_assessment,
 )
+from tpu_cake.matmul_collective_confirmation import MatmulCollectiveConfirmationContract
+from tpu_cake.matmul_collective_confirmation_runner import (
+    run_matmul_collective_confirmation,
+    validate_matmul_collective_confirmation,
+)
 from tpu_cake.physical_cost_model import (
     PhysicalCollectiveLatencyCalibration,
     PhysicalKernelLatencyReport,
@@ -237,6 +242,20 @@ def _parser() -> argparse.ArgumentParser:
 
     verify_bundle = commands.add_parser("verify-matmul-bundle")
     verify_bundle.add_argument("run_root", type=Path)
+
+    confirm_matmul_collective = commands.add_parser("confirm-matmul-collective")
+    confirm_matmul_collective.add_argument("--output-dir", required=True, type=Path)
+    confirm_matmul_collective.add_argument("--diagnostic-root", required=True, type=Path)
+    confirm_matmul_collective.add_argument(
+        "--diagnostic-archive",
+        required=True,
+        type=Path,
+    )
+    confirm_matmul_collective.add_argument("--contract", required=True, type=Path)
+
+    verify_matmul_collective = commands.add_parser("verify-matmul-collective-confirmation")
+    verify_matmul_collective.add_argument("run_root", type=Path)
+    verify_matmul_collective.add_argument("--contract", required=True, type=Path)
 
     finalize_rpa = commands.add_parser("finalize-rpa-run")
     finalize_rpa.add_argument("run_root", type=Path)
@@ -768,6 +787,37 @@ def main() -> None:
         print(
             f"MATMUL_BUNDLE_ACCEPTED status={receipt.status.value} "
             f"artifacts={len(receipt.artifacts)} metrics={len(receipt.metrics)}"
+        )
+        code = 0
+    elif args.command == "confirm-matmul-collective":
+        contract = MatmulCollectiveConfirmationContract.model_validate_json(
+            args.contract.read_text()
+        )
+        result = run_matmul_collective_confirmation(
+            args.output_dir,
+            args.diagnostic_root,
+            args.diagnostic_archive,
+            contract,
+        )
+        print(
+            "MATMUL_COLLECTIVE_CONFIRMATION_ACCEPTED "
+            f"confirmation_id={result.confirmation_id} "
+            f"decision={result.statistics.decision} "
+            f"selected_strategy={result.statistics.selected_strategy} "
+            f"scope={result.claim_scope}"
+        )
+        code = 0
+    elif args.command == "verify-matmul-collective-confirmation":
+        contract = MatmulCollectiveConfirmationContract.model_validate_json(
+            args.contract.read_text()
+        )
+        result = validate_matmul_collective_confirmation(args.run_root, contract)
+        print(
+            "MATMUL_COLLECTIVE_CONFIRMATION_REPLAYED "
+            f"confirmation_id={result.confirmation_id} "
+            f"decision={result.statistics.decision} "
+            f"selected_strategy={result.statistics.selected_strategy} "
+            f"scope={result.claim_scope}"
         )
         code = 0
     elif args.command == "finalize-rpa-run":
