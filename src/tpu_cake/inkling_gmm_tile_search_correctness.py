@@ -20,6 +20,7 @@ from tpu_cake.inkling_gmm_tile_search import (
 )
 
 GMM_CORRECTNESS_GATE_SCHEMA = "inkling-gmm-tile-search-correctness-v1"
+GMM_CONFIRMATION_CORRECTNESS_SCHEMA = "inkling-gmm-confirmation-correctness-v1"
 _OPERAND_NAMES = ("inputs", "gate", "up", "down")
 
 
@@ -122,8 +123,9 @@ class ProfileCorrectnessMeasurement(BaseModel):
     def measurement_inventory_is_exact(self) -> ProfileCorrectnessMeasurement:
         if tuple(item.name for item in self.operands) != _OPERAND_NAMES:
             raise ValueError("GMM correctness operand measurement inventory mismatch")
-        if tuple(item.policy for item in self.policies) != unique_correctness_policies():
-            raise ValueError("GMM correctness policy measurement inventory mismatch")
+        policies = tuple(item.policy for item in self.policies)
+        if not policies or len(policies) != len(set(policies)):
+            raise ValueError("GMM correctness policy measurements must be unique")
         return self
 
 
@@ -148,6 +150,43 @@ class GmmCorrectnessGateReport(BaseModel):
             raise ValueError("GMM correctness profile report inventory mismatch")
         if sum(len(profile.cpu_oracle) for profile in self.profiles) != 24:
             raise ValueError("GMM correctness CPU oracle measurement inventory mismatch")
+        if any(
+            tuple(item.policy for item in profile.policies) != unique_correctness_policies()
+            for profile in self.profiles
+        ):
+            raise ValueError("GMM correctness policy measurement inventory mismatch")
+        return self
+
+
+class GmmConfirmationCorrectnessReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: str = GMM_CONFIRMATION_CORRECTNESS_SCHEMA
+    report_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    search_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    route_report_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    numerical_contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate: GmmPolicyPair
+    profiles: tuple[ProfileCorrectnessMeasurement, ...]
+
+    @model_validator(mode="after")
+    def report_inventory_is_exact(self) -> GmmConfirmationCorrectnessReport:
+        baseline = GmmPolicyPair(
+            gate_up=GmmArmName.INCUMBENT,
+            down=GmmArmName.INCUMBENT,
+        )
+        expected = (baseline, self.candidate)
+        if self.candidate == baseline:
+            raise ValueError("GMM confirmation correctness candidate must differ from baseline")
+        if tuple(profile.profile_index for profile in self.profiles) != tuple(range(5)):
+            raise ValueError("GMM confirmation correctness profile inventory mismatch")
+        if sum(len(profile.cpu_oracle) for profile in self.profiles) != 24:
+            raise ValueError("GMM confirmation correctness CPU oracle inventory mismatch")
+        if any(
+            tuple(item.policy for item in profile.policies) != expected
+            for profile in self.profiles
+        ):
+            raise ValueError("GMM confirmation correctness policy inventory mismatch")
         return self
 
 
@@ -537,6 +576,84 @@ def run_correctness_gate(
     )
 
 
+def run_confirmation_correctness_gate(
+    contract: InklingGmmTileSearchContract,
+    report: InklingGmmRouteCorpusReport,
+    candidate: GmmPolicyPair,
+    *,
+    operand_factory: OperandFactory,
+    execute: CorrectnessExecutor,
+) -> GmmConfirmationCorrectnessReport:
+    baseline_policy = GmmPolicyPair(
+        gate_up=GmmArmName.INCUMBENT,
+        down=GmmArmName.INCUMBENT,
+    )
+    if candidate == baseline_policy:
+        _fail("CONFIRMATION_CANDIDATE_IS_BASELINE")
+    profiles = []
+    for profile_index, (profile, seed) in enumerate(
+        zip(contract.correctness.profiles, contract.correctness.seeds, strict=True)
+    ):
+        group = report.group_sizes[profile.corpus_index]
+        group_sizes = group.group_sizes
+        if (
+            group.completion_step != profile.completion_step
+            or group.layer_index != profile.layer_index
+            or _group_sizes_hash(group_sizes) != profile.group_sizes_sha256
+        ):
+            _fail("PROFILE_BINDING", profile=profile_index)
+        operands = operand_factory(profile_index, seed, profile.layer_index - 2)
+        _validate_production_operand_abi(operands)
+        operand_measurements = measure_operand_sentinels(operands.as_mapping(), seed=seed)
+        spans = tuple(
+            local_active_span(group_sizes, device_index=device_index)
+            for device_index in range(contract.production_abi.device_count)
+        )
+        baseline = execute(baseline_policy, operands, group_sizes)
+        candidate_outputs = execute(candidate, operands, group_sizes)
+        _validate_production_output_abi(baseline)
+        _validate_production_output_abi(candidate_outputs)
+        compare_active_spans(baseline, candidate_outputs, spans, policy_name=candidate.name)
+        profiles.append(
+            ProfileCorrectnessMeasurement(
+                profile_index=profile_index,
+                seed=seed,
+                completion_step=profile.completion_step,
+                layer_index=profile.layer_index,
+                group_sizes_sha256=profile.group_sizes_sha256,
+                operands=operand_measurements,
+                policies=(
+                    PolicyCorrectnessMeasurement(
+                        policy=baseline_policy,
+                        outputs=measure_outputs(baseline, spans),
+                    ),
+                    PolicyCorrectnessMeasurement(
+                        policy=candidate,
+                        outputs=measure_outputs(candidate_outputs, spans),
+                    ),
+                ),
+                cpu_oracle=_cpu_oracle_measurements(
+                    contract,
+                    operands,
+                    baseline,
+                    group_sizes,
+                    profile_index,
+                ),
+            )
+        )
+    provisional = GmmConfirmationCorrectnessReport(
+        report_id="0" * 64,
+        search_id=contract.search_id,
+        route_report_id=report.report_id,
+        numerical_contract_id=contract.correctness.numerical_contract_id,
+        candidate=candidate,
+        profiles=tuple(profiles),
+    )
+    return provisional.model_copy(
+        update={"report_id": model_identity_sha256(provisional, exclude={"report_id"})}
+    )
+
+
 def replay_correctness_gate(
     expected: GmmCorrectnessGateReport,
     contract: InklingGmmTileSearchContract,
@@ -561,6 +678,21 @@ def replay_correctness_gate(
 
 
 def write_correctness_report(path: Path, report: GmmCorrectnessGateReport) -> None:
+    with path.open("x") as stream:
+        stream.write(
+            json.dumps(
+                report.model_dump(mode="json", exclude_computed_fields=True),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+
+def write_confirmation_correctness_report(
+    path: Path,
+    report: GmmConfirmationCorrectnessReport,
+) -> None:
     with path.open("x") as stream:
         stream.write(
             json.dumps(

@@ -13,11 +13,18 @@ from tpu_cake.inkling_gmm_route_corpus import (
 from tpu_cake.inkling_gmm_tile_search import (
     GMM_IMPLEMENTATION_SOURCE_PATHS,
     GmmArmName,
+    GmmConfirmationObservation,
+    GmmPolicyPair,
     GmmSearchFamily,
+    InklingGmmTileSearchContract,
+    confirmation_orders,
+    confirmation_statistics,
     default_gmm_tile_search_contract,
 )
+from tpu_cake.inkling_gmm_tile_search_confirmation_verifier import verify_confirmation
 from tpu_cake.inkling_gmm_tile_search_correctness import (
     CpuOracleMeasurement,
+    GmmConfirmationCorrectnessReport,
     GmmCorrectnessGateReport,
     OperandSentinelMeasurement,
     OutputMeasurement,
@@ -82,6 +89,9 @@ def _route_report() -> tuple[InklingGmmRouteCorpusReport, bytes]:
 
 def _contract(report: InklingGmmRouteCorpusReport, report_raw: bytes):
     verifier_path = Path(__file__).parents[1] / ("src/tpu_cake/inkling_gmm_tile_search_verifier.py")
+    confirmation_verifier_path = Path(__file__).parents[1] / (
+        "src/tpu_cake/inkling_gmm_tile_search_confirmation_verifier.py"
+    )
     return default_gmm_tile_search_contract(
         accepted_route_report_id=report.report_id,
         accepted_route_report_sha256=hashlib.sha256(report_raw).hexdigest(),
@@ -91,6 +101,9 @@ def _contract(report: InklingGmmRouteCorpusReport, report_raw: bytes):
         tpu_cake_uv_lock_sha256="b" * 64,
         runner_source_sha256="c" * 64,
         verifier_source_sha256=hashlib.sha256(verifier_path.read_bytes()).hexdigest(),
+        confirmation_verifier_source_sha256=hashlib.sha256(
+            confirmation_verifier_path.read_bytes()
+        ).hexdigest(),
         inkling_git_commit="e" * 40,
         inkling_uv_lock_sha256="f" * 64,
         implementation_source_manifest=tuple(
@@ -284,6 +297,9 @@ def _bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
             "tpu_cake_uv_lock_sha256": contract.tpu_cake_uv_lock_sha256,
             "runner_source_sha256": contract.runner_source_sha256,
             "verifier_source_sha256": contract.verifier_source_sha256,
+            "confirmation_verifier_source_sha256": (
+                contract.confirmation_verifier_source_sha256
+            ),
             "inkling_git_commit": contract.inkling_git_commit,
             "inkling_uv_lock_sha256": contract.inkling_uv_lock_sha256,
         },
@@ -481,3 +497,178 @@ def test_verifier_rejects_a_symlinked_artifact(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="COMPILER_HLO_PATH"):
         _verify(paths)
+
+
+def _confirmation_bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
+    paths, _ = _bundle(tmp_path)
+    contract = InklingGmmTileSearchContract.model_validate_json(paths["contract"].read_bytes())
+    route_report = InklingGmmRouteCorpusReport.model_validate_json(
+        paths["route_report"].read_bytes()
+    )
+    verified_screening = verify_screening(
+        contract_path=paths["contract"],
+        route_report_path=paths["route_report"],
+        raw_observations_path=paths["raw"],
+    )
+    verified_screening_path = tmp_path / "verified-screening.json"
+    write_verified_report(verified_screening_path, verified_screening)
+    candidate = GmmPolicyPair(
+        gate_up=GmmArmName(verified_screening["finalists"]["gate-up"]),
+        down=GmmArmName(verified_screening["finalists"]["down"]),
+    )
+    full_correctness = _correctness_report(contract, route_report)
+    correctness_profiles = tuple(
+        profile.model_copy(
+            update={
+                "policies": (
+                    profile.policies[0],
+                    profile.policies[0].model_copy(
+                        update={
+                            "policy": candidate,
+                            "outputs": profile.policies[0].outputs,
+                        }
+                    ),
+                )
+            }
+        )
+        for profile in full_correctness.profiles
+    )
+    provisional_correctness = GmmConfirmationCorrectnessReport(
+        report_id="0" * 64,
+        search_id=contract.search_id,
+        route_report_id=route_report.report_id,
+        numerical_contract_id=contract.correctness.numerical_contract_id,
+        candidate=candidate,
+        profiles=correctness_profiles,
+    )
+    candidate_correctness = provisional_correctness.model_copy(
+        update={
+            "report_id": model_identity_sha256(
+                provisional_correctness,
+                exclude={"report_id"},
+            )
+        }
+    )
+    candidate_correctness_path = tmp_path / "candidate-correctness.json"
+    _write_json(
+        candidate_correctness_path,
+        candidate_correctness.model_dump(mode="json", exclude_computed_fields=True),
+    )
+    scopes = _expected_scopes(contract, candidate)
+    counts = _expected_custom_call_counts(contract, candidate)
+    stablehlo = "module @jit_chain {\n  func.func public @main() {\n    return\n  }\n}\n"
+    compiler_hlo = _hlo_text(counts)
+    stablehlo_path = tmp_path / "hlo/candidate.stablehlo.mlir"
+    compiler_hlo_path = tmp_path / "hlo/candidate.compiler-hlo.txt"
+    stablehlo_path.write_text(stablehlo)
+    compiler_hlo_path.write_text(compiler_hlo)
+    observations = tuple(
+        GmmConfirmationObservation(
+            round_index=round_index,
+            position=position,
+            policy=policy,
+            samples_ns=((950,) * 5 if policy == candidate else (1_000,) * 5),
+        )
+        for round_index, order in enumerate(confirmation_orders(contract, candidate))
+        for position, policy in enumerate(order)
+    )
+    statistics = confirmation_statistics(contract, candidate, observations)
+    confirmation = {
+        "schema_version": "inkling-gmm-tile-search-confirmation-observations-v1",
+        "search_id": contract.search_id,
+        "contract_sha256": hashlib.sha256(paths["contract"].read_bytes()).hexdigest(),
+        "route_report_id": route_report.report_id,
+        "route_report_sha256": hashlib.sha256(paths["route_report"].read_bytes()).hexdigest(),
+        "raw_screening_path": paths["raw"].relative_to(tmp_path).as_posix(),
+        "raw_screening_sha256": hashlib.sha256(paths["raw"].read_bytes()).hexdigest(),
+        "verified_screening_path": verified_screening_path.relative_to(tmp_path).as_posix(),
+        "verified_screening_sha256": hashlib.sha256(
+            verified_screening_path.read_bytes()
+        ).hexdigest(),
+        "screening_verification_id": verified_screening["verification_id"],
+        "confirmation_verifier_source_sha256": (
+            contract.confirmation_verifier_source_sha256
+        ),
+        "candidate_correctness": {
+            "schema_version": candidate_correctness.schema_version,
+            "report_id": candidate_correctness.report_id,
+            "path": candidate_correctness_path.relative_to(tmp_path).as_posix(),
+            "sha256": hashlib.sha256(candidate_correctness_path.read_bytes()).hexdigest(),
+        },
+        "candidate_compiled_policy": {
+            "policy": candidate.model_dump(mode="json"),
+            "stablehlo_path": stablehlo_path.relative_to(tmp_path).as_posix(),
+            "stablehlo_sha256": hashlib.sha256(stablehlo.encode()).hexdigest(),
+            "compiler_hlo_path": compiler_hlo_path.relative_to(tmp_path).as_posix(),
+            "compiler_hlo_sha256": hashlib.sha256(compiler_hlo.encode()).hexdigest(),
+            "gmm_scope_labels": list(scopes),
+            "gmm_custom_call_counts": counts,
+            "stablehlo_bytes": len(stablehlo.encode()),
+            "compiler_hlo_bytes": len(compiler_hlo.encode()),
+        },
+        "warmup": {
+            "order": [statistics.baseline.name, candidate.name],
+            "durations_ns": [1_000, 950],
+        },
+        "confirmation_observations": [
+            observation.model_dump(mode="json", exclude_computed_fields=True)
+            for observation in observations
+        ],
+        "confirmation_statistics": statistics.model_dump(
+            mode="json",
+            exclude_computed_fields=True,
+        ),
+        "claims": {
+            "candidate_correctness_gate_passed": True,
+            "paired_confirmation_run": True,
+            "promotion_authorized": True,
+            "immutable_receipt_created": False,
+        },
+        "limitations": [
+            "This observation file is mutable until an immutable receipt is created.",
+            "The confirmation applies only to the declared route corpus, ABI, runtime, and source revisions.",
+        ],
+    }
+    confirmation_path = tmp_path / "confirmation.json"
+    _write_json(confirmation_path, confirmation)
+    return {
+        **paths,
+        "confirmation": confirmation_path,
+    }, confirmation
+
+
+def test_confirmation_verifier_replays_screening_correctness_binding_and_statistics(
+    tmp_path: Path,
+) -> None:
+    paths, _ = _confirmation_bundle(tmp_path)
+
+    first = verify_confirmation(
+        contract_path=paths["contract"],
+        route_report_path=paths["route_report"],
+        confirmation_path=paths["confirmation"],
+    )
+    second = verify_confirmation(
+        contract_path=paths["contract"],
+        route_report_path=paths["route_report"],
+        confirmation_path=paths["confirmation"],
+    )
+
+    assert first == second
+    assert first["confirmation_statistics"]["confirmed"] is True
+    assert first["claims"]["confirmation_independently_replayed"] is True
+    assert first["claims"]["immutable_receipt_created"] is False
+
+
+def test_confirmation_verifier_rejects_reordered_or_recomputed_timing_forgery(
+    tmp_path: Path,
+) -> None:
+    paths, confirmation = _confirmation_bundle(tmp_path)
+    confirmation["confirmation_observations"][0]["samples_ns"] = [10] * 5
+    _write_json(paths["confirmation"], confirmation)
+
+    with pytest.raises(ValueError, match="STATISTICS_MISMATCH"):
+        verify_confirmation(
+            contract_path=paths["contract"],
+            route_report_path=paths["route_report"],
+            confirmation_path=paths["confirmation"],
+        )

@@ -33,6 +33,8 @@ from tpu_cake.inkling_gmm_route_corpus import InklingGmmRouteCorpusReport
 from tpu_cake.inkling_gmm_tile_search import (
     GMM_LAYER_INDICES,
     GmmArmName,
+    GmmConfirmationObservation,
+    GmmConfirmationStatistics,
     GmmKernelAbi,
     GmmOperation,
     GmmPolicyPair,
@@ -40,18 +42,25 @@ from tpu_cake.inkling_gmm_tile_search import (
     GmmSearchFamily,
     GmmTileArm,
     InklingGmmTileSearchContract,
+    confirmation_orders,
+    confirmation_statistics,
     screening_orders,
+    screening_statistics,
     validate_route_corpus_binding,
 )
 from tpu_cake.inkling_gmm_tile_search_correctness import (
     CorrectnessExecutor,
+    GmmConfirmationCorrectnessReport,
     GmmCorrectnessGateError,
     GmmCorrectnessGateReport,
     GmmCorrectnessOperands,
     GmmStageOutputs,
+    run_confirmation_correctness_gate,
     run_correctness_gate,
+    write_confirmation_correctness_report,
     write_correctness_report,
 )
+from tpu_cake.inkling_gmm_tile_search_verifier import verify_screening, write_verified_report
 
 _LOGGER = logging.getLogger("tpu_cake.inkling_gmm_tile_search_runner")
 _EXPERT_AXIS = "expert"
@@ -128,6 +137,7 @@ class SourceEnvironment:
     tpu_cake_uv_lock_sha256: str
     runner_source_sha256: str
     verifier_source_sha256: str
+    confirmation_verifier_source_sha256: str
     inkling_git_commit: str
     inkling_uv_lock_sha256: str
 
@@ -409,6 +419,9 @@ def validate_source_environment(
         )
     runner_hash = file_sha256(runner_path)
     verifier_path = tpu_cake_root / "src/tpu_cake/inkling_gmm_tile_search_verifier.py"
+    confirmation_verifier_path = (
+        tpu_cake_root / "src/tpu_cake/inkling_gmm_tile_search_confirmation_verifier.py"
+    )
     if runner_hash != contract.runner_source_sha256:
         _fail("RUNNER_SOURCE_HASH", path=Path(__file__))
     if not verifier_path.is_file():
@@ -416,6 +429,11 @@ def validate_source_environment(
     verifier_hash = file_sha256(verifier_path)
     if verifier_hash != contract.verifier_source_sha256:
         _fail("VERIFIER_SOURCE_HASH", path=verifier_path)
+    if not confirmation_verifier_path.is_file():
+        _fail("CONFIRMATION_VERIFIER_SOURCE_MISSING", path=confirmation_verifier_path)
+    confirmation_verifier_hash = file_sha256(confirmation_verifier_path)
+    if confirmation_verifier_hash != contract.confirmation_verifier_source_sha256:
+        _fail("CONFIRMATION_VERIFIER_SOURCE_HASH", path=confirmation_verifier_path)
     tpu_cake_head = _git_head(tpu_cake_root)
     if tpu_cake_head != contract.tpu_cake_git_commit:
         _fail(
@@ -451,6 +469,7 @@ def validate_source_environment(
         tpu_cake_uv_lock_sha256=tpu_cake_lock_hash,
         runner_source_sha256=runner_hash,
         verifier_source_sha256=verifier_hash,
+        confirmation_verifier_source_sha256=confirmation_verifier_hash,
         inkling_git_commit=inkling_head,
         inkling_uv_lock_sha256=file_sha256(lock_path),
     )
@@ -819,6 +838,31 @@ def run_tpu_correctness_gate(
     )
 
 
+def run_tpu_confirmation_correctness_gate(
+    contract: InklingGmmTileSearchContract,
+    report: InklingGmmRouteCorpusReport,
+    candidate: GmmPolicyPair,
+    *,
+    devices: Sequence[jax.Device],
+) -> GmmConfirmationCorrectnessReport:
+    execute = build_tpu_correctness_executor(contract, devices=devices)
+
+    def operand_factory(
+        _profile_index: int,
+        seed: int,
+        _layer_position: int,
+    ) -> GmmCorrectnessOperands:
+        return allocate_correctness_operands(seed=seed, devices=devices)
+
+    return run_confirmation_correctness_gate(
+        contract,
+        report,
+        candidate,
+        operand_factory=operand_factory,
+        execute=execute,
+    )
+
+
 def validate_resident_operands(
     contract: InklingGmmTileSearchContract,
     devices: Sequence[jax.Device],
@@ -1104,6 +1148,108 @@ def run_screening(prepared: PreparedScreen) -> tuple[GmmScreenObservation, ...]:
     return tuple(observations)
 
 
+def confirmation_candidate(
+    contract: InklingGmmTileSearchContract,
+    observations: tuple[GmmScreenObservation, ...],
+) -> GmmPolicyPair:
+    finalists = {
+        family: screening_statistics(
+            contract,
+            family,
+            tuple(observation for observation in observations if observation.family is family),
+        ).finalist
+        for family in contract.search.families
+    }
+    return GmmPolicyPair(
+        gate_up=finalists[GmmSearchFamily.GATE_UP],
+        down=finalists[GmmSearchFamily.DOWN],
+    )
+
+
+def _compiled_policy_payload(
+    compiled: CompiledChain,
+    *,
+    artifact_root: Path,
+) -> dict[str, object]:
+    return {
+        "policy": compiled.policy.model_dump(mode="json"),
+        "stablehlo_path": compiled.hlo.stablehlo_path.relative_to(artifact_root).as_posix(),
+        "stablehlo_sha256": compiled.hlo.stablehlo_sha256,
+        "compiler_hlo_path": compiled.hlo.compiler_hlo_path.relative_to(
+            artifact_root
+        ).as_posix(),
+        "compiler_hlo_sha256": compiled.hlo.compiler_hlo_sha256,
+        "gmm_scope_labels": compiled.hlo.gmm_scope_labels,
+        "gmm_custom_call_counts": compiled.hlo.gmm_custom_call_counts,
+        "stablehlo_bytes": compiled.hlo.stablehlo_path.stat().st_size,
+        "compiler_hlo_bytes": compiled.hlo.compiler_hlo_path.stat().st_size,
+    }
+
+
+def run_confirmation(
+    prepared: PreparedScreen,
+    candidate: GmmPolicyPair,
+    *,
+    hlo_root: Path,
+) -> tuple[CompiledChain, tuple[int, ...], tuple[GmmConfirmationObservation, ...], GmmConfirmationStatistics]:
+    baseline_policy = GmmPolicyPair(
+        gate_up=GmmArmName.INCUMBENT,
+        down=GmmArmName.INCUMBENT,
+    )
+    baseline = prepared.variants[(GmmSearchFamily.GATE_UP, GmmArmName.INCUMBENT)]
+    unique = {compiled.policy.name: compiled for compiled in prepared.variants.values()}
+    candidate_compiled = unique.get(candidate.name)
+    if candidate_compiled is None:
+        candidate_compiled = compile_chain(
+            prepared.contract,
+            candidate,
+            devices=prepared.devices,
+            operands=prepared.operands,
+            example_routes=prepared.routes[0],
+            hlo_root=hlo_root,
+        )
+    executables = {
+        baseline_policy.name: baseline,
+        candidate.name: candidate_compiled,
+    }
+    warmups = []
+    for policy in (baseline_policy, candidate):
+        for _ in range(
+            prepared.contract.confirmation.warmup_full_corpus_blocks_per_arm
+        ):
+            warmups.append(time_full_corpus_block(prepared, executables[policy.name]))
+    observations = []
+    for round_index, order in enumerate(
+        confirmation_orders(prepared.contract, candidate)
+    ):
+        for position, policy in enumerate(order):
+            samples = tuple(
+                time_full_corpus_block(prepared, executables[policy.name])
+                for _ in range(prepared.contract.confirmation.samples_per_arm_per_round)
+            )
+            observations.append(
+                GmmConfirmationObservation(
+                    round_index=round_index,
+                    position=position,
+                    policy=policy,
+                    samples_ns=samples,
+                )
+            )
+            _LOGGER.info(
+                "INKLING_GMM_RUNNER_CONFIRM round=%d position=%d policy=%s samples_ns=%s",
+                round_index,
+                position,
+                policy.name,
+                samples,
+            )
+    result = confirmation_statistics(
+        prepared.contract,
+        candidate,
+        tuple(observations),
+    )
+    return candidate_compiled, tuple(warmups), tuple(observations), result
+
+
 def _device_observation(device: jax.Device) -> dict[str, object]:
     return {
         "id": device.id,
@@ -1139,6 +1285,9 @@ def write_raw_observations(
             "tpu_cake_uv_lock_sha256": source_environment.tpu_cake_uv_lock_sha256,
             "runner_source_sha256": source_environment.runner_source_sha256,
             "verifier_source_sha256": source_environment.verifier_source_sha256,
+            "confirmation_verifier_source_sha256": (
+                source_environment.confirmation_verifier_source_sha256
+            ),
             "inkling_git_commit": source_environment.inkling_git_commit,
             "inkling_uv_lock_sha256": source_environment.inkling_uv_lock_sha256,
         },
@@ -1165,19 +1314,7 @@ def write_raw_observations(
             "free_memory_before_timing": prepared.free_memory_before_timing,
         },
         "compiled_policies": [
-            {
-                "policy": compiled.policy.model_dump(mode="json"),
-                "stablehlo_path": compiled.hlo.stablehlo_path.relative_to(path.parent).as_posix(),
-                "stablehlo_sha256": compiled.hlo.stablehlo_sha256,
-                "compiler_hlo_path": compiled.hlo.compiler_hlo_path.relative_to(
-                    path.parent
-                ).as_posix(),
-                "compiler_hlo_sha256": compiled.hlo.compiler_hlo_sha256,
-                "gmm_scope_labels": compiled.hlo.gmm_scope_labels,
-                "gmm_custom_call_counts": compiled.hlo.gmm_custom_call_counts,
-                "stablehlo_bytes": compiled.hlo.stablehlo_path.stat().st_size,
-                "compiler_hlo_bytes": compiled.hlo.compiler_hlo_path.stat().st_size,
-            }
+            _compiled_policy_payload(compiled, artifact_root=path.parent)
             for compiled in unique.values()
         ],
         "screening_observations": [
@@ -1187,6 +1324,72 @@ def write_raw_observations(
             "The pre-timing correctness report is bound but not independently replayed here.",
             "This runner does not create an immutable receipt.",
             "This runner does not make or authorize a promotion decision.",
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def write_confirmation_observations(
+    path: Path,
+    prepared: PreparedScreen,
+    candidate_compiled: CompiledChain,
+    warmup_durations_ns: tuple[int, ...],
+    observations: tuple[GmmConfirmationObservation, ...],
+    statistics: GmmConfirmationStatistics,
+    *,
+    candidate_correctness: GmmConfirmationCorrectnessReport,
+    candidate_correctness_path: Path,
+    contract_path: Path,
+    route_report_path: Path,
+    raw_screening_path: Path,
+    verified_screening_path: Path,
+) -> None:
+    verified_screening = json.loads(verified_screening_path.read_text())
+    payload = {
+        "schema_version": "inkling-gmm-tile-search-confirmation-observations-v1",
+        "search_id": prepared.contract.search_id,
+        "contract_sha256": file_sha256(contract_path),
+        "route_report_id": prepared.report.report_id,
+        "route_report_sha256": file_sha256(route_report_path),
+        "raw_screening_path": raw_screening_path.relative_to(path.parent).as_posix(),
+        "raw_screening_sha256": file_sha256(raw_screening_path),
+        "verified_screening_path": verified_screening_path.relative_to(path.parent).as_posix(),
+        "verified_screening_sha256": file_sha256(verified_screening_path),
+        "screening_verification_id": verified_screening["verification_id"],
+        "confirmation_verifier_source_sha256": (
+            prepared.contract.confirmation_verifier_source_sha256
+        ),
+        "candidate_correctness": {
+            "schema_version": candidate_correctness.schema_version,
+            "report_id": candidate_correctness.report_id,
+            "path": candidate_correctness_path.relative_to(path.parent).as_posix(),
+            "sha256": file_sha256(candidate_correctness_path),
+        },
+        "candidate_compiled_policy": _compiled_policy_payload(
+            candidate_compiled,
+            artifact_root=path.parent,
+        ),
+        "warmup": {
+            "order": [statistics.baseline.name, statistics.candidate.name],
+            "durations_ns": warmup_durations_ns,
+        },
+        "confirmation_observations": [
+            observation.model_dump(mode="json", exclude_computed_fields=True)
+            for observation in observations
+        ],
+        "confirmation_statistics": statistics.model_dump(
+            mode="json",
+            exclude_computed_fields=True,
+        ),
+        "claims": {
+            "candidate_correctness_gate_passed": True,
+            "paired_confirmation_run": True,
+            "promotion_authorized": statistics.confirmed,
+            "immutable_receipt_created": False,
+        },
+        "limitations": [
+            "This observation file is mutable until an immutable receipt is created.",
+            "The confirmation applies only to the declared route corpus, ABI, runtime, and source revisions.",
         ],
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -1240,8 +1443,49 @@ def run(
         contract_path=contract_path,
         route_report_path=route_report_path,
     )
-    _LOGGER.info("INKLING_GMM_RUNNER_COMPLETE observations=%s", output_path)
-    return output_path
+    verified_screening_path = output_root / "verified-screening.json"
+    verified_screening = verify_screening(
+        contract_path=contract_path,
+        route_report_path=route_report_path,
+        raw_observations_path=output_path,
+    )
+    write_verified_report(verified_screening_path, verified_screening)
+    candidate = confirmation_candidate(contract, observations)
+    candidate_correctness = run_tpu_confirmation_correctness_gate(
+        contract,
+        report,
+        candidate,
+        devices=devices,
+    )
+    candidate_correctness_path = output_root / "candidate-correctness-gate.json"
+    write_confirmation_correctness_report(
+        candidate_correctness_path,
+        candidate_correctness,
+    )
+    jax.clear_caches()
+    gc.collect()
+    candidate_compiled, warmups, confirmation_observations, statistics = run_confirmation(
+        prepared,
+        candidate,
+        hlo_root=hlo_root,
+    )
+    confirmation_path = output_root / "confirmation-observations.json"
+    write_confirmation_observations(
+        confirmation_path,
+        prepared,
+        candidate_compiled,
+        warmups,
+        confirmation_observations,
+        statistics,
+        candidate_correctness=candidate_correctness,
+        candidate_correctness_path=candidate_correctness_path,
+        contract_path=contract_path,
+        route_report_path=route_report_path,
+        raw_screening_path=output_path,
+        verified_screening_path=verified_screening_path,
+    )
+    _LOGGER.info("INKLING_GMM_RUNNER_COMPLETE confirmation=%s", confirmation_path)
+    return confirmation_path
 
 
 def _parser() -> argparse.ArgumentParser:

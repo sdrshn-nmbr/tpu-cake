@@ -96,6 +96,7 @@ def _contract() -> tuple[InklingGmmTileSearchContract, InklingGmmRouteCorpusRepo
         tpu_cake_uv_lock_sha256="e" * 64,
         runner_source_sha256="f" * 64,
         verifier_source_sha256="0" * 64,
+        confirmation_verifier_source_sha256="1" * 64,
         inkling_git_commit="a" * 40,
         inkling_uv_lock_sha256="b" * 64,
         implementation_source_manifest=_source_manifest(),

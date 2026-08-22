@@ -258,6 +258,8 @@ class GmmConfirmationProtocol(BaseModel):
     paired_rounds: Literal[32] = 32
     order_balance: Literal["alternating-ab-ba"] = "alternating-ab-ba"
     samples_per_arm_per_round: Literal[5] = 5
+    warmup_full_corpus_blocks_per_arm: Literal[1] = 1
+    warmup_order: Literal["baseline-then-candidate"] = "baseline-then-candidate"
     samples_synchronized: Literal[True] = True
     sample_unit: Literal["one-full-corpus-chain-block"] = "one-full-corpus-chain-block"
     candidate: Literal["combined-gate-up-and-down-family-finalists"] = (
@@ -400,6 +402,7 @@ class InklingGmmTileSearchContract(BaseModel):
     tpu_cake_uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     runner_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     verifier_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmation_verifier_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     inkling_git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     inkling_uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     implementation_source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
@@ -636,6 +639,7 @@ def default_gmm_tile_search_contract(
     tpu_cake_uv_lock_sha256: str,
     runner_source_sha256: str,
     verifier_source_sha256: str,
+    confirmation_verifier_source_sha256: str,
     inkling_git_commit: str,
     inkling_uv_lock_sha256: str,
     implementation_source_manifest: tuple[SourceFileContract, ...],
@@ -667,6 +671,7 @@ def default_gmm_tile_search_contract(
         tpu_cake_uv_lock_sha256=tpu_cake_uv_lock_sha256,
         runner_source_sha256=runner_source_sha256,
         verifier_source_sha256=verifier_source_sha256,
+        confirmation_verifier_source_sha256=confirmation_verifier_source_sha256,
         inkling_git_commit=inkling_git_commit,
         inkling_uv_lock_sha256=inkling_uv_lock_sha256,
         implementation_source_manifest=implementation_source_manifest,

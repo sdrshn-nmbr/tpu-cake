@@ -57,6 +57,7 @@ _SOURCE_KEYS = {
     "tpu_cake_uv_lock_sha256",
     "runner_source_sha256",
     "verifier_source_sha256",
+    "confirmation_verifier_source_sha256",
     "inkling_git_commit",
     "inkling_uv_lock_sha256",
 }
@@ -210,6 +211,7 @@ def _source_environment(contract: InklingGmmTileSearchContract) -> dict[str, str
         "tpu_cake_uv_lock_sha256": contract.tpu_cake_uv_lock_sha256,
         "runner_source_sha256": contract.runner_source_sha256,
         "verifier_source_sha256": contract.verifier_source_sha256,
+        "confirmation_verifier_source_sha256": contract.confirmation_verifier_source_sha256,
         "inkling_git_commit": contract.inkling_git_commit,
         "inkling_uv_lock_sha256": contract.inkling_uv_lock_sha256,
     }
