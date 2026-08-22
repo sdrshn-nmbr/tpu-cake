@@ -1,0 +1,118 @@
+{
+  "schema_version": "seqax-large-residual-v1",
+  "identity_schema": "length-prefixed-v2",
+  "question": "On TPU7x d=2,t=4, does the typed BF16 reduce-scatter, local residual, and deferred all-gather schedule beat residual all-reduce by more than 3% in resident whole-forward latency?",
+  "claim_scope": "fixed-model4096-layer1-sequence128-bf16-pallas-performance",
+  "compilation_source_root": "/home/sudarshan/tpu-cake-main",
+  "compiler_identity_status": "pending",
+  "compile_capture_count": 2,
+  "scaling_book_sources": [
+    "https://jax-ml.github.io/scaling-book/sharding/",
+    "https://jax-ml.github.io/scaling-book/inference/#appendix-c-latency-bound-communications"
+  ],
+  "illustrative_latency_crossover_bytes": 360000,
+  "full_activation_bf16_bytes_per_data_shard": 1048576,
+  "local_activation_bf16_bytes_per_device": 262144,
+  "partial_activation_f32_bytes_per_data_shard": 2097152,
+  "prior_small_activation_bf16_bytes_per_data_shard": 512,
+  "parameters": {
+    "batch": 2,
+    "data_mesh": 2,
+    "feed_forward": 1024,
+    "head": 64,
+    "key_value_heads": 4,
+    "layers": 1,
+    "model": 4096,
+    "numerical_semantics": "typed_bf16_hidden_v2",
+    "query_groups": 2,
+    "rope_max_timescale": 256,
+    "sequence": 128,
+    "tensor_mesh": 4,
+    "vocabulary": 256
+  },
+  "baseline": "residual_all_reduce",
+  "candidate": "standard",
+  "timing_seed": 1724055838864225376,
+  "correctness_seeds": [
+    12948912269241953413,
+    15621403801627247318,
+    8658431475210851483,
+    6509067647865353228,
+    13042482230828555848
+  ],
+  "warmup_iterations": 5,
+  "measured_iterations": 5,
+  "paired_rounds": 32,
+  "bootstrap_samples": 100000,
+  "confidence_level": 0.99,
+  "minimum_practical_improvement": 0.03,
+  "allow_early_stopping": false,
+  "allow_further_retry": false,
+  "candidates_resident_together": true,
+  "profile_only_after_decision": true,
+  "require_native_standard_reduce_scatters": 3,
+  "runtime": {
+    "python": "3.12.3",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "libtpu": "0.0.44.1",
+    "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "backend": "tpu",
+  "device_kind": "TPU7x",
+  "device_count": 8,
+  "mesh": {
+    "d": 2,
+    "t": 4
+  },
+  "candidates": [
+    {
+      "candidate": "standard",
+      "distributed_schedule_sha256": "b72a0fa72040601cae8d24185ebb6d0890f9b08e4be059e046426bee16c69ca0",
+      "physical_schedule_sha256": "c725424e3a7c4c71feb175f1d6243704dceeafd6f72a7cb9c71c67790bca2820",
+      "pallas_source_sha256": "a90357c41554d452fdfeaee05d451cc9a9a1a79a5d4c5d7f2ec73d7448e1b5db",
+      "pallas_manifest_sha256": "a503daf982286e87327b23b25ac28f6af5dce463dffccad55387ed8db8d343b4",
+      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_pallas_compiler_collectives": {
+        "stablehlo_reduce_scatter_count": 0,
+        "stablehlo_all_gather_count": 0,
+        "compiler_reduce_scatter_count": 0,
+        "compiler_all_reduce_count": 0,
+        "compiler_all_gather_count": 0,
+        "sparse_core_reduce_scatter_count": 0,
+        "sparse_core_all_gather_count": 0
+      },
+      "expected_pallas_regions": 9,
+      "expected_all_gathers": 17,
+      "expected_all_reduces": 0,
+      "expected_reduce_scatters": 3,
+      "expected_ring_equivalent_ici_bytes_per_device": 23154688,
+      "expected_peak_vmem_bytes_per_device": 12357632
+    },
+    {
+      "candidate": "residual_all_reduce",
+      "distributed_schedule_sha256": "3b4129d67948a82620f9fa595f9690fd00705ee95af6bbc9641e486071c865c0",
+      "physical_schedule_sha256": "b9b692967b4a82d15362ddcd0201e2427cb10cb4b1ac26bfc5dadfde8cc52ddc",
+      "pallas_source_sha256": "069d5499a03523d2b945f532f91f53b4b3f7dbbdb9ac5ea396e8e4ec76b08e3f",
+      "pallas_manifest_sha256": "18308733f03c8a7e0ee0a0c7b6c21c759c6e63475e918b17203072179eb196e5",
+      "pallas_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "control_stablehlo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_pallas_compiler_collectives": {
+        "stablehlo_reduce_scatter_count": 0,
+        "stablehlo_all_gather_count": 0,
+        "compiler_reduce_scatter_count": 0,
+        "compiler_all_reduce_count": 0,
+        "compiler_all_gather_count": 0,
+        "sparse_core_reduce_scatter_count": 0,
+        "sparse_core_all_gather_count": 0
+      },
+      "expected_pallas_regions": 9,
+      "expected_all_gathers": 15,
+      "expected_all_reduces": 2,
+      "expected_reduce_scatters": 1,
+      "expected_ring_equivalent_ici_bytes_per_device": 26300416,
+      "expected_peak_vmem_bytes_per_device": 13391872
+    }
+  ]
+}

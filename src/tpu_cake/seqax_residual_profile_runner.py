@@ -345,6 +345,7 @@ def _compile(
     devices: tuple[Any, ...],
     *,
     enforce_hlo_identity: bool = True,
+    enforce_compiler_collectives: bool = True,
 ) -> CompiledResidualProfile:
     pallas_callable, mesh = prepared.plan.build(interpret=False, devices=devices)
     resident = _resident_inputs(host_inputs, prepared, mesh)
@@ -402,7 +403,10 @@ def _compile(
         stablehlo=pallas_stablehlo.rstrip("\n"),
         compiler_hlo=pallas_compiler_hlo.rstrip("\n"),
     )
-    if pallas_compiler_analysis.collectives != expected.expected_pallas_compiler_collectives:
+    if (
+        enforce_compiler_collectives
+        and pallas_compiler_analysis.collectives != expected.expected_pallas_compiler_collectives
+    ):
         raise ValueError(
             "SEQAX_RESIDUAL_PROFILE_COMPILER_COLLECTIVE_MISMATCH "
             f"candidate={expected.candidate} "
