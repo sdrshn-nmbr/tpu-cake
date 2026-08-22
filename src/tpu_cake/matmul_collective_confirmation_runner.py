@@ -15,7 +15,7 @@ import time
 import urllib.request
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +113,10 @@ def _semantic_compiler_hlo(value: str) -> str:
             raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_COMPILER_HLO_INVALID")
         canonical = canonical[:metadata_start] + canonical[min(computation_starts) :]
     return re.sub(r" stack_frame_id=\d+", "", canonical)
+
+
+def _plan_manifest(plan: PallasMatmulPlan) -> dict[str, object]:
+    return asdict(plan)
 
 
 def _write_text(path: Path, value: str) -> None:
@@ -596,7 +600,7 @@ def _compile(
             strategy_root / "lowered_pallas.py",
             value.source.plan.render_executable_source(),
         )
-        _write_json(strategy_root / "plan_manifest.json", value.source.plan.manifest())
+        _write_json(strategy_root / "plan_manifest.json", _plan_manifest(value.source.plan))
         _write_text(strategy_root / "stablehlo.txt", stablehlo)
         _write_text(strategy_root / "compiler_hlo.txt", compiler_hlo)
         compiled.append(
@@ -1120,7 +1124,7 @@ def _replay_plans(
             or (strategy_root / "lowered_pallas.py").read_text()
             != value.plan.render_executable_source()
             or json.loads((strategy_root / "plan_manifest.json").read_text())
-            != value.plan.manifest()
+            != _plan_manifest(value.plan)
             or _sha256(strategy_root / "physical.xdsl") != authority.schedule_sha256
             or _sha256(strategy_root / "lowered_pallas.py")
             != authority.pallas_source_sha256
