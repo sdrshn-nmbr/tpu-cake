@@ -4,12 +4,14 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import time
 import urllib.request
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 from urllib.parse import urlparse
 
 import numpy as np
@@ -40,6 +42,8 @@ class InklingGmmRouteCorpusContract(BaseModel):
     inkling_source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
     model_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     model_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_weight_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    capture_source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
     producer_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     verifier_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     capture_uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -47,6 +51,7 @@ class InklingGmmRouteCorpusContract(BaseModel):
     prompt_case_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     required_server_command_fragments: tuple[str, ...] = Field(min_length=1)
     required_server_environment: dict[str, str]
+    forbidden_server_environment_names: tuple[str, ...] = Field(min_length=1)
     prompt_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     concurrency: int = Field(gt=0)
     prompt_tokens: int = Field(gt=0)
@@ -80,6 +85,13 @@ class InklingGmmRouteCorpusContract(BaseModel):
         paths = tuple(item.path for item in self.inkling_source_manifest)
         if len(paths) != len(set(paths)):
             raise ValueError("Inkling source manifest paths must be unique")
+        capture_paths = tuple(item.path for item in self.capture_source_manifest)
+        if len(capture_paths) != len(set(capture_paths)):
+            raise ValueError("capture source manifest paths must be unique")
+        if len(self.forbidden_server_environment_names) != len(
+            set(self.forbidden_server_environment_names)
+        ) or set(self.forbidden_server_environment_names) & set(self.required_server_environment):
+            raise ValueError("server environment declarations must be disjoint and unique")
         return self
 
 
@@ -107,6 +119,47 @@ class RouteRequestEvidence(BaseModel):
     final_routed_experts_base64: str = Field(min_length=1)
 
 
+class ModelArtifactEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    bytes: int = Field(gt=0)
+
+
+class RouteServerLaunchReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["inkling-gmm-route-server-launch-v1"] = (
+        "inkling-gmm-route-server-launch-v1"
+    )
+    receipt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    launch_nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
+    observed_tpu_cake_git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    capture_source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    inkling_git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    inkling_uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    inkling_source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    model_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_weight_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_weight_manifest: tuple[ModelArtifactEvidence, ...] = Field(min_length=2)
+    server_command: tuple[str, ...] = Field(min_length=1)
+    server_environment: dict[str, str]
+
+    @model_validator(mode="after")
+    def identity_is_valid(self) -> RouteServerLaunchReceipt:
+        if _manifest_sha256(self.model_weight_manifest) != self.model_weight_manifest_sha256:
+            raise ValueError("route server launch model manifest mismatch")
+        if (
+            self.receipt_id != "0" * 64
+            and model_identity_sha256(self, exclude={"receipt_id"}) != self.receipt_id
+        ):
+            raise ValueError("route server launch receipt identity mismatch")
+        return self
+
+
 class InklingGmmRouteCapture(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -117,7 +170,7 @@ class InklingGmmRouteCapture(BaseModel):
     prompt_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     producer_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     capture_uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    tpu_cake_git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    observed_tpu_cake_git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     tpu_cake_git_status_porcelain: Literal[""] = ""
     server_process_id: int = Field(gt=0)
     server_command: tuple[str, ...] = Field(min_length=1)
@@ -128,7 +181,13 @@ class InklingGmmRouteCapture(BaseModel):
     )
     server_idle_before: Literal[True] = True
     server_idle_after: Literal[True] = True
+    server_launch_receipt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    server_launch_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    server_launch_nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
     request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_bytes: int = Field(gt=0)
+    model_weight_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_weight_manifest: tuple[ModelArtifactEvidence, ...] = Field(min_length=2)
     raw_sse_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     raw_sse_bytes: int = Field(gt=0)
     requests: tuple[RouteRequestEvidence, ...] = Field(min_length=1)
@@ -146,6 +205,11 @@ class InklingGmmRouteCapture(BaseModel):
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"route capture {label} must be unique")
+        manifest_paths = tuple(item.path for item in self.model_weight_manifest)
+        if len(manifest_paths) != len(set(manifest_paths)):
+            raise ValueError("route capture model artifact paths must be unique")
+        if _manifest_sha256(self.model_weight_manifest) != self.model_weight_manifest_sha256:
+            raise ValueError("route capture model weight manifest mismatch")
         if (
             self.capture_id != "0" * 64
             and model_identity_sha256(self, exclude={"capture_id"}) != self.capture_id
@@ -178,6 +242,10 @@ class InklingGmmRouteCorpusReport(BaseModel):
     capture_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     producer_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     verifier_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    server_launch_receipt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    server_launch_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_weight_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     concurrency: int = Field(gt=0)
     selected_completion_steps: tuple[int, ...] = Field(min_length=1)
     first_moe_layer: int = Field(ge=0)
@@ -271,6 +339,180 @@ def _source_sha256() -> str:
     return file_sha256(Path(__file__))
 
 
+def _model_weight_manifest(model_config_path: Path) -> tuple[ModelArtifactEvidence, ...]:
+    snapshot = model_config_path.parent
+    index_path = snapshot / "model.safetensors.index.json"
+    index = json.loads(index_path.read_text())
+    weight_map = index.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise ValueError("INKLING_ROUTE_MODEL_WEIGHT_INDEX_INVALID")
+    shard_names = sorted(set(weight_map.values()))
+    if any(
+        not isinstance(name, str) or Path(name).name != name or not name.endswith(".safetensors")
+        for name in shard_names
+    ):
+        raise ValueError("INKLING_ROUTE_MODEL_WEIGHT_PATH_INVALID")
+    paths = (index_path, *(snapshot / name for name in shard_names))
+    if any(not path.is_file() for path in paths):
+        raise ValueError("INKLING_ROUTE_MODEL_WEIGHT_MISSING")
+    return tuple(
+        ModelArtifactEvidence(
+            path=path.relative_to(snapshot).as_posix(),
+            sha256=file_sha256(path),
+            bytes=path.stat().st_size,
+        )
+        for path in paths
+    )
+
+
+def _manifest_sha256(manifest: tuple[ModelArtifactEvidence, ...]) -> str:
+    return _json_sha256([item.model_dump(mode="json") for item in manifest])
+
+
+def _source_manifest_sha256(manifest: tuple[SourceFileContract, ...]) -> str:
+    return _json_sha256([item.model_dump(mode="json") for item in manifest])
+
+
+def _validate_source_manifest(
+    repository: Path,
+    manifest: tuple[SourceFileContract, ...],
+    *,
+    error: str,
+) -> None:
+    repository = repository.resolve()
+    for source in manifest:
+        path = repository / source.path
+        if (
+            Path(source.path).is_absolute()
+            or not path.resolve().is_relative_to(repository)
+            or not path.is_file()
+            or file_sha256(path) != source.sha256
+        ):
+            raise ValueError(f"{error} path={source.path}")
+
+
+def _require_new_external_artifacts(
+    artifacts: tuple[Path, ...],
+    repositories: tuple[Path, ...],
+    *,
+    exists_error: str,
+    inside_error: str,
+) -> None:
+    for artifact in artifacts:
+        if artifact.exists() or artifact.is_symlink():
+            raise FileExistsError(f"{exists_error} path={artifact}")
+        if any(
+            artifact.resolve().is_relative_to(repository.resolve()) for repository in repositories
+        ):
+            raise ValueError(inside_error)
+
+
+def _module_command(command: tuple[str, ...]) -> tuple[str, ...]:
+    try:
+        module_index = command.index("-m")
+    except ValueError as error:
+        raise ValueError("INKLING_ROUTE_SERVER_MODULE_COMMAND_MISSING") from error
+    return command[module_index:]
+
+
+def _server_process_environment(
+    contract: InklingGmmRouteCorpusContract,
+    *,
+    launch_nonce: str,
+    launch_receipt_sha256: str,
+    base_environment: dict[str, str],
+) -> dict[str, str]:
+    environment = dict(base_environment)
+    for name in contract.forbidden_server_environment_names:
+        environment.pop(name, None)
+    environment.update(contract.required_server_environment)
+    environment["TPU_CAKE_ROUTE_LAUNCH_NONCE"] = launch_nonce
+    environment["TPU_CAKE_ROUTE_LAUNCH_RECEIPT_SHA256"] = launch_receipt_sha256
+    return environment
+
+
+def launch_server_with_receipt(
+    *,
+    receipt_path: Path,
+    model_config_path: Path,
+    inkling_repo: Path,
+    contract: InklingGmmRouteCorpusContract,
+    server_command: tuple[str, ...],
+) -> None:
+    tpu_cake_repo = Path(__file__).resolve().parents[2]
+    repositories = (tpu_cake_repo.resolve(), inkling_repo.resolve())
+    _require_new_external_artifacts(
+        (receipt_path,),
+        repositories,
+        exists_error="INKLING_ROUTE_LAUNCH_RECEIPT_EXISTS",
+        inside_error="INKLING_ROUTE_LAUNCH_RECEIPT_INSIDE_SOURCE",
+    )
+    if not server_command:
+        raise ValueError("INKLING_ROUTE_LAUNCH_COMMAND_REQUIRED")
+    command_text = " ".join(server_command)
+    if any(fragment not in command_text for fragment in contract.required_server_command_fragments):
+        raise ValueError("INKLING_ROUTE_LAUNCH_COMMAND_MISMATCH")
+    tpu_cake_commit = _text(["git", "rev-parse", "HEAD"], cwd=tpu_cake_repo)
+    if _text(["git", "status", "--porcelain"], cwd=tpu_cake_repo):
+        raise ValueError("INKLING_ROUTE_LAUNCH_SOURCE_DIRTY")
+    if file_sha256(tpu_cake_repo / "uv.lock") != contract.capture_uv_lock_sha256:
+        raise ValueError("INKLING_ROUTE_LAUNCH_LOCK_MISMATCH")
+    _validate_source_manifest(
+        tpu_cake_repo,
+        contract.capture_source_manifest,
+        error="INKLING_ROUTE_LAUNCH_SOURCE_MISMATCH",
+    )
+    if _text(["git", "rev-parse", "HEAD"], cwd=inkling_repo) != contract.inkling_git_commit:
+        raise ValueError("INKLING_ROUTE_LAUNCH_INKLING_REVISION_MISMATCH")
+    if _text(["git", "status", "--porcelain"], cwd=inkling_repo):
+        raise ValueError("INKLING_ROUTE_LAUNCH_INKLING_DIRTY")
+    if file_sha256(inkling_repo / "uv.lock") != contract.inkling_uv_lock_sha256:
+        raise ValueError("INKLING_ROUTE_LAUNCH_INKLING_LOCK_MISMATCH")
+    _validate_source_manifest(
+        inkling_repo,
+        contract.inkling_source_manifest,
+        error="INKLING_ROUTE_LAUNCH_INKLING_SOURCE_MISMATCH",
+    )
+    if file_sha256(model_config_path) != contract.model_config_sha256:
+        raise ValueError("INKLING_ROUTE_LAUNCH_MODEL_CONFIG_MISMATCH")
+    model_weight_manifest = _model_weight_manifest(model_config_path)
+    if _manifest_sha256(model_weight_manifest) != contract.model_weight_manifest_sha256:
+        raise ValueError("INKLING_ROUTE_LAUNCH_MODEL_WEIGHT_MISMATCH")
+    environment = {name: os.environ.get(name, "") for name in contract.required_server_environment}
+    if environment != contract.required_server_environment:
+        raise ValueError("INKLING_ROUTE_LAUNCH_ENVIRONMENT_MISMATCH")
+    launch_nonce = uuid.uuid4().hex
+    provisional = RouteServerLaunchReceipt(
+        receipt_id="0" * 64,
+        contract_id=contract.contract_id,
+        launch_nonce=launch_nonce,
+        observed_tpu_cake_git_commit=tpu_cake_commit,
+        capture_source_manifest_sha256=_source_manifest_sha256(contract.capture_source_manifest),
+        inkling_git_commit=contract.inkling_git_commit,
+        inkling_uv_lock_sha256=contract.inkling_uv_lock_sha256,
+        inkling_source_manifest_sha256=_source_manifest_sha256(contract.inkling_source_manifest),
+        model_revision=contract.model_revision,
+        model_config_sha256=contract.model_config_sha256,
+        model_weight_manifest_sha256=contract.model_weight_manifest_sha256,
+        model_weight_manifest=model_weight_manifest,
+        server_command=server_command,
+        server_environment=environment,
+    )
+    receipt = provisional.model_copy(
+        update={"receipt_id": model_identity_sha256(provisional, exclude={"receipt_id"})}
+    )
+    payload = json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    with receipt_path.open("x") as stream:
+        stream.write(payload)
+    process_environment = _server_process_environment(
+        contract,
+        launch_nonce=launch_nonce,
+        launch_receipt_sha256=file_sha256(receipt_path),
+        base_environment=dict(os.environ),
+    )
+    os.execvpe(server_command[0], server_command, process_environment)
+
+
 def _text(command: list[str], *, cwd: Path) -> str:
     return subprocess.run(
         command, cwd=cwd, check=True, capture_output=True, text=True
@@ -309,6 +551,63 @@ def _wait_for_server_idle(url: str, *, timeout_seconds: float = 300.0) -> None:
     raise TimeoutError("INKLING_ROUTE_SERVER_IDLE_TIMEOUT")
 
 
+def _consume_route_sse(
+    lines: Iterable[bytes],
+    raw_sse: BinaryIO,
+    *,
+    request_ids: tuple[str, ...],
+    contract: InklingGmmRouteCorpusContract,
+) -> tuple[list[bytes | None], list[list[RouteChunkEvidence]]]:
+    final_routes: list[bytes | None] = [None] * contract.concurrency
+    chunks: list[list[RouteChunkEvidence]] = [[] for _ in range(contract.concurrency)]
+    done_observed = False
+    for raw_line in lines:
+        raw_sse.write(raw_line)
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not line.startswith(b"data: "):
+            raise ValueError("INKLING_ROUTE_SSE_LINE_INVALID")
+        payload = line[6:]
+        if payload == b"[DONE]":
+            if done_observed:
+                raise ValueError("INKLING_ROUTE_SSE_DONE_DUPLICATE")
+            done_observed = True
+            continue
+        if done_observed:
+            raise ValueError("INKLING_ROUTE_SSE_DATA_AFTER_DONE")
+        item = json.loads(payload)
+        index = item.pop("index")
+        if type(index) is not int or not 0 <= index < contract.concurrency:
+            raise ValueError(f"INKLING_ROUTE_RESPONSE_INDEX_INVALID index={index!r}")
+        meta = item["meta_info"]
+        if meta["id"] != request_ids[index]:
+            raise ValueError(f"INKLING_ROUTE_RESPONSE_ID_MISMATCH index={index}")
+        encoded_routes = meta["routed_experts"]
+        if encoded_routes is not None:
+            if final_routes[index] is not None:
+                raise ValueError(f"INKLING_ROUTE_MULTIPLE_PAYLOADS request={index}")
+            final_routes[index] = _decode_routes(encoded_routes)
+        finish_reason = meta["finish_reason"]
+        chunks[index].append(
+            RouteChunkEvidence(
+                completion_tokens=meta["completion_tokens"],
+                prompt_tokens=meta["prompt_tokens"],
+                server_batch_size=meta["server_batch_size"],
+                request_state_slot=meta["request_state_slot"],
+                recurrent_state_slot=meta["recurrent_state_slot"],
+                cached_tokens=meta["cached_tokens"],
+                finish_reason_type=(
+                    finish_reason.get("type") if isinstance(finish_reason, dict) else None
+                ),
+                routed_experts_present=encoded_routes is not None,
+            )
+        )
+    if not done_observed:
+        raise ValueError("INKLING_ROUTE_SSE_DONE_MISSING")
+    return final_routes, chunks
+
+
 def capture_routes(
     *,
     url: str,
@@ -316,19 +615,36 @@ def capture_routes(
     prompt_cases_path: Path,
     model_config_path: Path,
     inkling_repo: Path,
+    launch_receipt_path: Path,
     contract: InklingGmmRouteCorpusContract,
     profile_contract: InklingDecodeProfileContract,
 ) -> InklingGmmRouteCapture:
     raw_sse_path = output_path.with_name(f"{output_path.name}.sse")
-    for artifact in (output_path, raw_sse_path):
-        if artifact.exists():
-            raise FileExistsError(f"INKLING_ROUTE_CAPTURE_OUTPUT_EXISTS path={artifact}")
+    request_path = output_path.with_name(f"{output_path.name}.request.json")
+    artifacts = (output_path, raw_sse_path, request_path)
     tpu_cake_repo = Path(__file__).resolve().parents[2]
+    repositories = (tpu_cake_repo.resolve(), inkling_repo.resolve())
+    _require_new_external_artifacts(
+        artifacts,
+        repositories,
+        exists_error="INKLING_ROUTE_CAPTURE_OUTPUT_EXISTS",
+        inside_error="INKLING_ROUTE_CAPTURE_OUTPUT_INSIDE_SOURCE",
+    )
+    if launch_receipt_path.is_symlink() or any(
+        launch_receipt_path.resolve().is_relative_to(repository) for repository in repositories
+    ):
+        raise ValueError("INKLING_ROUTE_LAUNCH_RECEIPT_INVALID")
+    tpu_cake_commit = _text(["git", "rev-parse", "HEAD"], cwd=tpu_cake_repo)
     tpu_cake_status = _text(["git", "status", "--porcelain"], cwd=tpu_cake_repo)
     if tpu_cake_status:
         raise ValueError("INKLING_ROUTE_CAPTURE_SOURCE_DIRTY")
     if file_sha256(tpu_cake_repo / "uv.lock") != contract.capture_uv_lock_sha256:
         raise ValueError("INKLING_ROUTE_CAPTURE_LOCK_MISMATCH")
+    _validate_source_manifest(
+        tpu_cake_repo,
+        contract.capture_source_manifest,
+        error="INKLING_ROUTE_CAPTURE_SOURCE_MISMATCH",
+    )
     if urlparse(url).hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("INKLING_ROUTE_CAPTURE_MUST_USE_LOCALHOST")
     if profile_contract.contract_id != contract.profile_contract_id:
@@ -360,13 +676,36 @@ def capture_routes(
         raise ValueError("INKLING_ROUTE_SERVER_SOURCE_DIRTY")
     if file_sha256(inkling_repo / "uv.lock") != contract.inkling_uv_lock_sha256:
         raise ValueError("INKLING_ROUTE_SERVER_LOCK_MISMATCH")
-    for source in contract.inkling_source_manifest:
-        if file_sha256(inkling_repo / source.path) != source.sha256:
-            raise ValueError(f"INKLING_ROUTE_SERVER_SOURCE_MISMATCH path={source.path}")
+    _validate_source_manifest(
+        inkling_repo,
+        contract.inkling_source_manifest,
+        error="INKLING_ROUTE_SERVER_SOURCE_MISMATCH",
+    )
     if file_sha256(prompt_cases_path) != contract.prompt_corpus_sha256:
         raise ValueError("INKLING_ROUTE_PROMPT_CORPUS_MISMATCH")
     if file_sha256(model_config_path) != contract.model_config_sha256:
         raise ValueError("INKLING_ROUTE_MODEL_CONFIG_MISMATCH")
+    model_weight_manifest = _model_weight_manifest(model_config_path)
+    if _manifest_sha256(model_weight_manifest) != contract.model_weight_manifest_sha256:
+        raise ValueError("INKLING_ROUTE_MODEL_WEIGHT_MANIFEST_MISMATCH")
+    launch_receipt = RouteServerLaunchReceipt.model_validate_json(launch_receipt_path.read_text())
+    launch_receipt_sha256 = file_sha256(launch_receipt_path)
+    if (
+        launch_receipt.contract_id != contract.contract_id
+        or launch_receipt.capture_source_manifest_sha256
+        != _source_manifest_sha256(contract.capture_source_manifest)
+        or launch_receipt.inkling_git_commit != contract.inkling_git_commit
+        or launch_receipt.inkling_uv_lock_sha256 != contract.inkling_uv_lock_sha256
+        or launch_receipt.inkling_source_manifest_sha256
+        != _source_manifest_sha256(contract.inkling_source_manifest)
+        or launch_receipt.model_revision != contract.model_revision
+        or launch_receipt.model_config_sha256 != contract.model_config_sha256
+        or launch_receipt.model_weight_manifest_sha256 != contract.model_weight_manifest_sha256
+        or launch_receipt.model_weight_manifest != model_weight_manifest
+        or launch_receipt.server_environment != contract.required_server_environment
+        or launch_receipt.observed_tpu_cake_git_commit != tpu_cake_commit
+    ):
+        raise ValueError("INKLING_ROUTE_LAUNCH_RECEIPT_MISMATCH")
     if _source_sha256() != contract.producer_source_sha256:
         raise ValueError("INKLING_ROUTE_PRODUCER_SOURCE_MISMATCH")
     model_config = json.loads(model_config_path.read_text())["text_config"]
@@ -381,14 +720,23 @@ def capture_routes(
     server_process = _server_process(url, inkling_repo, profile_contract.server_command_fragments)
     if "--enable-return-routed-experts" not in server_process.cmdline:
         raise ValueError("INKLING_ROUTE_SERVER_CAPTURE_DISABLED")
+    dynamic_environment = {
+        "TPU_CAKE_ROUTE_LAUNCH_NONCE": launch_receipt.launch_nonce,
+        "TPU_CAKE_ROUTE_LAUNCH_RECEIPT_SHA256": launch_receipt_sha256,
+    }
     server_environment = _process_environment(
-        server_process.pid, set(contract.required_server_environment)
+        server_process.pid,
+        set(contract.required_server_environment)
+        | set(contract.forbidden_server_environment_names)
+        | set(dynamic_environment),
     )
-    if server_environment != contract.required_server_environment:
+    if server_environment != contract.required_server_environment | dynamic_environment:
         raise ValueError("INKLING_ROUTE_SERVER_ENVIRONMENT_MISMATCH")
     command = " ".join(server_process.cmdline)
     if any(fragment not in command for fragment in contract.required_server_command_fragments):
         raise ValueError("INKLING_ROUTE_SERVER_COMMAND_MISMATCH")
+    if _module_command(server_process.cmdline) != _module_command(launch_receipt.server_command):
+        raise ValueError("INKLING_ROUTE_LAUNCH_COMMAND_CHANGED")
     server_configuration = _declared_server_configuration(
         _get_json(url, "get_server_info"), profile_contract.server
     )
@@ -419,11 +767,12 @@ def capture_routes(
         "stream": True,
         "return_routed_experts": True,
     }
-    final_routes: list[bytes | None] = [None] * contract.concurrency
-    chunks: list[list[RouteChunkEvidence]] = [[] for _ in range(contract.concurrency)]
+    request_bytes = json.dumps(request_body, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    with request_path.open("xb") as stream:
+        stream.write(request_bytes)
     request = urllib.request.Request(
         f"{url.rstrip('/')}/generate",
-        data=json.dumps(request_body).encode(),
+        data=request_bytes,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -431,41 +780,12 @@ def capture_routes(
         raw_sse_path.open("xb") as raw_sse,
         urllib.request.urlopen(request, timeout=3600) as response,
     ):
-        for raw_line in response:
-            raw_sse.write(raw_line)
-            line = raw_line.strip()
-            if not line.startswith(b"data: "):
-                continue
-            payload = line[6:]
-            if payload == b"[DONE]":
-                break
-            item = json.loads(payload)
-            index = item.pop("index")
-            if type(index) is not int or not 0 <= index < contract.concurrency:
-                raise ValueError(f"INKLING_ROUTE_RESPONSE_INDEX_INVALID index={index!r}")
-            meta = item["meta_info"]
-            if meta["id"] != request_body["rid"][index]:
-                raise ValueError(f"INKLING_ROUTE_RESPONSE_ID_MISMATCH index={index}")
-            encoded_routes = meta["routed_experts"]
-            if encoded_routes is not None:
-                if final_routes[index] is not None:
-                    raise ValueError(f"INKLING_ROUTE_MULTIPLE_PAYLOADS request={index}")
-                final_routes[index] = _decode_routes(encoded_routes)
-            finish_reason = meta["finish_reason"]
-            chunks[index].append(
-                RouteChunkEvidence(
-                    completion_tokens=meta["completion_tokens"],
-                    prompt_tokens=meta["prompt_tokens"],
-                    server_batch_size=meta["server_batch_size"],
-                    request_state_slot=meta["request_state_slot"],
-                    recurrent_state_slot=meta["recurrent_state_slot"],
-                    cached_tokens=meta["cached_tokens"],
-                    finish_reason_type=(
-                        finish_reason.get("type") if isinstance(finish_reason, dict) else None
-                    ),
-                    routed_experts_present=encoded_routes is not None,
-                )
-            )
+        final_routes, chunks = _consume_route_sse(
+            response,
+            raw_sse,
+            request_ids=tuple(request_body["rid"]),
+            contract=contract,
+        )
     requests = tuple(
         RouteRequestEvidence(
             request_index=index,
@@ -484,10 +804,47 @@ def capture_routes(
     if final_server_process != server_process:
         raise RuntimeError("INKLING_ROUTE_SERVER_PROCESS_CHANGED")
     if (
+        file_sha256(launch_receipt_path) != launch_receipt_sha256
+        or _process_environment(final_server_process.pid, set(server_environment))
+        != server_environment
+    ):
+        raise RuntimeError("INKLING_ROUTE_SERVER_LAUNCH_IDENTITY_CHANGED")
+    if (
         _declared_server_configuration(_get_json(url, "get_server_info"), profile_contract.server)
         != server_configuration
     ):
         raise RuntimeError("INKLING_ROUTE_SERVER_CONFIGURATION_CHANGED")
+    if (
+        _text(["git", "rev-parse", "HEAD"], cwd=tpu_cake_repo) != tpu_cake_commit
+        or _text(["git", "status", "--porcelain"], cwd=tpu_cake_repo) != tpu_cake_status
+    ):
+        raise RuntimeError("INKLING_ROUTE_CAPTURE_SOURCE_CHANGED")
+    if (
+        _text(["git", "rev-parse", "HEAD"], cwd=inkling_repo) != contract.inkling_git_commit
+        or _text(["git", "status", "--porcelain"], cwd=inkling_repo)
+        or file_sha256(inkling_repo / "uv.lock") != contract.inkling_uv_lock_sha256
+        or any(
+            file_sha256(inkling_repo / source.path) != source.sha256
+            for source in contract.inkling_source_manifest
+        )
+    ):
+        raise RuntimeError("INKLING_ROUTE_SERVER_SOURCE_CHANGED")
+    if (
+        file_sha256(tpu_cake_repo / "uv.lock") != contract.capture_uv_lock_sha256
+        or _source_sha256() != contract.producer_source_sha256
+    ):
+        raise RuntimeError("INKLING_ROUTE_CAPTURE_SOURCE_CHANGED")
+    try:
+        _validate_source_manifest(
+            tpu_cake_repo,
+            contract.capture_source_manifest,
+            error="INKLING_ROUTE_CAPTURE_SOURCE_CHANGED",
+        )
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    final_model_weight_manifest = _model_weight_manifest(model_config_path)
+    if final_model_weight_manifest != model_weight_manifest:
+        raise RuntimeError("INKLING_ROUTE_MODEL_WEIGHTS_CHANGED")
     provisional = InklingGmmRouteCapture(
         capture_id="0" * 64,
         contract_id=contract.contract_id,
@@ -495,15 +852,21 @@ def capture_routes(
         prompt_corpus_sha256=contract.prompt_corpus_sha256,
         producer_source_sha256=_source_sha256(),
         capture_uv_lock_sha256=file_sha256(tpu_cake_repo / "uv.lock"),
-        tpu_cake_git_commit=_text(["git", "rev-parse", "HEAD"], cwd=tpu_cake_repo),
+        observed_tpu_cake_git_commit=tpu_cake_commit,
         tpu_cake_git_status_porcelain="",
         server_process_id=server_process.pid,
         server_command=server_process.cmdline,
-        server_environment=server_environment,
+        server_environment=contract.required_server_environment,
         server_configuration=server_configuration,
         server_idle_before=True,
         server_idle_after=True,
-        request_sha256=_json_sha256(request_body),
+        server_launch_receipt_id=launch_receipt.receipt_id,
+        server_launch_receipt_sha256=launch_receipt_sha256,
+        server_launch_nonce=launch_receipt.launch_nonce,
+        request_sha256=file_sha256(request_path),
+        request_bytes=request_path.stat().st_size,
+        model_weight_manifest_sha256=_manifest_sha256(model_weight_manifest),
+        model_weight_manifest=model_weight_manifest,
         raw_sse_sha256=file_sha256(raw_sse_path),
         raw_sse_bytes=raw_sse_path.stat().st_size,
         requests=requests,
@@ -512,9 +875,8 @@ def capture_routes(
         update={"capture_id": model_identity_sha256(provisional, exclude={"capture_id"})}
     )
     InklingGmmRouteCapture.model_validate(capture)
-    output_path.write_text(
-        json.dumps(capture.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-    )
+    with output_path.open("x") as stream:
+        stream.write(json.dumps(capture.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
     return capture
 
 
@@ -529,6 +891,7 @@ def _validated_route_arrays(
         or capture.prompt_corpus_sha256 != contract.prompt_corpus_sha256
         or capture.producer_source_sha256 != contract.producer_source_sha256
         or capture.capture_uv_lock_sha256 != contract.capture_uv_lock_sha256
+        or capture.model_weight_manifest_sha256 != contract.model_weight_manifest_sha256
         or capture.server_environment != contract.required_server_environment
         or _json_sha256(capture.server_configuration)
         != contract.profile_server_configuration_sha256
@@ -655,6 +1018,10 @@ def derive_route_corpus(
         capture_sha256=capture_sha256,
         producer_source_sha256=capture.producer_source_sha256,
         verifier_source_sha256=contract.verifier_source_sha256,
+        server_launch_receipt_id=capture.server_launch_receipt_id,
+        server_launch_receipt_sha256=capture.server_launch_receipt_sha256,
+        request_sha256=capture.request_sha256,
+        model_weight_manifest_sha256=capture.model_weight_manifest_sha256,
         concurrency=contract.concurrency,
         selected_completion_steps=contract.selected_completion_steps,
         first_moe_layer=contract.first_dense_layers,
@@ -674,18 +1041,26 @@ def derive_route_corpus(
 
 
 def write_report(path: Path, report: InklingGmmRouteCorpusReport) -> None:
-    path.write_text(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
+    with path.open("x") as stream:
+        stream.write(json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
+    launch = commands.add_parser("launch")
+    launch.add_argument("--receipt", type=Path, required=True)
+    launch.add_argument("--model-config", type=Path, required=True)
+    launch.add_argument("--inkling-repo", type=Path, required=True)
+    launch.add_argument("--contract", type=Path, required=True)
+    launch.add_argument("server_command", nargs=argparse.REMAINDER)
     capture = commands.add_parser("capture")
     capture.add_argument("--url", default="http://127.0.0.1:30000")
     capture.add_argument("--output", type=Path, required=True)
     capture.add_argument("--prompt-cases", type=Path, required=True)
     capture.add_argument("--model-config", type=Path, required=True)
     capture.add_argument("--inkling-repo", type=Path, required=True)
+    capture.add_argument("--launch-receipt", type=Path, required=True)
     capture.add_argument("--contract", type=Path, required=True)
     capture.add_argument("--profile-contract", type=Path, required=True)
     derive = commands.add_parser("derive")
@@ -696,6 +1071,8 @@ def _parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify")
     verify.add_argument("report", type=Path)
     verify.add_argument("--capture", type=Path, required=True)
+    verify.add_argument("--request", type=Path, required=True)
+    verify.add_argument("--launch-receipt", type=Path, required=True)
     verify.add_argument("--raw-sse", type=Path, required=True)
     verify.add_argument("--contract", type=Path, required=True)
     return parser
@@ -704,6 +1081,18 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _parser().parse_args()
     contract = InklingGmmRouteCorpusContract.model_validate_json(args.contract.read_text())
+    if args.command == "launch":
+        server_command = tuple(args.server_command)
+        if server_command[:1] == ("--",):
+            server_command = server_command[1:]
+        launch_server_with_receipt(
+            receipt_path=args.receipt,
+            model_config_path=args.model_config,
+            inkling_repo=args.inkling_repo,
+            contract=contract,
+            server_command=server_command,
+        )
+        return
     if args.command == "capture":
         profile = InklingDecodeProfileContract.model_validate_json(
             args.profile_contract.read_text()
@@ -714,6 +1103,7 @@ def main() -> None:
             prompt_cases_path=args.prompt_cases,
             model_config_path=args.model_config,
             inkling_repo=args.inkling_repo,
+            launch_receipt_path=args.launch_receipt,
             contract=contract,
             profile_contract=profile,
         )
@@ -727,10 +1117,29 @@ def main() -> None:
         contract=contract,
     )
     if args.command == "derive":
+        repository = Path(__file__).resolve().parents[2]
+        _require_new_external_artifacts(
+            (args.output,),
+            (repository,),
+            exists_error="INKLING_ROUTE_REPORT_OUTPUT_EXISTS",
+            inside_error="INKLING_ROUTE_REPORT_OUTPUT_INSIDE_SOURCE",
+        )
         write_report(args.output, report)
         print(f"INKLING_GMM_ROUTE_CORPUS_WRITTEN report_id={report.report_id}")
         return
     expected = InklingGmmRouteCorpusReport.model_validate_json(args.report.read_text())
+    launch_receipt = RouteServerLaunchReceipt.model_validate_json(args.launch_receipt.read_text())
+    if (
+        file_sha256(args.launch_receipt) != capture.server_launch_receipt_sha256
+        or launch_receipt.receipt_id != capture.server_launch_receipt_id
+        or launch_receipt.launch_nonce != capture.server_launch_nonce
+    ):
+        raise ValueError("INKLING_ROUTE_REPLAY_LAUNCH_RECEIPT_MISMATCH")
+    if (
+        file_sha256(args.request) != capture.request_sha256
+        or args.request.stat().st_size != capture.request_bytes
+    ):
+        raise ValueError("INKLING_ROUTE_REPLAY_REQUEST_MISMATCH")
     if capture.producer_source_sha256 != _source_sha256():
         raise ValueError("INKLING_ROUTE_REPLAY_SOURCE_MISMATCH")
     if report != expected:
