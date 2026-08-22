@@ -82,8 +82,10 @@ def _shard(role: str, device: int, m: int, k: int, n: int):
         sharding=("PartitionSpec(None, 't')" if role == "lhs" else "PartitionSpec('t', None)"),
         global_slice=slices,
         local_shape=tuple(value.stop - value.start for value in slices),
-        payload_nbytes=(slices[0].stop - slices[0].start) * (slices[1].stop - slices[1].start) * 2,
-        payload_sha256=format(device + 1, "x") * 64,
+        host_callback_payload_nbytes=(slices[0].stop - slices[0].start)
+        * (slices[1].stop - slices[1].start)
+        * 2,
+        host_callback_payload_sha256=format(device + 1, "x") * 64,
         sentinels=tuple(
             SurfaceCorrectnessSentinel(
                 ordinal=ordinal,
@@ -198,7 +200,15 @@ def _evidence() -> MatmulCollectiveSurfaceCorrectnessEvidence:
 
 def test_correctness_evidence_binds_inventory_shards_repeats_and_parent() -> None:
     evidence = _evidence()
-    validate_surface_correctness_evidence(evidence, PROTOCOL, DESIGN)
+    validate_surface_correctness_evidence(
+        evidence,
+        PROTOCOL,
+        DESIGN,
+        expected_protocol_file_sha256="8" * 64,
+        expected_execution_authority_sha256="9" * 64,
+        expected_invocation_nonce="a" * 64,
+        expected_worker_pid=123,
+    )
 
     assert len(evidence.continuity) == 32
     assert len(evidence.cases) == 80
@@ -209,8 +219,15 @@ def test_correctness_evidence_rejects_wrong_parent_and_noncanonical_shard() -> N
     evidence = _evidence()
     wrong_parent = evidence.model_copy(update={"parent_compile_manifest_file_sha256": "0" * 64})
     with pytest.raises(ValueError, match="AUTHORITY_MISMATCH"):
-        validate_surface_correctness_evidence(wrong_parent, PROTOCOL, DESIGN)
-
+        validate_surface_correctness_evidence(
+            wrong_parent,
+            PROTOCOL,
+            DESIGN,
+            expected_protocol_file_sha256="8" * 64,
+            expected_execution_authority_sha256="9" * 64,
+            expected_invocation_nonce="a" * 64,
+            expected_worker_pid=123,
+        )
     first_case = evidence.cases[0]
     first_shard = first_case.input.lhs_shards[0].model_copy(
         update={
@@ -226,7 +243,73 @@ def test_correctness_evidence_rejects_wrong_parent_and_noncanonical_shard() -> N
     broken_case = first_case.model_copy(update={"input": inputs})
     broken = evidence.model_copy(update={"cases": (broken_case, *evidence.cases[1:])})
     with pytest.raises(ValueError, match="SHARD_IDENTITY_INVALID"):
-        validate_surface_correctness_evidence(broken, PROTOCOL, DESIGN)
+        validate_surface_correctness_evidence(
+            broken,
+            PROTOCOL,
+            DESIGN,
+            expected_protocol_file_sha256="8" * 64,
+            expected_execution_authority_sha256="9" * 64,
+            expected_invocation_nonce="a" * 64,
+            expected_worker_pid=123,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("protocol_file_sha256", "0" * 64),
+        ("correctness_execution_authority_sha256", "0" * 64),
+    ),
+)
+def test_correctness_evidence_rejects_rebound_authority(field: str, value: str) -> None:
+    evidence = _evidence().model_copy(update={field: value})
+
+    with pytest.raises(ValueError, match="AUTHORITY_MISMATCH"):
+        validate_surface_correctness_evidence(
+            evidence,
+            PROTOCOL,
+            DESIGN,
+            expected_protocol_file_sha256="8" * 64,
+            expected_execution_authority_sha256="9" * 64,
+            expected_invocation_nonce="a" * 64,
+            expected_worker_pid=123,
+        )
+
+
+@pytest.mark.parametrize(
+    "execution_update",
+    ({"invocation_nonce": "f" * 64}, {"worker_pid": 999999}),
+)
+def test_correctness_evidence_rejects_spliced_execution(execution_update) -> None:
+    evidence = _evidence()
+    first_case = evidence.cases[0]
+    first_execution = first_case.executions[0].model_copy(update=execution_update)
+    broken_case = first_case.model_copy(
+        update={"executions": (first_execution, *first_case.executions[1:])}
+    )
+    broken = evidence.model_copy(update={"cases": (broken_case, *evidence.cases[1:])})
+
+    with pytest.raises(ValueError, match="EXECUTION_SEQUENCE_MISMATCH"):
+        validate_surface_correctness_evidence(
+            broken,
+            PROTOCOL,
+            DESIGN,
+            expected_protocol_file_sha256="8" * 64,
+            expected_execution_authority_sha256="9" * 64,
+            expected_invocation_nonce="a" * 64,
+            expected_worker_pid=123,
+        )
+
+
+def test_compile_continuity_rejects_path_traversal() -> None:
+    continuity = _evidence().continuity[0]
+
+    with pytest.raises(ValueError, match="COMPILE_CONTINUITY_FAILED"):
+        SurfaceCompileContinuityEvidence.model_validate(
+            continuity.model_copy(update={"stablehlo_path": "../outside.txt"}).model_dump(
+                mode="python", exclude_computed_fields=True
+            )
+        )
 
 
 @pytest.mark.parametrize(

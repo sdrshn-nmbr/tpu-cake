@@ -164,8 +164,8 @@ class MatmulCollectiveSurfaceCorrectnessProtocol(BaseModel):
         "abs(candidate-oracle)/(atol+rtol*abs(oracle))-v1"
     )
     shard_identity_schema: Literal[
-        "logical-dtype-global-shape-sharding-device-slice-payload-v1"
-    ] = "logical-dtype-global-shape-sharding-device-slice-payload-v1"
+        "logical-dtype-global-shape-sharding-device-slice-host-callback-payload-device-sentinels-v1"
+    ] = "logical-dtype-global-shape-sharding-device-slice-host-callback-payload-device-sentinels-v1"
     sentinel_rule: Literal["pattern-support-plus-32-semantic-coordinates-per-device-shard-v1"] = (
         "pattern-support-plus-32-semantic-coordinates-per-device-shard-v1"
     )

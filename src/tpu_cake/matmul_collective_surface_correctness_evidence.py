@@ -61,8 +61,8 @@ class SurfaceCorrectnessShardIdentity(BaseModel):
     logical_dtype: Literal["bfloat16"] = "bfloat16"
     numpy_dtype_str: Literal["<V2"] = "<V2"
     payload_byte_order: Literal["little"] = "little"
-    payload_nbytes: int = Field(gt=0)
-    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    host_callback_payload_nbytes: int = Field(gt=0)
+    host_callback_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     sentinels: tuple[SurfaceCorrectnessSentinel, ...] = Field(min_length=32, max_length=32)
 
     @model_validator(mode="after")
@@ -81,7 +81,7 @@ class SurfaceCorrectnessShardIdentity(BaseModel):
             or len(set(coordinates)) != len(coordinates)
             or coordinates != tuple(sorted(coordinates))
             or tuple(value.ordinal for value in self.sentinels) != tuple(range(32))
-            or self.payload_nbytes != self.local_shape[0] * self.local_shape[1] * 2
+            or self.host_callback_payload_nbytes != self.local_shape[0] * self.local_shape[1] * 2
             or any(
                 not all(
                     bound.start <= coordinate < bound.stop
@@ -267,20 +267,28 @@ class SurfaceCompileContinuityEvidence(BaseModel):
 
     @model_validator(mode="after")
     def identities_match_parent(self) -> SurfaceCompileContinuityEvidence:
-        if any(
-            parent != observed
-            for parent, observed in (
-                (
-                    self.parent_distributed_schedule_sha256,
-                    self.observed_distributed_schedule_sha256,
-                ),
-                (self.parent_physical_schedule_sha256, self.observed_physical_schedule_sha256),
-                (self.parent_pallas_source_sha256, self.observed_pallas_source_sha256),
-                (self.parent_semantic_stablehlo_sha256, self.observed_semantic_stablehlo_sha256),
-                (
-                    self.parent_semantic_compiler_hlo_sha256,
-                    self.observed_semantic_compiler_hlo_sha256,
-                ),
+        base = f"continuity/{self.scenario_name}/{self.strategy.value}"
+        if (
+            self.stablehlo_path != f"{base}/stablehlo.txt"
+            or self.compiler_hlo_path != f"{base}/compiler_hlo.txt"
+            or any(
+                parent != observed
+                for parent, observed in (
+                    (
+                        self.parent_distributed_schedule_sha256,
+                        self.observed_distributed_schedule_sha256,
+                    ),
+                    (self.parent_physical_schedule_sha256, self.observed_physical_schedule_sha256),
+                    (self.parent_pallas_source_sha256, self.observed_pallas_source_sha256),
+                    (
+                        self.parent_semantic_stablehlo_sha256,
+                        self.observed_semantic_stablehlo_sha256,
+                    ),
+                    (
+                        self.parent_semantic_compiler_hlo_sha256,
+                        self.observed_semantic_compiler_hlo_sha256,
+                    ),
+                )
             )
         ):
             raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_COMPILE_CONTINUITY_FAILED")
@@ -319,6 +327,11 @@ def validate_surface_correctness_evidence(
     evidence: MatmulCollectiveSurfaceCorrectnessEvidence,
     protocol: MatmulCollectiveSurfaceCorrectnessProtocol,
     design: MatmulCollectiveSurfaceDesignContract,
+    *,
+    expected_protocol_file_sha256: str,
+    expected_execution_authority_sha256: str,
+    expected_invocation_nonce: str,
+    expected_worker_pid: int,
 ) -> None:
     evidence = MatmulCollectiveSurfaceCorrectnessEvidence.model_validate(
         evidence.model_dump(mode="python", exclude_computed_fields=True)
@@ -331,6 +344,8 @@ def validate_surface_correctness_evidence(
     )
     if (
         evidence.protocol_id != protocol.protocol_id
+        or evidence.protocol_file_sha256 != expected_protocol_file_sha256
+        or evidence.correctness_execution_authority_sha256 != expected_execution_authority_sha256
         or evidence.parent_compile_manifest_file_sha256
         != protocol.parent_compile.manifest_file_sha256
         or design.design_id != protocol.parent_compile.design_id
@@ -392,7 +407,11 @@ def validate_surface_correctness_evidence(
         ):
             raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_EXECUTION_BINDING_MISMATCH")
     executions = tuple(value for case in evidence.cases for value in case.executions)
-    if tuple(value.sequence for value in executions) != tuple(range(1, len(executions) + 1)):
+    if tuple(value.sequence for value in executions) != tuple(range(1, len(executions) + 1)) or any(
+        value.invocation_nonce != expected_invocation_nonce
+        or value.worker_pid != expected_worker_pid
+        for value in executions
+    ):
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_EXECUTION_SEQUENCE_MISMATCH")
     if len({value.output.path for value in executions}) != len(executions):
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_OUTPUT_PATH_REUSED")
