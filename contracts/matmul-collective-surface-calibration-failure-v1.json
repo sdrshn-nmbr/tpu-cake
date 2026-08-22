@@ -1,0 +1,60 @@
+{
+  "archive": {
+    "file_count": 1031,
+    "maximum_member_size_bytes": 1073741824,
+    "maximum_members": 5000,
+    "maximum_total_size_bytes": 2147483648,
+    "member_count": 1389,
+    "path": "/home/sudarshan/tpu-cake-evidence/matmul-collective-surface-calibration-a990ebd-dd80bb0.failed.tar.zst",
+    "root_name": "matmul-collective-surface-calibration-a990ebd-dd80bb0",
+    "sha256": "6902e0ae70703d266ab5adf1991009d85039dedc0fe4e652c1c49285144c5956",
+    "size_bytes": 8310557,
+    "total_file_bytes": 1115313817
+  },
+  "attempt_claim_path": "/home/sudarshan/tpu-cake-evidence/matmul-collective-surface-calibration-attempts-v1/a6334e879bc6d1d2cb9389e28456c86d077722024f4869d3536ca8748da1dc84.json",
+  "attempt_claim_sha256": "9b73380ac0eeabbc4b18b8f6a370f51a42f210692f6078ba3e8a6d46f0bab8a0",
+  "attempt_id": "dd80bb0bcf3e37ccaa5cdc430f230c3c6f26091c9ac3100fa0f582c4877fa20b",
+  "decision": {
+    "attempt_complete": false,
+    "holdout_authorized": false,
+    "holdout_executed": false,
+    "measurements_valid": true,
+    "reason": "manifest-order-failure-before-archived-independent-replay-v1",
+    "retry_allowed": false
+  },
+  "design_id": "f2f8a0eeba4842167780cd3d79043443d0d02392ed037a5250df1a2218691d83",
+  "failure_file_sha256": "d94b8b04835c089a23f6b51a54422b7e2c9d57723d6d9405ee29a8b0fae4f8fb",
+  "launch_log": {
+    "path": "/home/sudarshan/tpu-cake-evidence/calibration-launch-a990ebd-dd80bb0.log",
+    "sha256": "3c1c0c4a2b3c8e87cfce4c2bc5665b0f07dfe875b28e7cf258259cde767ec380",
+    "size_bytes": 1366
+  },
+  "protocol_id": "136d8c93106124da136084ba273b5f5ff32a1c29ce564527895e7f11393085c9",
+  "schema_version": "matmul-collective-surface-calibration-failure-record-v1",
+  "source_commit": "a990ebd98ae3a73ad6b2585c8e4932df11d04ea6",
+  "verification": {
+    "invocation_id": "f9573999f4f14a3a8a0d5ca9ea729caa",
+    "log_path": "/home/sudarshan/tpu-cake-evidence/calibration-failure-verification-ea37403-dd80bb0.log",
+    "log_sha256": "b83d3c5d5f64648f44cd27fe45c735d3eb6df4425c1bf31be60f77176151ad64",
+    "log_size_bytes": 1123,
+    "result": {
+      "attempt_complete": false,
+      "attempt_id": "dd80bb0bcf3e37ccaa5cdc430f230c3c6f26091c9ac3100fa0f582c4877fa20b",
+      "correctness_parent_receipt_sha256": "7a28ba5f08a349f37dcbe50924a25fa76eac4d77e40d468a4dd71ea201bf7db2",
+      "evidence_sha256": "3672caafb174931bdbb0212c0839de4cd3e56ef1c29c91619b77ceccef4903d0",
+      "execution_authority_sha256": "8a5fef866f793d75c59a1291f1b330a2a3c1c211b8d0cf09c5c0077b5c2255ec",
+      "failure_file_sha256": "d94b8b04835c089a23f6b51a54422b7e2c9d57723d6d9405ee29a8b0fae4f8fb",
+      "holdout_authorized": false,
+      "ledger_sha256": "e81f6d4f302f6993e5f2dbd3f22bd4a990609f4ec24fb4cf9b7339e524d4f63c",
+      "measurements_valid": true,
+      "observed_seal_authorization": "pending_independent_replay",
+      "phase_ledger_sha256": "ffbccf9ca537e6ef2fa615299e8ae3a932b5c11a7d0b20400d57954b5685d47e",
+      "protocol_id": "136d8c93106124da136084ba273b5f5ff32a1c29ce564527895e7f11393085c9",
+      "receipt_sha256": "bf1f3bd74d561752e92442b1d2c96ab73d7dec312e1b07da62ee59df270bb4b2",
+      "sample_count": 2560,
+      "seal_sha256": "ec8cb0b82402436afe7c327402690853fb0708d04b732fe759f2172c053a3aed",
+      "source_authority_sha256": "70bcc7eb6f171a9528ce7fbcdfc4516dadafc81193a7813d27757152704c9092"
+    },
+    "verifier_commit": "ea37403c51d643e24393b76130919826b705d9f5"
+  }
+}

@@ -16,6 +16,7 @@ from tpu_cake.matmul_collective_surface_calibration_failure_verifier import (
 from tpu_cake.matmul_collective_surface_calibration_verifier import _identity_sha256
 
 _MARKER = "MATMUL_COLLECTIVE_SURFACE_CALIBRATION_MANIFEST_ORDER_INVALID"
+_RECORD = Path("contracts/matmul-collective-surface-calibration-failure-v1.json")
 
 
 def _failure_text(marker: str = _MARKER) -> str:
@@ -39,6 +40,38 @@ def _write_failure(
         )
         + "\n"
     )
+
+
+def test_failure_record_binds_frozen_archive_and_incomplete_verdict() -> None:
+    record = json.loads(_RECORD.read_text())
+
+    assert record["schema_version"] == ("matmul-collective-surface-calibration-failure-record-v1")
+    assert record["archive"] == {
+        "file_count": 1031,
+        "maximum_member_size_bytes": 1073741824,
+        "maximum_members": 5000,
+        "maximum_total_size_bytes": 2147483648,
+        "member_count": 1389,
+        "path": (
+            "/home/sudarshan/tpu-cake-evidence/"
+            "matmul-collective-surface-calibration-a990ebd-dd80bb0.failed.tar.zst"
+        ),
+        "root_name": "matmul-collective-surface-calibration-a990ebd-dd80bb0",
+        "sha256": "6902e0ae70703d266ab5adf1991009d85039dedc0fe4e652c1c49285144c5956",
+        "size_bytes": 8310557,
+        "total_file_bytes": 1115313817,
+    }
+    assert record["decision"] == {
+        "attempt_complete": False,
+        "holdout_authorized": False,
+        "holdout_executed": False,
+        "measurements_valid": True,
+        "reason": "manifest-order-failure-before-archived-independent-replay-v1",
+        "retry_allowed": False,
+    }
+    assert record["verification"]["result"]["sample_count"] == 2560
+    assert record["verification"]["result"]["holdout_authorized"] is False
+    assert record["verification"]["result"]["attempt_complete"] is False
 
 
 def test_manifest_failure_requires_the_exact_pydantic_failure(tmp_path: Path) -> None:
