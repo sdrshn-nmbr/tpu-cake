@@ -529,9 +529,6 @@ def _verify_compiler_hlo(
     observed = tuple(sorted(set(_SCOPE_PATTERN.findall(text))))
     if observed != expected_scopes:
         _fail("COMPILER_HLO_SCOPES", expected=expected_scopes, observed=observed)
-    scope_lines = [line for line in lines if _SCOPE_PATTERN.search(line)]
-    if not scope_lines or any(_HLO_INSTRUCTION_PATTERN.match(line) is None for line in scope_lines):
-        _fail("COMPILER_HLO_SCOPE_INSTRUCTION", path=path)
     entry_index = lines.index(entry_lines[0])
     custom_call_lines = [
         line

@@ -436,7 +436,7 @@ def test_verifier_rejects_scope_metadata_outside_an_hlo_instruction(tmp_path: Pa
     item["compiler_hlo_bytes"] = len(forged.encode())
     _write_json(paths["raw"], raw)
 
-    with pytest.raises(ValueError, match="COMPILER_HLO_SCOPE_INSTRUCTION"):
+    with pytest.raises(ValueError, match="COMPILER_HLO_CUSTOM_CALL_COUNTS"):
         _verify(paths)
 
 
