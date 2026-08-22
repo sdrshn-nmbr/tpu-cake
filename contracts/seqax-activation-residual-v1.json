@@ -5,6 +5,12 @@
   "claim_scope": "fixed-batch64-sequence64-model256-layer1-bf16-pallas-performance",
   "parent_failure_record_id": "1f62ff3394dedf1eca6cba4df92d6d2f316202a907897f75766a1017c48eab94",
   "compilation_source_root": "/home/sudarshan/tpu-cake-main",
+  "source_remote_url": "https://github.com/sdrshn-nmbr/tpu-cake.git",
+  "source_branch": "main",
+  "compiler_environment": {
+    "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
+  "compile_input_mode": "abstract-only",
   "compiler_identity_status": "pending",
   "compile_capture_count": 2,
   "correctness_policy_status": "pending-calibration",
@@ -46,7 +52,6 @@
   },
   "baseline": "residual_all_reduce",
   "candidate": "standard",
-  "compile_seed": 15562674972400553336,
   "correctness_seeds": [
     13829736965293478483,
     3292121790064367128,

@@ -20,10 +20,6 @@ SEQAX_ACTIVATION_RESIDUAL_SCOPE = "fixed-batch64-sequence64-model256-layer1-bf16
 SEQAX_ACTIVATION_RESIDUAL_PARENT_FAILURE_RECORD_ID = (
     "1f62ff3394dedf1eca6cba4df92d6d2f316202a907897f75766a1017c48eab94"
 )
-SEQAX_ACTIVATION_RESIDUAL_COMPILE_SEED = semantic_seed(
-    SEQAX_ACTIVATION_RESIDUAL_SCHEMA,
-    "compile",
-)
 SEQAX_ACTIVATION_RESIDUAL_CORRECTNESS_SEEDS = tuple(
     semantic_seed(SEQAX_ACTIVATION_RESIDUAL_SCHEMA, f"correctness:{index}") for index in range(5)
 )
@@ -73,6 +69,10 @@ class SeqaxActivationResidualDesignContract(BaseModel):
     claim_scope: str
     parent_failure_record_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     compilation_source_root: str
+    source_remote_url: str
+    source_branch: Literal["main"]
+    compiler_environment: dict[str, str]
+    compile_input_mode: Literal["abstract-only"]
     compiler_identity_status: Literal["pending"]
     compile_capture_count: Literal[2]
     correctness_policy_status: Literal["pending-calibration"]
@@ -97,7 +97,6 @@ class SeqaxActivationResidualDesignContract(BaseModel):
     parameters: dict[str, int | str]
     baseline: Literal[SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE]
     candidate: Literal[SeqaxResidualNormStrategy.STANDARD]
-    compile_seed: int
     correctness_seeds: tuple[int, ...] = Field(min_length=5, max_length=5)
     timing_seed: int
     warmup_iterations: int = Field(gt=0)
@@ -225,6 +224,12 @@ def default_seqax_activation_residual_design_contract(
         claim_scope=SEQAX_ACTIVATION_RESIDUAL_SCOPE,
         parent_failure_record_id=SEQAX_ACTIVATION_RESIDUAL_PARENT_FAILURE_RECORD_ID,
         compilation_source_root=SEQAX_ACTIVATION_RESIDUAL_COMPILATION_ROOT,
+        source_remote_url="https://github.com/sdrshn-nmbr/tpu-cake.git",
+        source_branch="main",
+        compiler_environment={
+            "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true",
+        },
+        compile_input_mode="abstract-only",
         compiler_identity_status="pending",
         compile_capture_count=2,
         correctness_policy_status="pending-calibration",
@@ -257,7 +262,6 @@ def default_seqax_activation_residual_design_contract(
         parameters=_parameters(),
         baseline=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
         candidate=SeqaxResidualNormStrategy.STANDARD,
-        compile_seed=SEQAX_ACTIVATION_RESIDUAL_COMPILE_SEED,
         correctness_seeds=SEQAX_ACTIVATION_RESIDUAL_CORRECTNESS_SEEDS,
         timing_seed=SEQAX_ACTIVATION_RESIDUAL_TIMING_SEED,
         warmup_iterations=5,
