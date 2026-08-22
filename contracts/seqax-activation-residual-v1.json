@@ -12,8 +12,12 @@
     "TPU_LIBRARY_PATH": "/home/sudarshan/tpu-cake-main/.venv/lib/python3.12/site-packages/libtpu/libtpu.so"
   },
   "compile_input_mode": "abstract-only",
-  "compiler_identity_status": "pending",
+  "compiler_identity_status": "failed",
   "compile_capture_count": 2,
+  "compiler_capture_completed_count": 0,
+  "compiler_capture_failed_invocation_id": "d489eb3baf0bd292e4cad1d49e1f493f",
+  "compiler_second_capture_launched": false,
+  "compiler_retry_authorized": false,
   "correctness_policy_status": "pending-calibration",
   "timing_authorized": false,
   "scaling_book_sources": [

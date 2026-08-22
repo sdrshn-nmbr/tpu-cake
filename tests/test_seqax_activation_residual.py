@@ -16,7 +16,9 @@ from tpu_cake.identity import json_sha256
 from tpu_cake.physical_cost_model import analyze_physical_kernel
 from tpu_cake.runner import _runtime_identity
 from tpu_cake.seqax_activation_residual import (
+    SeqaxActivationResidualCompilerFailureRecord,
     SeqaxActivationResidualDesignContract,
+    default_seqax_activation_residual_compiler_failure_record,
     default_seqax_activation_residual_design_contract,
 )
 from tpu_cake.seqax_activation_residual_runner import (
@@ -53,6 +55,10 @@ def test_external_activation_residual_design_is_canonical() -> None:
         "TPU_LIBRARY_PATH": "/home/sudarshan/tpu-cake-main/.venv/lib/python3.12/site-packages/libtpu/libtpu.so",
     }
     assert saved.compile_input_mode == "abstract-only"
+    assert saved.compiler_identity_status == "failed"
+    assert saved.compiler_capture_completed_count == 0
+    assert not saved.compiler_second_capture_launched
+    assert not saved.compiler_retry_authorized
     assert saved.full_activation_bf16_bytes_per_data_shard == 1_048_576
     assert saved.full_activation_bf16_bytes_per_data_shard > (
         saved.illustrative_latency_crossover_bytes
@@ -106,6 +112,19 @@ def test_activation_residual_static_plans_replay() -> None:
             report.memory.peak_live_vmem_bytes_per_device
             == expected.expected_peak_vmem_bytes_per_device
         )
+
+
+def test_failed_compiler_capture_is_canonical_and_terminal() -> None:
+    saved = SeqaxActivationResidualCompilerFailureRecord.model_validate_json(
+        Path("contracts/seqax-activation-residual-compiler-failure-v1.json").read_text()
+    )
+
+    assert saved == default_seqax_activation_residual_compiler_failure_record()
+    assert not saved.compilation_started
+    assert not saved.model_outputs_executed
+    assert not saved.second_capture_launched
+    assert saved.claim_consumed
+    assert not saved.retry_authorized
 
 
 def _boundary_hlo(
@@ -338,6 +357,8 @@ def test_compile_path_uses_abstract_inputs_and_has_shared_abi() -> None:
     prepared = _prepare_candidates(design)
 
     assert "ShapeDtypeStruct" in module_source
+    assert '"bool": jnp.bool_' in module_source
+    assert '"uint32": jnp.uint32' in module_source
     assert "seqax_forward_inputs" not in module_source
     assert "jax.device_put(" not in module_source
     assert ".block_until_ready(" not in module_source
@@ -345,5 +366,10 @@ def test_compile_path_uses_abstract_inputs_and_has_shared_abi() -> None:
     assert "pallas_executable(" not in source
     assert "control_executable(" not in source
     assert len(prepared[0].plan.input_contracts) == 13
+    assert {contract.dtype for contract in prepared[0].plan.input_contracts} == {
+        "bool",
+        "float32",
+        "uint32",
+    }
     assert prepared[0].plan.input_contracts == prepared[1].plan.input_contracts
     assert prepared[0].plan.output_contracts == prepared[1].plan.output_contracts

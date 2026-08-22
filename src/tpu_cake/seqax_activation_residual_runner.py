@@ -837,8 +837,10 @@ def _prepare_candidates(
 def _abstract_inputs(prepared: _PreparedCandidate, mesh: Any) -> tuple[Any, ...]:
     dtypes = {
         "bfloat16": jnp.bfloat16,
+        "bool": jnp.bool_,
         "float32": jnp.float32,
         "int32": jnp.int32,
+        "uint32": jnp.uint32,
     }
     values = []
     for contract in prepared.plan.input_contracts:

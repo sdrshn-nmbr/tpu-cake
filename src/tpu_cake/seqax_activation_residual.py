@@ -20,6 +20,13 @@ SEQAX_ACTIVATION_RESIDUAL_SCOPE = "fixed-batch64-sequence64-model256-layer1-bf16
 SEQAX_ACTIVATION_RESIDUAL_PARENT_FAILURE_RECORD_ID = (
     "1f62ff3394dedf1eca6cba4df92d6d2f316202a907897f75766a1017c48eab94"
 )
+SEQAX_ACTIVATION_RESIDUAL_COMPILER_FAILURE_SCHEMA = (
+    "seqax-activation-residual-compiler-failure-record-v1"
+)
+SEQAX_ACTIVATION_RESIDUAL_FAILED_DESIGN_ID = (
+    "babf5833e25bcad1c596c82163084ae66d6a1e6c7d508501aad07635c7ad8cde"
+)
+SEQAX_ACTIVATION_RESIDUAL_FAILED_INVOCATION_ID = "d489eb3baf0bd292e4cad1d49e1f493f"
 SEQAX_ACTIVATION_RESIDUAL_CORRECTNESS_SEEDS = tuple(
     semantic_seed(SEQAX_ACTIVATION_RESIDUAL_SCHEMA, f"correctness:{index}") for index in range(5)
 )
@@ -73,8 +80,12 @@ class SeqaxActivationResidualDesignContract(BaseModel):
     source_branch: Literal["main"]
     compiler_environment: dict[str, str]
     compile_input_mode: Literal["abstract-only"]
-    compiler_identity_status: Literal["pending"]
+    compiler_identity_status: Literal["failed"]
     compile_capture_count: Literal[2]
+    compiler_capture_completed_count: Literal[0]
+    compiler_capture_failed_invocation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    compiler_second_capture_launched: Literal[False]
+    compiler_retry_authorized: Literal[False]
     correctness_policy_status: Literal["pending-calibration"]
     timing_authorized: Literal[False]
     scaling_book_sources: tuple[str, ...] = Field(min_length=2, max_length=2)
@@ -231,8 +242,12 @@ def default_seqax_activation_residual_design_contract(
             "TPU_LIBRARY_PATH": "/home/sudarshan/tpu-cake-main/.venv/lib/python3.12/site-packages/libtpu/libtpu.so",
         },
         compile_input_mode="abstract-only",
-        compiler_identity_status="pending",
+        compiler_identity_status="failed",
         compile_capture_count=2,
+        compiler_capture_completed_count=0,
+        compiler_capture_failed_invocation_id=SEQAX_ACTIVATION_RESIDUAL_FAILED_INVOCATION_ID,
+        compiler_second_capture_launched=False,
+        compiler_retry_authorized=False,
         correctness_policy_status="pending-calibration",
         timing_authorized=False,
         scaling_book_sources=(
@@ -291,4 +306,83 @@ def default_seqax_activation_residual_design_contract(
         device_count=8,
         mesh={"d": 2, "t": 4},
         candidates=_plans(),
+    )
+
+
+class SeqaxActivationResidualCompilerFailureRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[SEQAX_ACTIVATION_RESIDUAL_COMPILER_FAILURE_SCHEMA] = (
+        SEQAX_ACTIVATION_RESIDUAL_COMPILER_FAILURE_SCHEMA
+    )
+    failed_design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    invocation_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    source_tree: str = Field(pattern=r"^[0-9a-f]{40}$")
+    design_file_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runner_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failure_root: str
+    failure_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    service_log_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_path: str
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_member_count: Literal[8]
+    failure_phase: Literal["abstract-input-construction-before-lowering"]
+    error: Literal["SEQAX_ACTIVATION_RESIDUAL_ABSTRACT_DTYPE_UNSUPPORTED dtype=uint32"]
+    compilation_started: Literal[False]
+    model_outputs_executed: Literal[False]
+    timing_collected: Literal[False]
+    second_capture_launched: Literal[False]
+    claim_consumed: Literal[True]
+    retry_authorized: Literal[False]
+    conclusion: Literal["compiler-capture-failed-frozen-before-lowering-v1"]
+
+    @model_validator(mode="after")
+    def record_is_canonical(self) -> SeqaxActivationResidualCompilerFailureRecord:
+        expected = default_seqax_activation_residual_compiler_failure_record()
+        if self.model_dump(exclude_computed_fields=True) != expected.model_dump(
+            exclude_computed_fields=True
+        ):
+            raise ValueError("Seqax activation residual compiler failure record mismatch")
+        return self
+
+    @computed_field
+    @property
+    def record_id(self) -> str:
+        return model_identity_sha256(self)
+
+
+def default_seqax_activation_residual_compiler_failure_record() -> (
+    SeqaxActivationResidualCompilerFailureRecord
+):
+    root = (
+        "/home/sudarshan/tpu-cake-evidence/"
+        "seqax-activation-residual-compiler-e289181-d489eb3baf0bd292e4cad1d49e1f493f"
+    )
+    return SeqaxActivationResidualCompilerFailureRecord.model_construct(
+        failed_design_id=SEQAX_ACTIVATION_RESIDUAL_FAILED_DESIGN_ID,
+        invocation_id=SEQAX_ACTIVATION_RESIDUAL_FAILED_INVOCATION_ID,
+        source_commit="e2891810dacdb9b286da5980c5a72261ca0b34d9",
+        source_tree="c333561c8ac7a50f485aa64bc85524ad0253fdeb",
+        design_file_sha256=("e1e363c2da4a672f441dc6ec7c83c7a8864cdb7ed002c712ed9e8fafe325e4de"),
+        runner_source_sha256=("da568326911c5598de938be5fe0d534d830ac0499aea60d954f2fcae1d5b80cd"),
+        uv_lock_sha256=("03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9"),
+        failure_root=root,
+        failure_artifact_sha256=(
+            "55bf18b72eadec5bee60cacd151342732005d369fdd5136ffa29ba27a65da967"
+        ),
+        service_log_sha256=("d99fe5111ee52f8028ade1b268c352fa5303cca42c985aefa3b08c92b71b1018"),
+        archive_path=f"{root}.failed.tar.zst",
+        archive_sha256=("43789afe0d360dc1065687ece65d8c06ab4db4a7303fe48a3903068cfd452e22"),
+        archive_member_count=8,
+        failure_phase="abstract-input-construction-before-lowering",
+        error="SEQAX_ACTIVATION_RESIDUAL_ABSTRACT_DTYPE_UNSUPPORTED dtype=uint32",
+        compilation_started=False,
+        model_outputs_executed=False,
+        timing_collected=False,
+        second_capture_launched=False,
+        claim_consumed=True,
+        retry_authorized=False,
+        conclusion="compiler-capture-failed-frozen-before-lowering-v1",
     )
