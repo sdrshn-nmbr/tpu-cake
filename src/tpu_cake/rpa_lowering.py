@@ -20,6 +20,7 @@ from jax.sharding import PartitionSpec as P
 from xdsl.dialects.builtin import BFloat16Type, IntegerType, ModuleOp
 from xdsl.ir import Operation
 
+from tpu_cake.artifacts import file_sha256
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
     BufferType,
@@ -30,6 +31,7 @@ from tpu_cake.dialects.tpu_schedule import (
     YieldOp,
 )
 from tpu_cake.frontend import schedule_sha256
+from tpu_cake.identity import RenderedSourceIdentity
 from tpu_cake.lowering import UnsupportedLoweringError
 from tpu_cake.rpa_owned_kernel import (
     OwnedRpaCase,
@@ -127,7 +129,7 @@ def _preflight_decode_metadata(
 
 
 @dataclass(frozen=True)
-class FusedRpaPlan:
+class FusedRpaPlan(RenderedSourceIdentity):
     name: str
     schedule_sha256: str
     query_shape: tuple[int, ...]
@@ -177,13 +179,13 @@ class FusedRpaPlan:
         ):
             raise ValueError("fused RPA executor does not match the pinned backend callable")
         source_path = Path(source)
-        source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        source_sha256 = file_sha256(source_path)
         live_manifest: list[tuple[str, str]] = []
         for name, _expected_sha256 in self.backend_manifest:
             dependency = source_path.parent / name
             if not dependency.is_file():
                 raise ValueError(f"fused RPA backend dependency is missing: {name}")
-            live_manifest.append((name, hashlib.sha256(dependency.read_bytes()).hexdigest()))
+            live_manifest.append((name, file_sha256(dependency)))
         if (
             source_sha256 != self.backend_sha256
             or (source_path.name, source_sha256) not in self.backend_manifest
@@ -365,7 +367,7 @@ def _source_sha256(value):
     source = inspect.getsourcefile(inspect.unwrap(value))
     if source is None:
         raise RuntimeError("cannot locate a fused RPA backend source")
-    return hashlib.sha256(Path(source).read_bytes()).hexdigest()
+    return file_sha256(Path(source))
 
 
 def _backend_manifest():
@@ -389,10 +391,6 @@ def run_preflighted(*inputs):
         device_kind=jax.devices()[0].device_kind,
     )
 """
-
-    def source_sha256(self) -> str:
-        return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
-
 
 @dataclass(frozen=True)
 class ShardedFusedRpaPlan:
@@ -1287,6 +1285,6 @@ def lower_inkling_owned_rpa_decode_core_to_pallas(
         backend_repository_revision=core.backend_repository_revision.data,
         backend_file_revision=core.backend_file_revision.data,
         backend_sha256=core.backend_sha256.data,
-        implementation_sha256=hashlib.sha256(implementation_path.read_bytes()).hexdigest(),
-        lowering_sha256=hashlib.sha256(lowering_path.read_bytes()).hexdigest(),
+        implementation_sha256=file_sha256(implementation_path),
+        lowering_sha256=file_sha256(lowering_path),
     )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -17,18 +16,39 @@ import numpy as np
 from jax.sharding import NamedSharding
 from xdsl.dialects.builtin import BFloat16Type, Float32Type, ModuleOp
 
+from tpu_cake.artifacts import (
+    build_artifact_manifest,
+)
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import save_array as _save_array
+from tpu_cake.artifacts import (
+    write_json as _write_json,
+)
+from tpu_cake.artifacts import (
+    write_text as _write_text,
+)
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.tpu_schedule import BufferType, MxuEinsumOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.jax_lowering import JaxTensorContract
-from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
+from tpu_cake.ledger import (
+    EvidenceRun,
+    RunState,
+    finalize_ledger,
+    payload_sha256,
+    read_ledger_history,
+)
+from tpu_cake.physical_geometry import buffer_dimension_names as _names
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_pallas_lowering import (
     SeqaxPallasPlan,
     _einsum_tiles,
     _pallas_einsum,
     lower_seqax_physical_to_pallas,
+    place_inputs,
 )
 from tpu_cake.seqax_pallas_runner import (
     _compiler_hlo,
@@ -77,14 +97,6 @@ class CompiledCandidate:
     compiler_hlo: str
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _search_source_manifest() -> tuple[SourceFileContract, ...]:
     package = Path(__file__).resolve().parent
     paths = (
@@ -110,21 +122,6 @@ def _search_source_manifest() -> tuple[SourceFileContract, ...]:
         )
         for path in paths
     )
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-
-def _write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value)
-
-
-def _save_array(path: Path, value: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
 
 
 def _save_primitive_input(path: Path, value: np.ndarray, dtype_name: str) -> None:
@@ -258,10 +255,6 @@ def _compile_candidate(
         stablehlo=stablehlo,
         compiler_hlo=compiler_hlo,
     )
-
-
-def _names(buffer: BufferType) -> tuple[str, ...]:
-    return tuple(value.data for value in buffer.shape.dimensions)
 
 
 def _primitive_dtype(operation: MxuEinsumOp) -> tuple[jnp.dtype, str]:
@@ -476,16 +469,10 @@ def _resident_inputs(
     host_inputs: tuple[np.ndarray, ...],
     compiled: CompiledCandidate,
 ) -> tuple[jax.Array, ...]:
-    return tuple(
-        jax.device_put(
-            jnp.asarray(value),
-            NamedSharding(compiled.mesh, contract.partition_spec()),
-        )
-        for value, contract in zip(
-            host_inputs,
-            compiled.prepared.plan.input_contracts,
-            strict=True,
-        )
+    return place_inputs(
+        host_inputs,
+        compiled.prepared.plan.input_contracts,
+        compiled.mesh,
     )
 
 
@@ -638,21 +625,19 @@ def run_seqax_pallas_search(
     source_state_sha256 = _sha256(root / "source_state.json")
     ledger_path = root / "ledger.sqlite"
     run_id = semantic_sha256("seqax-pallas-tile-search-run-v1", contract.search_id)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.create(run_id, {"search_id": contract.search_id})
+    evidence_run = EvidenceRun(ledger_path, run_id)
+    evidence_run.create({"search_id": contract.search_id})
 
     distributed, prepared = prepare_seqax_pallas_candidates(contract)
     _write_text(root / "distributed.xdsl", canonical_text(distributed))
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.VERIFIED,
-            {
-                "candidate_schedules": {
-                    value.candidate.name: value.plan.physical_schedule_sha256 for value in prepared
-                }
-            },
-        )
+    evidence_run.transition(
+        RunState.VERIFIED,
+        {
+            "candidate_schedules": {
+                value.candidate.name: value.plan.physical_schedule_sha256 for value in prepared
+            }
+        },
+    )
     plan_records = []
     for value in prepared:
         plan_root = root / "plans" / value.candidate.name
@@ -660,16 +645,14 @@ def run_seqax_pallas_search(
         _write_text(plan_root / "lowered_pallas.py", value.plan.render_executable_source())
         _write_json(plan_root / "plan_manifest.json", value.plan.manifest())
         _write_json(plan_root / "tiles.json", value.tiles)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.LOWERED,
-            {
-                "pallas_sources": {
-                    value.candidate.name: value.plan.source_sha256() for value in prepared
-                }
-            },
-        )
+    evidence_run.transition(
+        RunState.LOWERED,
+        {
+            "pallas_sources": {
+                value.candidate.name: value.plan.source_sha256() for value in prepared
+            }
+        },
+    )
 
     compile_host_inputs = tuple(
         np.asarray(value)
@@ -695,12 +678,10 @@ def run_seqax_pallas_search(
                 compiler_hlo_sha256=_sha256(plan_root / "compiler_hlo.txt"),
             )
         )
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COMPILED,
-            {"plans": [value.model_dump(mode="json") for value in plan_records]},
-        )
+    evidence_run.transition(
+        RunState.COMPILED,
+        {"plans": [value.model_dump(mode="json") for value in plan_records]},
+    )
 
     primitive = _primitive_observations(root / "primitive", contract, prepared)
     correctness = _candidate_correctness(
@@ -716,17 +697,13 @@ def run_seqax_pallas_search(
         root / "correctness.json",
         [value.model_dump(mode="json") for value in correctness],
     )
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.CORRECT,
-            {
-                "primitive_case_count": len(primitive),
-                "candidate_output_sha256": {
-                    value.name: value.output_sha256 for value in correctness
-                },
-            },
-        )
+    evidence_run.transition(
+        RunState.CORRECT,
+        {
+            "primitive_case_count": len(primitive),
+            "candidate_output_sha256": {value.name: value.output_sha256 for value in correctness},
+        },
+    )
 
     timing_inputs = {
         value.prepared.candidate.name: _resident_inputs(compile_host_inputs, value)
@@ -810,32 +787,28 @@ def run_seqax_pallas_search(
         winner=winner,
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.TIMED,
-            {
-                "round_count": len(rounds),
-                "confirmation_round_count": len(confirmation_rounds),
-                "provisional_winner": provisional_winner,
-                "winner": winner,
-            },
-        )
+    evidence_run.transition(
+        RunState.TIMED,
+        {
+            "round_count": len(rounds),
+            "confirmation_round_count": len(confirmation_rounds),
+            "provisional_winner": provisional_winner,
+            "winner": winner,
+        },
+    )
     _close_ledger(ledger_path)
     _validate_seqax_pallas_search(
         root,
         contract,
         require_accepted=False,
     )
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.ACCEPTED,
-            {
-                "result_sha256": _sha256(root / "result.json"),
-                "winner": winner,
-            },
-        )
+    evidence_run.transition(
+        RunState.ACCEPTED,
+        {
+            "result_sha256": _sha256(root / "result.json"),
+            "winner": winner,
+        },
+    )
     _close_ledger(ledger_path)
     _build_receipt(root, contract)
     return validate_seqax_pallas_search(root, contract)
@@ -971,20 +944,7 @@ def _artifact_role(relative: Path) -> ArtifactRole:
 
 
 def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
-    artifacts = []
-    for path in sorted(value for value in root.rglob("*") if value.is_file()):
-        relative = path.relative_to(root)
-        if relative.as_posix() == "receipt.json":
-            continue
-        artifacts.append(
-            ArtifactReference(
-                path=relative.as_posix(),
-                size_bytes=path.stat().st_size,
-                sha256=_sha256(path),
-                role=_artifact_role(relative),
-            )
-        )
-    return tuple(artifacts)
+    return build_artifact_manifest(root, role_for_path=_artifact_role)
 
 
 def _build_receipt(
@@ -1477,7 +1437,7 @@ def _validate_seqax_pallas_search(
     if tuple(event.state for event in history) != tuple(value[0] for value in ledger_payloads):
         raise ValueError("SEQAX_PALLAS_SEARCH_LEDGER_STATE_MISMATCH")
     if tuple(event.payload_sha256 for event in history) != tuple(
-        ExperimentLedger.payload_sha256(value[1]) for value in ledger_payloads
+        payload_sha256(value[1]) for value in ledger_payloads
     ):
         raise ValueError("SEQAX_PALLAS_SEARCH_LEDGER_PAYLOAD_MISMATCH")
 

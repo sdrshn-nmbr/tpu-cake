@@ -20,19 +20,34 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import jaxlib
 import ml_dtypes
 import numpy as np
-from jax.sharding import NamedSharding, PartitionSpec
+from jax.sharding import PartitionSpec
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from xdsl.utils.exceptions import VerifyException
 
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import (
+    write_json as _write_json,
+)
+from tpu_cake.artifacts import (
+    write_text as _write_text,
+)
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity, SourceFileContract
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.jax_lowering import JaxDistributedMeshPlan, lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
+from tpu_cake.ledger import (
+    EvidenceRun,
+    ExperimentLedger,
+    RunState,
+    finalize_ledger,
+    payload_sha256,
+    read_ledger_history,
+)
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_numerical import (
     SeqaxBf16CpuReferenceReplayAssessment,
@@ -67,6 +82,7 @@ from tpu_cake.seqax_pallas_lowering import (
     SeqaxPallasPlan,
     _parse_physical,
     lower_seqax_physical_to_pallas,
+    place_inputs,
 )
 from tpu_cake.seqax_pallas_runner import (
     _compiler_hlo,
@@ -326,27 +342,6 @@ class _CompiledScenario:
     record: SeqaxBf16PlanRecord
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _text_sha256(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
-
-
-def _write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value)
-
-
-def _write_json(path: Path, value: object) -> None:
-    _write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-
 def _write_json_atomic(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent.parent / (
@@ -580,21 +575,15 @@ def _close_ledger(path: Path) -> None:
 
 
 def _transition_or_replay(
-    ledger: ExperimentLedger,
-    run_id: str,
+    run: EvidenceRun,
     state: RunState,
     payload: dict[str, object],
 ) -> None:
-    expected_hash = ExperimentLedger.payload_sha256(payload)
-    existing = next((event for event in ledger.history(run_id) if event.state is state), None)
-    if existing is not None:
-        if existing.payload_sha256 != expected_hash:
-            raise ValueError(f"SEQAX_BF16_LEDGER_REPLAY_MISMATCH state={state.value}")
-        return
-    if state is RunState.CREATED:
-        ledger.create(run_id, payload)
-    else:
-        ledger.transition(run_id, state, payload)
+    run.record(
+        state,
+        payload,
+        conflict_error="SEQAX_BF16_LEDGER_REPLAY_MISMATCH state={state}",
+    )
 
 
 def _record_failure(root: Path, run_id: str, error: Exception) -> None:
@@ -674,13 +663,7 @@ def _validate_devices(devices: tuple[Any, ...], contract: SeqaxBf16ValidationCon
 
 
 def _resident_inputs(host_inputs: tuple[np.ndarray, ...], plan: Any, mesh: Any) -> tuple[Any, ...]:
-    return tuple(
-        jax.device_put(
-            jnp.asarray(value),
-            NamedSharding(mesh, tensor_contract.partition_spec()),
-        )
-        for value, tensor_contract in zip(host_inputs, plan.input_contracts, strict=True)
-    )
+    return place_inputs(host_inputs, plan.input_contracts, mesh)
 
 
 def _execute_outputs(executable: Any, inputs: tuple[Any, ...]) -> tuple[np.ndarray, ...]:
@@ -2541,67 +2524,59 @@ def _execute_seqax_bf16_validation(
     if source_state["git_commit"] != source_commit:
         raise ValueError("SEQAX_BF16_SOURCE_CHANGED_DURING_RUN")
     ledger_path = root / "ledger.sqlite"
-    with ExperimentLedger(ledger_path) as ledger:
-        _transition_or_replay(
-            ledger,
-            run_id,
-            RunState.CREATED,
-            {
-                "schema": SEQAX_BF16_RUN_SCHEMA,
-                "contract_id": contract.contract_id,
-                "source_commit": source_state["git_commit"],
-            },
-        )
+    evidence_run = EvidenceRun(ledger_path, run_id)
+    _transition_or_replay(
+        evidence_run,
+        RunState.CREATED,
+        {
+            "schema": SEQAX_BF16_RUN_SCHEMA,
+            "contract_id": contract.contract_id,
+            "source_commit": source_state["git_commit"],
+        },
+    )
 
     compiled = tuple(_prepare_scenario(root, scenario, devices) for scenario in contract.scenarios)
-    with ExperimentLedger(ledger_path) as ledger:
-        _transition_or_replay(
-            ledger,
-            run_id,
-            RunState.VERIFIED,
-            {
-                "distributed_schedules": {
-                    value.scenario.name: value.record.distributed_schedule_sha256
-                    for value in compiled
-                }
+    _transition_or_replay(
+        evidence_run,
+        RunState.VERIFIED,
+        {
+            "distributed_schedules": {
+                value.scenario.name: value.record.distributed_schedule_sha256 for value in compiled
+            }
+        },
+    )
+    _transition_or_replay(
+        evidence_run,
+        RunState.LOWERED,
+        {
+            "physical_schedules": {
+                value.scenario.name: value.record.physical_schedule_sha256 for value in compiled
             },
-        )
-        _transition_or_replay(
-            ledger,
-            run_id,
-            RunState.LOWERED,
-            {
-                "physical_schedules": {
-                    value.scenario.name: value.record.physical_schedule_sha256 for value in compiled
-                },
-                "pallas_sources": {
-                    value.scenario.name: value.record.pallas_source_sha256 for value in compiled
-                },
+            "pallas_sources": {
+                value.scenario.name: value.record.pallas_source_sha256 for value in compiled
             },
-        )
-        _transition_or_replay(
-            ledger,
-            run_id,
-            RunState.COMPILED,
-            {"plans": [value.record.model_dump(mode="json") for value in compiled]},
-        )
+        },
+    )
+    _transition_or_replay(
+        evidence_run,
+        RunState.COMPILED,
+        {"plans": [value.record.model_dump(mode="json") for value in compiled]},
+    )
 
     observations = tuple(
         _run_seed(root, value, seed, contract)
         for value in compiled
         for seed in value.scenario.seeds
     )
-    with ExperimentLedger(ledger_path) as ledger:
-        _transition_or_replay(
-            ledger,
-            run_id,
-            RunState.CORRECT,
-            {
-                "observations": len(observations),
-                "pallas_outputs": [value.pallas_output_sha256 for value in observations],
-                "control_outputs": [value.control_output_sha256 for value in observations],
-            },
-        )
+    _transition_or_replay(
+        evidence_run,
+        RunState.CORRECT,
+        {
+            "observations": len(observations),
+            "pallas_outputs": [value.pallas_output_sha256 for value in observations],
+            "control_outputs": [value.control_output_sha256 for value in observations],
+        },
+    )
 
     discriminators = _run_discriminators(root, contract, compiled[0], devices)
     result = SeqaxBf16ValidationResult(
@@ -2619,23 +2594,21 @@ def _execute_seqax_bf16_validation(
         claim_scope="producer-host-bf16-validation-only-v1",
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
-    with ExperimentLedger(ledger_path) as ledger:
-        _transition_or_replay(
-            ledger,
-            run_id,
-            RunState.VALIDATED,
-            {
-                "discriminators": [
-                    {
-                        "name": value.discriminator.value,
-                        "artifacts": list(value.artifact_sha256),
-                    }
-                    for value in discriminators
-                ],
-                "result_sha256": _sha256(root / "result.json"),
-            },
-        )
-        already_accepted = ledger.current_state(run_id) is RunState.ACCEPTED
+    _transition_or_replay(
+        evidence_run,
+        RunState.VALIDATED,
+        {
+            "discriminators": [
+                {
+                    "name": value.discriminator.value,
+                    "artifacts": list(value.artifact_sha256),
+                }
+                for value in discriminators
+            ],
+            "result_sha256": _sha256(root / "result.json"),
+        },
+    )
+    already_accepted = evidence_run.current_state() is RunState.ACCEPTED
     _close_ledger(ledger_path)
     _validate(
         root,
@@ -2643,13 +2616,11 @@ def _execute_seqax_bf16_validation(
         require_accepted=already_accepted,
         require_receipt=False,
     )
-    with ExperimentLedger(ledger_path) as ledger:
-        _transition_or_replay(
-            ledger,
-            run_id,
-            RunState.ACCEPTED,
-            {"result_sha256": _sha256(root / "result.json"), "producer_passed": True},
-        )
+    _transition_or_replay(
+        evidence_run,
+        RunState.ACCEPTED,
+        {"result_sha256": _sha256(root / "result.json"), "producer_passed": True},
+    )
     _close_ledger(ledger_path)
     _build_receipt(root, contract, run_id)
     return validate_seqax_bf16_validation(root, contract)
@@ -3797,7 +3768,7 @@ def _validate(
     if tuple(value.state for value in history) != tuple(state for state, _payload in payloads):
         raise ValueError("SEQAX_BF16_LEDGER_STATE_MISMATCH")
     if tuple(value.payload_sha256 for value in history) != tuple(
-        ExperimentLedger.payload_sha256(payload) for _state, payload in payloads
+        payload_sha256(payload) for _state, payload in payloads
     ):
         raise ValueError("SEQAX_BF16_LEDGER_PAYLOAD_MISMATCH")
     if require_receipt:

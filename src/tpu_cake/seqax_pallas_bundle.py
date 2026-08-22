@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -13,22 +12,25 @@ from pathlib import Path
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
-from xprof import profile_data
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.artifacts import resolve_bundle_artifact
+from tpu_cake.artifacts import resolved_artifact_reference as _reference
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
     CorrectnessResult,
-    EvidencePhase,
-    EvidencePhaseName,
     EvidenceProfile,
     KernelExperiment,
     RunReceipt,
     RunStatus,
+    group_evidence_phases,
+)
+from tpu_cake.contracts import (
+    counter_profile_experiment as _counter_experiment,
 )
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, array_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.metrics import (
     FormulaIdentity,
     MeasurementInterval,
@@ -66,7 +68,14 @@ from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_canonical_reference,
     seqax_forward_inputs,
 )
-from tpu_cake.xprof_evidence import assess_capture, capture_metrics
+from tpu_cake.xprof_evidence import (
+    XPlaneIndex,
+    assess_capture,
+    capture_metrics,
+)
+from tpu_cake.xprof_evidence import (
+    canonical_profile_assessment as _canonical_profile_assessment,
+)
 from tpu_cake.xprof_export import DEFAULT_TOOLS, XProfExportManifest, export_xprof_capture
 
 _PHASES = ("timing", "trace", "counters")
@@ -80,14 +89,6 @@ class _XProfDerivedManifest(BaseModel):
     artifacts: tuple[ArtifactReference, ...]
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _trusted_plan():
     distributed = seqax_forward_schedule(**SEQAX_EVIDENCE_PARAMETERS)
     physical = lower_seqax_forward_to_physical(distributed).module
@@ -96,46 +97,6 @@ def _trusted_plan():
 
 def _trusted_experiment() -> KernelExperiment:
     return seqax_physical_pallas_experiment(_trusted_plan()[2])
-
-
-def _counter_experiment(experiment: KernelExperiment) -> KernelExperiment:
-    return experiment.model_copy(
-        update={
-            "profile": experiment.profile.model_copy(
-                update={
-                    "require_hbm_read_counters": True,
-                    "require_hbm_write_counters": True,
-                    "require_cycle_counters": True,
-                    "minimum_counter_device_planes": experiment.target.chip_count,
-                }
-            )
-        }
-    )
-
-
-def _canonical_profile_assessment(value: dict[str, object]) -> dict[str, object]:
-    normalized = json.loads(json.dumps(value))
-    for key in ("timing_trace", "counter_trace"):
-        assessment = normalized.get(key)
-        if not isinstance(assessment, dict):
-            continue
-        capture = assessment.get("capture")
-        if not isinstance(capture, dict):
-            continue
-        program_ids = capture.get("timed_program_ids")
-        if isinstance(program_ids, list):
-            capture["timed_program_ids"] = sorted(program_ids)
-    return normalized
-
-
-def _reference(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
-    path = path.resolve()
-    return ArtifactReference(
-        path=path.relative_to(root.resolve()).as_posix(),
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-        role=role,
-    )
 
 
 def _load_result(root: Path, phase: str) -> SeqaxPallasRunResult:
@@ -588,7 +549,7 @@ def _validate_phase(
     )
     if tuple(event.state for event in history) != expected_states or tuple(
         event.payload_sha256 for event in history
-    ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
+    ) != tuple(payload_sha256(payload) for payload in expected_payloads):
         raise ValueError(f"SEQAX_PALLAS_LEDGER_REPLAY_MISMATCH phase={phase}")
     return maximum_absolute_error, maximum_relative_error
 
@@ -806,22 +767,18 @@ def _validate_capture(assessment, *, counters: bool) -> None:
 def _profile_event_replay(root: Path, phase: str, assessment) -> tuple[float, ...]:
     program = _bound_program(assessment)
     xplane = next((root / phase / "profile").rglob("*.xplane.pb"))
-    profile = profile_data.ProfileData.from_file(xplane)
-    try:
-        steps = 0
-        durations: list[float] = []
-        for plane in profile.planes:
-            for line in plane.lines:
-                for event in line.events:
-                    steps += event.name == _STEP_EVENT
-                    if (
-                        plane.name == "/device:TPU:0"
-                        and line.name == "XLA Modules"
-                        and event.name == program.name
-                    ):
-                        durations.append(float(event.duration_ns))
-    finally:
-        profile.close()
+    steps = 0
+    durations: list[float] = []
+    for plane in XPlaneIndex.from_file(xplane).planes:
+        for line in plane.lines:
+            for event in line.events:
+                steps += event.name == _STEP_EVENT
+                if (
+                    plane.name == "/device:TPU:0"
+                    and line.name == "XLA Modules"
+                    and event.name == program.name
+                ):
+                    durations.append(float(event.duration_ns))
     if steps != SEQAX_EVIDENCE_MEASURED_ITERATIONS:
         raise ValueError(
             f"SEQAX_PALLAS_PROFILE_STEP_COUNT_MISMATCH phase={phase} "
@@ -1054,21 +1011,6 @@ def _artifact_roles(
     return roles
 
 
-def _phases(artifacts: tuple[ArtifactReference, ...]) -> tuple[EvidencePhase, ...]:
-    grouped: dict[EvidencePhaseName, list[str]] = {phase: [] for phase in EvidencePhaseName}
-    for artifact in artifacts:
-        first = Path(artifact.path).parts[0]
-        phase = (
-            EvidencePhaseName(first)
-            if first in {*_PHASES, "finalizer"}
-            else EvidencePhaseName.AGGREGATE
-        )
-        grouped[phase].append(artifact.path)
-    return tuple(
-        EvidencePhase(name=phase, artifact_paths=tuple(paths)) for phase, paths in grouped.items()
-    )
-
-
 def _profile_replays(root: Path, experiment: KernelExperiment):
     trace = assess_capture(root / "trace", experiment.profile)
     counters = assess_capture(root / "counters", _counter_experiment(experiment).profile)
@@ -1268,7 +1210,7 @@ def build_seqax_pallas_receipt(root: Path, *, write_receipt: bool = True) -> Run
         required_semantic_properties=(),
         metrics=_metrics(root, results, replays),
         artifacts=artifacts,
-        phases=_phases(artifacts),
+        phases=group_evidence_phases(artifacts, execution_phases=frozenset(_PHASES)),
     )
     validate_seqax_pallas_receipt(receipt, root=root)
     if write_receipt:
@@ -1310,7 +1252,10 @@ def validate_seqax_pallas_receipt(receipt: RunReceipt, *, root: Path) -> None:
     )
     if receipt.artifacts != expected_artifacts:
         raise ValueError("SEQAX_PALLAS_RECEIPT_ARTIFACT_MANIFEST_MISMATCH")
-    if receipt.phases != _phases(expected_artifacts):
+    if receipt.phases != group_evidence_phases(
+        expected_artifacts,
+        execution_phases=frozenset(_PHASES),
+    ):
         raise ValueError("SEQAX_PALLAS_RECEIPT_PHASE_PARTITION_MISMATCH")
     source_identities = {
         _source_identity(

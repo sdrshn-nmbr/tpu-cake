@@ -6,10 +6,9 @@ import sys
 import tomllib
 from pathlib import Path
 
-from xdsl.context import Context
-from xdsl.dialects.builtin import Builtin, ModuleOp
-from xdsl.parser import Parser
+from xdsl.dialects.builtin import ModuleOp
 
+from tpu_cake.canonical import parse_tpu_cake_module
 from tpu_cake.contracts import (
     KernelExperiment,
     ProfileExpectation,
@@ -17,8 +16,6 @@ from tpu_cake.contracts import (
     experiment_artifact_json,
 )
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
-from tpu_cake.dialects.distributed_tensor import DistributedTensor
-from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import canonical_module_text
 from tpu_cake.inkling_decode_profile import (
     InklingDecodeProfileContract,
@@ -424,11 +421,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _parse_schedule(path: Path) -> ModuleOp:
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(DistributedTensor)
-    context.load_dialect(TPUSchedule)
-    return Parser(context, path.read_text(), name=str(path)).parse_module()
+    return parse_tpu_cake_module(path.read_text(), name=str(path))
 
 
 def _verify_schedule(path: Path) -> int:

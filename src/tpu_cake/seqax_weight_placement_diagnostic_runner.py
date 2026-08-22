@@ -16,11 +16,31 @@ from typing import Any
 import jax
 import numpy as np
 
+from tpu_cake.artifacts import (
+    build_artifact_manifest,
+    validate_artifact_manifest,
+)
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import save_array as _save_array
+from tpu_cake.artifacts import (
+    write_json as _write_json,
+)
+from tpu_cake.artifacts import (
+    write_text as _write_text,
+)
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
+from tpu_cake.ledger import (
+    EvidenceRun,
+    RunState,
+    finalize_ledger,
+    payload_sha256,
+    read_ledger_history,
+)
 from tpu_cake.metrics import MetricSource
 from tpu_cake.runner import RunMode, _runtime_identity, _source_state
 from tpu_cake.seqax_cost_model import SeqaxCostModelReport, estimate_seqax_forward
@@ -82,29 +102,6 @@ from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
 from tpu_cake.xprof_evidence import assess_capture
 
 SEQAX_WEIGHT_PLACEMENT_SEARCH_COMMIT = "6a83e59e1591db09387adbafe90dd0f8af850f76"
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-
-def _write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value)
-
-
-def _save_array(path: Path, value: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
 
 
 def _source_manifest() -> tuple[SourceFileContract, ...]:
@@ -519,39 +516,23 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 
 def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
-    return tuple(
-        ArtifactReference(
-            path=path.relative_to(root).as_posix(),
-            size_bytes=path.stat().st_size,
-            sha256=_sha256(path),
-            role=_artifact_role(path.relative_to(root)),
-        )
-        for path in sorted(value for value in root.rglob("*") if value.is_file())
-        if path.relative_to(root).as_posix() != "receipt.json"
+    return build_artifact_manifest(
+        root,
+        role_for_path=_artifact_role,
     )
 
 
 def _validate_manifest(root: Path, artifacts: tuple[ArtifactReference, ...]) -> None:
-    declared = tuple(value.path for value in artifacts)
-    observed = {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
-        if path.is_file() and path.relative_to(root).as_posix() != "receipt.json"
-    }
-    if len(declared) != len(set(declared)) or set(declared) != observed:
-        raise ValueError("SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_CLOSED_WORLD_MISMATCH")
-    for artifact in artifacts:
-        path = root / artifact.path
-        if (
-            path.is_symlink()
-            or path.stat().st_nlink != 1
-            or path.stat().st_size != artifact.size_bytes
-            or _sha256(path) != artifact.sha256
-            or _artifact_role(Path(artifact.path)) is not artifact.role
-        ):
-            raise ValueError(
-                f"SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_ARTIFACT_MISMATCH path={artifact.path}"
-            )
+    validate_artifact_manifest(
+        root,
+        artifacts,
+        role_for_path=_artifact_role,
+        duplicate_error="SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_CLOSED_WORLD_MISMATCH",
+        closed_world_error="SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_CLOSED_WORLD_MISMATCH",
+        mismatch_error=lambda path: (
+            f"SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_ARTIFACT_MISMATCH path={path}"
+        ),
+    )
 
 
 def _validate_source(root: Path, result: SeqaxWeightPlacementDiagnosticResult) -> None:
@@ -941,7 +922,7 @@ def _validate(
     if tuple(value.state for value in history) != tuple(value[0] for value in payloads):
         raise ValueError("SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_LEDGER_STATE_MISMATCH")
     if tuple(value.payload_sha256 for value in history) != tuple(
-        ExperimentLedger.payload_sha256(payload) for _state, payload in payloads
+        payload_sha256(payload) for _state, payload in payloads
     ):
         raise ValueError("SEQAX_WEIGHT_PLACEMENT_DIAGNOSTIC_LEDGER_PAYLOAD_MISMATCH")
     if require_accepted:
@@ -1019,37 +1000,32 @@ def run_seqax_weight_placement_diagnostic(
         _sha256(root / "source_manifest.json"),
     )
     ledger_path = root / "ledger.sqlite"
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.create(run_id, {"diagnostic_id": contract.diagnostic_id})
+    evidence_run = EvidenceRun(ledger_path, run_id)
+    evidence_run.create({"diagnostic_id": contract.diagnostic_id})
     prepared = prepare_weight_placement_candidates(trusted_search_contract)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.VERIFIED,
-            {
-                "search_receipt_sha256": contract.search_receipt_sha256,
-                "distributed_schedules": {
-                    value.candidate.name: value.plan.distributed_schedule_sha256
-                    for value in prepared
-                },
+    evidence_run.transition(
+        RunState.VERIFIED,
+        {
+            "search_receipt_sha256": contract.search_receipt_sha256,
+            "distributed_schedules": {
+                value.candidate.name: value.plan.distributed_schedule_sha256 for value in prepared
             },
-        )
+        },
+    )
     for value in prepared:
         candidate_root = root / "candidates" / value.candidate.name
         _write_text(candidate_root / "distributed.xdsl", canonical_text(value.distributed))
         _write_text(candidate_root / "physical.xdsl", canonical_text(value.physical))
         _write_text(candidate_root / "lowered_pallas.py", value.plan.render_executable_source())
         _write_json(candidate_root / "plan_manifest.json", value.plan.manifest())
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.LOWERED,
-            {
-                "pallas_sources": {
-                    value.candidate.name: value.plan.source_sha256() for value in prepared
-                }
-            },
-        )
+    evidence_run.transition(
+        RunState.LOWERED,
+        {
+            "pallas_sources": {
+                value.candidate.name: value.plan.source_sha256() for value in prepared
+            }
+        },
+    )
     host_inputs = tuple(
         np.asarray(value)
         for value in seqax_forward_inputs(
@@ -1065,24 +1041,22 @@ def run_seqax_weight_placement_diagnostic(
         _write_text(candidate_root / "stablehlo.txt", value.stablehlo + "\n")
         _write_text(candidate_root / "compiler_hlo.txt", value.compiler_hlo + "\n")
         _expected_plan_files(root, value.prepared, root / "search")
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COMPILED,
-            {
-                "compiled_hlo": {
-                    value.prepared.candidate.name: {
-                        "stablehlo_sha256": _sha256(
-                            root / "candidates" / value.prepared.candidate.name / "stablehlo.txt"
-                        ),
-                        "compiler_hlo_sha256": _sha256(
-                            root / "candidates" / value.prepared.candidate.name / "compiler_hlo.txt"
-                        ),
-                    }
-                    for value in compiled
+    evidence_run.transition(
+        RunState.COMPILED,
+        {
+            "compiled_hlo": {
+                value.prepared.candidate.name: {
+                    "stablehlo_sha256": _sha256(
+                        root / "candidates" / value.prepared.candidate.name / "stablehlo.txt"
+                    ),
+                    "compiler_hlo_sha256": _sha256(
+                        root / "candidates" / value.prepared.candidate.name / "compiler_hlo.txt"
+                    ),
                 }
-            },
-        )
+                for value in compiled
+            }
+        },
+    )
     executions = []
     outputs: dict[SeqaxWeightPlacementName, str] = {}
     for expected, value in zip(contract.candidates, compiled, strict=True):
@@ -1117,12 +1091,10 @@ def run_seqax_weight_placement_diagnostic(
             )
         _write_json(candidate_root / "cost_model.json", cost_report.model_dump(mode="json"))
         executions.append((expected, value, resident, actual, expected_output, cost_report))
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.CORRECT,
-            {"input_sha256": arrays_sha256(host_inputs), "output_sha256": outputs},
-        )
+    evidence_run.transition(
+        RunState.CORRECT,
+        {"input_sha256": arrays_sha256(host_inputs), "output_sha256": outputs},
+    )
     candidate_results = []
     profiles = []
     for expected, value, resident, actual, expected_output, cost_report in executions:
@@ -1195,23 +1167,21 @@ def run_seqax_weight_placement_diagnostic(
         correctness_scope="incumbent-bit-exact-diagnostic",
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COUNTERED,
-            {
-                "captures": {
-                    value.candidate: {
-                        "trace_xplane_sha256": value.trace.xplane_sha256,
-                        "counter_xplane_sha256": value.counters.xplane_sha256,
-                        "trace_attribution_sha256": value.trace.attribution_sha256,
-                        "counter_attribution_sha256": value.counters.attribution_sha256,
-                    }
-                    for value in candidate_results
-                },
-                "comparison": comparison.model_dump(mode="json"),
+    evidence_run.transition(
+        RunState.COUNTERED,
+        {
+            "captures": {
+                value.candidate: {
+                    "trace_xplane_sha256": value.trace.xplane_sha256,
+                    "counter_xplane_sha256": value.counters.xplane_sha256,
+                    "trace_attribution_sha256": value.trace.attribution_sha256,
+                    "counter_attribution_sha256": value.counters.attribution_sha256,
+                }
+                for value in candidate_results
             },
-        )
+            "comparison": comparison.model_dump(mode="json"),
+        },
+    )
     _close_ledger(ledger_path)
     _validate(
         root,
@@ -1219,12 +1189,10 @@ def run_seqax_weight_placement_diagnostic(
         contract,
         require_accepted=False,
     )
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.ACCEPTED,
-            {"result_sha256": _sha256(root / "result.json")},
-        )
+    evidence_run.transition(
+        RunState.ACCEPTED,
+        {"result_sha256": _sha256(root / "result.json")},
+    )
     _close_ledger(ledger_path)
     receipt = SeqaxWeightPlacementDiagnosticReceipt(
         status="passed",

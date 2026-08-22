@@ -10,7 +10,10 @@ import jax.numpy as jnp
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tpu_cake.artifacts import artifact_reference as _artifact
+from tpu_cake.artifacts import save_array_reference as _save_array
 from tpu_cake.canonical import canonical_text
+from tpu_cake.compiler_analysis import compiler_hlo_text as _compiler_hlo
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
@@ -32,7 +35,6 @@ from tpu_cake.runner import (
     _profiler_options,
     _record_event,
     _runtime_identity,
-    _sha256,
     _source_state,
     _write_json,
     _write_text,
@@ -156,31 +158,6 @@ class SeqaxForwardRunResult(BaseModel):
     coefficient_of_variation: float | None = Field(default=None, ge=0)
     runtime: RuntimeIdentity
     artifacts: tuple[ArtifactReference, ...]
-
-
-def _artifact(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
-    return ArtifactReference(
-        path=path.relative_to(root).as_posix(),
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-        role=role,
-    )
-
-
-def _save_array(
-    root: Path,
-    path: Path,
-    value: np.ndarray,
-    role: ArtifactRole,
-) -> ArtifactReference:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
-    return _artifact(root, path, role)
-
-
-def _compiler_hlo(lowered: Any) -> str:
-    computation = lowered.compiler_ir(dialect="hlo")
-    return computation.as_hlo_text() if hasattr(computation, "as_hlo_text") else str(computation)
 
 
 def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:
@@ -323,9 +300,7 @@ def run_seqax_forward(
             **SEQAX_EVIDENCE_PARAMETERS,
         )
     )
-    oracle = np.asarray(
-        seqax_forward_canonical_reference(host_inputs, **SEQAX_EVIDENCE_PARAMETERS)
-    )
+    oracle = np.asarray(seqax_forward_canonical_reference(host_inputs, **SEQAX_EVIDENCE_PARAMETERS))
     executable, mesh = plan.build(devices=devices)
     compile_inputs = tuple(jnp.asarray(value) for value in host_inputs)
     compile_started = time.perf_counter_ns()

@@ -41,6 +41,11 @@ _NEXT_STATES = {
 }
 
 
+def payload_sha256(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class LedgerEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -82,11 +87,6 @@ class ExperimentLedger:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    @staticmethod
-    def payload_sha256(payload: Mapping[str, object]) -> str:
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
-
     def create(self, run_id: str, payload: Mapping[str, object]) -> LedgerEvent:
         return self._append(run_id, RunState.CREATED, payload, previous=None)
 
@@ -115,7 +115,7 @@ class ExperimentLedger:
         *,
         previous: RunState | None,
     ) -> LedgerEvent:
-        payload_hash = self.payload_sha256(payload)
+        payload_hash = payload_sha256(payload)
         with self._connection:
             existing = self._connection.execute(
                 "SELECT sequence, timestamp_ns, payload_sha256 FROM events "
@@ -195,6 +195,12 @@ class EvidenceRun:
         self.run_id = run_id
         self._clock_ns = clock_ns
 
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
     def create(self, payload: Mapping[str, object]) -> LedgerEvent:
         with ExperimentLedger(self.path, clock_ns=self._clock_ns) as ledger:
             return ledger.create(self.run_id, payload)
@@ -206,6 +212,31 @@ class EvidenceRun:
     ) -> LedgerEvent:
         with ExperimentLedger(self.path, clock_ns=self._clock_ns) as ledger:
             return ledger.transition(self.run_id, state, payload)
+
+    def record(
+        self,
+        state: RunState,
+        payload: Mapping[str, object],
+        *,
+        conflict_error: str = "conflicting duplicate completion for {run_id} at {state}",
+    ) -> LedgerEvent:
+        expected_hash = payload_sha256(payload)
+        with ExperimentLedger(self.path, clock_ns=self._clock_ns) as ledger:
+            existing = next(
+                (event for event in ledger.history(self.run_id) if event.state is state),
+                None,
+            )
+            if existing is not None:
+                if existing.payload_sha256 != expected_hash:
+                    raise ValueError(conflict_error.format(run_id=self.run_id, state=state.value))
+                return existing
+            if state is RunState.CREATED:
+                return ledger.create(self.run_id, payload)
+            return ledger.transition(self.run_id, state, payload)
+
+    def current_state(self) -> RunState | None:
+        with ExperimentLedger(self.path, clock_ns=self._clock_ns) as ledger:
+            return ledger.current_state(self.run_id)
 
     def seal(self, sidecar_error: str) -> None:
         seal_ledger(self.path, sidecar_error)

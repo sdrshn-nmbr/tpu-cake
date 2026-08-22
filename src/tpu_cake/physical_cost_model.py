@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from xdsl.dialects.builtin import BFloat16Type, Float16Type, Float32Type, ModuleOp, UnknownLoc
-from xdsl.ir import Block, Operation, SSAValue
+from xdsl.ir import Block, Operation
 
 from tpu_cake.cost_model import HardwareRateModel, tpu7x_tensorcore_rates
 from tpu_cake.dialects.tpu_schedule import (
@@ -45,7 +45,11 @@ from tpu_cake.dialects.tpu_schedule import (
     physical_rotation_copies,
     physical_storage_buffers,
 )
+from tpu_cake.dialects.tpu_schedule import (
+    vector_configuration as _configuration,
+)
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
+from tpu_cake.identity import model_identity_sha256
 from tpu_cake.metrics import (
     FormulaIdentity,
     MeasurementInterval,
@@ -54,6 +58,7 @@ from tpu_cake.metrics import (
     MetricSource,
     Quantity,
     Unit,
+    estimated_metric_factory,
 )
 from tpu_cake.physical_geometry import mxu_geometry
 
@@ -385,9 +390,7 @@ class PhysicalCollectiveLatencyCalibration(BaseModel):
     @computed_field
     @property
     def calibration_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 class PhysicalCollectiveLatencyOperation(BaseModel):
@@ -479,12 +482,6 @@ def _location(operation: Operation) -> str:
     return "unknown" if isinstance(operation.location, UnknownLoc) else str(operation.location)
 
 
-def _root(value: SSAValue) -> SSAValue:
-    while isinstance(value.owner, ViewOp):
-        value = value.owner.base
-    return value
-
-
 def _mxu_input_dtype(operation: MxuMatmulOp | MxuEinsumOp) -> str:
     lhs = operation.lhs.type
     assert isinstance(lhs, BufferType)
@@ -507,10 +504,6 @@ def _buffer_dtype(buffer: BufferType) -> str:
     if isinstance(element_type, Float32Type):
         return "f32"
     return str(element_type)
-
-
-def _configuration(operation: VectorComputeOp) -> dict[str, str]:
-    return dict(value.data.split("=", 1) for value in operation.configuration)
 
 
 def _vector_counts(operation: VectorComputeOp) -> tuple[int, int, int, int]:
@@ -736,28 +729,7 @@ def _peak(
     )
 
 
-def _metric(
-    name: str,
-    value: Decimal | int,
-    unit: Unit,
-    source: MetricSource,
-    formula_name: str,
-    expression: str,
-    *,
-    scope: str = "one declared physical kernel invocation on one TPU device",
-    numerator: Quantity | None = None,
-    denominator: Quantity | None = None,
-) -> Metric:
-    return Metric(
-        name=name,
-        quantity=Quantity(value=Decimal(value), unit=unit),
-        kind=MeasurementKind.ESTIMATED,
-        interval=MeasurementInterval(scope=scope),
-        sources=(source,),
-        formula=FormulaIdentity(name=formula_name, version="1", expression=expression),
-        numerator=numerator,
-        denominator=denominator,
-    )
+_metric = estimated_metric_factory("one declared physical kernel invocation on one TPU device")
 
 
 def _latency_metric(

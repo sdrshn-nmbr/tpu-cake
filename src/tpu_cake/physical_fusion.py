@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
@@ -23,7 +22,11 @@ from tpu_cake.dialects.tpu_schedule import (
     ViewOp,
     buffer_bytes,
 )
+from tpu_cake.dialects.tpu_schedule import (
+    root_buffer_value as _root,
+)
 from tpu_cake.frontend import schedule_sha256
+from tpu_cake.identity import json_sha256, model_identity_sha256
 from tpu_cake.physical_cost_model import (
     PhysicalKernelResourceReport,
     analyze_physical_kernel,
@@ -149,9 +152,7 @@ class SeqaxSiluMultiplyFusionContract(BaseModel):
     @computed_field
     @property
     def contract_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 class SeqaxFusionScenarioComparison(BaseModel):
@@ -194,12 +195,6 @@ def default_seqax_silu_multiply_fusion_contract() -> SeqaxSiluMultiplyFusionCont
     )
 
 
-def _root(value: SSAValue) -> SSAValue:
-    while isinstance(value.owner, ViewOp):
-        value = value.owner.base
-    return value
-
-
 def _operation_ids(module: ModuleOp) -> dict[Operation, str]:
     return {
         operation: f"{index:04d}:{operation.name}" for index, operation in enumerate(module.walk())
@@ -207,9 +202,7 @@ def _operation_ids(module: ModuleOp) -> dict[Operation, str]:
 
 
 def _lineage_hash(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return json_sha256(value)
 
 
 def _vector_input_lineages(module: ModuleOp) -> dict[VectorComputeOp, tuple[str, ...]]:

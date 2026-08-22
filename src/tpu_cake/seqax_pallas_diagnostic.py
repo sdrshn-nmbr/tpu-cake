@@ -19,8 +19,17 @@ import jax
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from xdsl.dialects.builtin import BFloat16Type, Float32Type
-from xprof import profile_data
 
+from tpu_cake.artifacts import (
+    build_artifact_manifest,
+    validate_artifact_manifest,
+)
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import (
+    write_json as _write_json,
+)
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import (
     ArtifactReference,
@@ -34,7 +43,13 @@ from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.dialects.tpu_schedule import BufferType, CollectiveOp, MxuEinsumOp
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
+from tpu_cake.ledger import (
+    EvidenceRun,
+    RunState,
+    finalize_ledger,
+    payload_sha256,
+    read_ledger_history,
+)
 from tpu_cake.metrics import MetricSource
 from tpu_cake.runner import (
     RunMode,
@@ -64,7 +79,7 @@ from tpu_cake.seqax_pallas_search_runner import (
 )
 from tpu_cake.seqax_runner import expected_seqax_profiler_contract
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
-from tpu_cake.xprof_evidence import assess_capture
+from tpu_cake.xprof_evidence import XPlaneIndex, assess_capture
 from tpu_cake.xprof_export import XProfExportManifest, export_xprof_capture
 
 SEQAX_PALLAS_DIAGNOSTIC_SCHEMA = "seqax-pallas-incumbent-diagnostic-v1"
@@ -243,19 +258,6 @@ class SeqaxPallasDiagnosticReceipt(BaseModel):
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     ledger_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifacts: tuple[ArtifactReference, ...]
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 def _source_manifest() -> tuple[SourceFileContract, ...]:
@@ -455,22 +457,18 @@ def _profile_replay(
     step_event: str = _STEP_EVENT,
     iterations: int = SEQAX_PALLAS_DIAGNOSTIC_ITERATIONS,
 ) -> tuple[int, tuple[float, ...]]:
-    profile = profile_data.ProfileData.from_file(xplane)
-    try:
-        steps = 0
-        durations = []
-        for plane in profile.planes:
-            for line in plane.lines:
-                for event in line.events:
-                    steps += event.name == step_event
-                    if (
-                        plane.name == "/device:TPU:0"
-                        and line.name == "XLA Modules"
-                        and event.name == program_name
-                    ):
-                        durations.append(float(event.duration_ns))
-    finally:
-        profile.close()
+    steps = 0
+    durations = []
+    for plane in XPlaneIndex.from_file(xplane).planes:
+        for line in plane.lines:
+            for event in line.events:
+                steps += event.name == step_event
+                if (
+                    plane.name == "/device:TPU:0"
+                    and line.name == "XLA Modules"
+                    and event.name == program_name
+                ):
+                    durations.append(float(event.duration_ns))
     if steps != iterations:
         raise ValueError(
             f"SEQAX_PALLAS_DIAGNOSTIC_STEP_COUNT_MISMATCH expected={iterations} observed={steps}"
@@ -986,45 +984,19 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 
 def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
-    artifacts = []
-    for path in sorted(value for value in root.rglob("*") if value.is_file()):
-        relative = path.relative_to(root)
-        if relative.as_posix() == "receipt.json":
-            continue
-        artifacts.append(
-            ArtifactReference(
-                path=relative.as_posix(),
-                size_bytes=path.stat().st_size,
-                sha256=_sha256(path),
-                role=_artifact_role(relative),
-            )
-        )
-    return tuple(artifacts)
+    return build_artifact_manifest(root, role_for_path=_artifact_role)
 
 
 def _validate_manifest(root: Path, artifacts: tuple[ArtifactReference, ...]) -> None:
-    declared = tuple(value.path for value in artifacts)
-    if len(declared) != len(set(declared)):
-        raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_ARTIFACT_DUPLICATE")
-    observed = {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
-        if path.is_file() and path.relative_to(root).as_posix() != "receipt.json"
-    }
-    if set(declared) != observed:
-        raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_CLOSED_WORLD_MISMATCH")
-    if any(path.is_symlink() for path in root.rglob("*")):
-        raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_SYMLINK")
-    for artifact in artifacts:
-        path = root / artifact.path
-        if (
-            path.is_symlink()
-            or path.stat().st_nlink != 1
-            or path.stat().st_size != artifact.size_bytes
-            or _sha256(path) != artifact.sha256
-            or _artifact_role(Path(artifact.path)) is not artifact.role
-        ):
-            raise ValueError(f"SEQAX_PALLAS_DIAGNOSTIC_ARTIFACT_MISMATCH path={artifact.path}")
+    validate_artifact_manifest(
+        root,
+        artifacts,
+        role_for_path=_artifact_role,
+        duplicate_error="SEQAX_PALLAS_DIAGNOSTIC_ARTIFACT_DUPLICATE",
+        closed_world_error="SEQAX_PALLAS_DIAGNOSTIC_CLOSED_WORLD_MISMATCH",
+        symlink_error="SEQAX_PALLAS_DIAGNOSTIC_SYMLINK",
+        mismatch_error=lambda path: f"SEQAX_PALLAS_DIAGNOSTIC_ARTIFACT_MISMATCH path={path}",
+    )
 
 
 def _validate_search_snapshot(
@@ -1221,25 +1193,22 @@ def run_seqax_pallas_incumbent_diagnostic(
         _sha256(root / "counters" / "profiler_config.json"),
     )
     ledger_path = root / "ledger.sqlite"
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.create(run_id, {"contract": contract.model_dump(mode="json")})
+    evidence_run = EvidenceRun(ledger_path, run_id)
+    evidence_run.create({"contract": contract.model_dump(mode="json")})
 
     distributed, prepared = prepare_seqax_pallas_candidates(search_contract)
     incumbent = next(value for value in prepared if value.candidate.name == contract.candidate)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.VERIFIED,
-            {
-                "distributed_schedule_sha256": incumbent.plan.distributed_schedule_sha256,
-                "physical_schedule_sha256": incumbent.plan.physical_schedule_sha256,
-            },
-        )
-        ledger.transition(
-            run_id,
-            RunState.LOWERED,
-            {"pallas_source_sha256": incumbent.plan.source_sha256()},
-        )
+    evidence_run.transition(
+        RunState.VERIFIED,
+        {
+            "distributed_schedule_sha256": incumbent.plan.distributed_schedule_sha256,
+            "physical_schedule_sha256": incumbent.plan.physical_schedule_sha256,
+        },
+    )
+    evidence_run.transition(
+        RunState.LOWERED,
+        {"pallas_source_sha256": incumbent.plan.source_sha256()},
+    )
 
     host_inputs = tuple(
         np.asarray(value)
@@ -1267,15 +1236,13 @@ def run_seqax_pallas_incumbent_diagnostic(
     )
     if _compiler_tile_metadata(compiled.compiler_hlo) != expected_tiles:
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_COMPILER_TILE_MISMATCH")
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COMPILED,
-            {
-                "stablehlo_sha256": saved_plan.stablehlo_sha256,
-                "compiler_hlo_sha256": saved_plan.compiler_hlo_sha256,
-            },
-        )
+    evidence_run.transition(
+        RunState.COMPILED,
+        {
+            "stablehlo_sha256": saved_plan.stablehlo_sha256,
+            "compiler_hlo_sha256": saved_plan.compiler_hlo_sha256,
+        },
+    )
 
     resident = _resident_inputs(host_inputs, compiled)
     actual = _execute(compiled, resident)
@@ -1300,16 +1267,14 @@ def run_seqax_pallas_incumbent_diagnostic(
     for index, value in enumerate(host_inputs):
         np.save(inputs_root / f"{index:02d}.npy", value, allow_pickle=False)
     np.save(root / "output.npy", actual, allow_pickle=False)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.CORRECT,
-            {
-                "input_sha256": arrays_sha256(host_inputs),
-                "output_sha256": array_sha256(actual),
-                "expected_output_sha256": array_sha256(expected),
-            },
-        )
+    evidence_run.transition(
+        RunState.CORRECT,
+        {
+            "input_sha256": arrays_sha256(host_inputs),
+            "output_sha256": array_sha256(actual),
+            "expected_output_sha256": array_sha256(expected),
+        },
+    )
 
     for _ in range(contract.warmup_iterations):
         jax.block_until_ready(compiled.compiled(*resident))
@@ -1393,26 +1358,22 @@ def run_seqax_pallas_incumbent_diagnostic(
         cycle_counter_names=counter_assessment.capture.counters.cycle_names,
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COUNTERED,
-            {
-                "trace_xplane_sha256": _sha256(trace_xplane),
-                "counter_xplane_sha256": _sha256(counter_xplane),
-                "trace_step_count": trace_steps,
-                "counter_step_count": counter_steps,
-                "attribution_sha256": result.attribution_sha256,
-            },
-        )
+    evidence_run.transition(
+        RunState.COUNTERED,
+        {
+            "trace_xplane_sha256": _sha256(trace_xplane),
+            "counter_xplane_sha256": _sha256(counter_xplane),
+            "trace_step_count": trace_steps,
+            "counter_step_count": counter_steps,
+            "attribution_sha256": result.attribution_sha256,
+        },
+    )
     _close_ledger(ledger_path)
     _validate_diagnostic(root, require_accepted=False)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.ACCEPTED,
-            {"result_sha256": _sha256(root / "result.json")},
-        )
+    evidence_run.transition(
+        RunState.ACCEPTED,
+        {"result_sha256": _sha256(root / "result.json")},
+    )
     _close_ledger(ledger_path)
     receipt = SeqaxPallasDiagnosticReceipt(
         diagnostic_schema=SEQAX_PALLAS_DIAGNOSTIC_SCHEMA,
@@ -1702,7 +1663,7 @@ def _validate_diagnostic(root: Path, *, require_accepted: bool) -> SeqaxPallasDi
     if tuple(event.state for event in history) != tuple(value[0] for value in expected_payloads):
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_LEDGER_STATE_MISMATCH")
     if tuple(event.payload_sha256 for event in history) != tuple(
-        ExperimentLedger.payload_sha256(value[1]) for value in expected_payloads
+        payload_sha256(value[1]) for value in expected_payloads
     ):
         raise ValueError("SEQAX_PALLAS_DIAGNOSTIC_LEDGER_PAYLOAD_MISMATCH")
     if require_accepted:

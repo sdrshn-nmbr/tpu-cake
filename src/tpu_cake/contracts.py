@@ -235,6 +235,21 @@ def experiment_artifact_json(experiment: KernelExperiment, *, indent: int = 2) -
     )
 
 
+def counter_profile_experiment(experiment: KernelExperiment) -> KernelExperiment:
+    return experiment.model_copy(
+        update={
+            "profile": experiment.profile.model_copy(
+                update={
+                    "require_hbm_read_counters": True,
+                    "require_hbm_write_counters": True,
+                    "require_cycle_counters": True,
+                    "minimum_counter_device_planes": experiment.target.chip_count,
+                }
+            )
+        }
+    )
+
+
 class ArtifactReference(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     path: str = Field(min_length=1)
@@ -412,9 +427,7 @@ SEQAX_PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRole]] = {
             ArtifactRole.SOURCE_DIFF,
         }
     ),
-    EvidencePhaseName.FINALIZER: frozenset(
-        {ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}
-    ),
+    EvidencePhaseName.FINALIZER: frozenset({ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}),
     EvidencePhaseName.AGGREGATE: frozenset({ArtifactRole.PROFILE_ASSESSMENT}),
 }
 
@@ -463,9 +476,7 @@ SEQAX_PALLAS_PHASE_REQUIRED_ROLES: dict[EvidencePhaseName, frozenset[ArtifactRol
             ArtifactRole.SOURCE_DIFF,
         }
     ),
-    EvidencePhaseName.FINALIZER: frozenset(
-        {ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}
-    ),
+    EvidencePhaseName.FINALIZER: frozenset({ArtifactRole.SOURCE_STATE, ArtifactRole.SOURCE_DIFF}),
     EvidencePhaseName.AGGREGATE: frozenset({ArtifactRole.PROFILE_ASSESSMENT}),
 }
 
@@ -487,6 +498,25 @@ class EvidencePhase(BaseModel):
         if not self.artifact_paths or len(self.artifact_paths) != len(set(self.artifact_paths)):
             raise ValueError("evidence phase artifact paths must be non-empty and unique")
         return self
+
+
+def group_evidence_phases(
+    artifacts: tuple[ArtifactReference, ...],
+    *,
+    execution_phases: frozenset[str],
+) -> tuple[EvidencePhase, ...]:
+    grouped: dict[EvidencePhaseName, list[str]] = {phase: [] for phase in EvidencePhaseName}
+    for artifact in artifacts:
+        first = PurePosixPath(artifact.path).parts[0]
+        phase = (
+            EvidencePhaseName(first)
+            if first in execution_phases or first == "finalizer"
+            else EvidencePhaseName.AGGREGATE
+        )
+        grouped[phase].append(artifact.path)
+    return tuple(
+        EvidencePhase(name=phase, artifact_paths=tuple(paths)) for phase, paths in grouped.items()
+    )
 
 
 class CorrectnessResult(BaseModel):
@@ -530,9 +560,7 @@ class SearchProvenance(BaseModel):
 
 class RpaSearchSelection(StrEnum):
     CHALLENGER_PROMOTED = "challenger_promoted"
-    BASELINE_RETAINED_NO_PROMOTABLE_CHALLENGER = (
-        "baseline_retained_no_promotable_challenger"
-    )
+    BASELINE_RETAINED_NO_PROMOTABLE_CHALLENGER = "baseline_retained_no_promotable_challenger"
     BASELINE_RETAINED_CONFIRMATION_FAILED = "baseline_retained_confirmation_failed"
 
 
@@ -621,10 +649,7 @@ class RunReceipt(BaseModel):
             missing = sorted(role.value for role in required_roles - roles)
             if missing:
                 raise ValueError(f"passed receipt is missing artifact roles: {missing}")
-            if (
-                self.search_provenance is not None
-                or self.rpa_search_provenance is not None
-            ):
+            if self.search_provenance is not None or self.rpa_search_provenance is not None:
                 search_roles = {
                     ArtifactRole.SEARCH_CONTRACT,
                     ArtifactRole.SEARCH_RESULT,

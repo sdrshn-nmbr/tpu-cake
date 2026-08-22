@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis
 from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
-from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA
+from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, model_identity_sha256
 from tpu_cake.runner import RunMode
 from tpu_cake.seqax_numerical import (
     SeqaxBf16OutputAssessment,
@@ -122,9 +120,7 @@ class SeqaxResidualProfileContract(BaseModel):
     @computed_field
     @property
     def profile_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 class SeqaxResidualCorrectnessObservation(BaseModel):
@@ -397,10 +393,10 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "a9910167578c14c0d0a0a944a64477dfa471282024134d961e3994eb24e39cc5"
             ),
             pallas_source_sha256=(
-                "388ab7f77ad3fdbfaac8ef6fee1128c75451cd799425ffe3094d2e229d067521"
+                "fad2ca9c44cd4c0e6d6d0f647dc11dd9ba7f7d4018b4dcbf93630fb984be6701"
             ),
             pallas_manifest_sha256=(
-                "f4b44fd9f53539243a49b7bb3d82e4228c88daafaf001ef6cb688d5081549d2e"
+                "c8567107e33e043c5509363dc2a092939619566b6707a071ae5335648b7423ab"
             ),
             pallas_stablehlo_sha256=(
                 "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae"
@@ -438,10 +434,10 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "e9e2c0006672bab2a5981b109dc5eff67c30cb53664ed521175752f3ca748701"
             ),
             pallas_source_sha256=(
-                "8de41b8416f59918c493a7c1988c510a852bce7c43ea5219771e56a88a22fb25"
+                "9e643ef094dffb344c0d496fbe86d4ecb1da7c5dad352e9bc993dac04a380dc3"
             ),
             pallas_manifest_sha256=(
-                "5abfdd9106efd2d2137022286fcbba74775ba6f6b1271d96686569bea2ae6dd5"
+                "f737713469c28f99633ddb5e81694e2725f48edf9a1a841ac78e4b2cc6489c84"
             ),
             pallas_stablehlo_sha256=(
                 "741390690a9448d24e65bf350d50743b9afc56f88b2594cdf9daa7b6e9f88909"

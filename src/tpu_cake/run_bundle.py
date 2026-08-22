@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
@@ -28,14 +28,6 @@ from tpu_cake.search import (
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_experiment
 from tpu_cake.xprof_evidence import assess_capture
 from tpu_cake.xprof_export import export_xprof_capture
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _reference(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
@@ -85,9 +77,7 @@ def _ensure_exports(mode_root: Path) -> None:
     export_xprof_capture(mode_root / "profile", mode_root / "xprof")
 
 
-def build_distributed_matmul_receipt(
-    root: Path, *, search_root: Path | None = None
-) -> RunReceipt:
+def build_distributed_matmul_receipt(root: Path, *, search_root: Path | None = None) -> RunReceipt:
     root = root.resolve()
     finalizer_root = root / "finalizer"
     _source_state(Path(__file__).resolve().parents[2], finalizer_root)
@@ -125,9 +115,7 @@ def build_distributed_matmul_receipt(
     ]
     if any(state["git_dirty"] for state in source_states):
         raise ValueError("RECEIPT_REQUIRES_CLEAN_COMMITTED_SOURCE")
-    source_identities = {
-        (state["git_commit"], state["uv_lock_sha256"]) for state in source_states
-    }
+    source_identities = {(state["git_commit"], state["uv_lock_sha256"]) for state in source_states}
     if len(source_identities) != 1:
         raise ValueError("RUNS_DO_NOT_SHARE_SOURCE_AND_DEPENDENCY_IDENTITY")
 
@@ -150,9 +138,7 @@ def build_distributed_matmul_receipt(
         if search_result.winner is None:
             raise ValueError("SEARCH_DID_NOT_PROMOTE_A_WINNER")
         winner = next(
-            candidate
-            for candidate in contract.candidates
-            if candidate.name == search_result.winner
+            candidate for candidate in contract.candidates if candidate.name == search_result.winner
         )
         expected_shape = (
             int(model_input["mesh_size"]),
@@ -184,9 +170,7 @@ def build_distributed_matmul_receipt(
             for run_path in search_result.run_results
             if Path(run_path).name == winner.name
         ]
-        if {result.schedule_sha256 for result in winner_results} != {
-            timing.schedule_sha256
-        }:
+        if {result.schedule_sha256 for result in winner_results} != {timing.schedule_sha256}:
             raise ValueError("SEARCH_WINNER_SCHEDULE_DOES_NOT_MATCH_FINALIST")
         search_sources = [
             json.loads((search_root / run_path / "source_state.json").read_text())
@@ -305,9 +289,7 @@ def build_distributed_matmul_receipt(
                 )
     artifact_specs = list(artifact_roles.items())
     artifacts = tuple(_reference(root, path, role) for path, role in artifact_specs)
-    phase_paths: dict[EvidencePhaseName, list[str]] = {
-        phase: [] for phase in EvidencePhaseName
-    }
+    phase_paths: dict[EvidencePhaseName, list[str]] = {phase: [] for phase in EvidencePhaseName}
     for artifact in artifacts:
         first_component = Path(artifact.path).parts[0]
         phase = (

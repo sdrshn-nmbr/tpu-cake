@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import inspect
 from pathlib import Path
 
@@ -16,6 +15,7 @@ from sgl_jax.srt.kernels.ragged_paged_attention.tuned_block_sizes_v3 import (
 )
 from sgl_jax.srt.kernels.ragged_paged_attention.util import get_dtype_packing
 
+from tpu_cake.artifacts import file_sha256
 from tpu_cake.rpa_donation_confirmation import InklingRpaDonationConfirmationContract
 from tpu_cake.rpa_donation_confirmation_runner import (
     capture_inkling_rpa_donation_hlo_identities,
@@ -32,7 +32,7 @@ def _source_sha256(value: object) -> str:
     source = inspect.getsourcefile(inspect.unwrap(value))
     if source is None:
         raise RuntimeError("cannot locate a fused RPA backend source")
-    return hashlib.sha256(Path(source).read_bytes()).hexdigest()
+    return file_sha256(Path(source))
 
 
 def _backend_manifest() -> tuple[tuple[str, str], ...]:

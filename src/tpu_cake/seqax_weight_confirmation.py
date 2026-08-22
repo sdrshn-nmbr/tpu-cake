@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import statistics
 
@@ -9,7 +7,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
-from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_seed
+from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, model_identity_sha256, semantic_seed
 from tpu_cake.seqax_pallas_search import (
     SEQAX_PALLAS_CORRECTNESS_SEEDS,
     SEQAX_PALLAS_SEARCH_PARAMETERS,
@@ -173,9 +171,7 @@ class SeqaxWeightConfirmationContract(BaseModel):
     @computed_field
     @property
     def confirmation_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 class SeqaxWeightConfirmationStatistics(BaseModel):

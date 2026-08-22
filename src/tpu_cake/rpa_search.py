@@ -9,13 +9,15 @@ from pathlib import Path
 import jax
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
-from xprof import profile_data
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.contracts import RuntimeIdentity, SourceFileContract
+from tpu_cake.identity import model_identity_sha256
 from tpu_cake.rpa_bundle import validate_fused_rpa_run
 from tpu_cake.rpa_runner import run_fused_rpa
 from tpu_cake.runner import RunMode
 from tpu_cake.workloads.inkling_rpa import inkling_fused_rpa_experiment
+from tpu_cake.xprof_evidence import XPlaneIndex
 
 
 class RpaSearchCandidate(BaseModel):
@@ -95,9 +97,7 @@ class RpaSearchContract(BaseModel):
         if (self.seed, self.warmup_iterations, self.measured_iterations) != (97, 5, 50):
             raise ValueError("RPA search must use the fixed evidence protocol 97/5/50")
         if self.rounds % (2 * len(self.candidates)):
-            raise ValueError(
-                "RPA search rounds must complete forward and reverse Latin squares"
-            )
+            raise ValueError("RPA search rounds must complete forward and reverse Latin squares")
         if self.confirmation_rounds % 2:
             raise ValueError("RPA confirmation rounds must balance both run orders")
         return self
@@ -105,9 +105,7 @@ class RpaSearchContract(BaseModel):
     @computed_field
     @property
     def search_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 class RpaCandidateStatistics(BaseModel):
@@ -218,14 +216,6 @@ def _percentile(values: list[int], fraction: float) -> int:
     return ordered[index]
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _validated_profiler_config_sha256(
     path: Path,
     contract: RpaSearchContract,
@@ -247,20 +237,16 @@ def _device_timing(
         f"RPAd-p_16-bq_{candidate.query_block_size}_{candidate.query_cluster_size}"
         f"-bkv_{candidate.kv_block_size}_{candidate.kv_cluster_size}"
     )
-    profile = profile_data.ProfileData.from_file(xplanes[0])
-    try:
-        durations = tuple(
-            float(event.duration_ns)
-            for plane in profile.planes
-            if plane.name == "/device:TPU:0"
-            for line in plane.lines
-            if line.name == "XLA Ops"
-            for event in line.events
-            if event.name.startswith(f"%{event_fragment}")
-            and 'custom_call_target="tpu_custom_call"' in event.name
-        )
-    finally:
-        profile.close()
+    durations = tuple(
+        float(event.duration_ns)
+        for plane in XPlaneIndex.from_file(xplanes[0]).planes
+        if plane.name == "/device:TPU:0"
+        for line in plane.lines
+        if line.name == "XLA Ops"
+        for event in line.events
+        if event.name.startswith(f"%{event_fragment}")
+        and 'custom_call_target="tpu_custom_call"' in event.name
+    )
     if len(durations) != measured_iterations or any(value <= 0 for value in durations):
         raise ValueError(
             "RPA_SEARCH_DECODE_EVENT_PROTOCOL_MISMATCH "
@@ -288,9 +274,7 @@ def _improvement_interval(
     values = np.asarray(paired_improvements, dtype=np.float64)
     estimates = np.empty(samples, dtype=np.float64)
     for index in range(samples):
-        estimates[index] = np.median(
-            generator.choice(values, len(values), replace=True)
-        )
+        estimates[index] = np.median(generator.choice(values, len(values), replace=True))
     low, high = np.quantile(estimates, (0.025, 0.975))
     return float(low), float(high)
 
@@ -316,9 +300,7 @@ def _statistics(
         )
         median_duration = float(statistics.median(run_medians))
         median_improvement = float(statistics.median(paired))
-        deviation = float(
-            statistics.median(abs(value - median_duration) for value in run_medians)
-        )
+        deviation = float(statistics.median(abs(value - median_duration) for value in run_medians))
         coefficient = (
             statistics.pstdev(run_medians) / statistics.mean(run_medians)
             if len(run_medians) > 1 and statistics.mean(run_medians)
@@ -331,9 +313,7 @@ def _statistics(
                 run_count=len(candidate_runs),
                 sample_count=sum(len(result.durations_ns) for result in candidate_runs),
                 median_run_duration_ns=median_duration,
-                p90_run_median_ns=_percentile(
-                    [round(value) for value in run_medians], 0.9
-                ),
+                p90_run_median_ns=_percentile([round(value) for value in run_medians], 0.9),
                 median_absolute_deviation_ns=deviation,
                 coefficient_of_variation=coefficient,
                 improvement_over_baseline=median_improvement,
@@ -444,9 +424,7 @@ def _expected_result(
             name, candidate_execution_identity
         )
         if candidate_execution_identity != previous_candidate_identity:
-            raise ValueError(
-                f"RPA_SEARCH_CANDIDATE_EXECUTION_IDENTITY_MISMATCH candidate={name}"
-            )
+            raise ValueError(f"RPA_SEARCH_CANDIDATE_EXECUTION_IDENTITY_MISMATCH candidate={name}")
         timing_path = run_root / "device_timing.json"
         saved_timing = RpaDeviceTiming.model_validate_json(timing_path.read_text())
         expected_timing = _device_timing(
@@ -455,9 +433,7 @@ def _expected_result(
             contract.measured_iterations,
         )
         if saved_timing != expected_timing:
-            raise ValueError(
-                f"RPA_SEARCH_DEVICE_TIMING_REPLAY_MISMATCH candidate={name}"
-            )
+            raise ValueError(f"RPA_SEARCH_DEVICE_TIMING_REPLAY_MISMATCH candidate={name}")
         run_evidence.append(
             RpaSearchRunEvidence(
                 path=relative.as_posix(),
@@ -495,9 +471,7 @@ def _expected_result(
         for round_index, order in enumerate(confirmation_orders):
             for position, name in enumerate(order):
                 relative = (
-                    Path("confirmation")
-                    / f"round-{round_index:02d}"
-                    / f"{position:02d}-{name}"
+                    Path("confirmation") / f"round-{round_index:02d}" / f"{position:02d}-{name}"
                 )
                 confirmation_results[name].append(read_run(relative, name))
         confirmation = _confirmation_statistics(
@@ -597,9 +571,7 @@ def run_rpa_search(
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     contract_path = root / "contract.json"
-    contract_text = contract.model_dump_json(
-        indent=2, exclude_computed_fields=True
-    ) + "\n"
+    contract_text = contract.model_dump_json(indent=2, exclude_computed_fields=True) + "\n"
     if contract_path.exists():
         if contract_path.read_text() != contract_text:
             raise ValueError("RPA_SEARCH_CONTRACT_CHANGED")
@@ -623,14 +595,10 @@ def run_rpa_search(
             )
             timing_path = run_root / "device_timing.json"
             if not timing_path.exists():
-                timing_path.write_text(
-                    expected_timing.model_dump_json(indent=2) + "\n"
-                )
+                timing_path.write_text(expected_timing.model_dump_json(indent=2) + "\n")
             saved_timing = RpaDeviceTiming.model_validate_json(timing_path.read_text())
             if saved_timing != expected_timing:
-                raise ValueError(
-                    f"RPA_SEARCH_DEVICE_TIMING_REPLAY_MISMATCH candidate={name}"
-                )
+                raise ValueError(f"RPA_SEARCH_DEVICE_TIMING_REPLAY_MISMATCH candidate={name}")
             return
         if run_root.exists():
             _archive_incomplete_run(
@@ -667,9 +635,7 @@ def run_rpa_search(
             candidate,
             contract.measured_iterations,
         )
-        (run_root / "device_timing.json").write_text(
-            timing.model_dump_json(indent=2) + "\n"
-        )
+        (run_root / "device_timing.json").write_text(timing.model_dump_json(indent=2) + "\n")
 
     for round_index, order in enumerate(_execution_orders(contract)):
         for position, name in enumerate(order):
@@ -687,9 +653,7 @@ def run_rpa_search(
             )
             for position, name in enumerate(order):
                 ensure_run(
-                    Path("confirmation")
-                    / f"round-{round_index:02d}"
-                    / f"{position:02d}-{name}",
+                    Path("confirmation") / f"round-{round_index:02d}" / f"{position:02d}-{name}",
                     name,
                 )
     result = _expected_result(root, contract)

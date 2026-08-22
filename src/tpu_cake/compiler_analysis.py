@@ -28,6 +28,11 @@ _MEMORY_FIELDS = (
 )
 
 
+def compiler_hlo_text(lowered: Any) -> str:
+    computation = lowered.compiler_ir(dialect="hlo")
+    return computation.as_hlo_text() if hasattr(computation, "as_hlo_text") else str(computation)
+
+
 def _text_artifact_sha256(value: str) -> str:
     return hashlib.sha256((value + "\n").encode()).hexdigest()
 
@@ -47,11 +52,7 @@ class CompilerCostMetric(BaseModel):
         if self.available:
             if self.value is None or self.raw_value != self.value:
                 raise ValueError("available compiler metric must preserve its raw value")
-        elif (
-            self.name != "optimal_seconds"
-            or self.raw_value >= 0
-            or self.value is not None
-        ):
+        elif self.name != "optimal_seconds" or self.raw_value >= 0 or self.value is not None:
             raise ValueError("unsupported compiler metric unavailable state")
         return self
 
@@ -164,7 +165,9 @@ class CompilerCollectiveStrategySurface(BaseModel):
             raise ValueError("compiler collective strategy surface geometry mismatch")
         columns = tuple(point.columns for point in self.points)
         if columns != tuple(sorted(set(columns))):
-            raise ValueError("compiler collective strategy surface points must be sorted and unique")
+            raise ValueError(
+                "compiler collective strategy surface points must be sorted and unique"
+            )
         return self
 
 
@@ -174,9 +177,7 @@ def _compiler_operation_lines(value: str, operation: str) -> tuple[str, ...]:
 
 
 def _stablehlo_operation_count(value: str, operation: str) -> int:
-    pattern = re.compile(
-        rf'=\s*"?stablehlo\.{re.escape(operation)}"?(?=[\s(<])'
-    )
+    pattern = re.compile(rf'=\s*"?stablehlo\.{re.escape(operation)}"?(?=[\s(<])')
     return sum(bool(pattern.search(line)) for line in value.splitlines())
 
 
@@ -194,9 +195,7 @@ def analyze_compiler_collectives(
         ),
         stablehlo_all_gather_count=_stablehlo_operation_count(stablehlo, "all_gather"),
         compiler_reduce_scatter_count=len(reduce_scatter_lines),
-        compiler_all_reduce_count=len(
-            _compiler_operation_lines(compiler_hlo, "all-reduce")
-        ),
+        compiler_all_reduce_count=len(_compiler_operation_lines(compiler_hlo, "all-reduce")),
         compiler_all_gather_count=len(all_gather_lines),
         sparse_core_reduce_scatter_count=sum(
             "reduce_scatter_offload_config" in line
@@ -204,8 +203,7 @@ def analyze_compiler_collectives(
             for line in reduce_scatter_lines
         ),
         sparse_core_all_gather_count=sum(
-            "all_gather_offload_config" in line
-            and '"device_type":"DEVICE_TYPE_SPARSECORE"' in line
+            "all_gather_offload_config" in line and '"device_type":"DEVICE_TYPE_SPARSECORE"' in line
             for line in all_gather_lines
         ),
     )
@@ -215,9 +213,7 @@ def _capture_cost_metrics(value: object) -> tuple[CompilerCostMetric, ...]:
     if value is None:
         raise ValueError("COMPILER_ANALYSIS_COST_UNAVAILABLE")
     if not isinstance(value, dict):
-        raise TypeError(
-            f"COMPILER_ANALYSIS_COST_TYPE_INVALID type={type(value).__name__}"
-        )
+        raise TypeError(f"COMPILER_ANALYSIS_COST_TYPE_INVALID type={type(value).__name__}")
     if not value:
         raise ValueError("COMPILER_ANALYSIS_COST_EMPTY")
     metrics = []
@@ -230,15 +226,13 @@ def _capture_cost_metrics(value: object) -> tuple[CompilerCostMetric, ...]:
             or not math.isfinite(float(metric_value))
         ):
             raise ValueError(
-                "COMPILER_ANALYSIS_COST_VALUE_INVALID "
-                f"name={name!r} value={metric_value!r}"
+                f"COMPILER_ANALYSIS_COST_VALUE_INVALID name={name!r} value={metric_value!r}"
             )
         raw_value = float(metric_value)
         if raw_value < 0:
             if name != "optimal_seconds":
                 raise ValueError(
-                    "COMPILER_ANALYSIS_COST_VALUE_INVALID "
-                    f"name={name!r} value={metric_value!r}"
+                    f"COMPILER_ANALYSIS_COST_VALUE_INVALID name={name!r} value={metric_value!r}"
                 )
             metrics.append(
                 CompilerCostMetric(
@@ -267,8 +261,7 @@ def _capture_memory(value: object) -> CompilerMemoryAnalysis:
         observed = getattr(value, name, None)
         if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
             raise ValueError(
-                "COMPILER_ANALYSIS_MEMORY_FIELD_INVALID "
-                f"name={name} value={observed!r}"
+                f"COMPILER_ANALYSIS_MEMORY_FIELD_INVALID name={name} value={observed!r}"
             )
         fields[name] = observed
     buffer_assignment = getattr(value, "serialized_buffer_assignment_proto", None)
@@ -280,9 +273,7 @@ def _capture_memory(value: object) -> CompilerMemoryAnalysis:
         buffer_assignment_available=buffer_assignment_available,
         buffer_assignment_size_bytes=len(buffer_assignment),
         buffer_assignment_sha256=(
-            hashlib.sha256(buffer_assignment).hexdigest()
-            if buffer_assignment_available
-            else None
+            hashlib.sha256(buffer_assignment).hexdigest() if buffer_assignment_available else None
         ),
     )
 
@@ -324,10 +315,9 @@ def validate_compiler_analysis(
     compiler_hlo_path: Path,
 ) -> CompilerExecutableAnalysis:
     analysis = CompilerExecutableAnalysis.model_validate_json(path.read_text())
-    if (
-        analysis.stablehlo_sha256 != file_sha256(stablehlo_path)
-        or analysis.compiler_hlo_sha256 != file_sha256(compiler_hlo_path)
-    ):
+    if analysis.stablehlo_sha256 != file_sha256(
+        stablehlo_path
+    ) or analysis.compiler_hlo_sha256 != file_sha256(compiler_hlo_path):
         raise ValueError("COMPILER_ANALYSIS_PROGRAM_MISMATCH")
     observed_collectives = analyze_compiler_collectives(
         stablehlo=stablehlo_path.read_text(),

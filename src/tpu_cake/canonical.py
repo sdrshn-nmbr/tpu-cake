@@ -16,6 +16,28 @@ from tpu_cake.dialects.distributed_tensor import (
 from tpu_cake.dialects.tpu_schedule import AllocOp, KernelOp, TPUSchedule, ViewOp
 
 
+def parse_distributed_module(text: str, *, name: str = "<unknown>") -> ModuleOp:
+    context = Context()
+    context.load_dialect(Builtin)
+    context.load_dialect(DistributedTensor)
+    return Parser(context, text, name=name).parse_module()
+
+
+def parse_physical_module(text: str, *, name: str = "<unknown>") -> ModuleOp:
+    context = Context()
+    context.load_dialect(Builtin)
+    context.load_dialect(TPUSchedule)
+    return Parser(context, text, name=name).parse_module()
+
+
+def parse_tpu_cake_module(text: str, *, name: str = "<unknown>") -> ModuleOp:
+    context = Context()
+    context.load_dialect(Builtin)
+    context.load_dialect(DistributedTensor)
+    context.load_dialect(TPUSchedule)
+    return Parser(context, text, name=name).parse_module()
+
+
 def _normalize_semantics(module: ModuleOp) -> None:
     value_order = {}
     next_value = 0
@@ -36,9 +58,7 @@ def _normalize_semantics(module: ModuleOp) -> None:
             "add",
             "multiply",
         }:
-            operation.operands = tuple(
-                sorted(operation.operands, key=value_order.__getitem__)
-            )
+            operation.operands = tuple(sorted(operation.operands, key=value_order.__getitem__))
         if isinstance(operation, ViewOp):
             declared = operation.alias_group.data
             normalized = alias_names.setdefault(declared, f"alias{len(alias_names)}")

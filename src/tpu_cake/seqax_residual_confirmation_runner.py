@@ -23,7 +23,14 @@ from tpu_cake.canonical import canonical_text
 from tpu_cake.compiler_analysis import write_compiler_analysis
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history, seal_ledger
+from tpu_cake.ledger import (
+    EvidenceRun,
+    ExperimentLedger,
+    RunState,
+    payload_sha256,
+    read_ledger_history,
+    seal_ledger,
+)
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_numerical import default_seqax_bf16_validation_contract
 from tpu_cake.seqax_pallas_search_runner import _validate_output_abi
@@ -345,18 +352,11 @@ def _record_state(
     state: RunState,
     payload: Mapping[str, object],
 ) -> None:
-    expected_hash = ExperimentLedger.payload_sha256(payload)
-    if ledger_path.exists():
-        existing = {value.state: value for value in read_ledger_history(ledger_path, run_id)}
-        if state in existing:
-            if existing[state].payload_sha256 != expected_hash:
-                raise ValueError(f"SEQAX_RESIDUAL_CONFIRMATION_LEDGER_CONFLICT state={state}")
-            return
-    with ExperimentLedger(ledger_path) as ledger:
-        if state is RunState.CREATED:
-            ledger.create(run_id, payload)
-        else:
-            ledger.transition(run_id, state, payload)
+    EvidenceRun(ledger_path, run_id).record(
+        state,
+        payload,
+        conflict_error="SEQAX_RESIDUAL_CONFIRMATION_LEDGER_CONFLICT state={state}",
+    )
 
 
 def _record_failure(root: Path, run_id: str, error: Exception) -> None:
@@ -747,7 +747,7 @@ def _validate(
     if tuple(value.state for value in history) != tuple(state for state, _ in payloads):
         raise ValueError("SEQAX_RESIDUAL_CONFIRMATION_LEDGER_STATE_MISMATCH")
     if tuple(value.payload_sha256 for value in history) != tuple(
-        ExperimentLedger.payload_sha256(payload) for _, payload in payloads
+        payload_sha256(payload) for _, payload in payloads
     ):
         raise ValueError("SEQAX_RESIDUAL_CONFIRMATION_LEDGER_PAYLOAD_MISMATCH")
     expected_files = _expected_files(root, contract, receipt_present=require_receipt)

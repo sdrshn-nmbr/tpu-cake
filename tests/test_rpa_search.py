@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from tpu_cake import rpa_search
+from tpu_cake import xprof_evidence
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.rpa_search import (
     RpaDeviceTiming,
@@ -137,9 +137,12 @@ def test_checked_in_rpa_search_contract_is_valid() -> None:
 
     assert contract.baseline == "incumbent"
     assert len(contract.candidates) == 5
-    assert contract.search_id == RpaSearchContract.model_validate_json(
-        contract.model_dump_json(exclude_computed_fields=True)
-    ).search_id
+    assert (
+        contract.search_id
+        == RpaSearchContract.model_validate_json(
+            contract.model_dump_json(exclude_computed_fields=True)
+        ).search_id
+    )
     orders = _execution_orders(contract)
     assert len(orders) == 10
     assert all(
@@ -154,9 +157,7 @@ def test_rpa_search_replay_rejects_a_self_declared_contract(
 ) -> None:
     saved = _contract()
     expected = saved.model_copy(update={"minimum_practical_improvement": 0.02})
-    (tmp_path / "contract.json").write_text(
-        saved.model_dump_json(exclude_computed_fields=True)
-    )
+    (tmp_path / "contract.json").write_text(saved.model_dump_json(exclude_computed_fields=True))
 
     with pytest.raises(ValueError, match="RPA_SEARCH_CONTRACT_MISMATCH"):
         validate_rpa_search_result(tmp_path, expected)
@@ -205,26 +206,25 @@ def test_device_timing_accepts_only_tpu_xla_custom_call_events(
     xplane.write_bytes(b"xplane")
     candidate = _candidate("incumbent", (8, 128, 8, 128))
     event_name = (
-        '%RPAd-p_16-bq_8_8-bkv_128_128.1 custom-call(), '
-        'custom_call_target="tpu_custom_call"'
+        '%RPAd-p_16-bq_8_8-bkv_128_128.1 custom-call(), custom_call_target="tpu_custom_call"'
     )
 
     def event(duration: float) -> SimpleNamespace:
-        return SimpleNamespace(name=event_name, duration_ns=duration)
+        return SimpleNamespace(name=event_name, start_ns=0, duration_ns=duration)
 
     class FakeProfile:
         planes = (
             SimpleNamespace(
                 name="/host:CPU",
+                stats={},
                 lines=(SimpleNamespace(name="XLA Ops", events=(event(1.0),)),),
             ),
             SimpleNamespace(
                 name="/device:TPU:0",
+                stats={},
                 lines=(
                     SimpleNamespace(name="Host Threads", events=(event(2.0),)),
-                    SimpleNamespace(
-                        name="XLA Ops", events=tuple(event(10.0) for _ in range(50))
-                    ),
+                    SimpleNamespace(name="XLA Ops", events=tuple(event(10.0) for _ in range(50))),
                 ),
             ),
         )
@@ -233,7 +233,7 @@ def test_device_timing_accepts_only_tpu_xla_custom_call_events(
             pass
 
     monkeypatch.setattr(
-        rpa_search.profile_data.ProfileData,
+        xprof_evidence.profile_data.ProfileData,
         "from_file",
         lambda _: FakeProfile(),
     )

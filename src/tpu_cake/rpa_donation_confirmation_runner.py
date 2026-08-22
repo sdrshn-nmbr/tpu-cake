@@ -18,10 +18,11 @@ import jax
 import numpy as np
 from jax.sharding import PartitionSpec as P
 
+from tpu_cake.artifacts import build_artifact_manifest, file_sha256
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, RunState, payload_sha256, read_ledger_history
 from tpu_cake.rpa_donation_confirmation import (
     INKLING_RPA_DONATION_CONFIRMATION_RECEIPT_SCHEMA,
     INKLING_RPA_DONATION_CONFIRMATION_SCHEMA,
@@ -213,7 +214,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
     for path in additions:
         manifest[path] = SourceFileContract(
             path=path,
-            sha256=hashlib.sha256((repository / path).read_bytes()).hexdigest(),
+            sha256=file_sha256(repository / path),
         )
     return tuple(manifest[path] for path in sorted(manifest))
 
@@ -467,18 +468,11 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 
 def _artifacts(root: Path) -> tuple[ArtifactReference, ...]:
-    return tuple(
-        ArtifactReference(
-            path=path.relative_to(root).as_posix(),
-            size_bytes=path.stat().st_size,
-            sha256=_sha256(path),
-            role=_artifact_role(path.relative_to(root)),
-        )
-        for path in sorted(
-            (value for value in root.rglob("*") if value.is_file()),
-            key=lambda value: value.relative_to(root).as_posix(),
-        )
-        if path.name != "receipt.json"
+    return build_artifact_manifest(
+        root,
+        role_for_path=_artifact_role,
+        excluded_paths=(),
+        exclude_path=lambda path: path.name == "receipt.json",
     )
 
 
@@ -828,9 +822,7 @@ def validate_inkling_rpa_donation_confirmation(
     if tuple(value.state for value in history) != states or tuple(
         value.payload_sha256 for value in history
     ) != tuple(
-        ExperimentLedger.payload_sha256(
-            _ledger_payload(contract, expected_run_id, source_state, root, state)
-        )
+        payload_sha256(_ledger_payload(contract, expected_run_id, source_state, root, state))
         for state in states
     ):
         raise ValueError("INKLING_RPA_DONATION_LEDGER_REPLAY_MISMATCH")
@@ -895,18 +887,15 @@ def _run_staged(
     _write_json(root / "source_manifest.json", source_manifest)
     _write_text(root / "physical.xdsl", canonical_text(inkling_sharded_fused_rpa_schedule()))
     _write_json(root / "plan.json", contract.plan)
-    with ExperimentLedger(root / "ledger.sqlite") as ledger:
-        ledger.create(
-            run_id,
+    with EvidenceRun(root / "ledger.sqlite", run_id) as run:
+        run.create(
             _ledger_payload(contract, run_id, source_state, root, RunState.CREATED),
         )
-        ledger.transition(
-            run_id,
+        run.transition(
             RunState.VERIFIED,
             _ledger_payload(contract, run_id, source_state, root, RunState.VERIFIED),
         )
-        ledger.transition(
-            run_id,
+        run.transition(
             RunState.LOWERED,
             _ledger_payload(contract, run_id, source_state, root, RunState.LOWERED),
         )
@@ -917,15 +906,13 @@ def _run_staged(
         )
         for compiled in compiled_arms:
             _save_compiled_arm(root, compiled)
-        ledger.transition(
-            run_id,
+        run.transition(
             RunState.COMPILED,
             _ledger_payload(contract, run_id, source_state, root, RunState.COMPILED),
         )
         correctness = _correctness_observations(root, contract, compiled_arms)
         _write_json(root / "correctness.json", correctness)
-        ledger.transition(
-            run_id,
+        run.transition(
             RunState.CORRECT,
             _ledger_payload(contract, run_id, source_state, root, RunState.CORRECT),
         )
@@ -950,8 +937,7 @@ def _run_staged(
         )
         _write_json(root / "rounds.json", rounds)
         _write_json(root / "statistics.json", statistics_record)
-        ledger.transition(
-            run_id,
+        run.transition(
             RunState.TIMED,
             _ledger_payload(contract, run_id, source_state, root, RunState.TIMED),
         )
@@ -991,9 +977,8 @@ def _run_staged(
         require_accepted=False,
         require_receipt=False,
     )
-    with ExperimentLedger(root / "ledger.sqlite") as ledger:
-        ledger.transition(
-            run_id,
+    with EvidenceRun(root / "ledger.sqlite", run_id) as run:
+        run.transition(
             RunState.ACCEPTED,
             _ledger_payload(contract, run_id, source_state, root, RunState.ACCEPTED),
         )

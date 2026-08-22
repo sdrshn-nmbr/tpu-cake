@@ -10,7 +10,7 @@ class UnsupportedPhysicalGeometryError(ValueError):
     pass
 
 
-def _names(buffer: BufferType) -> tuple[str, ...]:
+def buffer_dimension_names(buffer: BufferType) -> tuple[str, ...]:
     return tuple(value.data for value in buffer.shape.dimensions)
 
 
@@ -60,9 +60,9 @@ def named_einsum_geometry(operation: MxuEinsumOp) -> MxuGeometry:
     assert isinstance(lhs_type, BufferType)
     assert isinstance(rhs_type, BufferType)
     assert isinstance(result_type, BufferType)
-    lhs_names = _names(lhs_type)
-    rhs_names = _names(rhs_type)
-    result_names = _names(result_type)
+    lhs_names = buffer_dimension_names(lhs_type)
+    rhs_names = buffer_dimension_names(rhs_type)
+    result_names = buffer_dimension_names(result_type)
     contractions = tuple(value.data for value in operation.contracting_dimensions)
     batch_names = tuple(
         name for name in lhs_names if name in rhs_names and name not in contractions

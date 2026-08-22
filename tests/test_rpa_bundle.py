@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tpu_cake import rpa_bundle
+from tpu_cake import xprof_evidence
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.rpa_bundle import (
     _decode_custom_call_durations,
@@ -113,14 +113,25 @@ def test_decode_custom_call_duration_requires_fifty_tpu_xla_events(
         planes = (
             SimpleNamespace(
                 name="/device:TPU:0",
+                stats={},
                 lines=(
                     SimpleNamespace(
                         name="XLA Ops",
                         events=tuple(
-                            SimpleNamespace(name=event_name, duration_ns=float(index + 1))
+                            SimpleNamespace(
+                                name=event_name,
+                                start_ns=index,
+                                duration_ns=float(index + 1),
+                            )
                             for index in range(50)
                         )
-                        + (SimpleNamespace(name=colliding_event_name, duration_ns=999.0),),
+                        + (
+                            SimpleNamespace(
+                                name=colliding_event_name,
+                                start_ns=51,
+                                duration_ns=999.0,
+                            ),
+                        ),
                     ),
                 ),
             ),
@@ -130,7 +141,7 @@ def test_decode_custom_call_duration_requires_fifty_tpu_xla_events(
             pass
 
     monkeypatch.setattr(
-        rpa_bundle.profile_data.ProfileData,
+        xprof_evidence.profile_data.ProfileData,
         "from_file",
         lambda _: FakeProfile(),
     )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated
@@ -10,13 +9,12 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.contracts import WorkloadStage
+from tpu_cake.identity import model_identity_sha256
 
 
 class OutputEquivalencePolicy(StrEnum):
     EXACT_IDENTITY = "exact_identity"
-    INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE = (
-        "independent_oracle_and_cross_mode_tolerance"
-    )
+    INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE = "independent_oracle_and_cross_mode_tolerance"
 
 
 class AttentionScenario(BaseModel):
@@ -45,14 +43,14 @@ class AttentionScenario(BaseModel):
     @computed_field
     @property
     def allocated_pages(self) -> int:
-        return sum((length + self.page_size - 1) // self.page_size for length in self.context_lengths)
+        return sum(
+            (length + self.page_size - 1) // self.page_size for length in self.context_lengths
+        )
 
     @computed_field
     @property
     def page_occupancy(self) -> Decimal:
-        return Decimal(sum(self.context_lengths)) / Decimal(
-            self.allocated_pages * self.page_size
-        )
+        return Decimal(sum(self.context_lengths)) / Decimal(self.allocated_pages * self.page_size)
 
 
 class AttentionWorkloadSurface(BaseModel):
@@ -75,9 +73,7 @@ class AttentionWorkloadSurface(BaseModel):
     @computed_field
     @property
     def surface_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude={"surface_id"})
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self, exclude={"surface_id"})
 
 
 class SeqaxForwardScenario(BaseModel):
@@ -141,9 +137,7 @@ class SeqaxForwardWorkloadSurface(BaseModel):
     @computed_field
     @property
     def surface_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude={"surface_id"})
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self, exclude={"surface_id"})
 
 
 WorkloadSurface = AttentionWorkloadSurface | SeqaxForwardWorkloadSurface
@@ -230,19 +224,14 @@ def compare_surface_candidates(
         for name in expected_names
     ):
         raise ValueError("surface candidates must pass their numerical contracts")
-    if (
-        surface.output_equivalence is OutputEquivalencePolicy.EXACT_IDENTITY
-        and any(
-            baseline_by_name[name].output_sha256
-            != candidate_by_name[name].output_sha256
-            for name in expected_names
-        )
+    if surface.output_equivalence is OutputEquivalencePolicy.EXACT_IDENTITY and any(
+        baseline_by_name[name].output_sha256 != candidate_by_name[name].output_sha256
+        for name in expected_names
     ):
         raise ValueError("surface candidates need matched correct outputs")
     if any(
         baseline_by_name[name].input_sha256 != candidate_by_name[name].input_sha256
-        or baseline_by_name[name].runtime_sha256
-        != candidate_by_name[name].runtime_sha256
+        or baseline_by_name[name].runtime_sha256 != candidate_by_name[name].runtime_sha256
         for name in expected_names
     ):
         raise ValueError("surface candidates need matched inputs and runtimes")
@@ -279,7 +268,10 @@ def compare_surface_candidates(
         )
     rounds = next(iter(round_counts))
     generator = np.random.default_rng(
-        int(hashlib.sha256(f"{surface.surface_id}:{candidate.candidate}".encode()).hexdigest()[:16], 16)
+        int(
+            hashlib.sha256(f"{surface.surface_id}:{candidate.candidate}".encode()).hexdigest()[:16],
+            16,
+        )
     )
     estimates = np.empty(surface.bootstrap_samples, dtype=np.float64)
     for index in range(surface.bootstrap_samples):

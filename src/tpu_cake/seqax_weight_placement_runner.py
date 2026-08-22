@@ -10,9 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
-from jax.sharding import NamedSharding
 from xdsl.dialects.builtin import ModuleOp
 
 from tpu_cake.artifacts import (
@@ -21,6 +19,7 @@ from tpu_cake.artifacts import (
 from tpu_cake.artifacts import (
     file_sha256 as _sha256,
 )
+from tpu_cake.artifacts import save_array as _save_array
 from tpu_cake.artifacts import (
     text_file_sha256 as _text_sha256,
 )
@@ -40,11 +39,12 @@ from tpu_cake.compiler_analysis import (
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.distributed_tensor import AllGatherOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import EvidenceRun, ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, RunState, payload_sha256, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_pallas_lowering import (
     SeqaxPallasPlan,
     lower_seqax_physical_to_pallas,
+    place_inputs,
 )
 from tpu_cake.seqax_pallas_runner import (
     _compiler_hlo,
@@ -54,11 +54,13 @@ from tpu_cake.seqax_pallas_runner import (
 )
 from tpu_cake.seqax_pallas_search import (
     SeqaxPallasCandidateCorrectness,
-    SeqaxPallasDevice,
     SeqaxPallasRoundObservation,
     candidate_statistics,
     confirmation_statistics,
     execution_orders,
+)
+from tpu_cake.seqax_pallas_search import (
+    seqax_pallas_device_inventory as _device_inventory,
 )
 from tpu_cake.seqax_pallas_search_runner import (
     _compiler_tile_metadata,
@@ -102,11 +104,6 @@ class CompiledPlacement:
     stablehlo: str
     compiler_hlo: str
     compiler_analysis: CompilerExecutableAnalysis
-
-
-def _save_array(path: Path, value: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
 
 
 def _load_array(path: Path) -> np.ndarray:
@@ -250,13 +247,7 @@ def _resident_inputs(
     prepared: PreparedPlacement,
     mesh: Any,
 ) -> tuple[jax.Array, ...]:
-    return tuple(
-        jax.device_put(
-            jnp.asarray(value),
-            NamedSharding(mesh, tensor.partition_spec()),
-        )
-        for value, tensor in zip(host_inputs, prepared.plan.input_contracts, strict=True)
-    )
+    return place_inputs(host_inputs, prepared.plan.input_contracts, mesh)
 
 
 def _compile(
@@ -310,18 +301,6 @@ def _execute(
     if len(outputs) != 1:
         raise ValueError("SEQAX_WEIGHT_PLACEMENT_OUTPUT_COUNT_MISMATCH")
     return np.asarray(outputs[0])
-
-
-def _device_inventory(devices: tuple[Any, ...]) -> tuple[SeqaxPallasDevice, ...]:
-    return tuple(
-        SeqaxPallasDevice(
-            id=device.id,
-            process_index=device.process_index,
-            platform=device.platform,
-            device_kind=device.device_kind,
-        )
-        for device in devices
-    )
 
 
 def _validate_devices(devices: tuple[Any, ...], contract: SeqaxWeightPlacementContract) -> None:
@@ -1225,7 +1204,7 @@ def _validate(
     if tuple(value.state for value in history) != tuple(value[0] for value in ledger_payloads):
         raise ValueError("SEQAX_WEIGHT_PLACEMENT_LEDGER_STATES_MISMATCH")
     if tuple(value.payload_sha256 for value in history) != tuple(
-        ExperimentLedger.payload_sha256(payload) for _state, payload in ledger_payloads
+        payload_sha256(payload) for _state, payload in ledger_payloads
     ):
         raise ValueError("SEQAX_WEIGHT_PLACEMENT_LEDGER_PAYLOAD_MISMATCH")
 

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import statistics
+from collections.abc import Sequence
 from enum import StrEnum
+from typing import Any
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
-from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_seed
+from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, model_identity_sha256, semantic_seed
 
 SEQAX_PALLAS_SEARCH_SCHEMA = "seqax-pallas-tile-search-v1"
 SEQAX_PALLAS_SEARCH_PARAMETERS = {
@@ -148,9 +148,7 @@ class SeqaxPallasSearchContract(BaseModel):
     @computed_field
     @property
     def search_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 class SeqaxPallasPrimitiveObservation(BaseModel):
@@ -254,6 +252,18 @@ class SeqaxPallasDevice(BaseModel):
     process_index: int = Field(ge=0)
     platform: str
     device_kind: str
+
+
+def seqax_pallas_device_inventory(devices: Sequence[Any]) -> tuple[SeqaxPallasDevice, ...]:
+    return tuple(
+        SeqaxPallasDevice(
+            id=device.id,
+            process_index=device.process_index,
+            platform=device.platform,
+            device_kind=device.device_kind,
+        )
+        for device in devices
+    )
 
 
 class SeqaxPallasSearchResult(BaseModel):

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import statistics
 from typing import Literal
@@ -9,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
-from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_seed
+from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, model_identity_sha256, semantic_seed
 from tpu_cake.rpa_lowering import lower_inkling_sharded_rpa_to_pallas
 from tpu_cake.workloads.inkling_rpa import inkling_sharded_fused_rpa_schedule
 
@@ -176,9 +174,7 @@ class InklingShardedRpaSurfaceContract(BaseModel):
     @computed_field
     @property
     def surface_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 def default_inkling_sharded_rpa_surface_contract() -> InklingShardedRpaSurfaceContract:

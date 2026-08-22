@@ -1,25 +1,28 @@
 from __future__ import annotations
 
-import hashlib
 import inspect
 import json
 import time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
 
 import jax
 import numpy as np
 from jax.sharding import NamedSharding
 from pydantic import BaseModel, ConfigDict, Field
 
+from tpu_cake.artifacts import artifact_reference as _artifact
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.artifacts import resolve_recorded_artifact
+from tpu_cake.artifacts import save_relative_array_artifact as _save_array
+from tpu_cake.artifacts import write_relative_text_artifact as _write_text
 from tpu_cake.canonical import canonical_text
+from tpu_cake.compiler_analysis import compiler_hlo_text as _compiler_hlo
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.identity import array_sha256, semantic_seed, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.metrics import MetricSource
 from tpu_cake.receipt import _source_identity
 from tpu_cake.runner import _record_event, _runtime_identity, _source_state
@@ -137,19 +140,9 @@ def seqax_forward_workload_surface() -> SeqaxForwardWorkloadSurface:
         minimum_practical_improvement=Decimal("0.03"),
         maximum_scenario_regression=Decimal("0.01"),
         bootstrap_samples=10_000,
-        output_equivalence=(
-            OutputEquivalencePolicy.INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE
-        ),
+        output_equivalence=(OutputEquivalencePolicy.INDEPENDENT_ORACLE_AND_CROSS_MODE_TOLERANCE),
         oracle_quantization_decimals=4,
     )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _write_json(path: Path, value: object, role: ArtifactRole) -> ArtifactReference:
@@ -160,27 +153,6 @@ def _write_json(path: Path, value: object, role: ArtifactRole) -> ArtifactRefere
         sha256=_sha256(path),
         role=role,
     )
-
-
-def _artifact(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
-    return ArtifactReference(
-        path=path.relative_to(root).as_posix(),
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-        role=role,
-    )
-
-
-def _write_text(
-    root: Path,
-    relative: Path,
-    value: str,
-    role: ArtifactRole,
-) -> ArtifactReference:
-    path = root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value)
-    return _artifact(root, path, role)
 
 
 def _write_nested_json(
@@ -197,18 +169,6 @@ def _write_nested_json(
     )
 
 
-def _save_array(
-    root: Path,
-    relative: Path,
-    value: np.ndarray,
-    role: ArtifactRole,
-) -> ArtifactReference:
-    path = root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
-    return _artifact(root, path, role)
-
-
 def _array_tuple_sha256(values) -> str:
     return semantic_sha256(
         "array-tuple-v1",
@@ -217,11 +177,7 @@ def _array_tuple_sha256(values) -> str:
 
 
 def _same_array(left: np.ndarray, right: np.ndarray) -> bool:
-    return (
-        left.shape == right.shape
-        and left.dtype == right.dtype
-        and np.array_equal(left, right)
-    )
+    return left.shape == right.shape and left.dtype == right.dtype and np.array_equal(left, right)
 
 
 def _symmetric_allclose(
@@ -277,11 +233,6 @@ def _strategy_source() -> str:
     ).replace("_build_surface_strategies", "build", 1)
 
 
-def _compiler_hlo(lowered: Any) -> str:
-    computation = lowered.compiler_ir(dialect="hlo")
-    return computation.as_hlo_text() if hasattr(computation, "as_hlo_text") else str(computation)
-
-
 def _artifact_roles(surface: SeqaxForwardWorkloadSurface) -> dict[str, ArtifactRole]:
     roles = {
         "surface.json": ArtifactRole.SEARCH_CONTRACT,
@@ -302,23 +253,15 @@ def _artifact_roles(surface: SeqaxForwardWorkloadSurface) -> dict[str, ArtifactR
             ).input_contracts
         )
         for index in range(input_count):
-            roles[f"inputs/{scenario.name}/{index:02d}.npy"] = (
-                ArtifactRole.CORRECTNESS_INPUT
-            )
+            roles[f"inputs/{scenario.name}/{index:02d}.npy"] = ArtifactRole.CORRECTNESS_INPUT
         roles[f"oracle/{scenario.name}.npy"] = ArtifactRole.ORACLE_OUTPUT
-        roles[f"outputs/{scenario.name}/baseline.npy"] = (
-            ArtifactRole.CORRECTNESS_OUTPUT
-        )
-        roles[f"outputs/{scenario.name}/candidate.npy"] = (
-            ArtifactRole.CORRECTNESS_OUTPUT
-        )
+        roles[f"outputs/{scenario.name}/baseline.npy"] = ArtifactRole.CORRECTNESS_OUTPUT
+        roles[f"outputs/{scenario.name}/candidate.npy"] = ArtifactRole.CORRECTNESS_OUTPUT
         roles[f"ir/{scenario.name}.xdsl"] = ArtifactRole.DISTRIBUTED_IR
         roles[f"lowering/{scenario.name}.py"] = ArtifactRole.JAX_SOURCE
         roles[f"cost/{scenario.name}.json"] = ArtifactRole.COST_MODEL
         roles[f"hlo/{scenario.name}/candidate_stablehlo.txt"] = ArtifactRole.STABLEHLO
-        roles[f"hlo/{scenario.name}/candidate_compiler_hlo.txt"] = (
-            ArtifactRole.COMPILER_HLO
-        )
+        roles[f"hlo/{scenario.name}/candidate_compiler_hlo.txt"] = ArtifactRole.COMPILER_HLO
     return roles
 
 
@@ -353,9 +296,7 @@ def run_seqax_surface(output_dir: Path) -> SeqaxSurfaceReceipt:
             or partial_surface != seqax_forward_workload_surface()
         ):
             raise ValueError(f"SEQAX_SURFACE_OUTPUT_NOT_OWNED path={output_dir}")
-        archived = output_dir.with_name(
-            f"{output_dir.name}.incomplete-{time.time_ns()}"
-        )
+        archived = output_dir.with_name(f"{output_dir.name}.incomplete-{time.time_ns()}")
         output_dir.rename(archived)
         print(f"SEQAX_SURFACE_ARCHIVED_INCOMPLETE source={output_dir} archive={archived}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -446,8 +387,7 @@ def run_seqax_surface(output_dir: Path) -> SeqaxSurfaceReceipt:
         )
         seed = semantic_seed(surface.surface_id, scenario.name, "inputs")
         host_inputs = tuple(
-            np.asarray(value)
-            for value in seqax_forward_inputs(seed=seed, **scenario.parameters())
+            np.asarray(value) for value in seqax_forward_inputs(seed=seed, **scenario.parameters())
         )
         host_inputs_by_scenario[scenario.name] = host_inputs
         resident_inputs_by_scenario[scenario.name] = tuple(
@@ -627,14 +567,10 @@ def run_seqax_surface(output_dir: Path) -> SeqaxSurfaceReceipt:
             **scenario.parameters(),
         )
         baseline_value = np.asarray(
-            jax.block_until_ready(
-                mapped_by_scenario[scenario.name](*resident_inputs)
-            )[0]
+            jax.block_until_ready(mapped_by_scenario[scenario.name](*resident_inputs))[0]
         )
         candidate_value = np.asarray(
-            jax.block_until_ready(
-                jitted_by_scenario[scenario.name](*resident_inputs)
-            )[0]
+            jax.block_until_ready(jitted_by_scenario[scenario.name](*resident_inputs))[0]
         )
         artifacts.extend(
             _save_array(
@@ -716,10 +652,7 @@ def run_seqax_surface(output_dir: Path) -> SeqaxSurfaceReceipt:
 def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) -> None:
     root = root.resolve()
     surface = seqax_forward_workload_surface()
-    if (
-        receipt.schema_version != SEQAX_SURFACE_SCHEMA
-        or receipt.surface_id != surface.surface_id
-    ):
+    if receipt.schema_version != SEQAX_SURFACE_SCHEMA or receipt.surface_id != surface.surface_id:
         raise ValueError("SEQAX_SURFACE_RECEIPT_IDENTITY_MISMATCH")
     expected_roles = _artifact_roles(surface)
     expected_paths = set(expected_roles)
@@ -750,24 +683,15 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
     saved_surface = SeqaxForwardWorkloadSurface.model_validate_json(
         (root / "surface.json").read_text()
     )
-    invocation = SeqaxSurfaceInvocation.model_validate_json(
-        (root / "invocation.json").read_text()
-    )
-    baseline = SurfaceCandidateObservation.model_validate_json(
-        (root / "baseline.json").read_text()
-    )
+    invocation = SeqaxSurfaceInvocation.model_validate_json((root / "invocation.json").read_text())
+    baseline = SurfaceCandidateObservation.model_validate_json((root / "baseline.json").read_text())
     candidate = SurfaceCandidateObservation.model_validate_json(
         (root / "candidate.json").read_text()
     )
-    comparison = SurfaceComparison.model_validate_json(
-        (root / "comparison.json").read_text()
-    )
+    comparison = SurfaceComparison.model_validate_json((root / "comparison.json").read_text())
     if saved_surface != surface or invocation != receipt.invocation:
         raise ValueError("SEQAX_SURFACE_CONTRACT_REPLAY_MISMATCH")
-    if (
-        baseline.candidate != invocation.baseline
-        or candidate.candidate != invocation.candidate
-    ):
+    if baseline.candidate != invocation.baseline or candidate.candidate != invocation.candidate:
         raise ValueError("SEQAX_SURFACE_CANDIDATE_IDENTITY_MISMATCH")
     for observation in (*baseline.scenarios, *candidate.scenarios):
         if (
@@ -786,8 +710,7 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
     for scenario in surface.scenarios:
         seed = semantic_seed(surface.surface_id, scenario.name, "inputs")
         expected_inputs = tuple(
-            np.asarray(value)
-            for value in seqax_forward_inputs(seed=seed, **scenario.parameters())
+            np.asarray(value) for value in seqax_forward_inputs(seed=seed, **scenario.parameters())
         )
         saved_inputs = tuple(
             np.load(
@@ -800,17 +723,13 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
             not _same_array(saved, expected)
             for saved, expected in zip(saved_inputs, expected_inputs, strict=True)
         ):
-            raise ValueError(
-                f"SEQAX_SURFACE_DETERMINISTIC_INPUT_MISMATCH scenario={scenario.name}"
-            )
+            raise ValueError(f"SEQAX_SURFACE_DETERMINISTIC_INPUT_MISMATCH scenario={scenario.name}")
         expected_oracle = seqax_forward_canonical_reference(
             expected_inputs,
             quantization_decimals=surface.oracle_quantization_decimals,
             **scenario.parameters(),
         )
-        saved_oracle = np.load(
-            root / "oracle" / f"{scenario.name}.npy", allow_pickle=False
-        )
+        saved_oracle = np.load(root / "oracle" / f"{scenario.name}.npy", allow_pickle=False)
         baseline_output = np.load(
             root / "outputs" / scenario.name / "baseline.npy", allow_pickle=False
         )
@@ -845,19 +764,15 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
             absolute_tolerance=SEQAX_SURFACE_ATOL,
             relative_tolerance=SEQAX_SURFACE_RTOL,
         ):
-            raise ValueError(
-                f"SEQAX_SURFACE_CROSS_MODE_MISMATCH scenario={scenario.name}"
-            )
+            raise ValueError(f"SEQAX_SURFACE_CROSS_MODE_MISMATCH scenario={scenario.name}")
         input_identity = _array_tuple_sha256(saved_inputs)
         baseline_output_identity = _array_tuple_sha256((baseline_output,))
         candidate_output_identity = _array_tuple_sha256((candidate_output,))
         if (
             baseline_by_name[scenario.name].input_sha256 != input_identity
             or candidate_by_name[scenario.name].input_sha256 != input_identity
-            or baseline_by_name[scenario.name].output_sha256
-            != baseline_output_identity
-            or candidate_by_name[scenario.name].output_sha256
-            != candidate_output_identity
+            or baseline_by_name[scenario.name].output_sha256 != baseline_output_identity
+            or candidate_by_name[scenario.name].output_sha256 != candidate_output_identity
         ):
             raise ValueError(f"SEQAX_SURFACE_ARRAY_IDENTITY_MISMATCH scenario={scenario.name}")
     if (
@@ -900,9 +815,7 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
         if (
             root / "lowering" / f"{scenario.name}.py"
         ).read_text() != plan.render_executable_source():
-            raise ValueError(
-                f"SEQAX_SURFACE_LOWERING_REPLAY_MISMATCH scenario={scenario.name}"
-            )
+            raise ValueError(f"SEQAX_SURFACE_LOWERING_REPLAY_MISMATCH scenario={scenario.name}")
         ir_artifact = by_path[f"ir/{scenario.name}.xdsl"]
         expected_cost = estimate_seqax_forward(
             module,
@@ -919,25 +832,13 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
             (root / "cost" / f"{scenario.name}.json").read_text()
         )
         if saved_cost != expected_cost:
-            raise ValueError(
-                f"SEQAX_SURFACE_COST_REPLAY_MISMATCH scenario={scenario.name}"
-            )
-        stablehlo = (
-            root / "hlo" / scenario.name / "candidate_stablehlo.txt"
-        ).read_text()
-        compiler_hlo = (
-            root / "hlo" / scenario.name / "candidate_compiler_hlo.txt"
-        ).read_text()
+            raise ValueError(f"SEQAX_SURFACE_COST_REPLAY_MISMATCH scenario={scenario.name}")
+        stablehlo = (root / "hlo" / scenario.name / "candidate_stablehlo.txt").read_text()
+        compiler_hlo = (root / "hlo" / scenario.name / "candidate_compiler_hlo.txt").read_text()
         if not all(
-            marker in stablehlo
-            for marker in ("stablehlo.all_gather", "stablehlo.reduce_scatter")
-        ) or not all(
-            marker in compiler_hlo
-            for marker in ("all-gather", "reduce-scatter", "dot")
-        ):
-            raise ValueError(
-                f"SEQAX_SURFACE_HLO_MARKER_MISMATCH scenario={scenario.name}"
-            )
+            marker in stablehlo for marker in ("stablehlo.all_gather", "stablehlo.reduce_scatter")
+        ) or not all(marker in compiler_hlo for marker in ("all-gather", "reduce-scatter", "dot")):
+            raise ValueError(f"SEQAX_SURFACE_HLO_MARKER_MISMATCH scenario={scenario.name}")
     expected_comparison = compare_surface_candidates(surface, baseline, candidate)
     if comparison != expected_comparison or receipt.comparison != expected_comparison:
         raise ValueError("SEQAX_SURFACE_COMPARISON_REPLAY_MISMATCH")
@@ -1003,6 +904,6 @@ def validate_seqax_surface_receipt(receipt: SeqaxSurfaceReceipt, *, root: Path) 
     if tuple(event.state for event in history) != tuple(
         state for state, _ in expected_ledger
     ) or tuple(event.payload_sha256 for event in history) != tuple(
-        ExperimentLedger.payload_sha256(payload) for _, payload in expected_ledger
+        payload_sha256(payload) for _, payload in expected_ledger
     ):
         raise ValueError("SEQAX_SURFACE_LEDGER_REPLAY_MISMATCH")

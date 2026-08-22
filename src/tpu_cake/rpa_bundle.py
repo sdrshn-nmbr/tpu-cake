@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -10,12 +9,11 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
-from xdsl.context import Context
-from xdsl.dialects.builtin import Builtin
-from xdsl.parser import Parser
-from xprof import profile_data
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.artifacts import resolve_recorded_artifact
+from tpu_cake.artifacts import resolved_artifact_reference as _reference
+from tpu_cake.canonical import parse_physical_module
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
@@ -27,10 +25,9 @@ from tpu_cake.contracts import (
     RunReceipt,
     RunStatus,
 )
-from tpu_cake.dialects.tpu_schedule import TPUSchedule
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.metrics import (
     FormulaIdentity,
     MeasurementInterval,
@@ -53,26 +50,13 @@ from tpu_cake.workloads.inkling_rpa import (
     inkling_fused_rpa_inputs,
     inkling_fused_rpa_reference,
 )
-from tpu_cake.xprof_evidence import assess_capture, capture_metrics, count_profile_events
+from tpu_cake.xprof_evidence import (
+    XPlaneIndex,
+    assess_capture,
+    capture_metrics,
+    count_profile_events,
+)
 from tpu_cake.xprof_export import export_xprof_capture
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _reference(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
-    path = path.resolve()
-    return ArtifactReference(
-        path=path.relative_to(root.resolve()).as_posix(),
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-        role=role,
-    )
 
 
 def _load_declared_array(path: Path, dtype: str) -> np.ndarray:
@@ -137,20 +121,16 @@ def _decode_custom_call_durations(
         raise ValueError(f"RPA_PROFILE_XPLANE_COUNT_MISMATCH phase={mode_root.name}")
     query_block, kv_block, query_cluster, kv_cluster = decode_block_sizes
     event_fragment = f"%RPAd-p_16-bq_{query_block}_{query_cluster}-bkv_{kv_block}_{kv_cluster}"
-    profile = profile_data.ProfileData.from_file(xplanes[0])
-    try:
-        durations = tuple(
-            float(event.duration_ns)
-            for plane in profile.planes
-            if plane.name == "/device:TPU:0"
-            for line in plane.lines
-            if line.name == "XLA Ops"
-            for event in line.events
-            if event.name.startswith(event_fragment + ".")
-            and 'custom_call_target="tpu_custom_call"' in event.name
-        )
-    finally:
-        profile.close()
+    durations = tuple(
+        float(event.duration_ns)
+        for plane in XPlaneIndex.from_file(xplanes[0]).planes
+        if plane.name == "/device:TPU:0"
+        for line in plane.lines
+        if line.name == "XLA Ops"
+        for event in line.events
+        if event.name.startswith(event_fragment + ".")
+        and 'custom_call_target="tpu_custom_call"' in event.name
+    )
     if len(durations) != expected_count or any(value <= 0 for value in durations):
         raise ValueError(
             "RPA_DECODE_CUSTOM_CALL_PROTOCOL_MISMATCH "
@@ -160,14 +140,10 @@ def _decode_custom_call_durations(
 
 
 def _parse_saved_plan(physical_path: Path, lowered_path: Path, result: FusedRpaRunResult):
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(TPUSchedule)
-    module = Parser(
-        context,
+    module = parse_physical_module(
         physical_path.read_text(),
         name=str(physical_path),
-    ).parse_module()
+    )
     plan = lower_inkling_rpa_to_pallas(module)
     if (
         plan.schedule_sha256 != result.schedule_sha256
@@ -500,7 +476,7 @@ def _validate_phase(
     history = read_ledger_history(artifacts["ledger.sqlite"], result.run_id)
     if tuple(event.state for event in history) != expected_states or tuple(
         event.payload_sha256 for event in history
-    ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
+    ) != tuple(payload_sha256(payload) for payload in expected_payloads):
         raise ValueError(f"RPA_LEDGER_EVIDENCE_MISMATCH phase={phase}")
     return max(absolute_errors), max(relative_errors)
 

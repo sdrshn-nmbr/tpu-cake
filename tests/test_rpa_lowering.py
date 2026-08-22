@@ -145,7 +145,7 @@ def test_legacy_fused_rpa_identities_remain_unchanged() -> None:
         "e1de39a3dfa8f4c930207fbe5218aa1f956b19b0b933e993fe35ae916e8ecad7"
     )
     assert plan.source_sha256() == (
-        "d441631f10bb58ca3efe8c03230508e33eeab13efd511b1dde416c8fd9a4428a"
+        "7a7e0ce4ba4957df7b69d55816f14fd0f4f73bc9d9aadb5ed90a062352b3abb3"
     )
 
 
@@ -374,10 +374,10 @@ def test_owned_rpa_decode_core_lowers_to_its_owned_pallas_plan() -> None:
         "17b2c99bd4cd76fef29ed17e4e4dd9238a9a1442015083b3995aa251b6342e88"
     )
     assert first.lowering_sha256 == (
-        "cf66a37f210a9e0be2b2f06cd895036b481521918a392b0988f36debc228419e"
+        "902fab180b32181a24943e7f973c7f6e47baf9e5bb6af43b23636d004ed8dd7e"
     )
     assert first.source_sha256() == (
-        "6e97e9cdbc481fa6abfc3ce1fe95cc252efcc55edd16a5226c2721f94f3469df"
+        "7f1c0e5a8273e274640fc3037a6f24bba2b7dcf84ee79e761e9d9a7e12200e99"
     )
     assert first.source_sha256() == second.source_sha256()
     with pytest.raises(ValueError, match="interpret mode does not support"):

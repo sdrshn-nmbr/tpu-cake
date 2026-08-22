@@ -9,15 +9,16 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from tpu_cake.artifacts import resolve_recorded_artifact
+from tpu_cake.artifacts import file_sha256, resolve_recorded_artifact
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, experiment_artifact_json
 from tpu_cake.identity import (
     LEGACY_SEMANTIC_IDENTITY_SCHEMA,
     SEMANTIC_IDENTITY_SCHEMA,
     array_sha256,
+    model_identity_sha256,
     semantic_sha256,
 )
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.pallas_lowering import (
     PALLAS_EXECUTION_SCHEMA,
@@ -72,9 +73,7 @@ class MatmulSearchContract(BaseModel):
     @computed_field
     @property
     def search_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude={"search_id"})
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self, exclude={"search_id"})
 
 
 class CandidateStatistics(BaseModel):
@@ -133,7 +132,7 @@ def _validate_artifact(path: Path, size_bytes: int, sha256: str) -> None:
         raise ValueError(f"SEARCH_ARTIFACT_MISSING path={path}")
     if path.stat().st_size != size_bytes:
         raise ValueError(f"SEARCH_ARTIFACT_SIZE_CHANGED path={path}")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = file_sha256(path)
     if digest != sha256:
         raise ValueError(f"SEARCH_ARTIFACT_HASH_CHANGED path={path}")
 
@@ -159,9 +158,7 @@ def _named_artifact(
         if Path(artifact.path).name == name and artifact.role is role
     ]
     if len(matches) != 1:
-        raise ValueError(
-            f"SEARCH_ARTIFACT_CONTRACT_MISMATCH name={name} role={role.value}"
-        )
+        raise ValueError(f"SEARCH_ARTIFACT_CONTRACT_MISMATCH name={name} role={role.value}")
     return _resolve_artifact(run_path, matches[0])
 
 
@@ -171,15 +168,11 @@ def _validate_saved_run_evidence(
     candidate: MatmulSearchCandidate,
     result: MatmulRunResult,
 ) -> None:
-    physical = _named_artifact(
-        run_path, result, "physical.xdsl", ArtifactRole.PHYSICAL_IR
-    )
-    pallas = _named_artifact(
-        run_path, result, "lowered_pallas.py", ArtifactRole.PALLAS_SOURCE
-    )
-    if hashlib.sha256(physical.read_bytes()).hexdigest() != result.schedule_sha256:
+    physical = _named_artifact(run_path, result, "physical.xdsl", ArtifactRole.PHYSICAL_IR)
+    pallas = _named_artifact(run_path, result, "lowered_pallas.py", ArtifactRole.PALLAS_SOURCE)
+    if file_sha256(physical) != result.schedule_sha256:
         raise ValueError(f"SEARCH_SCHEDULE_ARTIFACT_MISMATCH candidate={candidate.name}")
-    if hashlib.sha256(pallas.read_bytes()).hexdigest() != result.pallas_source_sha256:
+    if file_sha256(pallas) != result.pallas_source_sha256:
         raise ValueError(f"SEARCH_PALLAS_ARTIFACT_MISMATCH candidate={candidate.name}")
     plan = validate_saved_pallas_plan(
         physical,
@@ -253,9 +246,7 @@ def _validate_saved_run_evidence(
     ):
         raise ValueError(f"SEARCH_TIMING_STATISTIC_MISMATCH candidate={candidate.name}")
 
-    experiment_path = _named_artifact(
-        run_path, result, "experiment.json", ArtifactRole.EXPERIMENT
-    )
+    experiment_path = _named_artifact(run_path, result, "experiment.json", ArtifactRole.EXPERIMENT)
     expected_experiment = distributed_matmul_experiment(
         schedule_sha256=result.schedule_sha256,
         mesh_size=contract.mesh_size,
@@ -272,13 +263,9 @@ def _validate_saved_run_evidence(
         run_path, result, "profiler_config.json", ArtifactRole.PROFILER_CONFIG
     )
     validate_profiler_contract(RunMode.TIMING, json.loads(profiler_path.read_text()))
-    invocation_path = _named_artifact(
-        run_path, result, "invocation.json", ArtifactRole.INVOCATION
-    )
+    invocation_path = _named_artifact(run_path, result, "invocation.json", ArtifactRole.INVOCATION)
     invocation = json.loads(invocation_path.read_text())
-    identity_schema = invocation.get(
-        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
-    )
+    identity_schema = invocation.get("identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA)
     source_state_path = _named_artifact(
         run_path, result, "source_state.json", ArtifactRole.SOURCE_STATE
     )
@@ -288,9 +275,10 @@ def _validate_saved_run_evidence(
     source_state = json.loads(source_state_path.read_text())
     if source_state.get("git_dirty") is not False:
         raise ValueError(f"SEARCH_SOURCE_IS_DIRTY candidate={candidate.name}")
-    if source_state.get("source_diff_sha256") != hashlib.sha256(
-        source_diff_path.read_bytes()
-    ).hexdigest():
+    if (
+        source_state.get("source_diff_sha256")
+        != file_sha256(source_diff_path)
+    ):
         raise ValueError(f"SEARCH_SOURCE_DIFF_MISMATCH candidate={candidate.name}")
 
     expected_run_id = semantic_sha256(
@@ -307,34 +295,26 @@ def _validate_saved_run_evidence(
     if result.run_id != expected_run_id:
         raise ValueError(f"SEARCH_RUN_ID_MISMATCH candidate={candidate.name}")
 
-    distributed = _named_artifact(
-        run_path, result, "distributed.xdsl", ArtifactRole.DISTRIBUTED_IR
-    )
+    distributed = _named_artifact(run_path, result, "distributed.xdsl", ArtifactRole.DISTRIBUTED_IR)
     stablehlo = _named_artifact(run_path, result, "stablehlo.txt", ArtifactRole.STABLEHLO)
-    compiler_hlo = _named_artifact(
-        run_path, result, "compiler_hlo.txt", ArtifactRole.COMPILER_HLO
-    )
-    ledger = _named_artifact(
-        run_path, result, "ledger.sqlite", ArtifactRole.EXECUTION_LEDGER
-    )
+    compiler_hlo = _named_artifact(run_path, result, "compiler_hlo.txt", ArtifactRole.COMPILER_HLO)
+    ledger = _named_artifact(run_path, result, "ledger.sqlite", ArtifactRole.EXECUTION_LEDGER)
     created_payload = {
-            "mode": RunMode.TIMING.value,
-            "mesh_size": contract.mesh_size,
-            "m": contract.m,
-            "k": contract.k,
-            "n": contract.n,
-            "tile_m": candidate.tile_m,
-            "tile_n": candidate.tile_n,
-        }
+        "mode": RunMode.TIMING.value,
+        "mesh_size": contract.mesh_size,
+        "m": contract.m,
+        "k": contract.k,
+        "n": contract.n,
+        "tile_m": candidate.tile_m,
+        "tile_n": candidate.tile_n,
+    }
     if "identity_schema" in invocation:
         created_payload["identity_schema"] = identity_schema
     if "pallas_execution_schema" in invocation:
-        created_payload["pallas_execution_schema"] = invocation[
-            "pallas_execution_schema"
-        ]
+        created_payload["pallas_execution_schema"] = invocation["pallas_execution_schema"]
     expected_payloads = (
         created_payload,
-        {"distributed_ir_sha256": hashlib.sha256(distributed.read_bytes()).hexdigest()},
+        {"distributed_ir_sha256": file_sha256(distributed)},
         {
             "physical_ir_sha256": result.schedule_sha256,
             "schedule_sha256": result.schedule_sha256,
@@ -346,8 +326,8 @@ def _validate_saved_run_evidence(
             ),
         },
         {
-            "stablehlo_sha256": hashlib.sha256(stablehlo.read_bytes()).hexdigest(),
-            "compiler_hlo_sha256": hashlib.sha256(compiler_hlo.read_bytes()).hexdigest(),
+            "stablehlo_sha256": file_sha256(stablehlo),
+            "compiler_hlo_sha256": file_sha256(compiler_hlo),
             "compile_duration_ns": result.compile_duration_ns,
         },
         {
@@ -375,7 +355,7 @@ def _validate_saved_run_evidence(
     )
     if tuple(event.state for event in history) != expected_states or tuple(
         event.payload_sha256 for event in history
-    ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
+    ) != tuple(payload_sha256(payload) for payload in expected_payloads):
         raise ValueError(f"SEARCH_LEDGER_EVIDENCE_MISMATCH candidate={candidate.name}")
 
 
@@ -401,9 +381,7 @@ def _validate_resumed_result(
         "tile_n": candidate.tile_n,
         "interpret": interpret,
     }
-    identity_schema = invocation.get(
-        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
-    )
+    identity_schema = invocation.get("identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA)
     if "identity_schema" in invocation:
         if identity_schema != SEMANTIC_IDENTITY_SCHEMA:
             raise ValueError(f"STALE_SEARCH_IDENTITY_SCHEMA candidate={candidate.name}")
@@ -539,9 +517,7 @@ def run_matmul_search(
     if not all(result.passed for _, _, result, _ in run_results):
         failed = [name for _, name, result, _ in run_results if not result.passed]
         raise ValueError(f"SEARCH_CORRECTNESS_FAILED candidates={failed}")
-    input_hashes = {
-        (result.lhs_sha256, result.rhs_sha256) for _, _, result, _ in run_results
-    }
+    input_hashes = {(result.lhs_sha256, result.rhs_sha256) for _, _, result, _ in run_results}
     if len(input_hashes) != 1:
         raise ValueError("SEARCH_INPUTS_ARE_NOT_MATCHED")
     output_hashes_by_candidate: dict[str, set[str]] = {
@@ -559,14 +535,11 @@ def run_matmul_search(
     if len(runtime_identities) != 1:
         raise ValueError("SEARCH_RUNTIME_IDENTITIES_ARE_NOT_MATCHED")
     source_states = [
-        json.loads((path / "source_state.json").read_text())
-        for _, _, _, path in run_results
+        json.loads((path / "source_state.json").read_text()) for _, _, _, path in run_results
     ]
     if any(state["git_dirty"] for state in source_states):
         raise ValueError("SEARCH_REQUIRES_CLEAN_COMMITTED_SOURCE")
-    source_identities = {
-        (state["git_commit"], state["uv_lock_sha256"]) for state in source_states
-    }
+    source_identities = {(state["git_commit"], state["uv_lock_sha256"]) for state in source_states}
     if len(source_identities) != 1:
         raise ValueError("SEARCH_SOURCE_IDENTITIES_ARE_NOT_MATCHED")
     candidate_code_identities: dict[str, set[tuple[str, str]]] = {
@@ -599,7 +572,10 @@ def run_matmul_search(
             promotable = True
         else:
             paired_improvements = [
-                (round_medians[baseline_name][round_index] - round_medians[candidate.name][round_index])
+                (
+                    round_medians[baseline_name][round_index]
+                    - round_medians[candidate.name][round_index]
+                )
                 / round_medians[baseline_name][round_index]
                 for round_index in range(contract.rounds)
             ]

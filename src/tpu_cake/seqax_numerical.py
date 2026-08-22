@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from collections import deque
 from collections.abc import Callable
@@ -13,7 +12,8 @@ from jax._src.interpreters import mlir
 from jaxlib.mlir import ir
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from tpu_cake.identity import semantic_seed
+from tpu_cake.identity import model_identity_sha256, semantic_seed
+from tpu_cake.stablehlo import as_operation as _as_operation
 from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_canonical_reference,
     seqax_forward_inputs,
@@ -1038,9 +1038,7 @@ class SeqaxBf16ValidationContract(BaseModel):
     @computed_field
     @property
     def contract_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude={"contract_id"})
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self, exclude={"contract_id"})
 
 
 class SeqaxBf16OutputAssessment(BaseModel):
@@ -2429,13 +2427,6 @@ def _is_f32_tensor(value: ir.Value) -> bool:
     return isinstance(value_type, ir.RankedTensorType) and isinstance(
         value_type.element_type.maybe_downcast(), ir.F32Type
     )
-
-
-def _as_operation(value: object) -> ir.Operation | None:
-    if isinstance(value, ir.Operation):
-        return value
-    operation = getattr(value, "operation", None)
-    return operation if isinstance(operation, ir.Operation) else None
 
 
 def _result_reaches_function_return(result: ir.Value) -> bool:

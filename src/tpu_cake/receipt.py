@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -9,7 +8,13 @@ from pathlib import Path
 
 import numpy as np
 
-from tpu_cake.artifacts import resolve_bundle_artifact, resolve_recorded_artifact
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import (
+    resolve_bundle_artifact,
+    resolve_recorded_artifact,
+)
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
@@ -30,7 +35,7 @@ from tpu_cake.identity import (
     array_sha256,
     semantic_sha256,
 )
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.pallas_lowering import (
     PALLAS_EXECUTION_SCHEMA,
     PallasMatmulPlan,
@@ -45,14 +50,6 @@ from tpu_cake.search import (
 )
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_experiment
 from tpu_cake.xprof_evidence import assess_capture
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def counter_expectation(experiment: KernelExperiment) -> ProfileExpectation:
@@ -147,9 +144,7 @@ def _source_identity(
 
 
 def _validate_invocation_schemas(invocation: dict[str, object], phase: str) -> str:
-    identity_schema = invocation.get(
-        "identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA
-    )
+    identity_schema = invocation.get("identity_schema", LEGACY_SEMANTIC_IDENTITY_SCHEMA)
     if not isinstance(identity_schema, str):
         raise TypeError(f"RUN_IDENTITY_SCHEMA_INVALID phase={phase}")
     if "identity_schema" in invocation and identity_schema != SEMANTIC_IDENTITY_SCHEMA:
@@ -175,17 +170,13 @@ def _validate_result_artifact_bindings(
         relative = str(path.resolve().relative_to(root.resolve()))
         receipt_artifact = receipt_artifacts.get(relative)
         if receipt_artifact is None:
-            raise ValueError(
-                f"RESULT_ARTIFACT_NOT_BOUND_BY_RECEIPT phase={phase} path={relative}"
-            )
+            raise ValueError(f"RESULT_ARTIFACT_NOT_BOUND_BY_RECEIPT phase={phase} path={relative}")
         if (
             receipt_artifact.role is not artifact.role
             or receipt_artifact.size_bytes != artifact.size_bytes
             or receipt_artifact.sha256 != artifact.sha256
         ):
-            raise ValueError(
-                f"RESULT_ARTIFACT_RECEIPT_MISMATCH phase={phase} path={relative}"
-            )
+            raise ValueError(f"RESULT_ARTIFACT_RECEIPT_MISMATCH phase={phase} path={relative}")
         if path.stat().st_size != artifact.size_bytes or _sha256(path) != artifact.sha256:
             raise ValueError(f"RESULT_ARTIFACT_CONTENT_MISMATCH phase={phase} path={relative}")
         resolved[path.name] = path
@@ -219,7 +210,7 @@ def _validate_saved_matmul_phase(
     }
     if not required <= artifacts.keys():
         raise ValueError(
-            f"RESULT_ARTIFACT_SET_INCOMPLETE phase={phase} missing={sorted(required-artifacts.keys())}"
+            f"RESULT_ARTIFACT_SET_INCOMPLETE phase={phase} missing={sorted(required - artifacts.keys())}"
         )
     if _sha256(artifacts["physical.xdsl"]) != result.schedule_sha256:
         raise ValueError(f"PHYSICAL_IR_SCHEDULE_MISMATCH phase={phase}")
@@ -388,20 +379,18 @@ def _validate_saved_matmul_phase(
             xplane_size_bytes=xplanes[0].stat().st_size,
         )
     created_payload = {
-            "mode": result.mode.value,
-            "mesh_size": invocation["mesh_size"],
-            "m": invocation["m"],
-            "k": invocation["k"],
-            "n": invocation["n"],
-            "tile_m": invocation["tile_m"],
-            "tile_n": invocation["tile_n"],
-        }
+        "mode": result.mode.value,
+        "mesh_size": invocation["mesh_size"],
+        "m": invocation["m"],
+        "k": invocation["k"],
+        "n": invocation["n"],
+        "tile_m": invocation["tile_m"],
+        "tile_n": invocation["tile_n"],
+    }
     if "identity_schema" in invocation:
         created_payload["identity_schema"] = identity_schema
     if "pallas_execution_schema" in invocation:
-        created_payload["pallas_execution_schema"] = invocation[
-            "pallas_execution_schema"
-        ]
+        created_payload["pallas_execution_schema"] = invocation["pallas_execution_schema"]
     expected_payloads = (
         created_payload,
         {"distributed_ir_sha256": _sha256(artifacts["distributed.xdsl"])},
@@ -431,7 +420,7 @@ def _validate_saved_matmul_phase(
     history = read_ledger_history(artifacts["ledger.sqlite"], result.run_id)
     if tuple(event.state for event in history) != expected_states or tuple(
         event.payload_sha256 for event in history
-    ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
+    ) != tuple(payload_sha256(payload) for payload in expected_payloads):
         raise ValueError(f"RUN_LEDGER_EVIDENCE_MISMATCH phase={phase}")
     return maximum_absolute_error, maximum_relative_error, saved_plan
 
@@ -501,15 +490,12 @@ def _validate_roofline(
     operations = float(workload["operations"])
     total_bytes = float(workload["bytes_read"] + workload["bytes_written"])
     if operations != cost_report.counts.operations_per_device or total_bytes != (
-        cost_report.counts.hbm_read_bytes_per_device
-        + cost_report.counts.hbm_write_bytes_per_device
+        cost_report.counts.hbm_read_bytes_per_device + cost_report.counts.hbm_write_bytes_per_device
     ):
         raise ValueError("ROOFLINE_WORKLOAD_DOES_NOT_MATCH_COST_MODEL")
     if (
-        float(hardware["compute_peak_ops_s"])
-        != cost_report.hardware.compute_flops_per_second
-        or float(hardware["memory_bandwidth_bytes_s"])
-        != cost_report.hardware.hbm_bytes_per_second
+        float(hardware["compute_peak_ops_s"]) != cost_report.hardware.compute_flops_per_second
+        or float(hardware["memory_bandwidth_bytes_s"]) != cost_report.hardware.hbm_bytes_per_second
     ):
         raise ValueError("ROOFLINE_HARDWARE_DOES_NOT_MATCH_COST_MODEL")
     compute_peak = float(hardware["compute_peak_ops_s"]) * float(
@@ -603,19 +589,22 @@ def _validate_distributed_matmul_receipt(
     )
     if finalizer_identity[1] != next(iter(source_identities))[1]:
         raise ValueError("FINALIZER_LOCK_IDENTITY_DOES_NOT_MATCH_RUNS")
-    if len(
-        {
-            (
-                result.schedule_sha256,
-                result.pallas_source_sha256,
-                result.lhs_sha256,
-                result.rhs_sha256,
-                result.output_sha256,
-                result.runtime,
-            )
-            for result in results
-        }
-    ) != 1:
+    if (
+        len(
+            {
+                (
+                    result.schedule_sha256,
+                    result.pallas_source_sha256,
+                    result.lhs_sha256,
+                    result.rhs_sha256,
+                    result.output_sha256,
+                    result.runtime,
+                )
+                for result in results
+            }
+        )
+        != 1
+    ):
         raise ValueError("RUN_PHASE_IDENTITIES_DO_NOT_MATCH")
     maximum_absolute = max(value[0] for value in errors)
     maximum_relative = max(value[1] for value in errors)

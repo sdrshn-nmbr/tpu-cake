@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,87 @@ _MARKERS = (
 )
 
 
+@dataclass(frozen=True)
+class XPlaneEvent:
+    name: str
+    start_ns: int
+    duration_ns: int
+
+
+@dataclass(frozen=True)
+class XPlaneLine:
+    name: str
+    events: tuple[XPlaneEvent, ...]
+
+
+@dataclass(frozen=True)
+class XPlane:
+    name: str
+    stats: tuple[tuple[str, Any], ...]
+    lines: tuple[XPlaneLine, ...]
+
+    def stat_map(self) -> dict[str, Any]:
+        return dict(self.stats)
+
+
+@dataclass(frozen=True)
+class XPlaneIndex:
+    planes: tuple[XPlane, ...]
+
+    @classmethod
+    def from_file(cls, path: Path) -> XPlaneIndex:
+        profile = profile_data.ProfileData.from_file(path)
+        try:
+            return cls(
+                planes=tuple(
+                    XPlane(
+                        name=plane.name,
+                        stats=tuple(dict(plane.stats).items()),
+                        lines=tuple(
+                            XPlaneLine(
+                                name=line.name,
+                                events=tuple(
+                                    XPlaneEvent(
+                                        name=event.name,
+                                        start_ns=event.start_ns,
+                                        duration_ns=event.duration_ns,
+                                    )
+                                    for event in line.events
+                                ),
+                            )
+                            for line in plane.lines
+                        ),
+                    )
+                    for plane in profile.planes
+                )
+            )
+        finally:
+            profile.close()
+
+    def event_count(self, name: str) -> int:
+        return sum(
+            event.name == name
+            for plane in self.planes
+            for line in plane.lines
+            for event in line.events
+        )
+
+
+def canonical_profile_assessment(value: dict[str, object]) -> dict[str, object]:
+    normalized = json.loads(json.dumps(value))
+    for key in ("timing_trace", "counter_trace"):
+        assessment = normalized.get(key)
+        if not isinstance(assessment, dict):
+            continue
+        capture = assessment.get("capture")
+        if not isinstance(capture, dict):
+            continue
+        program_ids = capture.get("timed_program_ids")
+        if isinstance(program_ids, list):
+            capture["timed_program_ids"] = sorted(program_ids)
+    return normalized
+
+
 def _artifact(path: Path) -> ArtifactEvidence:
     path = path.resolve()
     digest = hashlib.sha256()
@@ -77,49 +159,45 @@ def _gviz_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _profile_planes(xplane: Path) -> tuple[tuple[PlaneEvidence, ...], CounterEvidence]:
-    profile = profile_data.ProfileData.from_file(xplane)
+def _profile_planes(index: XPlaneIndex) -> tuple[tuple[PlaneEvidence, ...], CounterEvidence]:
     planes: list[PlaneEvidence] = []
     hbm_read_names: set[str] = set()
     hbm_write_names: set[str] = set()
     cycle_names: set[str] = set()
     periodic_counter_names: set[str] = set()
     periodic_samples: dict[str, set[float]] = defaultdict(set)
-    try:
-        for plane in profile.planes:
-            plane_stats = dict(plane.stats)
-            tensor_core_events = 0
-            event_count = 0
-            core_match = _TPU_CORE.fullmatch(plane.name)
-            for line in plane.lines:
-                event_count += len(line.events)
-                if line.name == "Tensor Core":
-                    tensor_core_events += len(line.events)
-                if core_match and line.name == "_counters_":
-                    sample_points = {event.start_ns for event in line.events}
-                    if len(sample_points) >= 2:
-                        periodic_samples[core_match.group(1)].update(sample_points)
-                        periodic_counter_names.update(event.name for event in line.events)
-                if core_match and line.name.startswith("counters_"):
-                    for event in line.events:
-                        upper_name = event.name.upper()
-                        if "RD_RSP_BEAT_FROM_HBM" in upper_name:
-                            hbm_read_names.add(event.name)
-                        if "WR_REQ_BEAT_TO_HBM" in upper_name:
-                            hbm_write_names.add(event.name)
-                        if "CYCLE_COUNT_WINDOW" in upper_name:
-                            cycle_names.add(event.name)
-            planes.append(
-                PlaneEvidence(
-                    name=plane.name,
-                    device_type=plane_stats.get("device_type_string"),
-                    line_count=len(plane.lines),
-                    event_count=event_count,
-                    tensor_core_event_count=tensor_core_events,
-                )
+    for plane in index.planes:
+        plane_stats = plane.stat_map()
+        tensor_core_events = 0
+        event_count = 0
+        core_match = _TPU_CORE.fullmatch(plane.name)
+        for line in plane.lines:
+            event_count += len(line.events)
+            if line.name == "Tensor Core":
+                tensor_core_events += len(line.events)
+            if core_match and line.name == "_counters_":
+                sample_points = {event.start_ns for event in line.events}
+                if len(sample_points) >= 2:
+                    periodic_samples[core_match.group(1)].update(sample_points)
+                    periodic_counter_names.update(event.name for event in line.events)
+            if core_match and line.name.startswith("counters_"):
+                for event in line.events:
+                    upper_name = event.name.upper()
+                    if "RD_RSP_BEAT_FROM_HBM" in upper_name:
+                        hbm_read_names.add(event.name)
+                    if "WR_REQ_BEAT_TO_HBM" in upper_name:
+                        hbm_write_names.add(event.name)
+                    if "CYCLE_COUNT_WINDOW" in upper_name:
+                        cycle_names.add(event.name)
+        planes.append(
+            PlaneEvidence(
+                name=plane.name,
+                device_type=plane_stats.get("device_type_string"),
+                line_count=len(plane.lines),
+                event_count=event_count,
+                tensor_core_event_count=tensor_core_events,
             )
-    finally:
-        profile.close()
+        )
     return (
         tuple(planes),
         CounterEvidence(
@@ -136,16 +214,7 @@ def _profile_planes(xplane: Path) -> tuple[tuple[PlaneEvidence, ...], CounterEvi
 
 def count_profile_events(root: Path, event_name: str) -> int:
     xplane = _single(root.resolve(), "*.xplane.pb")
-    profile = profile_data.ProfileData.from_file(xplane)
-    try:
-        return sum(
-            event.name == event_name
-            for plane in profile.planes
-            for line in plane.lines
-            for event in line.events
-        )
-    finally:
-        profile.close()
+    return XPlaneIndex.from_file(xplane).event_count(event_name)
 
 
 def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvidence:
@@ -203,7 +272,7 @@ def collect_capture(root: Path, expectation: ProfileExpectation) -> CaptureEvide
             )
         )
 
-    planes, counters = _profile_planes(xplane)
+    planes, counters = _profile_planes(XPlaneIndex.from_file(xplane))
     return CaptureEvidence(
         xplane=_artifact(xplane),
         hlo_stats=_artifact(hlo_stats),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -9,28 +8,27 @@ from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
-from xdsl.context import Context
-from xdsl.dialects.builtin import Builtin
-from xdsl.parser import Parser
-from xprof import profile_data
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.artifacts import resolve_recorded_artifact
+from tpu_cake.artifacts import resolved_artifact_reference as _reference
+from tpu_cake.canonical import parse_distributed_module
 from tpu_cake.contracts import (
-    ArtifactReference,
     ArtifactRole,
     CorrectnessResult,
-    EvidencePhase,
-    EvidencePhaseName,
     EvidenceProfile,
     KernelExperiment,
     RunReceipt,
     RunStatus,
+    group_evidence_phases,
+)
+from tpu_cake.contracts import (
+    counter_profile_experiment as _counter_experiment,
 )
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
-from tpu_cake.dialects.distributed_tensor import DistributedTensor
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, array_sha256, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.metrics import (
     FormulaIdentity,
     MeasurementInterval,
@@ -62,44 +60,19 @@ from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_canonical_reference,
     seqax_forward_inputs,
 )
-from tpu_cake.xprof_evidence import assess_capture, capture_metrics, count_profile_events
+from tpu_cake.xprof_evidence import (
+    XPlaneIndex,
+    assess_capture,
+    capture_metrics,
+    count_profile_events,
+)
+from tpu_cake.xprof_evidence import (
+    canonical_profile_assessment as _canonical_profile_assessment,
+)
 from tpu_cake.xprof_export import export_xprof_capture
 
 _PHASES = ("timing", "trace", "counters")
 _PROFILE_MARKERS = ("all-gather", "reduce_scatter", "dot_general")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _canonical_profile_assessment(value: dict[str, object]) -> dict[str, object]:
-    normalized = json.loads(json.dumps(value))
-    for key in ("timing_trace", "counter_trace"):
-        assessment = normalized.get(key)
-        if not isinstance(assessment, dict):
-            continue
-        capture = assessment.get("capture")
-        if not isinstance(capture, dict):
-            continue
-        program_ids = capture.get("timed_program_ids")
-        if isinstance(program_ids, list):
-            capture["timed_program_ids"] = sorted(program_ids)
-    return normalized
-
-
-def _reference(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
-    path = path.resolve()
-    return ArtifactReference(
-        path=path.relative_to(root.resolve()).as_posix(),
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-        role=role,
-    )
 
 
 def _trusted_experiment() -> KernelExperiment:
@@ -114,37 +87,15 @@ def _trusted_experiment() -> KernelExperiment:
     )
 
 
-def _counter_experiment(experiment: KernelExperiment) -> KernelExperiment:
-    return experiment.model_copy(
-        update={
-            "profile": experiment.profile.model_copy(
-                update={
-                    "require_hbm_read_counters": True,
-                    "require_hbm_write_counters": True,
-                    "require_cycle_counters": True,
-                    "minimum_counter_device_planes": experiment.target.chip_count,
-                }
-            )
-        }
-    )
-
-
 def _load_result(root: Path, phase: str) -> SeqaxForwardRunResult:
-    result = SeqaxForwardRunResult.model_validate_json(
-        (root / phase / "result.json").read_text()
-    )
+    result = SeqaxForwardRunResult.model_validate_json((root / phase / "result.json").read_text())
     if result.mode.value != phase:
-        raise ValueError(
-            f"SEQAX_RUN_MODE_MISMATCH phase={phase} observed={result.mode.value}"
-        )
+        raise ValueError(f"SEQAX_RUN_MODE_MISMATCH phase={phase} observed={result.mode.value}")
     return result
 
 
 def _parse_plan(path: Path):
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(DistributedTensor)
-    module = Parser(context, path.read_text(), name=str(path)).parse_module()
+    module = parse_distributed_module(path.read_text(), name=str(path))
     module.verify()
     return module, lower_distributed_program_to_jax_mesh(module)
 
@@ -333,10 +284,7 @@ def _validate_phase(
     )
     if (
         result.backend != "tpu"
-        or re.fullmatch(
-            r"tpu(?: v)?7x(?: lite)?", result.device_kind.strip().lower()
-        )
-        is None
+        or re.fullmatch(r"tpu(?: v)?7x(?: lite)?", result.device_kind.strip().lower()) is None
         or result.device_count != plan.device_count
         or result.mesh != plan.mesh_axes
         or result.execution_scope != plan.execution_scope
@@ -358,15 +306,12 @@ def _validate_phase(
         ),
         expected_schedule_sha256=result.schedule_sha256,
     )
-    saved_cost = SeqaxCostModelReport.model_validate_json(
-        artifacts["cost_model.json"].read_text()
-    )
+    saved_cost = SeqaxCostModelReport.model_validate_json(artifacts["cost_model.json"].read_text())
     if saved_cost != expected_cost:
         raise ValueError(f"SEQAX_COST_MODEL_REPLAY_MISMATCH phase={phase}")
 
     input_paths = tuple(
-        artifacts[f"inputs/{index:02d}.npy"]
-        for index in range(len(experiment.workload.inputs))
+        artifacts[f"inputs/{index:02d}.npy"] for index in range(len(experiment.workload.inputs))
     )
     output_paths = (artifacts["outputs/00.npy"],)
     oracle_paths = (artifacts["oracle/00.npy"],)
@@ -417,9 +362,7 @@ def _validate_phase(
         or tuple(array_sha256(value) for value in saved_oracles) != result.oracle_sha256
     ):
         raise ValueError(f"SEQAX_ARRAY_IDENTITY_MISMATCH phase={phase}")
-    maximum_absolute_error, maximum_relative_error = _errors(
-        outputs[0], expected_oracle
-    )
+    maximum_absolute_error, maximum_relative_error = _errors(outputs[0], expected_oracle)
     passed = np.allclose(
         outputs[0],
         expected_oracle,
@@ -471,9 +414,7 @@ def _validate_phase(
         median = statistics.median(result.samples_ns)
         ordered = sorted(result.samples_ns)
         p90 = ordered[min(len(ordered) - 1, round((len(ordered) - 1) * 0.9))]
-        coefficient = statistics.pstdev(result.samples_ns) / statistics.mean(
-            result.samples_ns
-        )
+        coefficient = statistics.pstdev(result.samples_ns) / statistics.mean(result.samples_ns)
         if (
             result.median_ns != median
             or result.p90_ns != p90
@@ -539,7 +480,7 @@ def _validate_phase(
     )
     if tuple(event.state for event in history) != expected_states or tuple(
         event.payload_sha256 for event in history
-    ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
+    ) != tuple(payload_sha256(payload) for payload in expected_payloads):
         raise ValueError(f"SEQAX_LEDGER_REPLAY_MISMATCH phase={phase}")
     return maximum_absolute_error, maximum_relative_error
 
@@ -568,9 +509,7 @@ def _prefix_metrics(
             for source in metric.sources
         )
         result.append(
-            metric.model_copy(
-                update={"name": f"{prefix}_{metric.name}", "sources": sources}
-            )
+            metric.model_copy(update={"name": f"{prefix}_{metric.name}", "sources": sources})
         )
     return tuple(result)
 
@@ -681,9 +620,7 @@ def _validate_capture_topology(assessment, *, counters: bool) -> None:
             f"SEQAX_TPU_PLANE_SET_MISMATCH expected={sorted(expected_planes)} "
             f"observed={sorted(observed_planes)}"
         )
-    observed_counter_cores = set(
-        assessment.capture.counters.periodic_samples_per_tpu_core
-    )
+    observed_counter_cores = set(assessment.capture.counters.periodic_samples_per_tpu_core)
     expected_counter_cores = {"0", "2", "4", "6"} if counters else set()
     if observed_counter_cores != expected_counter_cores:
         raise ValueError(
@@ -701,19 +638,15 @@ def _module_durations(
     program_id = _bound_program_id(assessment)
     xplane = next((root / phase / "profile").rglob("*.xplane.pb"))
     expected_name = f"jit_execute({program_id})"
-    profile = profile_data.ProfileData.from_file(xplane)
-    try:
-        durations = tuple(
-            float(event.duration_ns)
-            for plane in profile.planes
-            if plane.name == "/device:TPU:0"
-            for line in plane.lines
-            if line.name == "XLA Modules"
-            for event in line.events
-            if event.name == expected_name
-        )
-    finally:
-        profile.close()
+    durations = tuple(
+        float(event.duration_ns)
+        for plane in XPlaneIndex.from_file(xplane).planes
+        if plane.name == "/device:TPU:0"
+        for line in plane.lines
+        if line.name == "XLA Modules"
+        for event in line.events
+        if event.name == expected_name
+    )
     if len(durations) != expected_count or any(value <= 0 for value in durations):
         raise ValueError(
             f"SEQAX_MODULE_EXECUTION_COUNT_MISMATCH phase={phase} "
@@ -776,17 +709,13 @@ def _module_metrics(
 
 
 def _cost_metrics(root: Path) -> tuple[Metric, ...]:
-    report = SeqaxCostModelReport.model_validate_json(
-        (root / "timing/cost_model.json").read_text()
-    )
+    report = SeqaxCostModelReport.model_validate_json((root / "timing/cost_model.json").read_text())
     return tuple(
         metric.model_copy(
             update={
                 "name": f"cost_{metric.name}",
                 "sources": tuple(
-                    source.model_copy(
-                        update={"artifact_path": f"timing/{source.artifact_path}"}
-                    )
+                    source.model_copy(update={"artifact_path": f"timing/{source.artifact_path}"})
                     for source in metric.sources
                 ),
             }
@@ -861,24 +790,6 @@ def _artifact_roles(
     return roles
 
 
-def _phases(artifacts: tuple[ArtifactReference, ...]) -> tuple[EvidencePhase, ...]:
-    grouped: dict[EvidencePhaseName, list[str]] = {
-        phase: [] for phase in EvidencePhaseName
-    }
-    for artifact in artifacts:
-        first = Path(artifact.path).parts[0]
-        phase = (
-            EvidencePhaseName(first)
-            if first in {*_PHASES, "finalizer"}
-            else EvidencePhaseName.AGGREGATE
-        )
-        grouped[phase].append(artifact.path)
-    return tuple(
-        EvidencePhase(name=phase, artifact_paths=tuple(paths))
-        for phase, paths in grouped.items()
-    )
-
-
 def build_seqax_forward_receipt(root: Path, *, write_receipt: bool = True) -> RunReceipt:
     root = root.resolve()
     finalizer = root / "finalizer"
@@ -900,9 +811,7 @@ def build_seqax_forward_receipt(root: Path, *, write_receipt: bool = True) -> Ru
         _ensure_exports(root, phase)
     experiment = _trusted_experiment()
     trace_assessment = assess_capture(root / "trace", experiment.profile)
-    counter_assessment = assess_capture(
-        root / "counters", _counter_experiment(experiment).profile
-    )
+    counter_assessment = assess_capture(root / "counters", _counter_experiment(experiment).profile)
     _validate_capture_topology(trace_assessment, counters=False)
     _validate_capture_topology(counter_assessment, counters=True)
     assessment_path = root / "profile_assessment.json"
@@ -962,7 +871,7 @@ def build_seqax_forward_receipt(root: Path, *, write_receipt: bool = True) -> Ru
         required_semantic_properties=(),
         metrics=metrics,
         artifacts=artifacts,
-        phases=_phases(artifacts),
+        phases=group_evidence_phases(artifacts, execution_phases=frozenset(_PHASES)),
     )
     validate_seqax_forward_receipt(receipt, root=root)
     if write_receipt:
@@ -1000,7 +909,10 @@ def validate_seqax_forward_receipt(receipt: RunReceipt, *, root: Path) -> None:
     )
     if receipt.artifacts != expected_artifacts:
         raise ValueError("SEQAX_RECEIPT_ARTIFACT_MANIFEST_MISMATCH")
-    if receipt.phases != _phases(expected_artifacts):
+    if receipt.phases != group_evidence_phases(
+        expected_artifacts,
+        execution_phases=frozenset(_PHASES),
+    ):
         raise ValueError("SEQAX_RECEIPT_PHASE_PARTITION_MISMATCH")
     source_identities = {
         _source_identity(
@@ -1013,13 +925,10 @@ def validate_seqax_forward_receipt(receipt: RunReceipt, *, root: Path) -> None:
     if len(source_identities) != 1:
         raise ValueError("SEQAX_RUNS_DO_NOT_SHARE_SOURCE_IDENTITY")
     errors = tuple(
-        _validate_phase(root, receipt, experiment, phase, results[phase])
-        for phase in _PHASES
+        _validate_phase(root, receipt, experiment, phase, results[phase]) for phase in _PHASES
     )
     trace_assessment = assess_capture(root / "trace", experiment.profile)
-    counter_assessment = assess_capture(
-        root / "counters", _counter_experiment(experiment).profile
-    )
+    counter_assessment = assess_capture(root / "counters", _counter_experiment(experiment).profile)
     _validate_capture_topology(trace_assessment, counters=False)
     _validate_capture_topology(counter_assessment, counters=True)
     expected_status = (
@@ -1034,8 +943,7 @@ def validate_seqax_forward_receipt(receipt: RunReceipt, *, root: Path) -> None:
     if (
         receipt.runtime != results["timing"].runtime
         or any(result.runtime != receipt.runtime for result in results.values())
-        or receipt.correctness.passed
-        is not all(result.passed for result in results.values())
+        or receipt.correctness.passed is not all(result.passed for result in results.values())
         or receipt.correctness.oracle != experiment.workload.numerical.reference
         or receipt.correctness.maximum_absolute_error != max(error[0] for error in errors)
         or receipt.correctness.maximum_relative_error != max(error[1] for error in errors)

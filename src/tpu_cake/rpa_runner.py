@@ -12,6 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
+from tpu_cake.artifacts import artifact_reference as _artifact
+from tpu_cake.artifacts import save_array_reference as _save_array
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import (
     ArtifactReference,
@@ -94,26 +96,6 @@ def validate_fused_rpa_run_protocol(
             "seed=97, "
             f"warmup={protocol.warmup_iterations}, measured={protocol.measured_iterations}"
         )
-
-
-def _artifact(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
-    return ArtifactReference(
-        path=path.relative_to(root).as_posix(),
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-        role=role,
-    )
-
-
-def _save_array(
-    root: Path,
-    path: Path,
-    value: np.ndarray,
-    role: ArtifactRole,
-) -> ArtifactReference:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
-    return _artifact(root, path, role)
 
 
 def _block_results(results: tuple[jax.Array, jax.Array]) -> None:

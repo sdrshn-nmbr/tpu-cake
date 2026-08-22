@@ -53,7 +53,7 @@
   "producer_machine": "x86_64",
   "plan": {
     "schedule_sha256": "12007604b3b6305899bd2f13d311aa77889199fc0398a3615c142f7966572b13",
-    "execution_sha256": "e0f2aac06b1ab01723399c168ce57fbd6d473a77a6b0232db087e23da9691f4a",
+    "execution_sha256": "39c23a221b104c751f9d092d6d4ed0ebbd3a1fa3d2cac0e2a2d5eee682153117",
     "stablehlo_sha256": "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a",
     "compiler_hlo_authority": "receipt-bound-raw-bytes-not-reproducible-identity",
     "mesh_axes": ["data", "tensor"],
@@ -146,14 +146,14 @@
     {
       "arm": "non_donating",
       "external_donate_argnums": [],
-      "execution_sha256": "a869381037b4c52c22b0af2aa574eeb1e06d091375a1a48bb7c387fab6405398",
+      "execution_sha256": "0f9610207b74f56d1606cd974ea3d00ef367b270d43423216d5aa12f6d7a0ec7",
       "stablehlo_sha256": "f5da8c8caa28f42ff79c9bb14cb5cd638d01de85eca4156d6116ec97d14f1c7e",
       "compiler_hlo_alias_contract": "no-query-cache-alias"
     },
     {
       "arm": "donating",
       "external_donate_argnums": [0, 3],
-      "execution_sha256": "251fbc910fe68035dafabea3e5ecdeab058ed51705335596966b797ca917b577",
+      "execution_sha256": "22de500727371820be5099c5c677603f517e88d3d70c7f15d433d41a1f4393c7",
       "stablehlo_sha256": "5b779f2014ab419c5dedbd40e2c8a428184f2eccad34db9e4ad7e322b2486b3a",
       "compiler_hlo_alias_contract": "query-output-aliases-arg0-cache-output-aliases-arg3"
     }

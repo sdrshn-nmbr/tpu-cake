@@ -56,7 +56,7 @@ def test_sharded_rpa_surface_contract_is_external_and_canonical() -> None:
     generated = default_inkling_sharded_rpa_surface_contract()
 
     assert saved == generated
-    assert saved.surface_id == ("38abd645484ad1acc3f209d9076a2bdc6ea25533426c19e0b4e8cbf7ee520b17")
+    assert saved.surface_id == ("8867ac1900b36f4c9df5196c4912500796af44d33630b6aab67ea941824ffd9c")
     assert not set(INKLING_SHARDED_RPA_CORRECTNESS_SEEDS) & _CALIBRATION_SEEDS
     assert saved.plan.external_donate_argnums == (0, 3)
     assert saved.plan.compiler_hlo_authority == (

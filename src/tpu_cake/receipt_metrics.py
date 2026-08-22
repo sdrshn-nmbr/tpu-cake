@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import statistics
 from decimal import Decimal
 from pathlib import Path
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.cost_model import CostModelReport
 from tpu_cake.evidence import CaptureAssessment
 from tpu_cake.metrics import (
@@ -19,14 +19,6 @@ from tpu_cake.metrics import (
 )
 from tpu_cake.runner import MatmulRunResult
 from tpu_cake.xprof_evidence import capture_metrics
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _relocate_metric_source(root: Path, source: MetricSource) -> MetricSource:

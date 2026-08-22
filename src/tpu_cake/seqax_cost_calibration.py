@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import time
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
@@ -9,7 +7,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.contracts import RuntimeIdentity
+from tpu_cake.identity import model_identity_sha256
 from tpu_cake.metrics import MeasurementKind, Metric, Unit
 from tpu_cake.runner import RunMode
 from tpu_cake.seqax_cost_model import SeqaxCostModelReport
@@ -71,9 +71,7 @@ class SeqaxCostCalibrationContract(BaseModel):
     @computed_field
     @property
     def contract_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude_computed_fields=True)
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self)
 
 
 class SeqaxCostCalibrationPoint(BaseModel):
@@ -198,14 +196,6 @@ def default_seqax_cost_calibration_contract() -> SeqaxCostCalibrationContract:
         measurement_scope="profiled-device-module-self-time",
         acceptance_scope="descriptive-in-surface-fit-only",
     )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _metric(metrics: tuple[Metric, ...], name: str, kind: MeasurementKind) -> Metric:

@@ -17,6 +17,7 @@ import numpy as np
 from jax.sharding import NamedSharding, PartitionSpec
 from pydantic import BaseModel, ConfigDict, Field
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import (
     ArtifactReference,
@@ -35,7 +36,7 @@ from tpu_cake.identity import (
     semantic_sha256,
     workload_rng,
 )
-from tpu_cake.ledger import ExperimentLedger, RunState
+from tpu_cake.ledger import EvidenceRun, RunState
 from tpu_cake.lowering import MatmulTile, lower_distributed_matmul
 from tpu_cake.metrics import MetricSource
 from tpu_cake.pallas_lowering import (
@@ -81,14 +82,6 @@ class MatmulRunResult(BaseModel):
     artifacts: tuple[ArtifactReference, ...]
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _write_text(path: Path, value: str, role: ArtifactRole) -> ArtifactReference:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value)
@@ -123,11 +116,7 @@ def _record_event(
     state: RunState,
     payload: dict[str, object],
 ) -> None:
-    with ExperimentLedger(ledger_path) as ledger:
-        if state is RunState.CREATED:
-            ledger.create(run_id, payload)
-        else:
-            ledger.transition(run_id, state, payload)
+    EvidenceRun(ledger_path, run_id).record(state, payload)
 
 
 def _profiler_options(mode: RunMode) -> jax.profiler.ProfileOptions:
@@ -364,9 +353,7 @@ def run_distributed_matmul(
             distributed_text,
             ArtifactRole.DISTRIBUTED_IR,
         ),
-        _write_text(
-            output_dir / "physical.xdsl", physical_text, ArtifactRole.PHYSICAL_IR
-        ),
+        _write_text(output_dir / "physical.xdsl", physical_text, ArtifactRole.PHYSICAL_IR),
         _write_text(
             output_dir / "lowered_pallas.py",
             plan.render_executable_source(),

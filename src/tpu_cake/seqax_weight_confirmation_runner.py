@@ -16,6 +16,7 @@ from tpu_cake.artifacts import (
 from tpu_cake.artifacts import (
     file_sha256 as _sha256,
 )
+from tpu_cake.artifacts import save_array as _save_array
 from tpu_cake.artifacts import (
     write_json as _write_json,
 )
@@ -30,7 +31,7 @@ from tpu_cake.compiler_analysis import (
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.distributed_tensor import AllGatherOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import EvidenceRun, ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, RunState, payload_sha256, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_pallas_runner import (
     _physical_collective_counts,
@@ -233,11 +234,6 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
     return build_artifact_manifest(root, role_for_path=_artifact_role)
-
-
-def _save_array(path: Path, value: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
 
 
 def run_seqax_weight_confirmation(
@@ -615,7 +611,7 @@ def _validate(
     if tuple(value.state for value in history) != tuple(value[0] for value in ledger_payloads):
         raise ValueError("SEQAX_WEIGHT_CONFIRMATION_LEDGER_STATES_MISMATCH")
     if tuple(value.payload_sha256 for value in history) != tuple(
-        ExperimentLedger.payload_sha256(payload) for _state, payload in ledger_payloads
+        payload_sha256(payload) for _state, payload in ledger_payloads
     ):
         raise ValueError("SEQAX_WEIGHT_CONFIRMATION_LEDGER_PAYLOAD_MISMATCH")
 

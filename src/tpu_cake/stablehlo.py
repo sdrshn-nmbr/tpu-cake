@@ -6,7 +6,7 @@ from jax._src.interpreters import mlir
 from jaxlib.mlir import ir
 
 
-def _as_operation(value: object) -> ir.Operation | None:
+def as_operation(value: object) -> ir.Operation | None:
     if isinstance(value, ir.Operation):
         return value
     operation = getattr(value, "operation", None)
@@ -36,13 +36,13 @@ def _result_reaches_return(result: ir.Value) -> bool:
             continue
         visited.add(value)
         for use in value.uses:
-            consumer = _as_operation(use.owner)
+            consumer = as_operation(use.owner)
             if consumer is None:
                 raise ValueError("STABLEHLO_INVALID_USE")
             if consumer.name == "func.return":
                 return True
             if consumer.name in {"sdy.return", "stablehlo.return"}:
-                parent = _as_operation(consumer.parent)
+                parent = as_operation(consumer.parent)
                 if parent is not None and use.operand_number < len(parent.results):
                     pending.append(parent.results[use.operand_number])
             pending.extend(consumer.results)

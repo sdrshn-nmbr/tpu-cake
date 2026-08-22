@@ -12,7 +12,7 @@ import pytest
 
 import tpu_cake.seqax_numerical_runner as numerical_runner
 from tpu_cake.cli import _parser
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.seqax_numerical import (
     SeqaxDiscriminatorClause,
     SeqaxNumericalDiscriminator,
@@ -34,7 +34,6 @@ from tpu_cake.seqax_numerical_runner import (
     _require_compilation_source_root,
     _require_relocation_runtime,
     _require_safe_root,
-    _transition_or_replay,
     _write_json_atomic,
 )
 from tpu_cake.workloads.seqax_oracle import (
@@ -657,18 +656,17 @@ def test_runner_replays_exact_historical_ledger_states(tmp_path: Path) -> None:
     run_id = "7" * 64
     created = {"contract": "test"}
     verified = {"schedule": "8" * 64}
-    with ExperimentLedger(tmp_path / "ledger.sqlite") as ledger:
-        _transition_or_replay(ledger, run_id, RunState.CREATED, created)
-        _transition_or_replay(ledger, run_id, RunState.VERIFIED, verified)
-        _transition_or_replay(ledger, run_id, RunState.CREATED, created)
-        _transition_or_replay(ledger, run_id, RunState.VERIFIED, verified)
-        with pytest.raises(ValueError, match="LEDGER_REPLAY_MISMATCH state=created"):
-            _transition_or_replay(
-                ledger,
-                run_id,
-                RunState.CREATED,
-                {"contract": "changed"},
-            )
+    run = EvidenceRun(tmp_path / "ledger.sqlite", run_id)
+    run.record(RunState.CREATED, created)
+    run.record(RunState.VERIFIED, verified)
+    run.record(RunState.CREATED, created)
+    run.record(RunState.VERIFIED, verified)
+    with pytest.raises(ValueError, match="LEDGER_REPLAY_MISMATCH state=created"):
+        run.record(
+            RunState.CREATED,
+            {"contract": "changed"},
+            conflict_error="SEQAX_BF16_LEDGER_REPLAY_MISMATCH state={state}",
+        )
 
     history = read_ledger_history(tmp_path / "ledger.sqlite", run_id)
     assert tuple(event.state for event in history) == (

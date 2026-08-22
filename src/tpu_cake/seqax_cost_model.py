@@ -45,13 +45,11 @@ from tpu_cake.dialects.distributed_tensor import (
 )
 from tpu_cake.frontend import schedule_sha256
 from tpu_cake.metrics import (
-    FormulaIdentity,
-    MeasurementInterval,
-    MeasurementKind,
     Metric,
     MetricSource,
     Quantity,
     Unit,
+    estimated_metric_factory,
 )
 
 
@@ -572,28 +570,7 @@ def _block_peak_live_bytes(
     return peak_global, peak_local
 
 
-def _metric(
-    name: str,
-    value: Decimal | int,
-    unit: Unit,
-    source: MetricSource,
-    formula_name: str,
-    expression: str,
-    *,
-    scope: str = "one complete logical Seqax forward on one JAX TPU device",
-    numerator: Quantity | None = None,
-    denominator: Quantity | None = None,
-) -> Metric:
-    return Metric(
-        name=name,
-        quantity=Quantity(value=Decimal(value), unit=unit),
-        kind=MeasurementKind.ESTIMATED,
-        interval=MeasurementInterval(scope=scope),
-        sources=(source,),
-        formula=FormulaIdentity(name=formula_name, version="1", expression=expression),
-        numerator=numerator,
-        denominator=denominator,
-    )
+_metric = estimated_metric_factory("one complete logical Seqax forward on one JAX TPU device")
 
 
 def estimate_seqax_forward(

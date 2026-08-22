@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable
 
 import numpy as np
+from pydantic import BaseModel
 
 LEGACY_SEMANTIC_IDENTITY_SCHEMA = "separator-v1"
 SEMANTIC_IDENTITY_SCHEMA = "length-prefixed-v2"
+
+
+class RenderedSourceIdentity:
+    def render_executable_source(self) -> str:
+        raise NotImplementedError
+
+    def source_sha256(self) -> str:
+        return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
 
 
 def semantic_seed(*parts: str, schema: str = SEMANTIC_IDENTITY_SCHEMA) -> int:
@@ -62,3 +72,21 @@ def array_sha256(array: np.ndarray) -> str:
 
 def arrays_sha256(arrays: Iterable[np.ndarray]) -> tuple[str, ...]:
     return tuple(array_sha256(array) for array in arrays)
+
+
+def json_sha256(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def model_identity_sha256(
+    model: BaseModel,
+    *,
+    exclude: set[str] | None = None,
+) -> str:
+    payload = (
+        model.model_dump(mode="json", exclude_computed_fields=True)
+        if exclude is None
+        else model.model_dump(mode="json", exclude=exclude)
+    )
+    return json_sha256(payload)

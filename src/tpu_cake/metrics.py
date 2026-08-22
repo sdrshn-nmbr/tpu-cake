@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
 from enum import StrEnum
+from functools import partial
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -94,3 +96,31 @@ class Metric(BaseModel):
                 "numerator and denominator are only valid for ratio or percent metrics"
             )
         return self
+
+
+def estimated_metric(
+    name: str,
+    value: Decimal | int,
+    unit: Unit,
+    source: MetricSource,
+    formula_name: str,
+    expression: str,
+    *,
+    scope: str,
+    numerator: Quantity | None = None,
+    denominator: Quantity | None = None,
+) -> Metric:
+    return Metric(
+        name=name,
+        quantity=Quantity(value=Decimal(value), unit=unit),
+        kind=MeasurementKind.ESTIMATED,
+        interval=MeasurementInterval(scope=scope),
+        sources=(source,),
+        formula=FormulaIdentity(name=formula_name, version="1", expression=expression),
+        numerator=numerator,
+        denominator=denominator,
+    )
+
+
+def estimated_metric_factory(default_scope: str) -> Callable[..., Metric]:
+    return partial(estimated_metric, scope=default_scope)

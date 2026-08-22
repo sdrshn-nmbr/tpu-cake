@@ -3,17 +3,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from xdsl.context import Context
-from xdsl.dialects.builtin import Builtin, IntAttr, ModuleOp
+from xdsl.dialects.builtin import IntAttr, ModuleOp
 from xdsl.ir import Block, Operation, SSAValue
-from xdsl.parser import Parser
 from xdsl.rewriter import Rewriter
 
+from tpu_cake.canonical import parse_distributed_module
 from tpu_cake.dialects.distributed_tensor import (
     AllGatherOp,
     AllReduceOp,
     CastOp,
-    DistributedTensor,
     DTensorType,
     EinsumLocalOp,
     EinsumOp,
@@ -616,10 +614,7 @@ def lower_seqax_forward_to_physical(
     einsum_tiles: tuple[tuple[int, int, int], ...] | None = None,
 ) -> SeqaxPhysicalLoweringResult:
     distributed_schedule_hash = schedule_sha256(module)
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(DistributedTensor)
-    canonical_module = Parser(context, canonical_module_text(module)).parse_module()
+    canonical_module = parse_distributed_module(canonical_module_text(module))
     program = _program(canonical_module)
     mesh = program.mesh.sizes()
     terminator = program.body.block.last_op

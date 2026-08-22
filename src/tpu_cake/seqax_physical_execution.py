@@ -28,7 +28,11 @@ from tpu_cake.dialects.tpu_schedule import (
     VectorImplementation,
     YieldOp,
 )
+from tpu_cake.dialects.tpu_schedule import (
+    vector_configuration as _configuration,
+)
 from tpu_cake.dtensor_interpreter import _strict_typed_silu
+from tpu_cake.physical_geometry import buffer_dimension_names as _names
 
 
 class UnsupportedPhysicalExecutionError(ValueError):
@@ -61,14 +65,6 @@ def _dtype(buffer: BufferType):
         if (width, signed) in by_width:
             return by_width[(width, signed)]
     raise UnsupportedPhysicalExecutionError(f"unsupported physical dtype {element_type}")
-
-
-def _names(buffer: BufferType) -> tuple[str, ...]:
-    return tuple(value.data for value in buffer.shape.dimensions)
-
-
-def _configuration(operation: VectorComputeOp) -> dict[str, str]:
-    return dict(value.data.split("=", 1) for value in operation.configuration)
 
 
 def _align_named(

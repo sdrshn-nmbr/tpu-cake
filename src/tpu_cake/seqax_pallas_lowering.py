@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,20 +10,19 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
-from jax.sharding import Mesh, PartitionSpec
-from xdsl.context import Context
-from xdsl.dialects.builtin import BFloat16Type, Builtin, ModuleOp
-from xdsl.parser import Parser
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
+from xdsl.dialects.builtin import BFloat16Type, ModuleOp
 
-from tpu_cake.dialects.distributed_tensor import DistributedTensor
+from tpu_cake.artifacts import file_sha256 as _sha256
+from tpu_cake.canonical import parse_distributed_module, parse_physical_module
 from tpu_cake.dialects.tpu_schedule import (
     BufferType,
     MxuEinsumOp,
-    TPUSchedule,
     VectorComputeOp,
     VectorImplementation,
 )
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
+from tpu_cake.identity import RenderedSourceIdentity
 from tpu_cake.jax_lowering import JaxTensorContract, lower_distributed_program_to_jax_mesh
 from tpu_cake.physical_geometry import named_einsum_geometry
 from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
@@ -37,8 +35,18 @@ class UnsupportedSeqaxPallasLoweringError(ValueError):
     pass
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def place_inputs(
+    host_inputs: tuple[np.ndarray, ...],
+    contracts: tuple[JaxTensorContract, ...],
+    mesh: Mesh,
+) -> tuple[jax.Array, ...]:
+    return tuple(
+        jax.device_put(
+            jnp.asarray(value),
+            NamedSharding(mesh, contract.partition_spec()),
+        )
+        for value, contract in zip(host_inputs, contracts, strict=True)
+    )
 
 
 def _implementation_manifest() -> tuple[tuple[str, str], ...]:
@@ -60,21 +68,11 @@ def _implementation_manifest() -> tuple[tuple[str, str], ...]:
 
 
 def _parse_distributed(text: str) -> ModuleOp:
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(DistributedTensor)
-    return Parser(context, text).parse_module()
+    return parse_distributed_module(text)
 
 
 def _parse_physical(text: str) -> ModuleOp:
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(TPUSchedule)
-    return Parser(context, text).parse_module()
-
-
-def _names(buffer: BufferType) -> tuple[str, ...]:
-    return tuple(value.data for value in buffer.shape.dimensions)
+    return parse_physical_module(text)
 
 
 def _einsum_tiles(module: ModuleOp) -> tuple[tuple[int, int, int], ...]:
@@ -293,7 +291,7 @@ def _pallas_silu_multiply(
 
 
 @dataclass(frozen=True)
-class SeqaxPallasPlan:
+class SeqaxPallasPlan(RenderedSourceIdentity):
     name: str
     canonical_distributed_xdsl: str
     canonical_physical_xdsl: str
@@ -596,9 +594,6 @@ PLAN = SeqaxPallasPlan(
 def build(*, interpret=False, devices=None):
     return PLAN.build(interpret=interpret, devices=devices)
 """
-
-    def source_sha256(self) -> str:
-        return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
 
 
 def lower_seqax_physical_to_pallas(

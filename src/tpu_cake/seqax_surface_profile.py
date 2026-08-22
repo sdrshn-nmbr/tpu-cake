@@ -16,9 +16,11 @@ import jax
 import numpy as np
 from jax.sharding import NamedSharding
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from xprof import profile_data
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.artifacts import resolve_recorded_artifact
+from tpu_cake.artifacts import save_relative_array_artifact as _save_array
+from tpu_cake.artifacts import write_relative_text_artifact as _write_text
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import (
     ArtifactReference,
@@ -29,7 +31,7 @@ from tpu_cake.contracts import (
 )
 from tpu_cake.identity import array_sha256, semantic_seed, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import RunState, payload_sha256, read_ledger_history
 from tpu_cake.metrics import (
     FormulaIdentity,
     MeasurementInterval,
@@ -64,7 +66,12 @@ from tpu_cake.workloads.seqax_oracle import (
     seqax_forward_canonical_reference,
     seqax_forward_inputs,
 )
-from tpu_cake.xprof_evidence import assess_capture, capture_metrics, count_profile_events
+from tpu_cake.xprof_evidence import (
+    XPlaneIndex,
+    assess_capture,
+    capture_metrics,
+    count_profile_events,
+)
 from tpu_cake.xprof_export import XProfExportManifest, export_xprof_capture
 
 SEQAX_SURFACE_PROFILE_SCHEMA = "tpu-cake-seqax-surface-profile-v1"
@@ -142,14 +149,6 @@ class SeqaxSurfaceProfileReceipt(BaseModel):
     accepted: bool
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _json_sha256(value: object) -> str:
     payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
     return hashlib.sha256(payload).hexdigest()
@@ -205,30 +204,6 @@ def _write_json(
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    return _artifact(root, path, role)
-
-
-def _write_text(
-    root: Path,
-    relative: Path,
-    value: str,
-    role: ArtifactRole,
-) -> ArtifactReference:
-    path = root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value)
-    return _artifact(root, path, role)
-
-
-def _save_array(
-    root: Path,
-    relative: Path,
-    value: np.ndarray,
-    role: ArtifactRole,
-) -> ArtifactReference:
-    path = root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
     return _artifact(root, path, role)
 
 
@@ -782,19 +757,15 @@ def _module_durations(phase_root: Path, assessment) -> tuple[float, ...]:
     xplanes = tuple((phase_root / "profile").rglob("*.xplane.pb"))
     if len(xplanes) != 1:
         raise ValueError("SEQAX_SURFACE_PROFILE_XPLANE_COUNT_MISMATCH")
-    profile = profile_data.ProfileData.from_file(xplanes[0])
-    try:
-        durations = tuple(
-            float(event.duration_ns)
-            for plane in profile.planes
-            if plane.name == "/device:TPU:0"
-            for line in plane.lines
-            if line.name == "XLA Modules"
-            for event in line.events
-            if event.name == f"jit_execute({program_id})"
-        )
-    finally:
-        profile.close()
+    durations = tuple(
+        float(event.duration_ns)
+        for plane in XPlaneIndex.from_file(xplanes[0]).planes
+        if plane.name == "/device:TPU:0"
+        for line in plane.lines
+        if line.name == "XLA Modules"
+        for event in line.events
+        if event.name == f"jit_execute({program_id})"
+    )
     if len(durations) != SEQAX_SURFACE_PROFILE_MEASURED_ITERATIONS or any(
         duration <= 0 for duration in durations
     ):
@@ -1334,7 +1305,7 @@ def _validate_result(
     )
     if tuple(event.state for event in history) != expected_states or tuple(
         event.payload_sha256 for event in history
-    ) != tuple(ExperimentLedger.payload_sha256(payload) for payload in expected_payloads):
+    ) != tuple(payload_sha256(payload) for payload in expected_payloads):
         raise ValueError("SEQAX_SURFACE_PROFILE_LEDGER_REPLAY_MISMATCH")
 
 

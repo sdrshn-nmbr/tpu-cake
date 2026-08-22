@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -8,10 +7,8 @@ from typing import Any
 import jax
 import numpy as np
 from jax.sharding import Mesh, PartitionSpec
-from xdsl.context import Context
 from xdsl.dialects.builtin import (
     BFloat16Type,
-    Builtin,
     Float16Type,
     Float32Type,
     IntegerType,
@@ -19,14 +16,13 @@ from xdsl.dialects.builtin import (
     Signedness,
 )
 from xdsl.ir import Operation, SSAValue
-from xdsl.parser import Parser
 
+from tpu_cake.canonical import parse_distributed_module
 from tpu_cake.dialects.distributed_tensor import (
     AllGatherOp,
     AllReduceOp,
     BroadcastOp,
     CastOp,
-    DistributedTensor,
     DTensorType,
     EinsumLocalOp,
     EinsumOp,
@@ -55,6 +51,7 @@ from tpu_cake.dtensor_interpreter import (
     execute_distributed_program_jax_sharded_with_strict_mlp,
 )
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
+from tpu_cake.identity import RenderedSourceIdentity
 
 JAX_LOGICAL_EXECUTION_SCHEMA = "dtensor-logical-jax-v1"
 JAX_DISTRIBUTED_EXECUTION_SCHEMA = "dtensor-shard-map-jax-v1"
@@ -222,14 +219,11 @@ def _validate_supported_program(module: ModuleOp) -> ProgramOp:
 
 
 def _parse_canonical_module(text: str) -> ModuleOp:
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(DistributedTensor)
-    return Parser(context, text).parse_module()
+    return parse_distributed_module(text)
 
 
 @dataclass(frozen=True)
-class JaxDistributedProgramPlan:
+class JaxDistributedProgramPlan(RenderedSourceIdentity):
     """Replayable global-logical execution of verified distributed tensor xDSL.
 
     This is an executable semantic backend, not a physical schedule. It uses one JAX
@@ -323,9 +317,6 @@ def build(*, device=None):
     return PLAN.build(device=device)
 """
 
-    def source_sha256(self) -> str:
-        return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
-
 
 def _validate_physical_supported_program(module: ModuleOp) -> ProgramOp:
     program = _validate_supported_program(module)
@@ -345,7 +336,7 @@ def _validate_physical_supported_program(module: ModuleOp) -> ProgramOp:
 
 
 @dataclass(frozen=True)
-class JaxDistributedMeshPlan:
+class JaxDistributedMeshPlan(RenderedSourceIdentity):
     """Replayable multi-device JAX/XLA lowering of distributed tensor xDSL.
 
     Operations execute on local shards inside ``jax.shard_map``. The plan uses real
@@ -522,9 +513,6 @@ PLAN = load_jax_distributed_mesh_plan(
 def build(*, devices=None):
     return PLAN.build(devices=devices)
 """
-
-    def source_sha256(self) -> str:
-        return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
 
 
 def lower_distributed_program_to_jax(module: ModuleOp) -> JaxDistributedProgramPlan:

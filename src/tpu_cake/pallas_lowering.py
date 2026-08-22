@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import hashlib
 import inspect
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -13,10 +12,10 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 from jax.sharding import Mesh, PartitionSpec
-from xdsl.context import Context
-from xdsl.dialects.builtin import BFloat16Type, Builtin, Float32Type, ModuleOp
-from xdsl.parser import Parser
+from xdsl.dialects.builtin import BFloat16Type, Float32Type, ModuleOp
 
+from tpu_cake.artifacts import file_sha256
+from tpu_cake.canonical import parse_physical_module
 from tpu_cake.dialects.tpu_schedule import (
     AllocOp,
     BufferType,
@@ -30,11 +29,11 @@ from tpu_cake.dialects.tpu_schedule import (
     KernelOp,
     MxuMatmulOp,
     SemaphoreAllocOp,
-    TPUSchedule,
     YieldOp,
     pallas_bidirectional_ring_resources,
 )
 from tpu_cake.frontend import schedule_sha256
+from tpu_cake.identity import RenderedSourceIdentity
 from tpu_cake.lowering import UnsupportedLoweringError
 
 LEGACY_PALLAS_EXECUTION_SCHEMA = "standalone-rendering-v1"
@@ -332,7 +331,7 @@ def _partition_spec(sharding: tuple[str, ...]) -> PartitionSpec:
 
 
 @dataclass(frozen=True)
-class PallasMatmulPlan:
+class PallasMatmulPlan(RenderedSourceIdentity):
     name: str
     schedule_sha256: str
     mesh_axis: str
@@ -672,9 +671,6 @@ def build(*, interpret=False, devices=None):
     return PLAN.build(interpret=interpret, devices=devices)
 """
 
-    def source_sha256(self) -> str:
-        return hashlib.sha256(self.render_executable_source().encode()).hexdigest()
-
 
 def _shape(buffer: BufferType) -> tuple[int, int]:
     shape = buffer.storage.get_shape()
@@ -858,15 +854,12 @@ def validate_saved_pallas_plan(
     schedule_sha256: str,
     pallas_source_sha256: str,
 ) -> PallasMatmulPlan:
-    if hashlib.sha256(physical_path.read_bytes()).hexdigest() != schedule_sha256:
+    if file_sha256(physical_path) != schedule_sha256:
         raise ValueError("SAVED_PHYSICAL_IR_HASH_MISMATCH")
-    if hashlib.sha256(pallas_path.read_bytes()).hexdigest() != pallas_source_sha256:
+    if file_sha256(pallas_path) != pallas_source_sha256:
         raise ValueError("SAVED_PALLAS_SOURCE_HASH_MISMATCH")
-    context = Context()
-    context.load_dialect(Builtin)
-    context.load_dialect(TPUSchedule)
     try:
-        module = Parser(context, physical_path.read_text(), name=str(physical_path)).parse_module()
+        module = parse_physical_module(physical_path.read_text(), name=str(physical_path))
         plan = replace(
             lower_physical_matmul_to_pallas(module),
             schedule_sha256=schedule_sha256,

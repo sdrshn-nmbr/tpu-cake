@@ -146,3 +146,22 @@ def test_evidence_run_preserves_conflicting_completion_and_sidecar_failures(
     monkeypatch.setattr("tpu_cake.ledger.finalize_ledger", lambda _path: (sidecar,))
     with pytest.raises(ValueError, match="TEST_LEDGER_SIDECARS"):
         run.seal("TEST_LEDGER_SIDECARS paths={paths}")
+
+
+def test_evidence_run_replays_an_earlier_phase_without_mutating_history(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite"
+    clock = iter(range(100, 200)).__next__
+    run = EvidenceRun(path, RUN_ID, clock_ns=clock)
+    created = run.record(RunState.CREATED, {"schedule": "a"})
+    run.record(RunState.VERIFIED, {"verified": True})
+
+    assert run.record(RunState.CREATED, {"schedule": "a"}) == created
+    assert run.current_state() is RunState.VERIFIED
+    assert len(read_ledger_history(path, RUN_ID)) == 2
+
+    with pytest.raises(ValueError, match="REPLAY_CONFLICT state=created"):
+        run.record(
+            RunState.CREATED,
+            {"schedule": "changed"},
+            conflict_error="REPLAY_CONFLICT state={state}",
+        )

@@ -14,7 +14,10 @@ import numpy as np
 from jax.sharding import NamedSharding
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tpu_cake.artifacts import artifact_reference as _artifact
+from tpu_cake.artifacts import save_array_reference as _save_array
 from tpu_cake.canonical import canonical_text
+from tpu_cake.compiler_analysis import compiler_hlo_text as _compiler_hlo
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
@@ -212,31 +215,6 @@ def seqax_physical_pallas_experiment(plan: SeqaxPallasPlan) -> KernelExperiment:
         ),
         schedule_sha256=plan.physical_schedule_sha256,
     )
-
-
-def _artifact(root: Path, path: Path, role: ArtifactRole) -> ArtifactReference:
-    return ArtifactReference(
-        path=path.relative_to(root).as_posix(),
-        size_bytes=path.stat().st_size,
-        sha256=_sha256(path),
-        role=role,
-    )
-
-
-def _save_array(
-    root: Path,
-    path: Path,
-    value: np.ndarray,
-    role: ArtifactRole,
-) -> ArtifactReference:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
-    return _artifact(root, path, role)
-
-
-def _compiler_hlo(lowered: Any) -> str:
-    computation = lowered.compiler_ir(dialect="hlo")
-    return computation.as_hlo_text() if hasattr(computation, "as_hlo_text") else str(computation)
 
 
 def _errors(actual: np.ndarray, expected: np.ndarray) -> tuple[float, float]:

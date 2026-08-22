@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import json
 import os
-import platform
 import subprocess
 import sys
 import time
@@ -17,12 +15,11 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-import jax
 import psutil
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
-from xprof import profile_data
 from xprof.cli.xprof_cli import XProfCli
 
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.contracts import ProfileExpectation, RuntimeIdentity, SourceFileContract
 from tpu_cake.evidence import (
     CaptureAssessment,
@@ -31,7 +28,9 @@ from tpu_cake.evidence import (
     FindingSeverity,
     ProgramEvidence,
 )
-from tpu_cake.xprof_evidence import assess_evidence, collect_capture
+from tpu_cake.identity import model_identity_sha256
+from tpu_cake.runner import _runtime_identity
+from tpu_cake.xprof_evidence import XPlaneIndex, assess_evidence, collect_capture
 
 INKLING_DECODE_PROFILE_SCHEMA = "inkling-whole-decode-profile-v1"
 
@@ -120,9 +119,7 @@ class InklingDecodeProfileContract(BaseModel):
     @computed_field
     @property
     def contract_id(self) -> str:
-        payload = self.model_dump(mode="json", exclude={"contract_id"})
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return model_identity_sha256(self, exclude={"contract_id"})
 
     @model_validator(mode="after")
     def protocol_is_complete(self) -> InklingDecodeProfileContract:
@@ -284,14 +281,6 @@ class InklingDecodeProfileAssessment(BaseModel):
         return self.capture.accepted and not self.findings
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _semantic_hlo_sha256(text: str) -> str:
     if "HloModule " not in text[:4096]:
         raise ValueError("INKLING_PROFILE_SEMANTIC_HLO_INVALID")
@@ -327,22 +316,6 @@ def _semantic_hlo_hashes(
         )
         hashes[program.name] = _semantic_hlo_sha256(text)
     return hashes
-
-
-def _runtime_identity() -> RuntimeIdentity:
-    def version(name: str) -> str | None:
-        try:
-            return importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            return None
-
-    return RuntimeIdentity(
-        python=platform.python_version(),
-        jax=jax.__version__,
-        jaxlib=version("jaxlib"),
-        libtpu=version("libtpu"),
-        xla=os.environ.get("LIBTPU_INIT_ARGS"),
-    )
 
 
 def _text(command: list[str], *, cwd: Path) -> str:
@@ -444,83 +417,73 @@ def _wait_for_xplane(profile_directory: Path) -> Path:
 
 
 def _module_event_counts(xplane: Path) -> dict[str, dict[str, int]]:
-    profile = profile_data.ProfileData.from_file(xplane)
-    try:
-        counts: dict[str, dict[str, int]] = {}
-        for plane in profile.planes:
-            if not plane.name.startswith("/device:TPU:") or "SparseCore" in plane.name:
-                continue
-            module_lines = [line for line in plane.lines if line.name == "XLA Modules"]
-            if len(module_lines) != 1:
-                raise ValueError(f"INKLING_PROFILE_XLA_MODULE_LINE_MISMATCH plane={plane.name}")
-            counts[plane.name] = dict(Counter(event.name for event in module_lines[0].events))
-        return counts
-    finally:
-        profile.close()
+    counts: dict[str, dict[str, int]] = {}
+    for plane in XPlaneIndex.from_file(xplane).planes:
+        if not plane.name.startswith("/device:TPU:") or "SparseCore" in plane.name:
+            continue
+        module_lines = [line for line in plane.lines if line.name == "XLA Modules"]
+        if len(module_lines) != 1:
+            raise ValueError(f"INKLING_PROFILE_XLA_MODULE_LINE_MISMATCH plane={plane.name}")
+        counts[plane.name] = dict(Counter(event.name for event in module_lines[0].events))
+    return counts
 
 
 def _xplane_identity(xplane: Path) -> tuple[int, int, int]:
-    profile = profile_data.ProfileData.from_file(xplane)
+    planes = XPlaneIndex.from_file(xplane).planes
+    metadata = [plane for plane in planes if plane.name == "/host:metadata"]
+    if len(metadata) != 1:
+        raise ValueError("INKLING_PROFILE_HOST_METADATA_INVENTORY_MISMATCH")
+    stats = metadata[0].stat_map()
     try:
-        metadata = [plane for plane in profile.planes if plane.name == "/host:metadata"]
-        if len(metadata) != 1:
-            raise ValueError("INKLING_PROFILE_HOST_METADATA_INVENTORY_MISMATCH")
-        stats = dict(metadata[0].stats)
-        try:
-            process_id = int(stats["process_id"])
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError("INKLING_PROFILE_PROCESS_ID_MISSING") from error
-        if process_id <= 0:
-            raise ValueError("INKLING_PROFILE_PROCESS_ID_INVALID")
-        environments = [plane for plane in profile.planes if plane.name == "Task Environment"]
-        if len(environments) != 1:
-            raise ValueError("INKLING_PROFILE_TASK_ENVIRONMENT_INVENTORY_MISMATCH")
-        environment = dict(environments[0].stats)
-        try:
-            start_time = int(environment["profile_start_time"])
-            stop_time = int(environment["profile_stop_time"])
-        except (KeyError, TypeError, ValueError) as error:
-            raise ValueError("INKLING_PROFILE_TIME_RANGE_MISSING") from error
-        if not 0 < start_time < stop_time:
-            raise ValueError("INKLING_PROFILE_TIME_RANGE_INVALID")
-        return process_id, start_time, stop_time
-    finally:
-        profile.close()
+        process_id = int(stats["process_id"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("INKLING_PROFILE_PROCESS_ID_MISSING") from error
+    if process_id <= 0:
+        raise ValueError("INKLING_PROFILE_PROCESS_ID_INVALID")
+    environments = [plane for plane in planes if plane.name == "Task Environment"]
+    if len(environments) != 1:
+        raise ValueError("INKLING_PROFILE_TASK_ENVIRONMENT_INVENTORY_MISMATCH")
+    environment = environments[0].stat_map()
+    try:
+        start_time = int(environment["profile_start_time"])
+        stop_time = int(environment["profile_stop_time"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("INKLING_PROFILE_TIME_RANGE_MISSING") from error
+    if not 0 < start_time < stop_time:
+        raise ValueError("INKLING_PROFILE_TIME_RANGE_INVALID")
+    return process_id, start_time, stop_time
 
 
 def _xplane_runtime(xplane: Path) -> dict[str, str]:
-    profile = profile_data.ProfileData.from_file(xplane)
-    try:
-        metadata = [plane for plane in profile.planes if plane.name == "/host:metadata"]
-        if len(metadata) != 1:
-            raise ValueError("INKLING_PROFILE_HOST_METADATA_INVENTORY_MISMATCH")
-        stats = dict(metadata[0].stats)
-        required = ("jax_version", "jaxlib_version", "tpu_version")
-        if any(not stats.get(name) for name in required):
-            raise ValueError("INKLING_PROFILE_RUNTIME_METADATA_MISSING")
-        device_types = {
-            dict(plane.stats).get("device_type_string")
-            for plane in profile.planes
-            if plane.name.startswith("/device:TPU:") and "SparseCore" not in plane.name
-        }
-        process_ids = {
-            dict(plane.stats).get("process_id")
-            for plane in profile.planes
-            if plane.name.startswith("/device:TPU:") and "SparseCore" not in plane.name
-        }
-        if len(device_types) != 1 or None in device_types:
-            raise ValueError("INKLING_PROFILE_DEVICE_TYPE_MISMATCH")
-        if len(process_ids) != 1 or None in process_ids:
-            raise ValueError("INKLING_PROFILE_PROCESS_INVENTORY_MISMATCH")
-        return {
-            "jax": stats["jax_version"],
-            "jaxlib": stats["jaxlib_version"],
-            "tpu_runtime": stats["tpu_version"],
-            "device_type": device_types.pop(),
-            "process_id": process_ids.pop(),
-        }
-    finally:
-        profile.close()
+    planes = XPlaneIndex.from_file(xplane).planes
+    metadata = [plane for plane in planes if plane.name == "/host:metadata"]
+    if len(metadata) != 1:
+        raise ValueError("INKLING_PROFILE_HOST_METADATA_INVENTORY_MISMATCH")
+    stats = metadata[0].stat_map()
+    required = ("jax_version", "jaxlib_version", "tpu_version")
+    if any(not stats.get(name) for name in required):
+        raise ValueError("INKLING_PROFILE_RUNTIME_METADATA_MISSING")
+    device_types = {
+        plane.stat_map().get("device_type_string")
+        for plane in planes
+        if plane.name.startswith("/device:TPU:") and "SparseCore" not in plane.name
+    }
+    process_ids = {
+        plane.stat_map().get("process_id")
+        for plane in planes
+        if plane.name.startswith("/device:TPU:") and "SparseCore" not in plane.name
+    }
+    if len(device_types) != 1 or None in device_types:
+        raise ValueError("INKLING_PROFILE_DEVICE_TYPE_MISMATCH")
+    if len(process_ids) != 1 or None in process_ids:
+        raise ValueError("INKLING_PROFILE_PROCESS_INVENTORY_MISMATCH")
+    return {
+        "jax": stats["jax_version"],
+        "jaxlib": stats["jaxlib_version"],
+        "tpu_runtime": stats["tpu_version"],
+        "device_type": device_types.pop(),
+        "process_id": process_ids.pop(),
+    }
 
 
 def _write_json_new(path: Path, payload: BaseModel) -> None:

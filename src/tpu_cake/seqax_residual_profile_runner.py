@@ -21,6 +21,21 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from xdsl.dialects.builtin import ModuleOp
 
+from tpu_cake.artifacts import (
+    build_artifact_manifest,
+    validate_artifact_manifest,
+)
+from tpu_cake.artifacts import (
+    file_sha256 as _sha256,
+)
+from tpu_cake.artifacts import save_array as _save_array
+from tpu_cake.artifacts import text_sha256 as _text_sha256
+from tpu_cake.artifacts import (
+    write_json as _write_json,
+)
+from tpu_cake.artifacts import (
+    write_text as _write_text,
+)
 from tpu_cake.canonical import canonical_text
 from tpu_cake.compiler_analysis import (
     CompilerCollectiveStrategyPoint,
@@ -38,9 +53,9 @@ from tpu_cake.contracts import (
     WorkloadStage,
 )
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
-from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
+from tpu_cake.identity import array_sha256, arrays_sha256, json_sha256, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import EvidenceRun, ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, RunState, payload_sha256, read_ledger_history
 from tpu_cake.metrics import MetricSource
 from tpu_cake.runner import RunMode, _runtime_identity, _source_state
 from tpu_cake.seqax_cost_model import SeqaxCostModelReport, estimate_seqax_forward
@@ -67,13 +82,22 @@ from tpu_cake.seqax_pallas_diagnostic import (
     _validate_xprof,
     _validate_xprof_replay,
 )
-from tpu_cake.seqax_pallas_lowering import SeqaxPallasPlan, lower_seqax_physical_to_pallas
+from tpu_cake.seqax_pallas_lowering import (
+    SeqaxPallasPlan,
+    lower_seqax_physical_to_pallas,
+    place_inputs,
+)
 from tpu_cake.seqax_pallas_runner import (
     _compiler_hlo,
     _physical_collective_inventory,
     _validate_compiled_program,
 )
-from tpu_cake.seqax_pallas_search import SeqaxPallasDevice
+from tpu_cake.seqax_pallas_search import (
+    SeqaxPallasDevice,
+)
+from tpu_cake.seqax_pallas_search import (
+    seqax_pallas_device_inventory as _device_inventory,
+)
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.seqax_residual_profile import (
     SEQAX_RESIDUAL_PROFILE_COMPILATION_ROOT,
@@ -128,29 +152,8 @@ class CompiledResidualProfile:
     control_compiler_analysis: CompilerExecutableAnalysis
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _text_sha256(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
-
-
 def _canonical_hlo(value: str) -> str:
     return value.rstrip("\n") + "\n"
-
-
-def _write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value)
-
-
-def _write_json(path: Path, value: object) -> None:
-    _write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 def _write_json_atomic(path: Path, value: object) -> None:
@@ -165,11 +168,6 @@ def _write_json_atomic(path: Path, value: object) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
-
-
-def _save_array(path: Path, value: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, value, allow_pickle=False)
 
 
 def _load_array(path: Path) -> np.ndarray:
@@ -282,9 +280,7 @@ def _parameters(contract: SeqaxResidualProfileContract) -> dict[str, int | Any]:
 
 
 def _json_sha256(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return json_sha256(value)
 
 
 def _prepare_candidates(
@@ -340,13 +336,7 @@ def _resident_inputs(
     prepared: PreparedResidualProfile,
     mesh: Any,
 ) -> tuple[jax.Array, ...]:
-    return tuple(
-        jax.device_put(
-            jnp.asarray(value),
-            NamedSharding(mesh, tensor.partition_spec()),
-        )
-        for value, tensor in zip(host_inputs, prepared.plan.input_contracts, strict=True)
-    )
+    return place_inputs(host_inputs, prepared.plan.input_contracts, mesh)
 
 
 def _compile(
@@ -552,18 +542,6 @@ def _execute(executable: Any, inputs: tuple[jax.Array, ...]) -> np.ndarray:
     if len(outputs) != 1:
         raise ValueError("SEQAX_RESIDUAL_PROFILE_OUTPUT_COUNT_MISMATCH")
     return np.asarray(outputs[0])
-
-
-def _device_inventory(devices: tuple[Any, ...]) -> tuple[SeqaxPallasDevice, ...]:
-    return tuple(
-        SeqaxPallasDevice(
-            id=device.id,
-            process_index=device.process_index,
-            platform=device.platform,
-            device_kind=device.device_kind,
-        )
-        for device in devices
-    )
 
 
 def _validate_devices(devices: tuple[Any, ...], contract: SeqaxResidualProfileContract) -> None:
@@ -957,37 +935,21 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 
 def _artifact_manifest(root: Path) -> tuple[ArtifactReference, ...]:
-    return tuple(
-        ArtifactReference(
-            path=path.relative_to(root).as_posix(),
-            size_bytes=path.stat().st_size,
-            sha256=_sha256(path),
-            role=_artifact_role(path.relative_to(root)),
-        )
-        for path in sorted(value for value in root.rglob("*") if value.is_file())
-        if path.relative_to(root).as_posix() != "receipt.json"
+    return build_artifact_manifest(
+        root,
+        role_for_path=_artifact_role,
     )
 
 
 def _validate_manifest(root: Path, artifacts: tuple[ArtifactReference, ...]) -> None:
-    declared = tuple(value.path for value in artifacts)
-    observed = {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
-        if path.is_file() and path.relative_to(root).as_posix() != "receipt.json"
-    }
-    if len(declared) != len(set(declared)) or set(declared) != observed:
-        raise ValueError("SEQAX_RESIDUAL_PROFILE_CLOSED_WORLD_MISMATCH")
-    for artifact in artifacts:
-        path = root / artifact.path
-        if (
-            path.is_symlink()
-            or path.stat().st_nlink != 1
-            or path.stat().st_size != artifact.size_bytes
-            or _sha256(path) != artifact.sha256
-            or _artifact_role(Path(artifact.path)) is not artifact.role
-        ):
-            raise ValueError(f"SEQAX_RESIDUAL_PROFILE_ARTIFACT_MISMATCH path={artifact.path}")
+    validate_artifact_manifest(
+        root,
+        artifacts,
+        role_for_path=_artifact_role,
+        duplicate_error="SEQAX_RESIDUAL_PROFILE_CLOSED_WORLD_MISMATCH",
+        closed_world_error="SEQAX_RESIDUAL_PROFILE_CLOSED_WORLD_MISMATCH",
+        mismatch_error=lambda path: f"SEQAX_RESIDUAL_PROFILE_ARTIFACT_MISMATCH path={path}",
+    )
 
 
 def _validate_source(root: Path, result: SeqaxResidualProfileResult) -> None:
@@ -1054,8 +1016,7 @@ def _expected_plan_files(root: Path, prepared: PreparedResidualProfile) -> None:
     stablehlo = StableHloInspector.parse((candidate_root / "pallas_stablehlo.txt").read_text())
     collective_counts = stablehlo.live_collective_counts()
     replayed_collectives = tuple(
-        collective_counts[name]
-        for name in ("all_gather", "all_reduce", "reduce_scatter")
+        collective_counts[name] for name in ("all_gather", "all_reduce", "reduce_scatter")
     )
     expected_collectives = (
         expected.expected_all_gathers,
@@ -1525,7 +1486,7 @@ def _validate(
     if tuple(value.state for value in history) != tuple(state for state, _payload in payloads):
         raise ValueError("SEQAX_RESIDUAL_PROFILE_LEDGER_STATE_MISMATCH")
     if tuple(value.payload_sha256 for value in history) != tuple(
-        ExperimentLedger.payload_sha256(payload) for _state, payload in payloads
+        payload_sha256(payload) for _state, payload in payloads
     ):
         raise ValueError("SEQAX_RESIDUAL_PROFILE_LEDGER_PAYLOAD_MISMATCH")
     if require_accepted:

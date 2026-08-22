@@ -24,10 +24,12 @@ from typing import Any
 import jax
 import numpy as np
 
+from tpu_cake.artifacts import build_artifact_manifest
+from tpu_cake.artifacts import file_sha256 as _sha256
 from tpu_cake.canonical import canonical_text
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity, SourceFileContract
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, RunState, payload_sha256, read_ledger_history
 from tpu_cake.rpa_lowering import ShardedFusedRpaPlan, lower_inkling_sharded_rpa_to_pallas
 from tpu_cake.rpa_surface import (
     INKLING_SHARDED_RPA_PORTABLE_CLAIM_SCOPE,
@@ -71,14 +73,6 @@ class _CompiledSurface:
 
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _json_payload(value: Any) -> Any:
@@ -566,18 +560,11 @@ def _artifact_role(path: Path) -> ArtifactRole:
 
 
 def _artifacts(root: Path) -> tuple[ArtifactReference, ...]:
-    return tuple(
-        ArtifactReference(
-            path=path.relative_to(root).as_posix(),
-            size_bytes=path.stat().st_size,
-            sha256=_sha256(path),
-            role=_artifact_role(path.relative_to(root)),
-        )
-        for path in sorted(
-            (value for value in root.rglob("*") if value.is_file()),
-            key=lambda value: value.relative_to(root).as_posix(),
-        )
-        if path.name != "receipt.json"
+    return build_artifact_manifest(
+        root,
+        role_for_path=_artifact_role,
+        excluded_paths=(),
+        exclude_path=lambda path: path.name == "receipt.json",
     )
 
 
@@ -879,9 +866,7 @@ def validate_inkling_sharded_rpa_surface(
     if tuple(value.state for value in history) != expected_states or tuple(
         value.payload_sha256 for value in history
     ) != tuple(
-        ExperimentLedger.payload_sha256(
-            _ledger_payload(contract, expected_run_id, source_state, root, state)
-        )
+        payload_sha256(_ledger_payload(contract, expected_run_id, source_state, root, state))
         for state in expected_states
     ):
         raise ValueError("INKLING_SHARDED_RPA_LEDGER_REPLAY_MISMATCH")
@@ -949,15 +934,13 @@ def _run_staged(
     _write_json(root / "source_manifest.json", source_manifest)
     _write_text(root / "physical.xdsl", canonical_text(inkling_sharded_fused_rpa_schedule()))
     _write_json(root / "plan.json", contract.plan)
-    ledger = ExperimentLedger(root / "ledger.sqlite")
-    ledger.create(run_id, _ledger_payload(contract, run_id, source_state, root, RunState.CREATED))
-    ledger.transition(
-        run_id,
+    run = EvidenceRun(root / "ledger.sqlite", run_id)
+    run.create(_ledger_payload(contract, run_id, source_state, root, RunState.CREATED))
+    run.transition(
         RunState.VERIFIED,
         _ledger_payload(contract, run_id, source_state, root, RunState.VERIFIED),
     )
-    ledger.transition(
-        run_id,
+    run.transition(
         RunState.LOWERED,
         _ledger_payload(contract, run_id, source_state, root, RunState.LOWERED),
     )
@@ -966,8 +949,7 @@ def _run_staged(
     compiled = _compile_surface(contract, kernel, devices, first_inputs)
     _write_text(root / "stablehlo.txt", compiled.stablehlo)
     _write_text(root / "compiler_hlo.txt", compiled.compiler_hlo)
-    ledger.transition(
-        run_id,
+    run.transition(
         RunState.COMPILED,
         _ledger_payload(contract, run_id, source_state, root, RunState.COMPILED),
     )
@@ -977,8 +959,7 @@ def _run_staged(
         for seed in contract.correctness_seeds
     )
     _write_json(root / "correctness.json", correctness)
-    ledger.transition(
-        run_id,
+    run.transition(
         RunState.CORRECT,
         _ledger_payload(contract, run_id, source_state, root, RunState.CORRECT),
     )
@@ -1000,8 +981,7 @@ def _run_staged(
     _save_bf16(root / "timing" / "post_output.npy", post_timing[0])
     _save_bf16(root / "timing" / "post_cache.npy", post_timing[1])
     _write_json(root / "rounds.json", rounds)
-    ledger.transition(
-        run_id,
+    run.transition(
         RunState.TIMED,
         _ledger_payload(contract, run_id, source_state, root, RunState.TIMED),
     )
@@ -1035,16 +1015,14 @@ def _run_staged(
         claim_scope=contract.claim_scope,
     )
     _write_json(root / "result.json", result)
-    ledger.close()
     validate_inkling_sharded_rpa_surface(
         root,
         contract,
         require_receipt=False,
         require_accepted_ledger=False,
     )
-    with ExperimentLedger(root / "ledger.sqlite") as accepted_ledger:
-        accepted_ledger.transition(
-            run_id,
+    with EvidenceRun(root / "ledger.sqlite", run_id) as run:
+        run.transition(
             RunState.ACCEPTED,
             _ledger_payload(contract, run_id, source_state, root, RunState.ACCEPTED),
         )

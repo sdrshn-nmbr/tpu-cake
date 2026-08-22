@@ -89,7 +89,7 @@ def test_donation_confirmation_contract_is_external_and_pinned() -> None:
     canonical = default_inkling_rpa_donation_confirmation_contract()
     assert saved == canonical
     assert (
-        saved.confirmation_id == "7dfee6b9b857bf5aef6a16745bf5a32a28a130a2131afd3395a35c9f4edecb5a"
+        saved.confirmation_id == "f9fe07ecffec138caaf33abb643a28a744860bfc0168aaa3fb3e4d5694b01866"
     )
     assert saved.hlo_identity_status == "pinned"
     assert tuple(value.stablehlo_sha256 for value in saved.arms) == (
