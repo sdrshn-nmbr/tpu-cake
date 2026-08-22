@@ -38,10 +38,12 @@ from tpu_cake.dialects.tpu_schedule import (
     VectorComputeOp,
     ViewOp,
     YieldOp,
+    analyze_physical_stage_resources,
     buffer_bytes,
     collective_implementation_resources,
     mxu_accumulator_scratch_bytes,
-    pipeline_resident_memory_bytes,
+    physical_rotation_copies,
+    physical_storage_buffers,
 )
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.metrics import (
@@ -483,11 +485,6 @@ def _root(value: SSAValue) -> SSAValue:
     return value
 
 
-def _operation_stage(operation: Operation) -> int | None:
-    stage = getattr(operation, "stage", None)
-    return None if stage is None else stage.data
-
-
 def _mxu_input_dtype(operation: MxuMatmulOp | MxuEinsumOp) -> str:
     lhs = operation.lhs.type
     assert isinstance(lhs, BufferType)
@@ -510,14 +507,6 @@ def _buffer_dtype(buffer: BufferType) -> str:
     if isinstance(element_type, Float32Type):
         return "f32"
     return str(element_type)
-
-
-def _wait_stage(start: DmaStartOp | RemoteDmaStartOp) -> int:
-    expected = DmaWaitOp if isinstance(start, DmaStartOp) else RemoteDmaWaitOp
-    waits = tuple(use.operation for use in start.token.uses if isinstance(use.operation, expected))
-    if len(waits) != 1:
-        raise UnsupportedPhysicalCostModelError(f"{start.name} must have exactly one matching wait")
-    return waits[0].stage.data
 
 
 def _configuration(operation: VectorComputeOp) -> dict[str, str]:
@@ -675,200 +664,53 @@ def _executed_leaf_operations(
     return tuple(result)
 
 
-def _rotation_copies(kernel: KernelOp) -> tuple[tuple[BufferType, int], ...]:
-    copies: list[tuple[BufferType, int]] = []
-    for operation in kernel.body.block.ops:
-        if not isinstance(operation, PipelineLoopOp):
-            continue
-        roots = tuple(_root(value) for value in operation.captures)
-        for value, rotation in zip(roots, operation.rotation_counts, strict=True):
-            buffer = value.type
-            assert isinstance(buffer, BufferType)
-            if buffer.ownership.data is not Ownership.EXTERNAL and rotation.data > 1:
-                copies.append((buffer, rotation.data - 1))
-    return tuple(copies)
-
-
-def _storage_buffers(kernel: KernelOp) -> tuple[BufferType, ...]:
-    buffers = [value.type for value in kernel.body.block.args if isinstance(value.type, BufferType)]
-    buffers.extend(
-        operation.buffer.type
-        for operation in kernel.body.block.ops
-        if isinstance(operation, AllocOp) and isinstance(operation.buffer.type, BufferType)
-    )
-    return tuple(buffers)
-
-
-def _link_uses(
-    operation: CollectiveOp | CollectiveReduceScatterOp | RemoteDmaStartOp,
-    kernel: KernelOp,
-) -> tuple[str, ...]:
-    if kernel.topology is None:
-        return ()
-    if isinstance(operation, RemoteDmaStartOp):
-        plan = kernel.topology.transfer_plans_by_id()[operation.transfer_plan.data]
-        return tuple(sorted(link.data for route in plan.routes for link in route.route_link_ids))
-    plan_value = operation.collective_plan
-    if plan_value is None:
-        return ()
-    plan = kernel.topology.plans_by_id()[plan_value.data]
-    return tuple(sorted(link.data for group in plan.groups for link in group.route_link_ids))
-
-
 def _top_level_stages(
     kernel: KernelOp,
     operation_ids: dict[Operation, str],
 ) -> tuple[PhysicalStageRecord, ...]:
-    operations = tuple(kernel.body.block.ops)
-    local_buffers = tuple(
-        buffer
-        for buffer in _storage_buffers(kernel)
-        if buffer.ownership.data is not Ownership.EXTERNAL
+    return tuple(
+        PhysicalStageRecord(
+            scope="kernel",
+            stage=stage.stage,
+            operation_ids=tuple(operation_ids[operation] for operation, _ in stage.operations),
+            active_dma=stage.active_dma,
+            active_remote_dma=stage.active_remote_dma,
+            active_mxu=stage.active_mxu,
+            active_vector=stage.active_vector,
+            active_ici=stage.active_ici,
+            live_vmem_bytes_per_device=stage.live_vmem_bytes_per_device,
+            live_smem_bytes_per_device=stage.live_smem_bytes_per_device,
+            link_channel_uses=stage.link_channel_uses,
+        )
+        for stage in analyze_physical_stage_resources(kernel)
+        if stage.scope is None
     )
-    rotation_copies = _rotation_copies(kernel)
-    max_stage = max(
-        (
-            *(_operation_stage(operation) or 0 for operation in operations),
-            *(buffer.lifetime.end.data for buffer in local_buffers),
-        ),
-        default=0,
-    )
-    records: list[PhysicalStageRecord] = []
-    for stage in range(max_stage + 1):
-        scheduled = tuple(
-            operation for operation in operations if _operation_stage(operation) == stage
-        )
-        active_dma = tuple(
-            operation
-            for operation in operations
-            if isinstance(operation, DmaStartOp)
-            and operation.stage.data <= stage <= _wait_stage(operation)
-        )
-        active_remote = tuple(
-            operation
-            for operation in operations
-            if isinstance(operation, RemoteDmaStartOp)
-            and operation.stage.data <= stage <= _wait_stage(operation)
-        )
-        mxu = sum(isinstance(operation, (MxuMatmulOp, MxuEinsumOp)) for operation in scheduled)
-        vector = sum(isinstance(operation, VectorComputeOp) for operation in scheduled)
-        collectives = tuple(
-            operation
-            for operation in scheduled
-            if isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp))
-        )
-        link_counts: Counter[str] = Counter()
-        for operation in (*active_remote, *collectives):
-            link_counts.update(_link_uses(operation, kernel))
-        live_by_space = {
-            space: sum(
-                buffer_bytes(buffer)
-                for buffer in local_buffers
-                if buffer.space.data is space
-                and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
-            )
-            + sum(
-                buffer_bytes(buffer) * copies
-                for buffer, copies in rotation_copies
-                if buffer.space.data is space
-                and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
-            )
-            for space in (MemorySpace.VMEM, MemorySpace.SMEM)
-        }
-        live_by_space[MemorySpace.VMEM] += sum(
-            mxu_accumulator_scratch_bytes(operation)
-            for operation in scheduled
-            if isinstance(operation, (MxuMatmulOp, MxuEinsumOp))
-        )
-        live_by_space[MemorySpace.VMEM] += sum(
-            collective_implementation_resources(operation).vmem_scratch_bytes
-            for operation in collectives
-        )
-        records.append(
-            PhysicalStageRecord(
-                scope="kernel",
-                stage=stage,
-                operation_ids=tuple(operation_ids[operation] for operation in scheduled),
-                active_dma=len(active_dma),
-                active_remote_dma=len(active_remote),
-                active_mxu=mxu,
-                active_vector=vector,
-                active_ici=len(collectives),
-                live_vmem_bytes_per_device=live_by_space[MemorySpace.VMEM],
-                live_smem_bytes_per_device=live_by_space[MemorySpace.SMEM],
-                link_channel_uses=tuple(sorted(link_counts.items())),
-            )
-        )
-    return tuple(records)
 
 
 def _pipeline_stages(
     kernel: KernelOp,
     operation_ids: dict[Operation, str],
 ) -> tuple[PhysicalStageRecord, ...]:
-    records: list[PhysicalStageRecord] = []
-    for pipeline in (
-        operation for operation in kernel.body.block.ops if isinstance(operation, PipelineLoopOp)
-    ):
-        operations = tuple(pipeline.body.block.ops)
-        horizon = (
-            pipeline.trip_count.data - 1
-        ) * pipeline.initiation_interval.data + pipeline.pipeline_stages.data
-        resident_bytes = pipeline_resident_memory_bytes(kernel)
-        for absolute_stage in range(horizon):
-            operation_labels: list[str] = []
-            active_dma = active_remote = active_mxu = active_vector = active_ici = 0
-            accumulator_scratch_bytes = 0
-            collective_scratch_bytes = 0
-            link_counts: Counter[str] = Counter()
-            for iteration in range(pipeline.trip_count.data):
-                logical_stage = absolute_stage - iteration * pipeline.initiation_interval.data
-                if logical_stage < 0 or logical_stage >= pipeline.pipeline_stages.data:
-                    continue
-                for operation in operations:
-                    operation_stage = _operation_stage(operation)
-                    if isinstance(operation, DmaStartOp) and (
-                        operation.stage.data <= logical_stage <= _wait_stage(operation)
-                    ):
-                        active_dma += 1
-                    if isinstance(operation, RemoteDmaStartOp) and (
-                        operation.stage.data <= logical_stage <= _wait_stage(operation)
-                    ):
-                        active_remote += 1
-                        link_counts.update(_link_uses(operation, kernel))
-                    if operation_stage != logical_stage:
-                        continue
-                    operation_labels.append(f"{operation_ids[operation]}@{iteration}")
-                    active_mxu += isinstance(operation, (MxuMatmulOp, MxuEinsumOp))
-                    if isinstance(operation, (MxuMatmulOp, MxuEinsumOp)):
-                        accumulator_scratch_bytes += mxu_accumulator_scratch_bytes(operation)
-                    active_vector += isinstance(operation, VectorComputeOp)
-                    if isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp)):
-                        active_ici += 1
-                        collective_scratch_bytes += collective_implementation_resources(
-                            operation
-                        ).vmem_scratch_bytes
-                        link_counts.update(_link_uses(operation, kernel))
-            records.append(
-                PhysicalStageRecord(
-                    scope=operation_ids[pipeline],
-                    stage=absolute_stage,
-                    operation_ids=tuple(operation_labels),
-                    active_dma=active_dma,
-                    active_remote_dma=active_remote,
-                    active_mxu=active_mxu,
-                    active_vector=active_vector,
-                    active_ici=active_ici,
-                    live_vmem_bytes_per_device=(
-                        resident_bytes[MemorySpace.VMEM]
-                        + accumulator_scratch_bytes
-                        + collective_scratch_bytes
-                    ),
-                    live_smem_bytes_per_device=resident_bytes[MemorySpace.SMEM],
-                    link_channel_uses=tuple(sorted(link_counts.items())),
-                )
-            )
-    return tuple(records)
+    return tuple(
+        PhysicalStageRecord(
+            scope=operation_ids[stage.scope],
+            stage=stage.stage,
+            operation_ids=tuple(
+                f"{operation_ids[operation]}@{iteration}"
+                for operation, iteration in stage.operations
+            ),
+            active_dma=stage.active_dma,
+            active_remote_dma=stage.active_remote_dma,
+            active_mxu=stage.active_mxu,
+            active_vector=stage.active_vector,
+            active_ici=stage.active_ici,
+            live_vmem_bytes_per_device=stage.live_vmem_bytes_per_device,
+            live_smem_bytes_per_device=stage.live_smem_bytes_per_device,
+            link_channel_uses=stage.link_channel_uses,
+        )
+        for stage in analyze_physical_stage_resources(kernel)
+        if stage.scope is not None
+    )
 
 
 def _peak(
@@ -1173,7 +1015,7 @@ def analyze_physical_kernel(
                 )
             )
 
-    storage = _storage_buffers(kernel)
+    storage = physical_storage_buffers(kernel)
     modes = tuple(value.data for value in kernel.argument_modes)
     arguments = tuple(kernel.body.block.args)
     external_resident = sum(
@@ -1242,7 +1084,7 @@ def analyze_physical_kernel(
         for buffer in storage
         if buffer.ownership.data is not Ownership.EXTERNAL and buffer.space.data is MemorySpace.SMEM
     )
-    rotation_copies = _rotation_copies(kernel)
+    rotation_copies = physical_rotation_copies(kernel)
     rotation_vmem = sum(
         buffer_bytes(buffer) * copies
         for buffer, copies in rotation_copies

@@ -29,6 +29,7 @@ from tpu_cake.dialects.tpu_schedule import (
     TopologyAttr,
     TransferPlanAttr,
     TransferRouteAttr,
+    analyze_physical_stage_resources,
     rectilinear_topology,
 )
 from tpu_cake.frontend import KernelBuilder, buffer, canonical_module_text, schedule_sha256
@@ -794,7 +795,10 @@ def _pipeline_module(
 
 
 def test_pipeline_work_multiplies_by_trip_count_but_rotation_storage_does_not() -> None:
-    report = _report(_pipeline_module(initiation_interval=2, accumulator_rotations=2))
+    module = _pipeline_module(initiation_interval=2, accumulator_rotations=2)
+    report = _report(module)
+    kernel = next(operation for operation in module.walk() if isinstance(operation, KernelOp))
+    analysis = analyze_physical_stage_resources(kernel)
 
     assert report.operation_executions == (
         ("tpu_schedule.dma_start", 3),
@@ -807,6 +811,34 @@ def test_pipeline_work_multiplies_by_trip_count_but_rotation_storage_does_not() 
     assert report.memory.peak_live_vmem_bytes_per_device == 768
     pipeline_stages = tuple(value for value in report.stages if value.scope != "kernel")
     assert max(value.active_mxu for value in pipeline_stages) == 1
+    assert tuple(
+        (
+            value.stage,
+            value.active_dma,
+            value.active_remote_dma,
+            value.active_mxu,
+            value.active_vector,
+            value.active_ici,
+            value.live_vmem_bytes_per_device,
+            value.live_smem_bytes_per_device,
+            value.link_channel_uses,
+        )
+        for value in pipeline_stages
+    ) == tuple(
+        (
+            value.stage,
+            value.active_dma,
+            value.active_remote_dma,
+            value.active_mxu,
+            value.active_vector,
+            value.active_ici,
+            value.live_vmem_bytes_per_device,
+            value.live_smem_bytes_per_device,
+            value.link_channel_uses,
+        )
+        for value in analysis
+        if value.scope is not None
+    )
 
 
 def test_pipeline_einsum_scratch_is_shared_dialect_and_report_authority() -> None:

@@ -24,6 +24,7 @@ from tpu_cake.dialects.tpu_schedule import (
     TransferPlanAttr,
     TransferRouteAttr,
     YieldOp,
+    analyze_physical_stage_resources,
     rectilinear_topology,
 )
 from tpu_cake.frontend import KernelBuilder, buffer
@@ -968,7 +969,21 @@ def _pipeline_matmul_kernel(
 
 
 def test_pipeline_loop_proves_rotation_and_overlapped_resource_capacity() -> None:
-    _pipeline_matmul_kernel(initiation_interval=2, accumulator_rotations=2).verify()
+    module = _pipeline_matmul_kernel(initiation_interval=2, accumulator_rotations=2)
+    module.verify()
+    kernel = next(operation for operation in module.walk() if isinstance(operation, KernelOp))
+    pipeline = next(
+        operation for operation in module.walk() if isinstance(operation, PipelineLoopOp)
+    )
+    stages = tuple(
+        stage
+        for stage in analyze_physical_stage_resources(kernel)
+        if stage.scope is pipeline
+    )
+
+    assert tuple(stage.stage for stage in stages) == tuple(range(9))
+    assert max(stage.active_mxu for stage in stages) == 1
+    assert max(stage.live_vmem_bytes_per_device for stage in stages) == 768
     with pytest.raises(VerifyException, match="needs 2 rotating buffers"):
         _pipeline_matmul_kernel(initiation_interval=2, accumulator_rotations=1)
     with pytest.raises(VerifyException, match="exceeds MXU capacity"):

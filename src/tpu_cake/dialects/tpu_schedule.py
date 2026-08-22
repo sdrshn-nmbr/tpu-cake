@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import pairwise, product
@@ -3161,127 +3163,53 @@ class PipelineLoopOp(IRDLOperation):
                     operation.transfer_plan.data not in transfer_plans
                 ):
                     raise VerifyException("pipeline remote DMA references an unknown transfer plan")
-        horizon = (
-            self.trip_count.data - 1
-        ) * self.initiation_interval.data + self.pipeline_stages.data
-        resident_bytes = pipeline_resident_memory_bytes(kernel)
-        for absolute_stage in range(horizon):
-            active_dma = 0
-            active_remote_dma = 0
-            mxu_uses = 0
-            vector_uses = 0
-            ici_uses = 0
-            accumulator_scratch_bytes = 0
-            collective_scratch_bytes = 0
-            link_uses: dict[str, int] = {}
-            semaphore_uses: dict[Operation, int] = {}
-            for iteration in range(self.trip_count.data):
-                logical_stage = absolute_stage - iteration * self.initiation_interval.data
-                if logical_stage < 0 or logical_stage >= self.pipeline_stages.data:
-                    continue
-                for operation in scheduled:
-                    if isinstance(operation, DmaStartOp):
-                        wait = next(
-                            use.operation
-                            for use in operation.token.uses
-                            if isinstance(use.operation, DmaWaitOp)
-                        )
-                        if operation.stage.data <= logical_stage <= wait.stage.data:
-                            active_dma += 1
-                            owner = operation.semaphore.owner
-                            semaphore_uses[owner] = semaphore_uses.get(owner, 0) + 1
-                    elif isinstance(operation, RemoteDmaStartOp):
-                        wait = next(
-                            use.operation
-                            for use in operation.token.uses
-                            if isinstance(use.operation, RemoteDmaWaitOp)
-                        )
-                        if operation.stage.data <= logical_stage <= wait.stage.data:
-                            active_remote_dma += 1
-                            owner = operation.semaphore.owner
-                            semaphore_uses[owner] = semaphore_uses.get(owner, 0) + 1
-                            plan = transfer_plans.get(operation.transfer_plan.data)
-                            if plan is not None:
-                                for route in plan.routes:
-                                    for link_id in route.route_link_ids:
-                                        link_uses[link_id.data] = link_uses.get(link_id.data, 0) + 1
-                    elif isinstance(
-                        operation,
-                        (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp),
-                    ):
-                        mxu_uses += operation.stage.data == logical_stage
-                        if operation.stage.data == logical_stage and isinstance(
-                            operation, (MxuMatmulOp, MxuEinsumOp)
-                        ):
-                            accumulator_scratch_bytes += mxu_accumulator_scratch_bytes(operation)
-                    elif isinstance(operation, VectorComputeOp):
-                        vector_uses += operation.stage.data == logical_stage
-                    elif _is_collective(operation):
-                        assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
-                        if operation.stage.data == logical_stage:
-                            ici_uses += 1
-                            collective_scratch_bytes += collective_implementation_resources(
-                                operation
-                            ).vmem_scratch_bytes
-                            if operation.collective_plan is not None:
-                                plan = topology_plans.get(operation.collective_plan.data)
-                                if plan is not None:
-                                    for group in plan.groups:
-                                        for link_id in group.route_link_ids:
-                                            link_uses[link_id.data] = (
-                                                link_uses.get(link_id.data, 0) + 1
-                                            )
-            if active_dma > kernel.dma_engine_count.data:
+        for resources in analyze_pipeline_stage_resources(self, kernel):
+            stage = resources.stage
+            if resources.active_dma > kernel.dma_engine_count.data:
                 raise VerifyException(
-                    f"pipeline exceeds DMA capacity at absolute stage {absolute_stage}"
+                    f"pipeline exceeds DMA capacity at absolute stage {stage}"
                 )
             if (
                 kernel.remote_dma_engine_count is None
-                or active_remote_dma > kernel.remote_dma_engine_count.data
+                or resources.active_remote_dma > kernel.remote_dma_engine_count.data
             ):
                 raise VerifyException(
-                    f"pipeline exceeds remote DMA capacity at absolute stage {absolute_stage}"
+                    f"pipeline exceeds remote DMA capacity at absolute stage {stage}"
                 )
-            if mxu_uses > kernel.mxu_count.data:
+            if resources.active_mxu > kernel.mxu_count.data:
                 raise VerifyException(
-                    f"pipeline exceeds MXU capacity at absolute stage {absolute_stage}"
+                    f"pipeline exceeds MXU capacity at absolute stage {stage}"
                 )
-            if vector_uses > kernel.vector_unit_count.data:
+            if resources.active_vector > kernel.vector_unit_count.data:
                 raise VerifyException(
-                    f"pipeline exceeds vector capacity at absolute stage {absolute_stage}"
+                    f"pipeline exceeds vector capacity at absolute stage {stage}"
                 )
-            if ici_uses > kernel.ici_link_count.data:
+            if resources.active_ici > kernel.ici_link_count.data:
                 raise VerifyException(
-                    f"pipeline exceeds ICI capacity at absolute stage {absolute_stage}"
+                    f"pipeline exceeds ICI capacity at absolute stage {stage}"
                 )
-            for link_id, uses in link_uses.items():
+            for link_id, uses in resources.link_channel_uses:
                 capacity = topology_links[link_id].channel_count.data
                 if uses > capacity:
                     raise VerifyException(
                         f"pipeline exceeds topology link {link_id} capacity "
-                        f"at absolute stage {absolute_stage}"
+                        f"at absolute stage {stage}"
                     )
-            for owner, uses in semaphore_uses.items():
+            for owner, uses in resources.semaphore_uses:
                 if not isinstance(owner, SemaphoreAllocOp) or uses > owner.slot_count:
                     raise VerifyException(
-                        f"pipeline exceeds semaphore slots at absolute stage {absolute_stage}"
+                        f"pipeline exceeds semaphore slots at absolute stage {stage}"
                     )
-            live_vmem_bytes = (
-                resident_bytes[MemorySpace.VMEM]
-                + accumulator_scratch_bytes
-                + collective_scratch_bytes
-            )
-            if live_vmem_bytes > kernel.vmem_capacity_bytes.data:
+            if resources.live_vmem_bytes_per_device > kernel.vmem_capacity_bytes.data:
                 raise VerifyException(
                     "pipeline VMEM capacity exceeded at absolute stage "
-                    f"{absolute_stage}: {live_vmem_bytes} > "
+                    f"{stage}: {resources.live_vmem_bytes_per_device} > "
                     f"{kernel.vmem_capacity_bytes.data}"
                 )
-            live_smem_bytes = resident_bytes[MemorySpace.SMEM]
-            if live_smem_bytes > kernel.smem_capacity_bytes.data:
+            if resources.live_smem_bytes_per_device > kernel.smem_capacity_bytes.data:
                 raise VerifyException(
                     "pipeline SMEM capacity exceeded at absolute stage "
-                    f"{absolute_stage}: {live_smem_bytes} > "
+                    f"{stage}: {resources.live_smem_bytes_per_device} > "
                     f"{kernel.smem_capacity_bytes.data}"
                 )
 
@@ -3976,144 +3904,335 @@ class KernelOp(IRDLOperation):
 
         if in_flight or remote_in_flight:
             raise VerifyException("kernel ends with DMA operations still in flight")
-        local_buffers = [
-            buffer for buffer in storage_buffers if buffer.ownership.data is not Ownership.EXTERNAL
-        ]
-        max_operation_stage = max((_stage(operation) or 0 for operation in operations), default=0)
-        max_lifetime_stage = max(
-            (buffer.lifetime.end.data for buffer in local_buffers),
-            default=0,
-        )
-        max_stage = max(max_operation_stage, max_lifetime_stage)
-        for stage in range(max_stage + 1):
-            active_dma = sum(
-                start.stage.data <= stage <= wait.operation.stage.data
-                for start in (op for op in operations if isinstance(op, DmaStartOp))
-                for wait in start.token.uses
-                if isinstance(wait.operation, DmaWaitOp)
-            ) + sum(
-                2
-                for operation in operations
-                if isinstance(operation, RpaDecodeCoreOp) and operation.stage.data == stage
-            )
-            active_remote_dma = sum(
-                start.stage.data <= stage <= wait.operation.stage.data
-                for start in (op for op in operations if isinstance(op, RemoteDmaStartOp))
-                for wait in start.token.uses
-                if isinstance(wait.operation, RemoteDmaWaitOp)
-            )
-            mxu_uses = sum(
-                isinstance(
-                    operation,
-                    (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp, RpaDecodeCoreOp),
-                )
-                and operation.stage.data == stage
-                for operation in operations
-            )
-            vector_uses = sum(
-                isinstance(operation, (VectorComputeOp, RpaDecodeCoreOp))
-                and operation.stage.data == stage
-                for operation in operations
-            )
-            ici_uses = sum(
-                _is_collective(operation) and operation.stage.data == stage
-                for operation in operations
-            )
-            if active_dma > self.dma_engine_count.data:
+        for resources in analyze_kernel_stage_resources(self):
+            stage = resources.stage
+            if resources.active_dma > self.dma_engine_count.data:
                 raise VerifyException(
                     f"DMA engine capacity exceeded at stage {stage}: "
-                    f"{active_dma} > {self.dma_engine_count.data}"
+                    f"{resources.active_dma} > {self.dma_engine_count.data}"
                 )
             if (
                 self.physical_schema is not None
                 and self.remote_dma_engine_count is not None
-                and active_remote_dma > self.remote_dma_engine_count.data
+                and resources.active_remote_dma > self.remote_dma_engine_count.data
             ):
                 raise VerifyException(
                     f"remote DMA engine capacity exceeded at stage {stage}: "
-                    f"{active_remote_dma} > {self.remote_dma_engine_count.data}"
+                    f"{resources.active_remote_dma} > {self.remote_dma_engine_count.data}"
                 )
-            if mxu_uses > self.mxu_count.data:
+            if resources.active_mxu > self.mxu_count.data:
                 raise VerifyException(
-                    f"MXU capacity exceeded at stage {stage}: {mxu_uses} > {self.mxu_count.data}"
+                    f"MXU capacity exceeded at stage {stage}: "
+                    f"{resources.active_mxu} > {self.mxu_count.data}"
                 )
-            if vector_uses > self.vector_unit_count.data:
+            if resources.active_vector > self.vector_unit_count.data:
                 raise VerifyException(
                     f"vector capacity exceeded at stage {stage}: "
-                    f"{vector_uses} > {self.vector_unit_count.data}"
+                    f"{resources.active_vector} > {self.vector_unit_count.data}"
                 )
-            if ici_uses > self.ici_link_count.data:
+            if resources.active_ici > self.ici_link_count.data:
                 raise VerifyException(
                     f"ICI link capacity exceeded at stage {stage}: "
-                    f"{ici_uses} > {self.ici_link_count.data}"
+                    f"{resources.active_ici} > {self.ici_link_count.data}"
                 )
             if self.physical_schema is not None:
-                link_uses: dict[str, int] = {}
-                for operation in operations:
-                    if not _is_collective(operation):
-                        continue
-                    assert isinstance(operation, (CollectiveReduceScatterOp, CollectiveOp))
-                    if operation.stage.data != stage or operation.collective_plan is None:
-                        continue
-                    plan = topology_plans[operation.collective_plan.data]
-                    for group in plan.groups:
-                        for link_id in group.route_link_ids:
-                            link_uses[link_id.data] = link_uses.get(link_id.data, 0) + 1
-                assert self.topology is not None
-                transfer_plans = self.topology.transfer_plans_by_id()
-                for operation in operations:
-                    if not isinstance(operation, RemoteDmaStartOp):
-                        continue
-                    wait = next(
-                        use.operation
-                        for use in operation.token.uses
-                        if isinstance(use.operation, RemoteDmaWaitOp)
-                    )
-                    if not operation.stage.data <= stage <= wait.stage.data:
-                        continue
-                    plan = transfer_plans[operation.transfer_plan.data]
-                    for route in plan.routes:
-                        for link_id in route.route_link_ids:
-                            link_uses[link_id.data] = link_uses.get(link_id.data, 0) + 1
-                for link_id, uses in link_uses.items():
+                for link_id, uses in resources.link_channel_uses:
                     capacity = topology_links[link_id].channel_count.data
                     if uses > capacity:
                         raise VerifyException(
                             f"topology link {link_id} capacity exceeded at stage {stage}: "
                             f"{uses} > {capacity}"
                         )
-            for space, capacity, label in (
-                (MemorySpace.VMEM, self.vmem_capacity_bytes.data, "VMEM"),
-                (MemorySpace.SMEM, self.smem_capacity_bytes.data, "SMEM"),
+            for live_bytes, capacity, label in (
+                (
+                    resources.live_vmem_bytes_per_device,
+                    self.vmem_capacity_bytes.data,
+                    "VMEM",
+                ),
+                (
+                    resources.live_smem_bytes_per_device,
+                    self.smem_capacity_bytes.data,
+                    "SMEM",
+                ),
             ):
-                live_bytes = sum(
-                    buffer_bytes(buffer)
-                    for buffer in local_buffers
-                    if buffer.space.data is space
-                    and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
-                )
-                live_bytes += sum(
-                    buffer_bytes(buffer) * copies
-                    for buffer, copies in rotation_copies
-                    if buffer.space.data is space
-                    and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
-                )
-                if space is MemorySpace.VMEM:
-                    live_bytes += sum(
-                        mxu_accumulator_scratch_bytes(operation)
-                        for operation in operations
-                        if isinstance(operation, (MxuMatmulOp, MxuEinsumOp))
-                        and operation.stage.data == stage
-                    )
-                    live_bytes += sum(
-                        collective_implementation_resources(operation).vmem_scratch_bytes
-                        for operation in operations
-                        if _is_collective(operation) and operation.stage.data == stage
-                    )
                 if live_bytes > capacity:
                     raise VerifyException(
                         f"{label} capacity exceeded at stage {stage}: {live_bytes} > {capacity}"
                     )
+
+@dataclass(frozen=True)
+class PhysicalStageResources:
+    scope: PipelineLoopOp | None
+    stage: int
+    operations: tuple[tuple[Operation, int | None], ...]
+    active_dma: int
+    active_remote_dma: int
+    active_mxu: int
+    active_vector: int
+    active_ici: int
+    live_vmem_bytes_per_device: int
+    live_smem_bytes_per_device: int
+    link_channel_uses: tuple[tuple[str, int], ...]
+    semaphore_uses: tuple[tuple[Operation, int], ...] = ()
+
+
+def _physical_link_uses(
+    operation: CollectiveOp | CollectiveReduceScatterOp | RemoteDmaStartOp,
+    kernel: KernelOp,
+) -> tuple[str, ...]:
+    if kernel.topology is None:
+        return ()
+    if isinstance(operation, RemoteDmaStartOp):
+        plan = kernel.topology.transfer_plans_by_id()[operation.transfer_plan.data]
+        return tuple(
+            sorted(link.data for route in plan.routes for link in route.route_link_ids)
+        )
+    if operation.collective_plan is None:
+        return ()
+    plan = kernel.topology.plans_by_id()[operation.collective_plan.data]
+    return tuple(
+        sorted(link.data for group in plan.groups for link in group.route_link_ids)
+    )
+
+
+def physical_storage_buffers(kernel: KernelOp) -> tuple[BufferType, ...]:
+    buffers = [
+        value.type for value in kernel.body.block.args if isinstance(value.type, BufferType)
+    ]
+    buffers.extend(
+        operation.buffer.type
+        for operation in kernel.body.block.ops
+        if isinstance(operation, AllocOp) and isinstance(operation.buffer.type, BufferType)
+    )
+    return tuple(buffers)
+
+
+def physical_rotation_copies(kernel: KernelOp) -> tuple[tuple[BufferType, int], ...]:
+    def root(value: SSAValue) -> SSAValue:
+        while isinstance(value.owner, ViewOp):
+            value = value.owner.base
+        return value
+
+    copies: list[tuple[BufferType, int]] = []
+    for operation in kernel.body.block.ops:
+        if not isinstance(operation, PipelineLoopOp):
+            continue
+        for capture, rotation in zip(
+            operation.captures, operation.rotation_counts, strict=True
+        ):
+            buffer = root(capture).type
+            assert isinstance(buffer, BufferType)
+            if buffer.ownership.data is not Ownership.EXTERNAL and rotation.data > 1:
+                copies.append((buffer, rotation.data - 1))
+    return tuple(copies)
+
+
+def analyze_kernel_stage_resources(kernel: KernelOp) -> tuple[PhysicalStageResources, ...]:
+    operations = tuple(kernel.body.block.ops)
+    local_buffers = tuple(
+        buffer
+        for buffer in physical_storage_buffers(kernel)
+        if buffer.ownership.data is not Ownership.EXTERNAL
+    )
+    rotation_copies = physical_rotation_copies(kernel)
+    max_stage = max(
+        (
+            *(_stage(operation) or 0 for operation in operations),
+            *(buffer.lifetime.end.data for buffer in local_buffers),
+        ),
+        default=0,
+    )
+    records: list[PhysicalStageResources] = []
+    for stage in range(max_stage + 1):
+        scheduled = tuple(operation for operation in operations if _stage(operation) == stage)
+        active_dma = tuple(
+            operation
+            for operation in operations
+            if isinstance(operation, DmaStartOp)
+            and operation.stage.data <= stage
+            <= next(
+                use.operation.stage.data
+                for use in operation.token.uses
+                if isinstance(use.operation, DmaWaitOp)
+            )
+        )
+        active_remote = tuple(
+            operation
+            for operation in operations
+            if isinstance(operation, RemoteDmaStartOp)
+            and operation.stage.data <= stage
+            <= next(
+                use.operation.stage.data
+                for use in operation.token.uses
+                if isinstance(use.operation, RemoteDmaWaitOp)
+            )
+        )
+        rpa_cores = sum(
+            isinstance(operation, RpaDecodeCoreOp) for operation in scheduled
+        )
+        collectives = tuple(operation for operation in scheduled if _is_collective(operation))
+        link_counts: Counter[str] = Counter()
+        for operation in (*active_remote, *collectives):
+            assert isinstance(
+                operation,
+                (RemoteDmaStartOp, CollectiveOp, CollectiveReduceScatterOp),
+            )
+            link_counts.update(_physical_link_uses(operation, kernel))
+        live_by_space = {
+            space: sum(
+                buffer_bytes(buffer)
+                for buffer in local_buffers
+                if buffer.space.data is space
+                and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
+            )
+            + sum(
+                buffer_bytes(buffer) * copies
+                for buffer, copies in rotation_copies
+                if buffer.space.data is space
+                and buffer.lifetime.start.data <= stage <= buffer.lifetime.end.data
+            )
+            for space in (MemorySpace.VMEM, MemorySpace.SMEM)
+        }
+        live_by_space[MemorySpace.VMEM] += sum(
+            mxu_accumulator_scratch_bytes(operation)
+            for operation in scheduled
+            if isinstance(operation, (MxuMatmulOp, MxuEinsumOp))
+        )
+        live_by_space[MemorySpace.VMEM] += sum(
+            collective_implementation_resources(operation).vmem_scratch_bytes
+            for operation in collectives
+            if isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp))
+        )
+        records.append(
+            PhysicalStageResources(
+                scope=None,
+                stage=stage,
+                operations=tuple((operation, None) for operation in scheduled),
+                active_dma=len(active_dma) + 2 * rpa_cores,
+                active_remote_dma=len(active_remote),
+                active_mxu=sum(
+                    isinstance(
+                        operation,
+                        (
+                            MxuMatmulOp,
+                            MxuEinsumOp,
+                            RaggedPagedAttentionOp,
+                            RpaDecodeCoreOp,
+                        ),
+                    )
+                    for operation in scheduled
+                ),
+                active_vector=sum(
+                    isinstance(operation, (VectorComputeOp, RpaDecodeCoreOp))
+                    for operation in scheduled
+                ),
+                active_ici=len(collectives),
+                live_vmem_bytes_per_device=live_by_space[MemorySpace.VMEM],
+                live_smem_bytes_per_device=live_by_space[MemorySpace.SMEM],
+                link_channel_uses=tuple(sorted(link_counts.items())),
+            )
+        )
+    return tuple(records)
+
+
+def analyze_pipeline_stage_resources(
+    pipeline: PipelineLoopOp, kernel: KernelOp
+) -> tuple[PhysicalStageResources, ...]:
+    operations = tuple(pipeline.body.block.ops)
+    scheduled = tuple(operation for operation in operations if _stage(operation) is not None)
+    horizon = (
+        pipeline.trip_count.data - 1
+    ) * pipeline.initiation_interval.data + pipeline.pipeline_stages.data
+    resident_bytes = pipeline_resident_memory_bytes(kernel)
+    records: list[PhysicalStageResources] = []
+    for absolute_stage in range(horizon):
+        operation_instances: list[tuple[Operation, int | None]] = []
+        active_dma = active_remote = active_mxu = active_vector = active_ici = 0
+        accumulator_scratch_bytes = collective_scratch_bytes = 0
+        link_counts: Counter[str] = Counter()
+        semaphore_counts: Counter[Operation] = Counter()
+        for iteration in range(pipeline.trip_count.data):
+            logical_stage = absolute_stage - iteration * pipeline.initiation_interval.data
+            if logical_stage < 0 or logical_stage >= pipeline.pipeline_stages.data:
+                continue
+            for operation in scheduled:
+                if isinstance(operation, DmaStartOp) and (
+                    operation.stage.data <= logical_stage
+                    <= next(
+                        use.operation.stage.data
+                        for use in operation.token.uses
+                        if isinstance(use.operation, DmaWaitOp)
+                    )
+                ):
+                    active_dma += 1
+                    semaphore_owner = operation.semaphore.owner
+                    assert isinstance(semaphore_owner, Operation)
+                    semaphore_counts[semaphore_owner] += 1
+                if isinstance(operation, RemoteDmaStartOp) and (
+                    operation.stage.data <= logical_stage
+                    <= next(
+                        use.operation.stage.data
+                        for use in operation.token.uses
+                        if isinstance(use.operation, RemoteDmaWaitOp)
+                    )
+                ):
+                    active_remote += 1
+                    semaphore_owner = operation.semaphore.owner
+                    assert isinstance(semaphore_owner, Operation)
+                    semaphore_counts[semaphore_owner] += 1
+                    link_counts.update(_physical_link_uses(operation, kernel))
+                if _stage(operation) != logical_stage:
+                    continue
+                operation_instances.append((operation, iteration))
+                active_mxu += isinstance(
+                    operation,
+                    (MxuMatmulOp, MxuEinsumOp, RaggedPagedAttentionOp),
+                )
+                if isinstance(operation, (MxuMatmulOp, MxuEinsumOp)):
+                    accumulator_scratch_bytes += mxu_accumulator_scratch_bytes(operation)
+                active_vector += isinstance(operation, VectorComputeOp)
+                if _is_collective(operation):
+                    assert isinstance(operation, (CollectiveOp, CollectiveReduceScatterOp))
+                    active_ici += 1
+                    collective_scratch_bytes += collective_implementation_resources(
+                        operation
+                    ).vmem_scratch_bytes
+                    link_counts.update(_physical_link_uses(operation, kernel))
+        records.append(
+            PhysicalStageResources(
+                scope=pipeline,
+                stage=absolute_stage,
+                operations=tuple(operation_instances),
+                active_dma=active_dma,
+                active_remote_dma=active_remote,
+                active_mxu=active_mxu,
+                active_vector=active_vector,
+                active_ici=active_ici,
+                live_vmem_bytes_per_device=(
+                    resident_bytes[MemorySpace.VMEM]
+                    + accumulator_scratch_bytes
+                    + collective_scratch_bytes
+                ),
+                live_smem_bytes_per_device=resident_bytes[MemorySpace.SMEM],
+                link_channel_uses=tuple(sorted(link_counts.items())),
+                semaphore_uses=tuple(semaphore_counts.items()),
+            )
+        )
+    return tuple(records)
+
+
+def analyze_physical_stage_resources(
+    kernel: KernelOp,
+) -> tuple[PhysicalStageResources, ...]:
+    return (
+        *analyze_kernel_stage_resources(kernel),
+        *(
+            stage
+            for operation in kernel.body.block.ops
+            if isinstance(operation, PipelineLoopOp)
+            for stage in analyze_pipeline_stage_resources(operation, kernel)
+        ),
+    )
 
 
 TPUSchedule = Dialect(
