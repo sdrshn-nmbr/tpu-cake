@@ -717,7 +717,7 @@ def verify_independently(
             raise ValueError("INKLING_ROUTE_VERIFY_FINISH_REASON_MISMATCH")
         if any(
             meta["prompt_tokens"] != prompt_tokens
-            or meta["server_batch_size"] != concurrency
+            or (meta["completion_tokens"] > 1 and meta["server_batch_size"] != concurrency)
             or meta["cached_tokens"] != 0
             for meta in metas
         ):

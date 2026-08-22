@@ -940,7 +940,10 @@ def _validated_route_arrays(
         for chunk in request.chunks:
             if chunk.prompt_tokens != contract.prompt_tokens:
                 raise ValueError("INKLING_ROUTE_PROMPT_TOKEN_MISMATCH")
-            if chunk.server_batch_size != contract.expected_server_batch_size:
+            if (
+                chunk.completion_tokens > 1
+                and chunk.server_batch_size != contract.expected_server_batch_size
+            ):
                 raise ValueError("INKLING_ROUTE_SERVER_BATCH_MISMATCH")
             if chunk.cached_tokens != 0:
                 raise ValueError("INKLING_ROUTE_CACHE_REUSE_DETECTED")

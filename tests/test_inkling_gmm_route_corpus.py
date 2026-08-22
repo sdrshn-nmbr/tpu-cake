@@ -113,7 +113,7 @@ def _capture(contract: InklingGmmRouteCorpusContract) -> InklingGmmRouteCapture:
                 RouteChunkEvidence(
                     completion_tokens=completion,
                     prompt_tokens=contract.prompt_tokens,
-                    server_batch_size=contract.concurrency,
+                    server_batch_size=1 if completion == 1 else contract.concurrency,
                     request_state_slot=request_index,
                     recurrent_state_slot=request_index + 10,
                     cached_tokens=0,
@@ -327,14 +327,21 @@ def _repair_bundle_bindings(bundle: dict[str, object]) -> None:
 
 def test_route_corpus_reconstructs_each_full_batch_decode_layer() -> None:
     contract = _contract()
+    capture = _capture(contract)
     report = derive_route_corpus(
-        capture=_capture(contract),
+        capture=capture,
         capture_sha256="7" * 64,
         raw_sse_sha256="7" * 64,
         raw_sse_bytes=1,
         contract=contract,
     )
 
+    assert all(request.chunks[0].server_batch_size == 1 for request in capture.requests)
+    assert all(
+        chunk.server_batch_size == contract.concurrency
+        for request in capture.requests
+        for chunk in request.chunks[1:]
+    )
     assert len(report.group_sizes) == 6
     assert {(group.completion_step, group.layer_index) for group in report.group_sizes} == {
         (step, layer) for step in (2, 3) for layer in (1, 2, 3)
