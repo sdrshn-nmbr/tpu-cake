@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import subprocess
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from pydantic import ValidationError
 import tpu_cake.matmul_collective_surface_runner as surface_runner
 from tpu_cake.contracts import SourceFileContract
 from tpu_cake.matmul_collective_surface_prediction import (
+    MatmulCollectiveSurfaceSplit,
     SurfaceCalibrationObservation,
     default_matmul_collective_surface_design_contract,
     derive_matmul_collective_surface_design_report,
@@ -32,6 +35,7 @@ from tpu_cake.matmul_collective_surface_runner import (
     create_surface_attempt_root,
     derive_surface_input_identities,
     make_compile_capture_record,
+    record_surface_holdout_correctness,
     record_surface_phase,
     replay_calibration_seal,
     replay_compile_capture_report,
@@ -47,6 +51,61 @@ from tpu_cake.matmul_collective_surface_runner import (
     write_surface_correctness_artifact,
 )
 from tpu_cake.runner import MatmulCollectiveStrategy
+
+EXECUTION_AUTHORITY_SHA256 = "e" * 64
+
+begin_surface_holdout = partial(
+    begin_surface_holdout,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+record_surface_holdout_correctness = partial(
+    record_surface_holdout_correctness,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+replay_calibration_seal = partial(
+    replay_calibration_seal,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+replay_compile_capture_report = partial(
+    replay_compile_capture_report,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+seal_surface_calibration = partial(
+    seal_surface_calibration,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+validate_calibration_seal = partial(
+    validate_calibration_seal,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+validate_compile_capture_report = partial(
+    validate_compile_capture_report,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+validate_surface_calibration_batch = partial(
+    validate_surface_calibration_batch,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+validate_surface_correctness_artifact = partial(
+    validate_surface_correctness_artifact,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+write_calibration_seal = partial(
+    write_calibration_seal,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+write_compile_capture_report = partial(
+    write_compile_capture_report,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+write_surface_calibration_batch = partial(
+    write_surface_calibration_batch,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
+write_surface_correctness_artifact = partial(
+    write_surface_correctness_artifact,
+    execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
+)
 
 
 def _sha(value: str) -> str:
@@ -242,6 +301,7 @@ def _compile_report(contract, source) -> MatmulCollectiveSurfaceCompileReport:
     return MatmulCollectiveSurfaceCompileReport(
         design_id=contract.design_id,
         source_authority_sha256=source.authority_sha256,
+        execution_authority_sha256=EXECUTION_AUTHORITY_SHA256,
         captures=tuple(records),
     )
 
@@ -265,6 +325,7 @@ def _correctness_artifact(
     contract,
     compile_report,
     source,
+    split=MatmulCollectiveSurfaceSplit.CALIBRATION,
 ) -> SurfaceCorrectnessArtifact:
     identities = {
         value.scenario_name: value.input_contract_sha256
@@ -272,6 +333,7 @@ def _correctness_artifact(
     }
     return SurfaceCorrectnessArtifact(
         design_id=contract.design_id,
+        split=split,
         compile_report_sha256=compile_report.report_sha256,
         source_authority_sha256=source.authority_sha256,
         observations=tuple(
@@ -289,6 +351,7 @@ def _correctness_artifact(
                 mismatched_element_count=0,
             )
             for scenario in contract.scenarios
+            if scenario.split is split
             for strategy in contract.strategies
             for pattern in contract.correctness_patterns
         ),
@@ -385,12 +448,58 @@ def test_executable_dependency_manifest_matches_recursive_import_closure() -> No
     assert _recursive_internal_imports(entrypoint) == SURFACE_EXECUTABLE_DEPENDENCIES
 
 
+def test_source_subprocess_environment_ignores_hostile_git_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hostile_home = tmp_path / "home"
+    hostile_home.mkdir()
+    (hostile_home / ".gitconfig").write_text(
+        '[url "https://attacker.invalid/"]\n\tinsteadOf = https://github.com/\n'
+    )
+    monkeypatch.setenv("HOME", str(hostile_home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(hostile_home / ".gitconfig"))
+    environment = surface_runner._source_subprocess_environment()
+
+    assert environment == {
+        "GIT_ASKPASS": "/bin/false",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": "/nonexistent",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+    result = subprocess.run(
+        ["/usr/bin/git", "config", "--global", "--get-regexp", r"^url\."],
+        cwd="/",
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 def test_compile_capture_is_complete_balanced_stable_and_strategy_checked(
     contract, source, source_blobs
 ) -> None:
     report = _compile_report(contract, source)
     validate_compile_capture_report(report, contract, source, source_blobs)
     assert len(report.captures) == 80
+
+    forged_authority = report.model_copy(update={"execution_authority_sha256": "f" * 64})
+    with pytest.raises(ValueError, match="COMPILE_AUTHORITY_MISMATCH"):
+        surface_runner.validate_compile_capture_report(
+            forged_authority,
+            contract,
+            source,
+            source_blobs,
+            EXECUTION_AUTHORITY_SHA256,
+        )
 
     forged_schema = report.model_copy(update={"schema_version": "attacker-v999"})
     with pytest.raises(ValidationError):
@@ -542,6 +651,8 @@ def test_correctness_and_calibration_artifacts_are_exact_and_writer_validated(
         source,
         source_blobs,
     )
+    assert correctness.split is MatmulCollectiveSurfaceSplit.CALIBRATION
+    assert len(correctness.observations) == 160
     validate_surface_calibration_batch(batch, contract, compile_report, source, source_blobs)
 
     failed = correctness.observations[0].model_copy(update={"mismatched_element_count": 1})
@@ -764,6 +875,32 @@ def test_calibration_seal_binds_model_and_all_holdout_predictions(
         correctness,
         batch,
     )
+    holdout_correctness = _correctness_artifact(
+        contract,
+        compile_report,
+        source,
+        MatmulCollectiveSurfaceSplit.HOLDOUT,
+    )
+    holdout_ledger = record_surface_holdout_correctness(
+        ledger,
+        holdout_correctness,
+        contract,
+        compile_report,
+        source,
+        source_blobs,
+    )
+    assert len(holdout_correctness.observations) == 40
+    assert holdout_ledger.current_phase is SurfacePhase.HOLDOUT_CORRECTNESS
+
+    with pytest.raises(ValueError, match="HOLDOUT_CORRECTNESS_PHASE_MISMATCH"):
+        record_surface_holdout_correctness(
+            ledger,
+            correctness,
+            contract,
+            compile_report,
+            source,
+            source_blobs,
+        )
 
     forged_ledger = _calibration_ledger(compile_report, correctness, batch)
     forged_ledger = record_surface_phase(

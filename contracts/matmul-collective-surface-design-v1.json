@@ -8,9 +8,16 @@
   "project": "astral-medley-465922-b2",
   "zone": "us-central1-c",
   "hostname": "tpu-cake-v7x-rsag-wx7r",
+  "numeric_project_id": "541760035156",
+  "instance_id": "5064039476077763048",
+  "instance_hostname": "tpu-cake-v7x-rsag-wx7r.us-central1-c.c.astral-medley-465922-b2.internal",
+  "machine_type": "tpu7x-standard-4t",
+  "cpu_platform": "Intel Emerald Rapids",
   "backend": "tpu",
   "device_kind": "TPU7x",
   "device_count": 8,
+  "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+  "device_process_index": 0,
   "runtime": {
     "python": "3.12.3",
     "jax": "0.11.0",
@@ -18,7 +25,13 @@
     "libtpu": "0.0.44.1",
     "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
   },
+  "compiler_environment": {
+    "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true"
+  },
   "mesh_size": 8,
+  "attempt_registry_root": "/home/sudarshan/tpu-cake-evidence/matmul-collective-surface-attempts-v1",
+  "compile_input_abi_schema": "global-shape-dtype-named-sharding-v1",
+  "compiler_analysis_schema": "compiler-executable-analysis-v2",
   "input_dtype": "bfloat16",
   "output_dtype": "float32",
   "strategies": [
@@ -85,13 +98,17 @@
   "calibration_warmup_iterations": 10,
   "calibration_calls_per_position": 5,
   "calibration_paired_rounds": 16,
+  "calibration_scenario_order_rule": "two-sweep-forward-reverse-8-rounds-each-v1",
   "holdout_warmup_iterations": 20,
   "holdout_calls_per_position": 5,
   "holdout_paired_rounds": 32,
+  "holdout_scenario_order_rule": "two-sweep-forward-reverse-16-rounds-each-v1",
   "correctness_patterns": ["constant", "one-hot-stripes", "signed-periodic", "block-diagonal", "low-rank"],
+  "correctness_order_rule": "calibration-before-seal-holdout-after-seal-v1",
   "timing_oracle_coordinate_count": 128,
   "profile_modes": ["trace", "counters"],
   "profile_repetitions": 20,
+  "profile_scope": "all-40-arms-post-holdout-only-v1",
   "profile_execution_separate_from_timing": true,
   "trace_and_counter_fields_available_to_fit": false,
   "scaling_book_authorities": [
@@ -109,6 +126,7 @@
   "allow_calibration_refit_after_holdout": false,
   "source_manifest_rule": "explicit-executable-dependency-closure-v1",
   "compiler_capture_repetitions": 2,
+  "compile_duration_available_to_fit": false,
   "require_stable_compiler_semantic_hashes": true,
   "compiler_failure_policy": "fail-entire-one-shot-attempt-without-retry-v1",
   "paired_order_rule": "balanced-alternating-ab-ba-with-presealed-start-arm-v1"

@@ -82,11 +82,22 @@ class MatmulCollectiveSurfaceDesignContract(BaseModel):
     project: str
     zone: str
     hostname: str
+    numeric_project_id: str
+    instance_id: str
+    instance_hostname: str
+    machine_type: str
+    cpu_platform: str
     backend: str
     device_kind: str
     device_count: int = Field(gt=0)
+    device_ids: tuple[int, ...]
+    device_process_index: int = Field(ge=0)
     runtime: dict[str, str | None]
+    compiler_environment: dict[str, str]
     mesh_size: int = Field(gt=0)
+    attempt_registry_root: str
+    compile_input_abi_schema: str
+    compiler_analysis_schema: str
     input_dtype: str
     output_dtype: str
     strategies: tuple[MatmulCollectiveStrategy, MatmulCollectiveStrategy]
@@ -119,13 +130,17 @@ class MatmulCollectiveSurfaceDesignContract(BaseModel):
     calibration_warmup_iterations: int = Field(gt=0)
     calibration_calls_per_position: int = Field(ge=3)
     calibration_paired_rounds: int = Field(ge=8)
+    calibration_scenario_order_rule: str
     holdout_warmup_iterations: int = Field(gt=0)
     holdout_calls_per_position: int = Field(ge=3)
     holdout_paired_rounds: int = Field(ge=16)
+    holdout_scenario_order_rule: str
     correctness_patterns: tuple[str, ...] = Field(min_length=5, max_length=5)
+    correctness_order_rule: str
     timing_oracle_coordinate_count: int = Field(ge=64)
     profile_modes: tuple[str, str]
     profile_repetitions: int = Field(ge=5)
+    profile_scope: str
     profile_execution_separate_from_timing: bool
     trace_and_counter_fields_available_to_fit: bool
     scaling_book_authorities: tuple[str, ...] = Field(min_length=2)
@@ -139,6 +154,7 @@ class MatmulCollectiveSurfaceDesignContract(BaseModel):
     allow_calibration_refit_after_holdout: bool
     source_manifest_rule: str
     compiler_capture_repetitions: int = Field(ge=2)
+    compile_duration_available_to_fit: bool
     require_stable_compiler_semantic_hashes: bool
     compiler_failure_policy: str
     paired_order_rule: str
@@ -287,11 +303,26 @@ def default_matmul_collective_surface_design_contract_payload() -> dict[str, obj
         "project": "astral-medley-465922-b2",
         "zone": "us-central1-c",
         "hostname": "tpu-cake-v7x-rsag-wx7r",
+        "numeric_project_id": "541760035156",
+        "instance_id": "5064039476077763048",
+        "instance_hostname": (
+            "tpu-cake-v7x-rsag-wx7r.us-central1-c.c.astral-medley-465922-b2.internal"
+        ),
+        "machine_type": "tpu7x-standard-4t",
+        "cpu_platform": "Intel Emerald Rapids",
         "backend": "tpu",
         "device_kind": "TPU7x",
         "device_count": 8,
+        "device_ids": list(range(8)),
+        "device_process_index": 0,
         "runtime": MATMUL_COLLECTIVE_SURFACE_RUNTIME,
+        "compiler_environment": {"LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true"},
         "mesh_size": 8,
+        "attempt_registry_root": (
+            "/home/sudarshan/tpu-cake-evidence/matmul-collective-surface-attempts-v1"
+        ),
+        "compile_input_abi_schema": "global-shape-dtype-named-sharding-v1",
+        "compiler_analysis_schema": "compiler-executable-analysis-v2",
         "input_dtype": "bfloat16",
         "output_dtype": "float32",
         "strategies": [
@@ -352,9 +383,11 @@ def default_matmul_collective_surface_design_contract_payload() -> dict[str, obj
         "calibration_warmup_iterations": 10,
         "calibration_calls_per_position": 5,
         "calibration_paired_rounds": 16,
+        "calibration_scenario_order_rule": "two-sweep-forward-reverse-8-rounds-each-v1",
         "holdout_warmup_iterations": 20,
         "holdout_calls_per_position": 5,
         "holdout_paired_rounds": 32,
+        "holdout_scenario_order_rule": "two-sweep-forward-reverse-16-rounds-each-v1",
         "correctness_patterns": [
             "constant",
             "one-hot-stripes",
@@ -362,9 +395,11 @@ def default_matmul_collective_surface_design_contract_payload() -> dict[str, obj
             "block-diagonal",
             "low-rank",
         ],
+        "correctness_order_rule": "calibration-before-seal-holdout-after-seal-v1",
         "timing_oracle_coordinate_count": 128,
         "profile_modes": ["trace", "counters"],
         "profile_repetitions": 20,
+        "profile_scope": "all-40-arms-post-holdout-only-v1",
         "profile_execution_separate_from_timing": True,
         "trace_and_counter_fields_available_to_fit": False,
         "scaling_book_authorities": [
@@ -382,6 +417,7 @@ def default_matmul_collective_surface_design_contract_payload() -> dict[str, obj
         "allow_calibration_refit_after_holdout": False,
         "source_manifest_rule": "explicit-executable-dependency-closure-v1",
         "compiler_capture_repetitions": 2,
+        "compile_duration_available_to_fit": False,
         "require_stable_compiler_semantic_hashes": True,
         "compiler_failure_policy": "fail-entire-one-shot-attempt-without-retry-v1",
         "paired_order_rule": "balanced-alternating-ab-ba-with-presealed-start-arm-v1",

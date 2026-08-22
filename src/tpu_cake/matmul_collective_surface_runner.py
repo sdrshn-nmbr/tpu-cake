@@ -20,6 +20,7 @@ from tpu_cake.matmul_collective_surface_prediction import (
     MatmulCollectiveSurfaceArmPlan,
     MatmulCollectiveSurfaceDesignContract,
     MatmulCollectiveSurfaceModel,
+    MatmulCollectiveSurfaceSplit,
     SurfaceCalibrationObservation,
     derive_matmul_collective_surface_design_report,
     fit_surface_model,
@@ -28,7 +29,12 @@ from tpu_cake.receipt import _validate_matmul_compiler_strategy
 from tpu_cake.runner import MatmulCollectiveStrategy, _runtime_identity
 
 MATMUL_COLLECTIVE_SURFACE_COMPILE_SCHEMA = "matmul-collective-surface-compile-v1"
+MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_SCHEMA = "matmul-collective-surface-correctness-v1"
+MATMUL_COLLECTIVE_SURFACE_CALIBRATION_BATCH_SCHEMA = (
+    "matmul-collective-surface-calibration-batch-v1"
+)
 MATMUL_COLLECTIVE_SURFACE_CALIBRATION_SEAL_SCHEMA = "matmul-collective-surface-calibration-seal-v1"
+MATMUL_COLLECTIVE_SURFACE_PHASE_LEDGER_SCHEMA = "matmul-collective-surface-phase-ledger-v1"
 
 SURFACE_EXECUTABLE_DEPENDENCIES = (
     "tpu_cake/__init__.py",
@@ -64,6 +70,22 @@ SURFACE_EXECUTABLE_DEPENDENCIES = (
     "tpu_cake/workloads/matmul.py",
     "tpu_cake/xprof_evidence.py",
 )
+
+_SYSTEM_GIT = "/usr/bin/git"
+
+
+def _source_subprocess_environment() -> dict[str, str]:
+    return {
+        "GIT_ASKPASS": "/bin/false",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": "/nonexistent",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
 
 
 def _text_sha256(value: str) -> str:
@@ -102,6 +124,7 @@ class SurfacePhase(StrEnum):
     CALIBRATION = "calibration"
     CALIBRATION_SEALED = "calibration_sealed"
     HOLDOUT = "holdout"
+    HOLDOUT_CORRECTNESS = "holdout_correctness"
 
 
 class MatmulCollectiveSurfaceSourceAuthority(BaseModel):
@@ -166,6 +189,7 @@ class MatmulCollectiveSurfaceCompileReport(BaseModel):
     )
     design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_authority_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    execution_authority_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     captures: tuple[CompileCaptureRecord, ...] = Field(min_length=1)
 
     @computed_field
@@ -212,13 +236,24 @@ class SurfaceCorrectnessObservation(BaseModel):
 class SurfaceCorrectnessArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal["matmul-collective-surface-correctness-v1"] = (
+        MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_SCHEMA
+    )
     design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    split: MatmulCollectiveSurfaceSplit
     compile_report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_authority_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     observations: tuple[SurfaceCorrectnessObservation, ...] = Field(
-        min_length=200,
-        max_length=200,
+        min_length=40,
+        max_length=160,
     )
+
+    @model_validator(mode="after")
+    def observation_count_matches_split(self) -> SurfaceCorrectnessArtifact:
+        expected = 160 if self.split is MatmulCollectiveSurfaceSplit.CALIBRATION else 40
+        if len(self.observations) != expected:
+            raise ValueError("Matmul collective surface correctness split inventory mismatch")
+        return self
 
     @computed_field
     @property
@@ -229,6 +264,9 @@ class SurfaceCorrectnessArtifact(BaseModel):
 class SurfaceCalibrationBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal["matmul-collective-surface-calibration-batch-v1"] = (
+        MATMUL_COLLECTIVE_SURFACE_CALIBRATION_BATCH_SCHEMA
+    )
     design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     compile_report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_authority_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -296,6 +334,9 @@ class SurfacePhaseEvent(BaseModel):
 class SurfacePhaseLedger(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal["matmul-collective-surface-phase-ledger-v1"] = (
+        MATMUL_COLLECTIVE_SURFACE_PHASE_LEDGER_SCHEMA
+    )
     attempt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     events: tuple[SurfacePhaseEvent, ...] = ()
 
@@ -320,6 +361,7 @@ _PHASE_ORDER = (
     SurfacePhase.CALIBRATION,
     SurfacePhase.CALIBRATION_SEALED,
     SurfacePhase.HOLDOUT,
+    SurfacePhase.HOLDOUT_CORRECTNESS,
 )
 
 
@@ -403,8 +445,9 @@ def _read_committed_source_blob_items(
         repository_path = path if path == "uv.lock" else f"src/{path}"
         try:
             blob = subprocess.run(
-                ["git", "show", f"{source_commit}:{repository_path}"],
+                [_SYSTEM_GIT, "show", f"{source_commit}:{repository_path}"],
                 cwd=root,
+                env=_source_subprocess_environment(),
                 check=True,
                 capture_output=True,
             ).stdout
@@ -471,8 +514,19 @@ def capture_surface_source_authority(
 
     def git(*arguments: str) -> str:
         return subprocess.run(
-            ["git", *arguments],
+            [_SYSTEM_GIT, *arguments],
             cwd=repository_root,
+            env=_source_subprocess_environment(),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def git_remote(*arguments: str) -> str:
+        return subprocess.run(
+            [_SYSTEM_GIT, *arguments],
+            cwd="/",
+            env=_source_subprocess_environment(),
             check=True,
             capture_output=True,
             text=True,
@@ -484,8 +538,8 @@ def capture_surface_source_authority(
     commit = git("rev-parse", "HEAD")
     branch = git("branch", "--show-current")
     origin_main = git("rev-parse", "origin/main")
-    remote_url = git("remote", "get-url", "origin")
-    remote_record = git("ls-remote", "origin", "refs/heads/main").split()
+    remote_url = contract.source_remote_url
+    remote_record = git_remote("ls-remote", remote_url, "refs/heads/main").split()
     if len(remote_record) != 2 or remote_record[1] != "refs/heads/main":
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_REMOTE_MAIN_UNAVAILABLE")
     blobs = _read_committed_source_blobs(repository_root, commit)
@@ -581,6 +635,7 @@ def validate_compile_capture_report(
     contract: MatmulCollectiveSurfaceDesignContract,
     source: MatmulCollectiveSurfaceSourceAuthority,
     source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
 ) -> None:
     report = _revalidate_model(report)
     contract = _revalidate_model(contract)
@@ -589,6 +644,7 @@ def validate_compile_capture_report(
     if (
         report.design_id != contract.design_id
         or report.source_authority_sha256 != source.authority_sha256
+        or report.execution_authority_sha256 != execution_authority_sha256
     ):
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_COMPILE_AUTHORITY_MISMATCH")
     expected = tuple(
@@ -651,12 +707,19 @@ def validate_surface_correctness_artifact(
     compile_report: MatmulCollectiveSurfaceCompileReport,
     source: MatmulCollectiveSurfaceSourceAuthority,
     source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
 ) -> None:
     artifact = _revalidate_model(artifact)
     contract = _revalidate_model(contract)
     compile_report = _revalidate_model(compile_report)
     source = _revalidate_model(source)
-    validate_compile_capture_report(compile_report, contract, source, source_blobs)
+    validate_compile_capture_report(
+        compile_report,
+        contract,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     if (
         artifact.design_id != contract.design_id
         or artifact.compile_report_sha256 != compile_report.report_sha256
@@ -666,6 +729,7 @@ def validate_surface_correctness_artifact(
     expected = tuple(
         (scenario.name, strategy, pattern)
         for scenario in contract.scenarios
+        if scenario.split is artifact.split
         for strategy in contract.strategies
         for pattern in contract.correctness_patterns
     )
@@ -701,12 +765,19 @@ def validate_surface_calibration_batch(
     compile_report: MatmulCollectiveSurfaceCompileReport,
     source: MatmulCollectiveSurfaceSourceAuthority,
     source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
 ) -> None:
     batch = _revalidate_model(batch)
     contract = _revalidate_model(contract)
     compile_report = _revalidate_model(compile_report)
     source = _revalidate_model(source)
-    validate_compile_capture_report(compile_report, contract, source, source_blobs)
+    validate_compile_capture_report(
+        compile_report,
+        contract,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     if (
         batch.design_id != contract.design_id
         or batch.compile_report_sha256 != compile_report.report_sha256
@@ -737,8 +808,8 @@ def record_surface_phase(
         raise ValueError(
             f"MATMUL_COLLECTIVE_SURFACE_PHASE_ORDER current={current} requested={phase.value}"
         )
-    if phase is SurfacePhase.HOLDOUT:
-        raise ValueError("MATMUL_COLLECTIVE_SURFACE_HOLDOUT_REQUIRES_VALIDATED_SEAL")
+    if phase in {SurfacePhase.HOLDOUT, SurfacePhase.HOLDOUT_CORRECTNESS}:
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_HOLDOUT_REQUIRES_VALIDATED_EVIDENCE")
     return _append_surface_phase(ledger, phase, artifact_sha256)
 
 
@@ -816,6 +887,7 @@ def seal_surface_calibration(
     source_blobs: Mapping[str, bytes],
     correctness: SurfaceCorrectnessArtifact,
     batch: SurfaceCalibrationBatch,
+    execution_authority_sha256: str,
 ) -> tuple[SurfacePhaseLedger, CalibrationSealEnvelope]:
     ledger = _revalidate_model(ledger)
     contract = _revalidate_model(contract)
@@ -823,17 +895,33 @@ def seal_surface_calibration(
     source = _revalidate_model(source)
     correctness = _revalidate_model(correctness)
     batch = _revalidate_model(batch)
+    if correctness.split is not MatmulCollectiveSurfaceSplit.CALIBRATION:
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_CALIBRATION_CORRECTNESS_SPLIT_MISMATCH")
     if ledger.current_phase is not SurfacePhase.CALIBRATION:
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_PHASE_ORDER calibration seal unavailable")
-    validate_compile_capture_report(compile_report, contract, source, source_blobs)
+    validate_compile_capture_report(
+        compile_report,
+        contract,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     validate_surface_correctness_artifact(
         correctness,
         contract,
         compile_report,
         source,
         source_blobs,
+        execution_authority_sha256,
     )
-    validate_surface_calibration_batch(batch, contract, compile_report, source, source_blobs)
+    validate_surface_calibration_batch(
+        batch,
+        contract,
+        compile_report,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     expected_ledger_hashes = (
         compile_report.report_sha256,
         correctness.artifact_sha256,
@@ -891,6 +979,7 @@ def validate_calibration_seal(
     source_blobs: Mapping[str, bytes],
     correctness: SurfaceCorrectnessArtifact,
     batch: SurfaceCalibrationBatch,
+    execution_authority_sha256: str,
 ) -> None:
     envelope = _revalidate_model(envelope)
     ledger = _revalidate_model(ledger)
@@ -899,15 +988,31 @@ def validate_calibration_seal(
     source = _revalidate_model(source)
     correctness = _revalidate_model(correctness)
     batch = _revalidate_model(batch)
-    validate_compile_capture_report(compile_report, contract, source, source_blobs)
+    if correctness.split is not MatmulCollectiveSurfaceSplit.CALIBRATION:
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_CALIBRATION_CORRECTNESS_SPLIT_MISMATCH")
+    validate_compile_capture_report(
+        compile_report,
+        contract,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     validate_surface_correctness_artifact(
         correctness,
         contract,
         compile_report,
         source,
         source_blobs,
+        execution_authority_sha256,
     )
-    validate_surface_calibration_batch(batch, contract, compile_report, source, source_blobs)
+    validate_surface_calibration_batch(
+        batch,
+        contract,
+        compile_report,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     seal = envelope.seal
     expected_ledger_hashes = (
         compile_report.report_sha256,
@@ -937,6 +1042,7 @@ def begin_surface_holdout(
     source_blobs: Mapping[str, bytes],
     correctness: SurfaceCorrectnessArtifact,
     batch: SurfaceCalibrationBatch,
+    execution_authority_sha256: str,
 ) -> SurfacePhaseLedger:
     ledger = _revalidate_model(ledger)
     contract = _revalidate_model(contract)
@@ -959,8 +1065,40 @@ def begin_surface_holdout(
         source_blobs,
         correctness,
         batch,
+        execution_authority_sha256,
     )
     return _append_surface_phase(ledger, SurfacePhase.HOLDOUT, envelope.seal_sha256)
+
+
+def record_surface_holdout_correctness(
+    ledger: SurfacePhaseLedger,
+    artifact: SurfaceCorrectnessArtifact,
+    contract: MatmulCollectiveSurfaceDesignContract,
+    compile_report: MatmulCollectiveSurfaceCompileReport,
+    source: MatmulCollectiveSurfaceSourceAuthority,
+    source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
+) -> SurfacePhaseLedger:
+    ledger = _revalidate_model(ledger)
+    artifact = _revalidate_model(artifact)
+    if (
+        ledger.current_phase is not SurfacePhase.HOLDOUT
+        or artifact.split is not MatmulCollectiveSurfaceSplit.HOLDOUT
+    ):
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_HOLDOUT_CORRECTNESS_PHASE_MISMATCH")
+    validate_surface_correctness_artifact(
+        artifact,
+        contract,
+        compile_report,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
+    return _append_surface_phase(
+        ledger,
+        SurfacePhase.HOLDOUT_CORRECTNESS,
+        artifact.artifact_sha256,
+    )
 
 
 def create_surface_attempt_root(root: Path, attempt_id: str) -> None:
@@ -1014,8 +1152,15 @@ def write_compile_capture_report(
     contract: MatmulCollectiveSurfaceDesignContract,
     source: MatmulCollectiveSurfaceSourceAuthority,
     source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
 ) -> None:
-    validate_compile_capture_report(report, contract, source, source_blobs)
+    validate_compile_capture_report(
+        report,
+        contract,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     _write_model_exclusive(path, report)
 
 
@@ -1026,6 +1171,7 @@ def write_surface_correctness_artifact(
     compile_report: MatmulCollectiveSurfaceCompileReport,
     source: MatmulCollectiveSurfaceSourceAuthority,
     source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
 ) -> None:
     validate_surface_correctness_artifact(
         artifact,
@@ -1033,6 +1179,7 @@ def write_surface_correctness_artifact(
         compile_report,
         source,
         source_blobs,
+        execution_authority_sha256,
     )
     _write_model_exclusive(path, artifact)
 
@@ -1044,8 +1191,16 @@ def write_surface_calibration_batch(
     compile_report: MatmulCollectiveSurfaceCompileReport,
     source: MatmulCollectiveSurfaceSourceAuthority,
     source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
 ) -> None:
-    validate_surface_calibration_batch(batch, contract, compile_report, source, source_blobs)
+    validate_surface_calibration_batch(
+        batch,
+        contract,
+        compile_report,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     _write_model_exclusive(path, batch)
 
 
@@ -1054,9 +1209,16 @@ def replay_compile_capture_report(
     contract: MatmulCollectiveSurfaceDesignContract,
     source: MatmulCollectiveSurfaceSourceAuthority,
     source_blobs: Mapping[str, bytes],
+    execution_authority_sha256: str,
 ) -> MatmulCollectiveSurfaceCompileReport:
     report = MatmulCollectiveSurfaceCompileReport.model_validate_json(path.read_text())
-    validate_compile_capture_report(report, contract, source, source_blobs)
+    validate_compile_capture_report(
+        report,
+        contract,
+        source,
+        source_blobs,
+        execution_authority_sha256,
+    )
     return report
 
 
@@ -1070,6 +1232,7 @@ def write_calibration_seal(
     source_blobs: Mapping[str, bytes],
     correctness: SurfaceCorrectnessArtifact,
     batch: SurfaceCalibrationBatch,
+    execution_authority_sha256: str,
 ) -> None:
     validate_calibration_seal(
         envelope,
@@ -1080,6 +1243,7 @@ def write_calibration_seal(
         source_blobs,
         correctness,
         batch,
+        execution_authority_sha256,
     )
     _write_model_exclusive(path, envelope)
 
@@ -1093,6 +1257,7 @@ def replay_calibration_seal(
     source_blobs: Mapping[str, bytes],
     correctness: SurfaceCorrectnessArtifact,
     batch: SurfaceCalibrationBatch,
+    execution_authority_sha256: str,
 ) -> CalibrationSealEnvelope:
     envelope = CalibrationSealEnvelope.model_validate_json(path.read_text())
     validate_calibration_seal(
@@ -1104,5 +1269,6 @@ def replay_calibration_seal(
         source_blobs,
         correctness,
         batch,
+        execution_authority_sha256,
     )
     return envelope
