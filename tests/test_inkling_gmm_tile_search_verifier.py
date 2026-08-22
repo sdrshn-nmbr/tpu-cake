@@ -16,6 +16,15 @@ from tpu_cake.inkling_gmm_tile_search import (
     GmmSearchFamily,
     default_gmm_tile_search_contract,
 )
+from tpu_cake.inkling_gmm_tile_search_correctness import (
+    CpuOracleMeasurement,
+    GmmCorrectnessGateReport,
+    OperandSentinelMeasurement,
+    OutputMeasurement,
+    PolicyCorrectnessMeasurement,
+    ProfileCorrectnessMeasurement,
+    StageOutputMeasurement,
+)
 from tpu_cake.inkling_gmm_tile_search_verifier import (
     _estimated_operand_bytes_per_device,
     _expected_custom_call_counts,
@@ -111,6 +120,71 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def _correctness_report(contract, report) -> GmmCorrectnessGateReport:
+    digest = "1" * 64
+    stage = StageOutputMeasurement(
+        active_sha256=digest,
+        nonfinite_count=0,
+        outside_nonzero_count=0,
+    )
+    outputs = OutputMeasurement(gate=stage, up=stage, down=stage)
+    operands = tuple(
+        OperandSentinelMeasurement(
+            name=name,
+            shape=(1,),
+            dtype="bfloat16",
+            indices=((0,),),
+            descriptor_sha256=digest,
+            sentinel_sha256=digest,
+        )
+        for name in ("inputs", "gate", "up", "down")
+    )
+    profiles = []
+    for profile_index, (profile, seed) in enumerate(
+        zip(contract.correctness.profiles, contract.correctness.seeds, strict=True)
+    ):
+        cpu_count = (
+            sum(row.profile_index == profile_index for row in contract.correctness.cpu_oracle_rows)
+            * 3
+        )
+        profiles.append(
+            ProfileCorrectnessMeasurement(
+                profile_index=profile_index,
+                seed=seed,
+                completion_step=profile.completion_step,
+                layer_index=profile.layer_index,
+                group_sizes_sha256=profile.group_sizes_sha256,
+                operands=operands,
+                policies=tuple(
+                    PolicyCorrectnessMeasurement(policy=policy, outputs=outputs)
+                    for policy in _expected_policies(contract)
+                ),
+                cpu_oracle=tuple(
+                    CpuOracleMeasurement(
+                        stage=f"stage-{index}",
+                        expected_sha256=digest,
+                        actual_sha256=digest,
+                        maximum_absolute_error=0,
+                        maximum_relative_error=0,
+                    )
+                    for index in range(cpu_count)
+                ),
+            )
+        )
+    provisional = GmmCorrectnessGateReport(
+        report_id="0" * 64,
+        search_id=contract.search_id,
+        route_report_id=report.report_id,
+        numerical_contract_id=contract.correctness.numerical_contract_id,
+        profiles=tuple(profiles),
+    )
+    return provisional.model_copy(
+        update={
+            "report_id": _json_sha256(provisional.model_dump(mode="json", exclude={"report_id"}))
+        }
+    )
+
+
 def _bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
     report, report_raw = _route_report()
     contract = _contract(report, report_raw)
@@ -126,6 +200,16 @@ def _bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
         + "\n"
     )
     report_path.write_bytes(report_raw)
+    correctness_path = tmp_path / "correctness-gate.json"
+    correctness = _correctness_report(contract, report)
+    correctness_path.write_text(
+        json.dumps(
+            correctness.model_dump(mode="json", exclude_computed_fields=True),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     hlo_root = tmp_path / "hlo"
     hlo_root.mkdir()
     compiled = []
@@ -209,6 +293,12 @@ def _bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
             "instance_name": contract.target_runtime.instance_name,
             "accelerator_type": contract.target_runtime.accelerator_type,
         },
+        "correctness_gate": {
+            "schema_version": correctness.schema_version,
+            "report_id": correctness.report_id,
+            "path": correctness_path.relative_to(tmp_path).as_posix(),
+            "sha256": hashlib.sha256(correctness_path.read_bytes()).hexdigest(),
+        },
         "runtime": {
             "jax": "0.11.0",
             "jaxlib": "0.11.0",
@@ -225,7 +315,7 @@ def _bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
         "compiled_policies": compiled,
         "screening_observations": observations,
         "limitations": [
-            "These are raw execution observations, not correctness evidence.",
+            "The pre-timing correctness report is bound but not independently replayed here.",
             "This runner does not create an immutable receipt.",
             "This runner does not make or authorize a promotion decision.",
         ],
@@ -258,7 +348,8 @@ def test_verifier_recomputes_the_balanced_screens_and_emits_only_screening_claim
     assert first["evidence_scope"] == "screening-only"
     assert first["finalists"] == {"gate-up": "sparse-m64", "down": "split-n"}
     assert first["claims"] == {
-        "correctness_verified": False,
+        "correctness_gate_bound": True,
+        "correctness_independently_replayed": False,
         "confirmation_run": False,
         "immutable_receipt_created": False,
         "promotion_authorized": False,

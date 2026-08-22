@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import logging
@@ -41,6 +42,15 @@ from tpu_cake.inkling_gmm_tile_search import (
     InklingGmmTileSearchContract,
     screening_orders,
     validate_route_corpus_binding,
+)
+from tpu_cake.inkling_gmm_tile_search_correctness import (
+    CorrectnessExecutor,
+    GmmCorrectnessGateError,
+    GmmCorrectnessGateReport,
+    GmmCorrectnessOperands,
+    GmmStageOutputs,
+    run_correctness_gate,
+    write_correctness_report,
 )
 
 _LOGGER = logging.getLogger("tpu_cake.inkling_gmm_tile_search_runner")
@@ -642,6 +652,173 @@ def allocate_resident_operands(
     return operands
 
 
+def allocate_correctness_operands(
+    *,
+    seed: int,
+    devices: Sequence[jax.Device],
+) -> GmmCorrectnessOperands:
+    shapes = {
+        "inputs": (288, 4096),
+        "gate": (32, 4096, 2048),
+        "up": (32, 4096, 2048),
+        "down": (32, 2048, 4096),
+    }
+    arrays = {
+        stream: _generate_uniform_shards(
+            seed=seed,
+            stream=f"correctness-{stream}",
+            local_shape=shape,
+            devices=devices,
+            replicated=stream == "inputs",
+        )
+        for stream, shape in shapes.items()
+    }
+    return GmmCorrectnessOperands(
+        inputs=arrays["inputs"],
+        gate_weights=arrays["gate"],
+        up_weights=arrays["up"],
+        down_weights=arrays["down"],
+    )
+
+
+def _single_layer_chain(
+    inputs: jax.Array,
+    gate_weights: jax.Array,
+    up_weights: jax.Array,
+    down_weights: jax.Array,
+    group_sizes: jax.Array,
+    *,
+    gate_up_tiles: TileSizes,
+    down_tiles: TileSizes,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    group_offset = jax.lax.axis_index(_EXPERT_AXIS).astype(jnp.int32) * 32
+    common = {
+        "group_sizes": group_sizes,
+        "preferred_element_type": jnp.float32,
+        "group_offset": group_offset,
+        "interpret": False,
+        "maybe_quantize_lhs": False,
+        "acc_dtype": jnp.float32,
+        "activation_quantized_dtype": None,
+    }
+    gate = gmm(
+        lhs=inputs,
+        rhs=gate_weights,
+        zero_initialize=False,
+        v2_tile_info=gate_up_tiles,
+        **common,
+    )
+    up = gmm(
+        lhs=inputs,
+        rhs=up_weights,
+        zero_initialize=False,
+        v2_tile_info=gate_up_tiles,
+        **common,
+    )
+    down = gmm(
+        lhs=jax.nn.silu(gate) * up,
+        rhs=down_weights,
+        zero_initialize=True,
+        v2_tile_info=down_tiles,
+        **common,
+    )
+    return gate, up, down
+
+
+def build_tpu_correctness_executor(
+    contract: InklingGmmTileSearchContract,
+    *,
+    devices: Sequence[jax.Device],
+) -> CorrectnessExecutor:
+    compiled: dict[str, Any] = {}
+    place_groups = jax.pmap(lambda value: value, devices=devices)
+
+    def execute(
+        policy: GmmPolicyPair,
+        operands: GmmCorrectnessOperands,
+        group_sizes: tuple[int, ...],
+    ) -> GmmStageOutputs:
+        executable = compiled.get(policy.name)
+        groups = place_groups(
+            np.broadcast_to(
+                np.asarray(group_sizes, dtype=np.int32),
+                (len(devices), len(group_sizes)),
+            )
+        )
+        arguments = (
+            operands.inputs,
+            operands.gate_weights,
+            operands.up_weights,
+            operands.down_weights,
+            groups,
+        )
+        if executable is None:
+            gate_up_tiles, down_tiles = resolved_policy_tiles(contract, policy)
+
+            def chain(
+                inputs: jax.Array,
+                gate_weights: jax.Array,
+                up_weights: jax.Array,
+                down_weights: jax.Array,
+                route_groups: jax.Array,
+            ) -> tuple[jax.Array, jax.Array, jax.Array]:
+                return _single_layer_chain(
+                    inputs,
+                    gate_weights,
+                    up_weights,
+                    down_weights,
+                    route_groups,
+                    gate_up_tiles=gate_up_tiles,
+                    down_tiles=down_tiles,
+                )
+
+            _LOGGER.info("INKLING_GMM_CORRECTNESS_COMPILE policy=%s", policy.name)
+            executable = (
+                jax.pmap(
+                    chain,
+                    axis_name=_EXPERT_AXIS,
+                    devices=devices,
+                )
+                .lower(*arguments)
+                .compile()
+            )
+            compiled[policy.name] = executable
+        try:
+            gate, up, down = executable(*arguments)
+            jax.block_until_ready((gate, up, down))
+        except Exception as error:
+            _LOGGER.exception("INKLING_GMM_CORRECTNESS_EXECUTION_FAILED policy=%s", policy.name)
+            raise GmmTileSearchRunnerError(
+                f"INKLING_GMM_CORRECTNESS_EXECUTION policy={policy.name}"
+            ) from error
+        return GmmStageOutputs(gate=gate, up=up, down=down)
+
+    return execute
+
+
+def run_tpu_correctness_gate(
+    contract: InklingGmmTileSearchContract,
+    report: InklingGmmRouteCorpusReport,
+    *,
+    devices: Sequence[jax.Device],
+) -> GmmCorrectnessGateReport:
+    execute = build_tpu_correctness_executor(contract, devices=devices)
+
+    def operand_factory(
+        _profile_index: int,
+        seed: int,
+        _layer_position: int,
+    ) -> GmmCorrectnessOperands:
+        return allocate_correctness_operands(seed=seed, devices=devices)
+
+    return run_correctness_gate(
+        contract,
+        report,
+        operand_factory=operand_factory,
+        execute=execute,
+    )
+
+
 def validate_resident_operands(
     contract: InklingGmmTileSearchContract,
     devices: Sequence[jax.Device],
@@ -945,6 +1122,8 @@ def write_raw_observations(
     *,
     source_environment: SourceEnvironment,
     execution_target: Mapping[str, str],
+    correctness_report: GmmCorrectnessGateReport,
+    correctness_report_path: Path,
     contract_path: Path,
     route_report_path: Path,
 ) -> None:
@@ -964,6 +1143,12 @@ def write_raw_observations(
             "inkling_uv_lock_sha256": source_environment.inkling_uv_lock_sha256,
         },
         "execution_target": dict(execution_target),
+        "correctness_gate": {
+            "schema_version": correctness_report.schema_version,
+            "report_id": correctness_report.report_id,
+            "path": correctness_report_path.relative_to(path.parent).as_posix(),
+            "sha256": file_sha256(correctness_report_path),
+        },
         "runtime": {
             "jax": jax.__version__,
             "jaxlib": jaxlib.__version__,
@@ -999,7 +1184,7 @@ def write_raw_observations(
             observation.model_dump(mode="json") for observation in observations
         ],
         "limitations": [
-            "These are raw execution observations, not correctness evidence.",
+            "The pre-timing correctness report is bound but not independently replayed here.",
             "This runner does not create an immutable receipt.",
             "This runner does not make or authorize a promotion decision.",
         ],
@@ -1025,6 +1210,15 @@ def run(
     execution_target = execution_target_metadata(contract)
     devices = _runtime_devices(contract)
     output_root.mkdir(parents=True)
+    correctness_report = run_tpu_correctness_gate(
+        contract,
+        report,
+        devices=devices,
+    )
+    correctness_report_path = output_root / "correctness-gate.json"
+    write_correctness_report(correctness_report_path, correctness_report)
+    jax.clear_caches()
+    gc.collect()
     hlo_root = output_root / "hlo"
     hlo_root.mkdir()
     prepared = prepare_screen(
@@ -1041,6 +1235,8 @@ def run(
         observations,
         source_environment=source_environment,
         execution_target=execution_target,
+        correctness_report=correctness_report,
+        correctness_report_path=correctness_report_path,
         contract_path=contract_path,
         route_report_path=route_report_path,
     )
@@ -1067,7 +1263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             route_report_path=arguments.route_report,
             output_root=arguments.output_root,
         )
-    except GmmTileSearchRunnerError:
+    except (GmmCorrectnessGateError, GmmTileSearchRunnerError):
         return 1
     except Exception:
         _LOGGER.exception("INKLING_GMM_RUNNER_UNHANDLED_FAILURE")

@@ -19,6 +19,10 @@ from tpu_cake.inkling_gmm_tile_search import (
     GmmSearchFamily,
     InklingGmmTileSearchContract,
 )
+from tpu_cake.inkling_gmm_tile_search_correctness import (
+    GMM_CORRECTNESS_GATE_SCHEMA,
+    GmmCorrectnessGateReport,
+)
 
 _RUNNER_SCHEMA = "inkling-gmm-tile-search-runner-observations-v1"
 _VERIFIED_SCHEMA = "inkling-gmm-tile-search-screening-verification-v1"
@@ -28,7 +32,7 @@ _SCOPE_PATTERN = re.compile(
 )
 _HLO_INSTRUCTION_PATTERN = re.compile(r"^\s*(?:ROOT\s+)?%?[^=\s]+\s*=")
 _LIMITATIONS = [
-    "These are raw execution observations, not correctness evidence.",
+    "The pre-timing correctness report is bound but not independently replayed here.",
     "This runner does not create an immutable receipt.",
     "This runner does not make or authorize a promotion decision.",
 ]
@@ -40,12 +44,14 @@ _RAW_KEYS = {
     "route_report_sha256",
     "source_environment",
     "execution_target",
+    "correctness_gate",
     "runtime",
     "residency",
     "compiled_policies",
     "screening_observations",
     "limitations",
 }
+_CORRECTNESS_GATE_KEYS = {"schema_version", "report_id", "path", "sha256"}
 _SOURCE_KEYS = {
     "tpu_cake_git_commit",
     "tpu_cake_uv_lock_sha256",
@@ -322,6 +328,46 @@ def _verify_residency(
     if expected_estimate >= min(before_allocation):
         _fail("RESIDENCY_ESTIMATE_HEADROOM")
     return value
+
+
+def _verify_correctness_gate(
+    contract: InklingGmmTileSearchContract,
+    route_report: InklingGmmRouteCorpusReport,
+    value: object,
+    *,
+    artifact_root: Path,
+) -> dict[str, str]:
+    if not isinstance(value, dict):
+        _fail("CORRECTNESS_GATE_OBJECT")
+    _exact_keys(value, _CORRECTNESS_GATE_KEYS, label="CORRECTNESS_GATE")
+    if (
+        value["schema_version"] != GMM_CORRECTNESS_GATE_SCHEMA
+        or not _hex(value["report_id"], 64)
+        or not _hex(value["sha256"], 64)
+    ):
+        _fail("CORRECTNESS_GATE_METADATA")
+    path = _artifact_path(artifact_root, value["path"], label="CORRECTNESS_GATE")
+    raw = path.read_bytes()
+    if _sha256(raw) != value["sha256"]:
+        _fail("CORRECTNESS_GATE_SHA256")
+    try:
+        report = GmmCorrectnessGateReport.model_validate_json(raw)
+    except ValueError as error:
+        _fail("CORRECTNESS_GATE_REPORT", error=error)
+    expected_id = _json_sha256(report.model_dump(mode="json", exclude={"report_id"}))
+    if report.report_id != expected_id or report.report_id != value["report_id"]:
+        _fail("CORRECTNESS_GATE_REPORT_ID")
+    if (
+        report.search_id != contract.search_id
+        or report.route_report_id != route_report.report_id
+        or report.numerical_contract_id != contract.correctness.numerical_contract_id
+    ):
+        _fail("CORRECTNESS_GATE_BINDING")
+    return {
+        "schema_version": report.schema_version,
+        "report_id": report.report_id,
+        "sha256": value["sha256"],
+    }
 
 
 def _screening_orders(
@@ -693,6 +739,12 @@ def verify_screening(
     if source != _source_environment(contract):
         _fail("SOURCE_BINDING")
     execution_target = _verify_execution_target(contract, raw["execution_target"])
+    correctness_gate = _verify_correctness_gate(
+        contract,
+        report,
+        raw["correctness_gate"],
+        artifact_root=raw_observations_path.parent,
+    )
     runtime = _verify_runtime(contract, raw["runtime"])
     residency = _verify_residency(contract, raw["residency"])
     policies = _verify_compiled_policies(
@@ -713,13 +765,15 @@ def verify_screening(
         "raw_observations_sha256": _sha256(raw_bytes),
         "source_environment": source,
         "execution_target": execution_target,
+        "correctness_gate": correctness_gate,
         "runtime": runtime,
         "residency": residency,
         "compiled_policies": policies,
         "screening_statistics": statistics_by_family,
         "finalists": finalists,
         "claims": {
-            "correctness_verified": False,
+            "correctness_gate_bound": True,
+            "correctness_independently_replayed": False,
             "confirmation_run": False,
             "immutable_receipt_created": False,
             "promotion_authorized": False,

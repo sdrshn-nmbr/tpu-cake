@@ -4,10 +4,11 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.identity import array_sha256, model_identity_sha256
 from tpu_cake.inkling_gmm_route_corpus import InklingGmmRouteCorpusReport
@@ -117,6 +118,14 @@ class ProfileCorrectnessMeasurement(BaseModel):
     policies: tuple[PolicyCorrectnessMeasurement, ...]
     cpu_oracle: tuple[CpuOracleMeasurement, ...]
 
+    @model_validator(mode="after")
+    def measurement_inventory_is_exact(self) -> ProfileCorrectnessMeasurement:
+        if tuple(item.name for item in self.operands) != _OPERAND_NAMES:
+            raise ValueError("GMM correctness operand measurement inventory mismatch")
+        if tuple(item.policy for item in self.policies) != unique_correctness_policies():
+            raise ValueError("GMM correctness policy measurement inventory mismatch")
+        return self
+
 
 class GmmCorrectnessGateReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -132,6 +141,14 @@ class GmmCorrectnessGateReport(BaseModel):
     @property
     def profile_count(self) -> int:
         return len(self.profiles)
+
+    @model_validator(mode="after")
+    def report_inventory_is_exact(self) -> GmmCorrectnessGateReport:
+        if tuple(profile.profile_index for profile in self.profiles) != tuple(range(5)):
+            raise ValueError("GMM correctness profile report inventory mismatch")
+        if sum(len(profile.cpu_oracle) for profile in self.profiles) != 24:
+            raise ValueError("GMM correctness CPU oracle measurement inventory mismatch")
+        return self
 
 
 OperandFactory = Callable[[int, int, int], GmmCorrectnessOperands]
@@ -541,3 +558,15 @@ def replay_correctness_gate(
             observed_report_id=observed.report_id,
         )
     return observed
+
+
+def write_correctness_report(path: Path, report: GmmCorrectnessGateReport) -> None:
+    with path.open("x") as stream:
+        stream.write(
+            json.dumps(
+                report.model_dump(mode="json", exclude_computed_fields=True),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
