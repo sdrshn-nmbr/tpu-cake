@@ -1,0 +1,32 @@
+{
+  "schema_version": "matmul-collective-repeat-prediction-v1",
+  "confirmation_id": "7c33b7cf0d0a84439ddd5214ac10a73e1fe73dccde04804252148e7a76b50163",
+  "diagnostic_archive_sha256": "0893037a5ab36637a2d62cccec7a58f6d36600318239d26b49f3188c299dc5a6",
+  "confirmation_result_sha256": "d02da084b88b216a5cb5f39f726fd2676f2635f02eb50c59453677dcf4ac019b",
+  "confirmation_receipt_sha256": "64630b3179073341228f7f8df5c9a0ece77f8adcaba196a5ded4fc6cdc900485",
+  "confirmation_archive_sha256": "93c7a0e99a2e3cf1517f3cacd4a3d9b56b98e753686b83f47895706c80f024e9",
+  "confirmation_contract_sha256": "aab4e762692c4f619acc28b5b6f864c9b2d60596c0c1860bcf8648b6aed0ae1f",
+  "confirmation_rounds_sha256": "72b32e0331a049e9c2d4a039006133b3b82cd933566404a9934f7c7af39c6449",
+  "confirmation_timing_input_sha256": "e5c386b5b29f62dca7c880d1fc39ad7254cac56dd836a209e02433f9d15d9828",
+  "calibration": [
+    {
+      "strategy": "xla_reduce_scatter",
+      "diagnostic_receipt_sha256": "be689c3a2c8f74a280a7cb86e6d5a08244257ec0da27f2bfd7ccc4863dfabb32",
+      "timing_result_sha256": "6d6a33187737884576abd7341c238fbf4cd0c7d036a2cdbe1bca8820e485483f",
+      "cost_model_sha256": "c2450b4272eb52e5fb1e283f929637d738651f61f4c97272017ba04346af6816"
+    },
+    {
+      "strategy": "pallas_bidirectional_ring",
+      "diagnostic_receipt_sha256": "11362485533e43e065adfc136d3d7a900441f56c3f1bd4b437af4b5213911702",
+      "timing_result_sha256": "6c6824e19a777fd34986620119fccccfea2cc376efdee4940125c8ab30d9580e",
+      "cost_model_sha256": "25d9b12c744fb009a362cc12465bb2a22b1a6dc6f293d71139f3ef611a3a9525"
+    }
+  ],
+  "prediction_rule": "predicted_median_ns(strategy)=median(diagnostic_timing_samples_ns(strategy))",
+  "evaluation_rule": "holdout_median_ns(strategy)=median(confirmation_round_medians_ns(strategy))",
+  "prediction_rule_predeclared": false,
+  "acceptance_bound_predeclared": false,
+  "prospective_validation": false,
+  "same_shape_holdout": true,
+  "supports_shape_extrapolation": false
+}
