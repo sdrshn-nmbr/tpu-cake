@@ -1332,7 +1332,7 @@ def _validate(
         raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_PLAN_IDENTITY_MISMATCH")
     correctness = _replay_correctness(root, contract)
     correctness_file = tuple(
-        MatmulCollectiveCorrectnessObservation.model_validate(value)
+        MatmulCollectiveCorrectnessObservation.model_validate_json(json.dumps(value))
         for value in json.loads((root / "correctness.json").read_text())
     )
     expected_correctness_orders = tuple(
@@ -1381,7 +1381,7 @@ def _validate(
             MatmulCollectiveTimingOutput(strategy=strategy, sha256=array_sha256(post))
         )
     rounds = tuple(
-        MatmulCollectiveTimingRound.model_validate(value)
+        MatmulCollectiveTimingRound.model_validate_json(json.dumps(value))
         for value in json.loads((root / "rounds.json").read_text())
     )
     statistics_record = collective_confirmation_statistics(contract, rounds)
