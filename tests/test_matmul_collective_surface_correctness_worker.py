@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import jax
@@ -10,6 +11,7 @@ from jax.sharding import Mesh
 
 from tpu_cake.matmul_collective_surface_correctness import make_correctness_operand_shard
 from tpu_cake.matmul_collective_surface_correctness_executor import (
+    CORRECTNESS_EXECUTABLE_DEPENDENCIES,
     SurfaceCorrectnessWorkerRequest,
 )
 from tpu_cake.matmul_collective_surface_correctness_protocol import (
@@ -25,6 +27,7 @@ from tpu_cake.matmul_collective_surface_correctness_worker import (
     _parent_consensus,
     _save_array_exclusive,
     _validate_empty_compilation_cache,
+    _validate_loaded_tpu_cake_sources,
     _validate_worker_authorization,
     _verify_resident_sentinels,
 )
@@ -165,6 +168,22 @@ def test_worker_authorization_rejects_substituted_request_path(tmp_path) -> None
 
     with pytest.raises(ValueError, match="REQUEST_PATH_MISMATCH"):
         _validate_worker_authorization(tmp_path, substituted, _request())
+
+
+def test_loaded_source_closure_handles_module_execution_as_main(monkeypatch) -> None:
+    repository_root = Path.cwd()
+    source_blobs = {
+        path: (
+            repository_root / (f"src/{path}" if path.startswith("tpu_cake/") else path)
+        ).read_bytes()
+        for path in CORRECTNESS_EXECUTABLE_DEPENDENCIES
+    }
+    monkeypatch.delitem(
+        sys.modules,
+        "tpu_cake.matmul_collective_surface_correctness_worker",
+    )
+
+    _validate_loaded_tpu_cake_sources(repository_root, source_blobs)
 
 
 @pytest.mark.parametrize("role", ("lhs", "rhs"))

@@ -743,10 +743,19 @@ def _validate_loaded_tpu_cake_sources(
         if path.is_symlink() or relative not in expected or path.read_bytes() != expected[relative]:
             raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_LOADED_SOURCE_MISMATCH")
         observed.add(relative)
+    worker_relative = CORRECTNESS_WORKER_SOURCE_PATH.removeprefix("src/")
+    running_worker = Path(__file__)
+    if (
+        running_worker.is_symlink()
+        or running_worker.resolve() != (repository_root / CORRECTNESS_WORKER_SOURCE_PATH).resolve()
+        or running_worker.read_bytes() != expected[worker_relative]
+    ):
+        raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_LOADED_SOURCE_MISMATCH")
+    observed.add(worker_relative)
     required = {
         "tpu_cake/__init__.py",
         CORRECTNESS_EXECUTOR_SOURCE_PATH.removeprefix("src/"),
-        CORRECTNESS_WORKER_SOURCE_PATH.removeprefix("src/"),
+        worker_relative,
     }
     if not required <= observed:
         raise ValueError("MATMUL_COLLECTIVE_SURFACE_CORRECTNESS_LOADED_SOURCE_INCOMPLETE")
