@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import statistics
 from enum import StrEnum
 from typing import Literal
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.contracts import SourceFileContract
@@ -51,6 +54,14 @@ class GmmArmName(StrEnum):
 class GmmSearchFamily(StrEnum):
     GATE_UP = "gate-up"
     DOWN = "down"
+
+
+class GmmCorrectnessProfileReason(StrEnum):
+    MAX_SKEW = "max-skew"
+    MAX_NONZERO_EXPERTS = "max-nonzero-experts"
+    SEMANTIC_HASH_0 = "semantic-hash-0"
+    SEMANTIC_HASH_1 = "semantic-hash-1"
+    SEMANTIC_HASH_2 = "semantic-hash-2"
 
 
 class RouteCorpusBinding(BaseModel):
@@ -269,6 +280,65 @@ class GmmConfirmationProtocol(BaseModel):
     operands_resident: Literal[True] = True
 
 
+class GmmCorrectnessProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reason: GmmCorrectnessProfileReason
+    corpus_index: int = Field(ge=0)
+    completion_step: int = Field(gt=1)
+    layer_index: int = Field(ge=0)
+    group_sizes_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class GmmCpuOracleRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    device_index: int = Field(ge=0, lt=8)
+    profile_index: int = Field(ge=0, lt=5)
+    row_index: int = Field(ge=0, lt=288)
+    down_columns: tuple[int, ...]
+
+    @model_validator(mode="after")
+    def columns_are_exact(self) -> GmmCpuOracleRow:
+        if (
+            len(self.down_columns) != 8
+            or tuple(sorted(self.down_columns)) != self.down_columns
+            or len(set(self.down_columns)) != len(self.down_columns)
+            or not {0, 2047, 2048, 4095}.issubset(self.down_columns)
+            or any(column < 0 or column >= 4096 for column in self.down_columns)
+        ):
+            raise ValueError("GMM CPU oracle column inventory mismatch")
+        return self
+
+
+class GmmNumericalContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    schema_version: Literal["inkling-gmm-numerical-v1"] = "inkling-gmm-numerical-v1"
+    operand_generation: Literal["jax-stateless-uniform-v1"] = "jax-stateless-uniform-v1"
+    operand_minimum: Literal[-0.02] = -0.02
+    operand_maximum: Literal[0.02] = 0.02
+    gate_up_oracle: Literal["left-to-right-fp32-k-accumulation"] = (
+        "left-to-right-fp32-k-accumulation"
+    )
+    silu_oracle: Literal["fp32-x-over-one-plus-exp-negative-x"] = (
+        "fp32-x-over-one-plus-exp-negative-x"
+    )
+    down_oracle: Literal["left-to-right-fp32-k-accumulation"] = "left-to-right-fp32-k-accumulation"
+    cpu_absolute_tolerance: Literal[0.02] = 0.02
+    cpu_relative_tolerance: Literal[0.02] = 0.02
+    candidate_incumbent_comparison: Literal["bit-exact-active-spans"] = "bit-exact-active-spans"
+
+    @computed_field
+    @property
+    def contract_id(self) -> str:
+        return model_identity_sha256(self)
+
+
+def default_gmm_numerical_contract() -> GmmNumericalContract:
+    return GmmNumericalContract()
+
+
 class GmmCorrectnessProtocol(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
@@ -278,6 +348,7 @@ class GmmCorrectnessProtocol(BaseModel):
     profile_selection: Literal[
         "max-skew-max-nonzero-three-semantic-hash-with-all-shard-coverage"
     ] = "max-skew-max-nonzero-three-semantic-hash-with-all-shard-coverage"
+    profiles: tuple[GmmCorrectnessProfile, ...]
     require_all_expert_shards_covered: Literal[True] = True
     comparison: Literal["gate-up-intermediates-and-final-down-vs-incumbent"] = (
         "gate-up-intermediates-and-final-down-vs-incumbent"
@@ -287,6 +358,7 @@ class GmmCorrectnessProtocol(BaseModel):
     cpu_oracle_rows_per_expert_shard: Literal[1] = 1
     cpu_oracle_down_columns: tuple[int, ...] = (0, 2047, 2048, 4095)
     cpu_oracle_seeded_interior_columns_per_row: Literal[4] = 4
+    cpu_oracle_rows: tuple[GmmCpuOracleRow, ...]
     absolute_tolerance: float = Field(gt=0)
     relative_tolerance: float = Field(gt=0)
     tolerances_frozen_before_timing: Literal[True] = True
@@ -297,8 +369,20 @@ class GmmCorrectnessProtocol(BaseModel):
     def seeds_are_exact(self) -> GmmCorrectnessProtocol:
         if self.seeds != GMM_CORRECTNESS_SEEDS:
             raise ValueError("GMM correctness seeds are not canonical")
+        numerical = default_gmm_numerical_contract()
+        if self.numerical_contract_id != numerical.contract_id or (
+            self.absolute_tolerance,
+            self.relative_tolerance,
+        ) != (numerical.cpu_absolute_tolerance, numerical.cpu_relative_tolerance):
+            raise ValueError("GMM numerical contract mismatch")
+        if len(self.profiles) != self.profile_count or tuple(
+            profile.reason for profile in self.profiles
+        ) != tuple(GmmCorrectnessProfileReason):
+            raise ValueError("GMM correctness profile inventory mismatch")
         if self.cpu_oracle_down_columns != (0, 2047, 2048, 4095):
             raise ValueError("GMM CPU oracle boundary columns are not canonical")
+        if tuple(row.device_index for row in self.cpu_oracle_rows) != tuple(range(8)):
+            raise ValueError("GMM CPU oracle row inventory mismatch")
         return self
 
 
@@ -348,11 +432,202 @@ class InklingGmmTileSearchContract(BaseModel):
         return model_identity_sha256(self)
 
 
+class GmmPolicyPair(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    gate_up: GmmArmName
+    down: GmmArmName
+
+    @computed_field
+    @property
+    def name(self) -> str:
+        return f"gate-up={self.gate_up.value},down={self.down.value}"
+
+
+class GmmScreenObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    family: GmmSearchFamily
+    round_index: int = Field(ge=0, lt=10)
+    position: int = Field(ge=0, lt=5)
+    arm: GmmArmName
+    duration_ns: int = Field(gt=0)
+
+
+class GmmArmScreenStatistics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    arm: GmmArmName
+    durations_ns: tuple[int, ...]
+    median_duration_ns: float = Field(gt=0)
+
+
+class GmmFamilyScreenStatistics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    family: GmmSearchFamily
+    finalist: GmmArmName
+    arms: tuple[GmmArmScreenStatistics, ...]
+
+
+class GmmConfirmationObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    round_index: int = Field(ge=0, lt=32)
+    position: int = Field(ge=0, lt=2)
+    policy: GmmPolicyPair
+    samples_ns: tuple[int, ...]
+
+    @model_validator(mode="after")
+    def samples_are_exact(self) -> GmmConfirmationObservation:
+        if len(self.samples_ns) != 5 or any(sample <= 0 for sample in self.samples_ns):
+            raise ValueError("GMM confirmation sample inventory mismatch")
+        return self
+
+    @computed_field
+    @property
+    def median_ns(self) -> float:
+        return statistics.median(self.samples_ns)
+
+
+class GmmConfirmationStatistics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    baseline: GmmPolicyPair
+    candidate: GmmPolicyPair
+    paired_improvements: tuple[float, ...]
+    median_improvement: float
+    mean_improvement: float
+    confidence_interval: tuple[float, float]
+    confidence_level: float
+    bootstrap_seed: int
+    bootstrap_samples: int
+    minimum_practical_improvement: float
+    confirmed: bool
+
+
+def _group_sizes_sha256(group_sizes: tuple[int, ...]) -> str:
+    payload = json.dumps(group_sizes, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _active_shards(group_sizes: tuple[int, ...]) -> set[int]:
+    return {
+        device_index
+        for device_index in range(8)
+        if sum(group_sizes[device_index * 32 : (device_index + 1) * 32]) > 0
+    }
+
+
+def select_correctness_profiles(
+    report: InklingGmmRouteCorpusReport,
+) -> tuple[GmmCorrectnessProfile, ...]:
+    if (
+        report.report_id == "0" * 64
+        or model_identity_sha256(report, exclude={"report_id"}) != report.report_id
+    ):
+        raise ValueError("GMM correctness profiles require a final route report")
+    groups = report.group_sizes
+    max_skew_index = max(
+        range(len(groups)),
+        key=lambda index: (max(groups[index].group_sizes), -index),
+    )
+    max_nonzero_index = max(
+        (index for index in range(len(groups)) if index != max_skew_index),
+        key=lambda index: (
+            sum(value > 0 for value in groups[index].group_sizes),
+            -index,
+        ),
+    )
+    selected = [max_skew_index, max_nonzero_index]
+    covered = _active_shards(groups[max_skew_index].group_sizes) | _active_shards(
+        groups[max_nonzero_index].group_sizes
+    )
+    for ordinal in range(3):
+        seed = semantic_seed(
+            INKLING_GMM_TILE_SEARCH_SCHEMA,
+            "correctness-profile",
+            str(ordinal),
+        )
+        missing = set(range(8)) - covered
+
+        def candidate_key(
+            index: int,
+            profile_seed: int = seed,
+            missing_shards: frozenset[int] = frozenset(missing),
+        ) -> tuple[int, bytes, int]:
+            group = groups[index]
+            digest = hashlib.sha256(
+                f"{profile_seed}:{group.completion_step}:{group.layer_index}".encode()
+            ).digest()
+            new_shards = len(_active_shards(group.group_sizes) & missing_shards)
+            return -new_shards, digest, index
+
+        remaining = (index for index in range(len(groups)) if index not in selected)
+        selected_index = min(remaining, key=candidate_key)
+        selected.append(selected_index)
+        covered |= _active_shards(groups[selected_index].group_sizes)
+    if covered != set(range(8)):
+        raise ValueError("GMM correctness profiles do not cover every expert shard")
+    return tuple(
+        GmmCorrectnessProfile(
+            reason=reason,
+            corpus_index=index,
+            completion_step=groups[index].completion_step,
+            layer_index=groups[index].layer_index,
+            group_sizes_sha256=_group_sizes_sha256(groups[index].group_sizes),
+        )
+        for reason, index in zip(GmmCorrectnessProfileReason, selected, strict=True)
+    )
+
+
+def select_cpu_oracle_rows(
+    report: InklingGmmRouteCorpusReport,
+    profiles: tuple[GmmCorrectnessProfile, ...],
+) -> tuple[GmmCpuOracleRow, ...]:
+    rows = []
+    boundary_columns = {0, 2047, 2048, 4095}
+    for device_index in range(8):
+        for profile_index, profile in enumerate(profiles):
+            group_sizes = report.group_sizes[profile.corpus_index].group_sizes
+            start, end = local_active_span(group_sizes, device_index=device_index)
+            if start < end:
+                break
+        else:
+            raise ValueError(f"GMM CPU oracle has no active row for shard {device_index}")
+        columns = set(boundary_columns)
+        ordinal = 0
+        while len(columns) < 8:
+            column = (
+                1
+                + semantic_seed(
+                    INKLING_GMM_TILE_SEARCH_SCHEMA,
+                    "cpu-oracle-column",
+                    report.corpus_sha256,
+                    str(device_index),
+                    str(ordinal),
+                )
+                % 4094
+            )
+            columns.add(column)
+            ordinal += 1
+        rows.append(
+            GmmCpuOracleRow(
+                device_index=device_index,
+                profile_index=profile_index,
+                row_index=start,
+                down_columns=tuple(sorted(columns)),
+            )
+        )
+    return tuple(rows)
+
+
 def default_gmm_tile_search_contract(
     *,
     accepted_route_report_id: str,
     accepted_route_report_sha256: str,
     accepted_route_corpus_sha256: str,
+    accepted_route_report: InklingGmmRouteCorpusReport,
     tpu_cake_git_commit: str,
     tpu_cake_uv_lock_sha256: str,
     runner_source_sha256: str,
@@ -360,10 +635,14 @@ def default_gmm_tile_search_contract(
     inkling_git_commit: str,
     inkling_uv_lock_sha256: str,
     implementation_source_manifest: tuple[SourceFileContract, ...],
-    numerical_contract_id: str,
-    absolute_tolerance: float,
-    relative_tolerance: float,
 ) -> InklingGmmTileSearchContract:
+    if (
+        accepted_route_report.report_id != accepted_route_report_id
+        or accepted_route_report.corpus_sha256 != accepted_route_corpus_sha256
+    ):
+        raise ValueError("accepted GMM route report binding mismatch")
+    correctness_profiles = select_correctness_profiles(accepted_route_report)
+    numerical = default_gmm_numerical_contract()
     gate_up = {
         "lhs_dtype": "bf16",
         "rhs_dtype": "bf16",
@@ -418,10 +697,15 @@ def default_gmm_tile_search_contract(
         search=GmmSearchProtocol(operand_seed=GMM_OPERAND_SEED),
         confirmation=GmmConfirmationProtocol(),
         correctness=GmmCorrectnessProtocol(
-            numerical_contract_id=numerical_contract_id,
+            numerical_contract_id=numerical.contract_id,
             seeds=GMM_CORRECTNESS_SEEDS,
-            absolute_tolerance=absolute_tolerance,
-            relative_tolerance=relative_tolerance,
+            profiles=correctness_profiles,
+            cpu_oracle_rows=select_cpu_oracle_rows(
+                accepted_route_report,
+                correctness_profiles,
+            ),
+            absolute_tolerance=numerical.cpu_absolute_tolerance,
+            relative_tolerance=numerical.cpu_relative_tolerance,
         ),
     )
 
@@ -450,6 +734,127 @@ def screening_orders(
         offset = round_index % len(names)
         orders.append(basis[offset:] + basis[:offset])
     return tuple(orders)
+
+
+def screening_statistics(
+    contract: InklingGmmTileSearchContract,
+    family: GmmSearchFamily,
+    observations: tuple[GmmScreenObservation, ...],
+) -> GmmFamilyScreenStatistics:
+    orders = screening_orders(contract, family)
+    if len(observations) != len(orders) * len(contract.arms):
+        raise ValueError("GMM screening observation count mismatch")
+    grouped: dict[GmmArmName, list[int]] = {arm.name: [] for arm in contract.arms}
+    offset = 0
+    for round_index, order in enumerate(orders):
+        observed = observations[offset : offset + len(order)]
+        offset += len(order)
+        if any(item.family is not family for item in observed):
+            raise ValueError("GMM screening family mismatch")
+        if tuple(item.round_index for item in observed) != (round_index,) * len(order):
+            raise ValueError("GMM screening round mismatch")
+        if tuple(item.position for item in observed) != tuple(range(len(order))):
+            raise ValueError("GMM screening position mismatch")
+        if tuple(item.arm for item in observed) != order:
+            raise ValueError("GMM screening execution order mismatch")
+        for item in observed:
+            grouped[item.arm].append(item.duration_ns)
+    arm_statistics = tuple(
+        GmmArmScreenStatistics(
+            arm=arm.name,
+            durations_ns=tuple(grouped[arm.name]),
+            median_duration_ns=statistics.median(grouped[arm.name]),
+        )
+        for arm in contract.arms
+    )
+    declaration_order = {arm.name: index for index, arm in enumerate(contract.arms)}
+    finalist = min(
+        arm_statistics,
+        key=lambda item: (
+            item.median_duration_ns,
+            item.arm is not GmmArmName.INCUMBENT,
+            declaration_order[item.arm],
+        ),
+    ).arm
+    return GmmFamilyScreenStatistics(
+        family=family,
+        finalist=finalist,
+        arms=arm_statistics,
+    )
+
+
+def confirmation_orders(
+    contract: InklingGmmTileSearchContract,
+    candidate: GmmPolicyPair,
+) -> tuple[tuple[GmmPolicyPair, GmmPolicyPair], ...]:
+    baseline = GmmPolicyPair(
+        gate_up=GmmArmName.INCUMBENT,
+        down=GmmArmName.INCUMBENT,
+    )
+    if candidate == baseline:
+        raise ValueError("GMM confirmation candidate must differ from the incumbent")
+    forward = (baseline, candidate)
+    reverse = (candidate, baseline)
+    return tuple(
+        forward if round_index % 2 == 0 else reverse
+        for round_index in range(contract.confirmation.paired_rounds)
+    )
+
+
+def confirmation_statistics(
+    contract: InklingGmmTileSearchContract,
+    candidate: GmmPolicyPair,
+    observations: tuple[GmmConfirmationObservation, ...],
+) -> GmmConfirmationStatistics:
+    orders = confirmation_orders(contract, candidate)
+    if len(observations) != 2 * len(orders):
+        raise ValueError("GMM confirmation observation count mismatch")
+    baseline = GmmPolicyPair(
+        gate_up=GmmArmName.INCUMBENT,
+        down=GmmArmName.INCUMBENT,
+    )
+    improvements = []
+    offset = 0
+    for round_index, order in enumerate(orders):
+        observed = observations[offset : offset + 2]
+        offset += 2
+        if tuple(item.round_index for item in observed) != (round_index, round_index):
+            raise ValueError("GMM confirmation round mismatch")
+        if tuple(item.position for item in observed) != (0, 1):
+            raise ValueError("GMM confirmation position mismatch")
+        if tuple(item.policy for item in observed) != order:
+            raise ValueError("GMM confirmation execution order mismatch")
+        medians = {item.policy.name: item.median_ns for item in observed}
+        improvements.append(1.0 - medians[candidate.name] / medians[baseline.name])
+    values = np.asarray(improvements, dtype=np.float64)
+    bootstrap_seed = semantic_seed(
+        INKLING_GMM_TILE_SEARCH_SCHEMA,
+        "confirmation-bootstrap",
+        contract.search_id,
+        candidate.name,
+    )
+    generator = np.random.default_rng(bootstrap_seed)
+    indices = generator.integers(
+        0,
+        len(values),
+        size=(contract.confirmation.bootstrap_samples, len(values)),
+    )
+    bootstrap = np.median(values[indices], axis=1)
+    tail = (1.0 - contract.confirmation.confidence_level) / 2.0
+    lower, upper = np.quantile(bootstrap, (tail, 1.0 - tail), method="linear")
+    return GmmConfirmationStatistics(
+        baseline=baseline,
+        candidate=candidate,
+        paired_improvements=tuple(float(value) for value in values),
+        median_improvement=float(np.median(values)),
+        mean_improvement=float(np.mean(values)),
+        confidence_interval=(float(lower), float(upper)),
+        confidence_level=contract.confirmation.confidence_level,
+        bootstrap_seed=bootstrap_seed,
+        bootstrap_samples=contract.confirmation.bootstrap_samples,
+        minimum_practical_improvement=contract.confirmation.minimum_practical_improvement,
+        confirmed=bool(lower > contract.confirmation.minimum_practical_improvement),
+    )
 
 
 def validate_route_corpus_binding(

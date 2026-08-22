@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -16,12 +17,22 @@ from tpu_cake.inkling_gmm_tile_search import (
     GMM_IMPLEMENTATION_SOURCE_PATHS,
     GMM_OPERAND_SEED,
     GmmArmName,
+    GmmConfirmationObservation,
+    GmmCorrectnessProfileReason,
     GmmOperation,
+    GmmPolicyPair,
+    GmmScreenObservation,
     GmmSearchFamily,
     InklingGmmTileSearchContract,
+    confirmation_orders,
+    confirmation_statistics,
+    default_gmm_numerical_contract,
     default_gmm_tile_search_contract,
     local_active_span,
     screening_orders,
+    screening_statistics,
+    select_correctness_profiles,
+    select_cpu_oracle_rows,
     validate_route_corpus_binding,
 )
 
@@ -35,8 +46,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
 
 def _route_report() -> tuple[InklingGmmRouteCorpusReport, bytes]:
     groups = []
-    counts = (1,) * 32 + (0,) * 224
-    counts = (257, *counts[1:])
+    counts = (33,) + (1,) * 255
     for completion_step in range(2, 66):
         for layer_index in range(2, 42):
             groups.append(
@@ -81,6 +91,7 @@ def _contract() -> tuple[InklingGmmTileSearchContract, InklingGmmRouteCorpusRepo
         accepted_route_report_id=report.report_id,
         accepted_route_report_sha256=hashlib.sha256(raw).hexdigest(),
         accepted_route_corpus_sha256=report.corpus_sha256,
+        accepted_route_report=report,
         tpu_cake_git_commit="d" * 40,
         tpu_cake_uv_lock_sha256="e" * 64,
         runner_source_sha256="f" * 64,
@@ -88,9 +99,6 @@ def _contract() -> tuple[InklingGmmTileSearchContract, InklingGmmRouteCorpusRepo
         inkling_git_commit="a" * 40,
         inkling_uv_lock_sha256="b" * 64,
         implementation_source_manifest=_source_manifest(),
-        numerical_contract_id="c" * 64,
-        absolute_tolerance=0.02,
-        relative_tolerance=0.02,
     )
     return contract, report
 
@@ -217,13 +225,21 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
     assert contract.confirmation.combined_failure_rule == "no-promotion-no-fallback"
     assert contract.confirmation.screening_samples_reused is False
     assert contract.correctness.seeds == GMM_CORRECTNESS_SEEDS
-    assert contract.correctness.numerical_contract_id == "c" * 64
+    assert (
+        contract.correctness.numerical_contract_id == default_gmm_numerical_contract().contract_id
+    )
     assert contract.correctness.profile_count == 5
+    assert tuple(profile.reason for profile in contract.correctness.profiles) == tuple(
+        GmmCorrectnessProfileReason
+    )
     assert contract.correctness.require_all_expert_shards_covered is True
     assert contract.correctness.compare_complete_active_spans is True
     assert contract.correctness.cpu_oracle_rows_per_expert_shard == 1
     assert contract.correctness.cpu_oracle_down_columns == (0, 2047, 2048, 4095)
     assert contract.correctness.cpu_oracle_seeded_interior_columns_per_row == 4
+    assert tuple(row.device_index for row in contract.correctness.cpu_oracle_rows) == tuple(
+        range(8)
+    )
     assert contract.correctness.tolerances_frozen_before_timing is True
 
 
@@ -252,6 +268,7 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
         (("confirmation", "allow_retry"), True),
         (("confirmation", "combined_failure_rule"), "confirm-hybrids"),
         (("correctness", "seeds"), GMM_CORRECTNESS_SEEDS[:-1]),
+        (("correctness", "absolute_tolerance"), 1.0),
         (("correctness", "cpu_oracle_down_columns"), (0, 4095)),
     ),
 )
@@ -392,3 +409,85 @@ def test_screening_orders_are_exact_balanced_forward_reverse_latin_squares() -> 
         for arm in GmmArmName:
             positions = [order.index(arm) for order in orders]
             assert sorted(positions) == [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
+
+
+def test_correctness_profiles_and_cpu_rows_are_reconstructed_from_the_route_corpus() -> None:
+    report = InklingGmmRouteCorpusReport.model_validate_json(
+        Path("evidence/inkling/gmm-route-corpus-v1.json").read_text()
+    )
+
+    profiles = select_correctness_profiles(report)
+    rows = select_cpu_oracle_rows(report, profiles)
+
+    assert tuple((profile.completion_step, profile.layer_index) for profile in profiles) == (
+        (24, 41),
+        (20, 3),
+        (58, 14),
+        (54, 25),
+        (43, 33),
+    )
+    assert tuple(row.device_index for row in rows) == tuple(range(8))
+    assert tuple(row.profile_index for row in rows) == (0,) * 8
+    assert tuple(row.row_index for row in rows) == (0, 40, 85, 88, 99, 163, 211, 283)
+    assert all(len(row.down_columns) == 8 for row in rows)
+    assert all({0, 2047, 2048, 4095}.issubset(row.down_columns) for row in rows)
+
+
+def test_screening_statistics_select_the_lowest_median_with_declared_ties() -> None:
+    contract, _ = _contract()
+    durations = {
+        GmmArmName.INCUMBENT: 100,
+        GmmArmName.SPARSE_M64: 90,
+        GmmArmName.SPARSE_M32: 95,
+        GmmArmName.SPLIT_N: 105,
+        GmmArmName.SPARSE_M64_SPLIT_N: 90,
+    }
+    observations = tuple(
+        GmmScreenObservation(
+            family=GmmSearchFamily.GATE_UP,
+            round_index=round_index,
+            position=position,
+            arm=arm,
+            duration_ns=durations[arm],
+        )
+        for round_index, order in enumerate(screening_orders(contract, GmmSearchFamily.GATE_UP))
+        for position, arm in enumerate(order)
+    )
+
+    result = screening_statistics(contract, GmmSearchFamily.GATE_UP, observations)
+
+    assert result.finalist is GmmArmName.SPARSE_M64
+    forged = list(observations)
+    forged[0] = forged[0].model_copy(update={"arm": GmmArmName.SPLIT_N})
+    with pytest.raises(ValueError, match="execution order"):
+        screening_statistics(contract, GmmSearchFamily.GATE_UP, tuple(forged))
+
+
+def test_confirmation_statistics_apply_the_strict_paired_bootstrap_gate() -> None:
+    contract, _ = _contract()
+    candidate = GmmPolicyPair(
+        gate_up=GmmArmName.SPARSE_M64,
+        down=GmmArmName.SPLIT_N,
+    )
+    observations = []
+    for round_index, order in enumerate(confirmation_orders(contract, candidate)):
+        for position, policy in enumerate(order):
+            sample = 950 if policy == candidate else 1_000
+            observations.append(
+                GmmConfirmationObservation(
+                    round_index=round_index,
+                    position=position,
+                    policy=policy,
+                    samples_ns=(sample,) * 5,
+                )
+            )
+
+    result = confirmation_statistics(contract, candidate, tuple(observations))
+
+    assert result.median_improvement == pytest.approx(0.05)
+    assert result.confidence_interval == pytest.approx((0.05, 0.05))
+    assert result.confirmed is True
+    forged = list(observations)
+    forged[0], forged[1] = forged[1], forged[0]
+    with pytest.raises(ValueError, match="(position|execution order)"):
+        confirmation_statistics(contract, candidate, tuple(forged))
