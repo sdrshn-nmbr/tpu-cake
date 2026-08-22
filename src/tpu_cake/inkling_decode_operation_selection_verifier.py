@@ -172,12 +172,13 @@ def _candidate_claim(
     *,
     program_id: str,
     prefix: str,
-) -> tuple[int, int, int, Decimal, Decimal, tuple[str, ...]]:
+) -> list[dict[str, object]]:
     times: defaultdict[str, int] = defaultdict(int)
     occurrences: defaultdict[str, int] = defaultdict(int)
     rows: defaultdict[str, int] = defaultdict(int)
-    intensities: list[Decimal] = []
-    bounds: set[str] = set()
+    intensities: defaultdict[str, list[Decimal]] = defaultdict(list)
+    dma_stalls: defaultdict[str, list[Decimal]] = defaultdict(list)
+    bounds: defaultdict[str, set[str]] = defaultdict(set)
     for row in _gviz_rows(path):
         name = str(row.get("hlo_op_name") or "")
         if str(row.get("program_id")) != program_id or not name.startswith(prefix):
@@ -205,21 +206,31 @@ def _candidate_claim(
         intensity = Decimal(str(row.get("operational_intensity")))
         if not intensity.is_finite() or intensity < 0:
             raise ValueError("INKLING_OPERATION_SELECTION_INDEPENDENT_INTENSITY_INVALID")
-        intensities.append(intensity)
+        dma_stall = Decimal(str(row.get("dma_stall_percent")))
+        if not dma_stall.is_finite() or dma_stall < 0:
+            raise ValueError("INKLING_OPERATION_SELECTION_INDEPENDENT_DMA_STALL_INVALID")
+        intensities[family].append(intensity)
+        dma_stalls[family].append(dma_stall)
         bound = row.get("bound_by")
         if not isinstance(bound, str) or not bound:
             raise ValueError("INKLING_OPERATION_SELECTION_INDEPENDENT_BOUND_INVALID")
-        bounds.add(bound)
+        bounds[family].add(bound)
     if not times:
         raise ValueError("INKLING_OPERATION_SELECTION_INDEPENDENT_CANDIDATE_MISSING")
-    return (
-        sum(times.values()),
-        sum(occurrences.values()),
-        sum(rows.values()),
-        min(intensities),
-        max(intensities),
-        tuple(sorted(bounds)),
-    )
+    return [
+        {
+            "name": family,
+            "raw_time_ps": times[family],
+            "occurrences": occurrences[family],
+            "hlo_rows": rows[family],
+            "operational_intensity_min": str(min(intensities[family])),
+            "operational_intensity_max": str(max(intensities[family])),
+            "dma_stall_percent_min": str(min(dma_stalls[family])),
+            "dma_stall_percent_max": str(max(dma_stalls[family])),
+            "bound_by": sorted(bounds[family]),
+        }
+        for family in sorted(times)
+    ]
 
 
 def verify_report_independently(
@@ -273,11 +284,34 @@ def verify_report_independently(
         main_time, unattributed, ranking = _ranking(
             exports["op_profile"], str(report["main_program_name"])
         )
-        candidate = _candidate_claim(
+        candidate_families = _candidate_claim(
             exports["hlo_stats"],
             program_id=str(report["main_program_id"]),
             prefix=str(contract["candidate_hlo_prefix"]),
         )
+
+    candidate_time = sum(int(item["raw_time_ps"]) for item in candidate_families)
+    candidate_occurrences = sum(int(item["occurrences"]) for item in candidate_families)
+    candidate_rows = sum(int(item["hlo_rows"]) for item in candidate_families)
+    for family in candidate_families:
+        family["device_op_share_of_main_program"] = str(
+            _share(int(family["raw_time_ps"]), main_time)
+        )
+    candidate_families = [
+        {
+            "name": item["name"],
+            "raw_time_ps": item["raw_time_ps"],
+            "occurrences": item["occurrences"],
+            "hlo_rows": item["hlo_rows"],
+            "device_op_share_of_main_program": item["device_op_share_of_main_program"],
+            "operational_intensity_min": item["operational_intensity_min"],
+            "operational_intensity_max": item["operational_intensity_max"],
+            "dma_stall_percent_min": item["dma_stall_percent_min"],
+            "dma_stall_percent_max": item["dma_stall_percent_max"],
+            "bound_by": item["bound_by"],
+        }
+        for item in candidate_families
+    ]
 
     candidate_partitions = [
         item
@@ -288,8 +322,8 @@ def verify_report_independently(
         )
     ]
     if (
-        sum(int(item["raw_time_ps"]) for item in candidate_partitions) != candidate[0]
-        or sum(int(item["occurrences"]) for item in candidate_partitions) != candidate[1]
+        sum(int(item["raw_time_ps"]) for item in candidate_partitions) != candidate_time
+        or sum(int(item["occurrences"]) for item in candidate_partitions) != candidate_occurrences
     ):
         raise ValueError("INKLING_OPERATION_SELECTION_INDEPENDENT_CANDIDATE_VIEW_MISMATCH")
 
@@ -302,18 +336,27 @@ def verify_report_independently(
         "winner_partition_key": ranking[0]["key"],
         "winner_raw_time_ps": ranking[0]["raw_time_ps"],
         "winner_device_op_share_of_main_program": ranking[0]["device_op_share_of_main_program"],
-        "candidate_raw_time_ps": candidate[0],
-        "candidate_occurrences": candidate[1],
-        "candidate_hlo_rows": candidate[2],
-        "candidate_device_op_share_of_main_program": str(_share(candidate[0], main_time)),
+        "candidate_raw_time_ps": candidate_time,
+        "candidate_occurrences": candidate_occurrences,
+        "candidate_hlo_rows": candidate_rows,
+        "candidate_device_op_share_of_main_program": str(_share(candidate_time, main_time)),
+        "candidate_kernel_families": candidate_families,
     }
     for key, expected in public_claim.items():
         if report.get(key) != expected:
             raise ValueError(f"INKLING_OPERATION_SELECTION_INDEPENDENT_{key.upper()}_MISMATCH")
     expected_claim = contract["expected_claim"]
+    observed_intensities = [
+        Decimal(str(item[key]))
+        for item in candidate_families
+        for key in ("operational_intensity_min", "operational_intensity_max")
+    ]
+    observed_bounds = sorted({bound for item in candidate_families for bound in item["bound_by"]})
     if (
-        candidate[3] != Decimal(str(expected_claim["candidate_operational_intensity_min"]))
-        or candidate[4] != Decimal(str(expected_claim["candidate_operational_intensity_max"]))
-        or list(candidate[5]) != contract["expected_bound_by"]
+        min(observed_intensities)
+        != Decimal(str(expected_claim["candidate_operational_intensity_min"]))
+        or max(observed_intensities)
+        != Decimal(str(expected_claim["candidate_operational_intensity_max"]))
+        or observed_bounds != contract["expected_bound_by"]
     ):
         raise ValueError("INKLING_OPERATION_SELECTION_INDEPENDENT_HLO_CLAIM_MISMATCH")

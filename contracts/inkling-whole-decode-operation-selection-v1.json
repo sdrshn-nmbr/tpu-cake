@@ -7,7 +7,7 @@
   "op_profile_sha256": "b828bd1a5b2d7e75c8ba99669029a55ebaec95fea3ddf5b0b81aadab90db3cfa",
   "hlo_stats_sha256": "bf2ef9aa8cecd73a5b950c2152c69e34644aa6e4d37382eb022c9f3b6e61f363",
   "producer_source_sha256": "a7b2ac87f5153b600802ac7a3ef1f859aeb19483b1b8b989bf5f3883a39cf2b9",
-  "verifier_source_sha256": "7fdec81d95d14a64f1dc8bd9ada55f4c162875497c9e73a07fcab39c8b57d749",
+  "verifier_source_sha256": "03045974534a1f7a048349993487f9b1fab83112b5daf9cca9a0909b09f2dc98",
   "uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
   "selection_rule": "largest-xprof-device-op-self-time-partition",
   "required_winner_partition_key": "custom-call-family/gmm_v2-g_32-m_288-k_4096-n_2048-tm_128-tk_4096-tn_2048",

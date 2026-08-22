@@ -430,6 +430,24 @@ def test_independent_verifier_recomputes_the_public_claim(
         selection_contract=contract,
     )
 
+    forged = json.loads(report_path.read_text())
+    forged["candidate_kernel_families"][0]["name"] = "fabricated-family"
+    forged["candidate_kernel_families"][0]["bound_by"] = ["MXU"]
+    identity = dict(forged)
+    identity.pop("report_id")
+    forged["report_id"] = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    _write_json(report_path, forged)
+
+    with pytest.raises(ValueError, match="INDEPENDENT_CANDIDATE_KERNEL_FAMILIES_MISMATCH"):
+        independent_verifier.verify_report_independently(
+            report_path=report_path,
+            capture_root=tmp_path,
+            profile_contract=profile,
+            selection_contract=contract,
+        )
+
 
 def test_operation_selection_contract_is_committed_and_module_cli_is_public() -> None:
     contract = InklingDecodeOperationSelectionContract.model_validate_json(
