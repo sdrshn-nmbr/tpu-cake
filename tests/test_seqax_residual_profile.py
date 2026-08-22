@@ -84,9 +84,7 @@ def test_seqax_residual_profile_external_contract_matches_factory() -> None:
         for candidate in saved.candidates
         for value in (
             candidate.pallas_stablehlo_sha256,
-            candidate.pallas_compiler_hlo_sha256,
             candidate.control_stablehlo_sha256,
-            candidate.control_compiler_hlo_sha256,
         )
     )
 
@@ -100,9 +98,7 @@ def test_seqax_residual_profile_pending_contract_refuses_before_writes(
         value.model_copy(
             update={
                 "pallas_stablehlo_sha256": "0" * 64,
-                "pallas_compiler_hlo_sha256": "0" * 64,
                 "control_stablehlo_sha256": "0" * 64,
-                "control_compiler_hlo_sha256": "0" * 64,
             }
         )
         for value in pinned.candidates
@@ -340,9 +336,10 @@ def test_seqax_residual_profile_runner_builds_and_replays_a_closed_receipt(
             candidate.model_copy(
                 update={
                     "pallas_stablehlo_sha256": hashlib.sha256(values[0].encode()).hexdigest(),
-                    "pallas_compiler_hlo_sha256": hashlib.sha256(values[1].encode()).hexdigest(),
                     "control_stablehlo_sha256": hashlib.sha256(values[2].encode()).hexdigest(),
-                    "control_compiler_hlo_sha256": hashlib.sha256(values[3].encode()).hexdigest(),
+                    "expected_pallas_compiler_collectives": _compiler_analysis(
+                        values[0], values[1]
+                    ).collectives,
                 }
             )
         )

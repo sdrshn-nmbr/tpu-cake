@@ -9,6 +9,7 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis
 from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, semantic_seed
 from tpu_cake.seqax_numerical import default_seqax_bf16_validation_contract
@@ -144,9 +145,8 @@ class SeqaxResidualConfirmationPlan(BaseModel):
     pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pallas_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    pallas_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    control_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_pallas_compiler_collectives: CompilerCollectiveAnalysis
     pallas_regions: int = Field(gt=0)
     all_gathers: int = Field(ge=0)
     all_reduces: int = Field(ge=0)

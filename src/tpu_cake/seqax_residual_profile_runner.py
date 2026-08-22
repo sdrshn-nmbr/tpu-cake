@@ -401,20 +401,28 @@ def _compile(
     control_compiler_hlo = _canonical_hlo(control_executable.as_text())
     identities = (
         _text_sha256(pallas_stablehlo),
-        _text_sha256(pallas_compiler_hlo),
         _text_sha256(control_stablehlo),
-        _text_sha256(control_compiler_hlo),
     )
     required_identities = (
         expected.pallas_stablehlo_sha256,
-        expected.pallas_compiler_hlo_sha256,
         expected.control_stablehlo_sha256,
-        expected.control_compiler_hlo_sha256,
     )
     if enforce_hlo_identity and identities != required_identities:
         raise ValueError(
             "SEQAX_RESIDUAL_PROFILE_COMPILED_IDENTITY_MISMATCH "
             f"candidate={expected.candidate} expected={required_identities} observed={identities}"
+        )
+    pallas_compiler_analysis = capture_compiler_analysis(
+        pallas_executable,
+        stablehlo=pallas_stablehlo.rstrip("\n"),
+        compiler_hlo=pallas_compiler_hlo.rstrip("\n"),
+    )
+    if pallas_compiler_analysis.collectives != expected.expected_pallas_compiler_collectives:
+        raise ValueError(
+            "SEQAX_RESIDUAL_PROFILE_COMPILER_COLLECTIVE_MISMATCH "
+            f"candidate={expected.candidate} "
+            f"expected={expected.expected_pallas_compiler_collectives} "
+            f"observed={pallas_compiler_analysis.collectives}"
         )
     return CompiledResidualProfile(
         prepared=prepared,
@@ -425,15 +433,11 @@ def _compile(
         pallas_compiler_hlo=pallas_compiler_hlo,
         control_stablehlo=control_stablehlo,
         control_compiler_hlo=control_compiler_hlo,
-        pallas_compiler_analysis=capture_compiler_analysis(
-        pallas_executable,
-        stablehlo=pallas_stablehlo.rstrip("\n"),
-        compiler_hlo=pallas_compiler_hlo.rstrip("\n"),
-        ),
+        pallas_compiler_analysis=pallas_compiler_analysis,
         control_compiler_analysis=capture_compiler_analysis(
-        control_executable,
-        stablehlo=control_stablehlo.rstrip("\n"),
-        compiler_hlo=control_compiler_hlo.rstrip("\n"),
+            control_executable,
+            stablehlo=control_stablehlo.rstrip("\n"),
+            compiler_hlo=control_compiler_hlo.rstrip("\n"),
         ),
     )
 
@@ -1053,11 +1057,7 @@ def _expected_plan_files(root: Path, prepared: PreparedResidualProfile) -> None:
         or json.loads((candidate_root / "plan_manifest.json").read_text())
         != prepared.plan.manifest()
         or _sha256(candidate_root / "pallas_stablehlo.txt") != expected.pallas_stablehlo_sha256
-        or _sha256(candidate_root / "pallas_compiler_hlo.txt")
-        != expected.pallas_compiler_hlo_sha256
         or _sha256(candidate_root / "control_stablehlo.txt") != expected.control_stablehlo_sha256
-        or _sha256(candidate_root / "control_compiler_hlo.txt")
-        != expected.control_compiler_hlo_sha256
     ):
         raise ValueError(
             f"SEQAX_RESIDUAL_PROFILE_PLAN_REPLAY_MISMATCH candidate={expected.candidate}"
@@ -1071,7 +1071,7 @@ def _expected_plan_files(root: Path, prepared: PreparedResidualProfile) -> None:
         all_reduce_count=expected.expected_all_reduces,
         reduce_scatter_count=expected.expected_reduce_scatters,
     )
-    validate_compiler_analysis(
+    pallas_analysis = validate_compiler_analysis(
         candidate_root / "pallas_compiler_analysis.json",
         stablehlo_path=candidate_root / "pallas_stablehlo.txt",
         compiler_hlo_path=candidate_root / "pallas_compiler_hlo.txt",
@@ -1081,6 +1081,10 @@ def _expected_plan_files(root: Path, prepared: PreparedResidualProfile) -> None:
         stablehlo_path=candidate_root / "control_stablehlo.txt",
         compiler_hlo_path=candidate_root / "control_compiler_hlo.txt",
     )
+    if pallas_analysis.collectives != expected.expected_pallas_compiler_collectives:
+        raise ValueError(
+            f"SEQAX_RESIDUAL_PROFILE_COMPILER_REPLAY_MISMATCH candidate={expected.candidate}"
+        )
 
 
 def _replay_correctness(
@@ -1455,9 +1459,7 @@ def _validate(
             or saved.pallas_source_sha256 != expected.pallas_source_sha256
             or saved.pallas_manifest_sha256 != expected.pallas_manifest_sha256
             or saved.pallas_stablehlo_sha256 != expected.pallas_stablehlo_sha256
-            or saved.pallas_compiler_hlo_sha256 != expected.pallas_compiler_hlo_sha256
             or saved.control_stablehlo_sha256 != expected.control_stablehlo_sha256
-            or saved.control_compiler_hlo_sha256 != expected.control_compiler_hlo_sha256
             or saved.pallas_compiler_analysis_sha256
             != _sha256(candidate_root / "pallas_compiler_analysis.json")
             or saved.control_compiler_analysis_sha256

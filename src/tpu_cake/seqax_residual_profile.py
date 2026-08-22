@@ -6,6 +6,7 @@ import math
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis
 from tpu_cake.contracts import ArtifactReference, RuntimeIdentity, SourceFileContract
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA
 from tpu_cake.runner import RunMode
@@ -33,9 +34,8 @@ class SeqaxResidualProfileCandidateContract(BaseModel):
     pallas_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pallas_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pallas_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    pallas_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    control_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_pallas_compiler_collectives: CompilerCollectiveAnalysis
     expected_pallas_regions: int = Field(gt=0)
     expected_all_gathers: int = Field(ge=0)
     expected_all_reduces: int = Field(ge=0)
@@ -107,9 +107,7 @@ class SeqaxResidualProfileContract(BaseModel):
             for candidate in self.candidates
             for value in (
                 candidate.pallas_stablehlo_sha256,
-                candidate.pallas_compiler_hlo_sha256,
                 candidate.control_stablehlo_sha256,
-                candidate.control_compiler_hlo_sha256,
             )
         )
         zero = "0" * 64
@@ -405,16 +403,19 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "8de9903ccd4e74e4ded51589cbde9ec869f5a85d34de4ac3a1acbaadff772665"
             ),
             pallas_stablehlo_sha256=(
-                "11e044eb217cf74dd9ba968290b0326511b2e454b222daf7688c33404462a3d5"
-            ),
-            pallas_compiler_hlo_sha256=(
-                "9a4f95b321c0d342eb850c08316f1cc7869eb064c21d362881dd1b7e4e0cfd46"
+                "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae"
             ),
             control_stablehlo_sha256=(
                 "05f377de78b292c90d020b8d865285c807ed2e5d3814c0b4977da09c629cffa6"
             ),
-            control_compiler_hlo_sha256=(
-                "1d1b379f1b31534cf1a4de4d8616358d40bf10089e4d29aee2a26aedfaffed6e"
+            expected_pallas_compiler_collectives=CompilerCollectiveAnalysis(
+                stablehlo_reduce_scatter_count=3,
+                stablehlo_all_gather_count=17,
+                compiler_reduce_scatter_count=3,
+                compiler_all_reduce_count=5,
+                compiler_all_gather_count=8,
+                sparse_core_reduce_scatter_count=3,
+                sparse_core_all_gather_count=8,
             ),
             expected_pallas_regions=9,
             expected_all_gathers=17,
@@ -443,16 +444,19 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "cb1e97845fc0fe78ed5d74a7e956cabed246fd14262261c0a21329ba4082f27f"
             ),
             pallas_stablehlo_sha256=(
-                "015f34a68e49c654f714cbde064d0e7f66082e20d15b702ba4aa5502b48757c8"
-            ),
-            pallas_compiler_hlo_sha256=(
-                "85b3cc1138d01cac9a528a056fd759a377b5185d845f53a0210b87520fbab288"
+                "741390690a9448d24e65bf350d50743b9afc56f88b2594cdf9daa7b6e9f88909"
             ),
             control_stablehlo_sha256=(
                 "e3a7902d71030a1cb180d4d44b77f290d0f3e0933f09df9d84d301cbeba416b2"
             ),
-            control_compiler_hlo_sha256=(
-                "f36bd56bef8b331e1bac2f183d345c5b06488527d6ebe19c6e5f335bce8518ad"
+            expected_pallas_compiler_collectives=CompilerCollectiveAnalysis(
+                stablehlo_reduce_scatter_count=1,
+                stablehlo_all_gather_count=15,
+                compiler_reduce_scatter_count=1,
+                compiler_all_reduce_count=5,
+                compiler_all_gather_count=8,
+                sparse_core_reduce_scatter_count=1,
+                sparse_core_all_gather_count=8,
             ),
             expected_pallas_regions=9,
             expected_all_gathers=15,
