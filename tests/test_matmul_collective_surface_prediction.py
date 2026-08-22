@@ -27,6 +27,7 @@ def test_surface_design_contract_is_canonical_and_keeps_holdout_untouched() -> N
 
     assert saved == default_matmul_collective_surface_design_contract()
     assert len(saved.design_id) == 64
+    assert saved.source_remote_url == "https://github.com/sdrshn-nmbr/tpu-cake.git"
     assert tuple(value.name for value in saved.calibration_scenarios) == tuple(
         f"calibration-{index}" for index in range(16)
     )

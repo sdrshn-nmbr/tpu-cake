@@ -77,6 +77,7 @@ class MatmulCollectiveSurfaceDesignContract(BaseModel):
     identity_schema: str = SEMANTIC_IDENTITY_SCHEMA
     source_branch: str
     require_origin_main: bool
+    source_remote_url: str
     compilation_source_root: str
     project: str
     zone: str
@@ -281,6 +282,7 @@ def default_matmul_collective_surface_design_contract_payload() -> dict[str, obj
         "identity_schema": SEMANTIC_IDENTITY_SCHEMA,
         "source_branch": "main",
         "require_origin_main": True,
+        "source_remote_url": "https://github.com/sdrshn-nmbr/tpu-cake.git",
         "compilation_source_root": "/home/sudarshan/tpu-cake-main",
         "project": "astral-medley-465922-b2",
         "zone": "us-central1-c",

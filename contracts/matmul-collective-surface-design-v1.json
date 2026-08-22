@@ -3,6 +3,7 @@
   "identity_schema": "length-prefixed-v2",
   "source_branch": "main",
   "require_origin_main": true,
+  "source_remote_url": "https://github.com/sdrshn-nmbr/tpu-cake.git",
   "compilation_source_root": "/home/sudarshan/tpu-cake-main",
   "project": "astral-medley-465922-b2",
   "zone": "us-central1-c",
