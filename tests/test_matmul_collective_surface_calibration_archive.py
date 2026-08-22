@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import tpu_cake.matmul_collective_surface_calibration_archive as archive_module
 from tpu_cake.matmul_collective_surface_calibration_archive import (
     copy_parent_archive,
     validate_and_extract_parent_archive,
@@ -83,6 +84,27 @@ def test_parent_archive_copy_and_safe_extraction_execute_real_zstd_boundary(
     _extract(staged, tmp_path / "extracted")
 
     assert (tmp_path / "extracted/parent/data/result.json").read_bytes() == b"xxx"
+
+
+def test_zstd_reads_the_open_archive_descriptor_from_stdin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = _archive(tmp_path, (_directory("parent"), _file("parent/value")))
+    real_popen = subprocess.Popen
+    observed: list[tuple[list[str], object, object]] = []
+
+    def recording_popen(arguments: list[str], **keywords: object) -> subprocess.Popen[bytes]:
+        observed.append((arguments, keywords.get("stdin"), keywords.get("pass_fds")))
+        return real_popen(arguments, **keywords)
+
+    monkeypatch.setattr(archive_module.subprocess, "Popen", recording_popen)
+
+    _extract(archive, tmp_path / "extracted")
+
+    assert len(observed) == 2
+    assert all(arguments == [str(_zstd()), "-dc"] for arguments, _, _ in observed)
+    assert all(isinstance(stdin, int) and pass_fds is None for _, stdin, pass_fds in observed)
 
 
 def test_parent_archive_rejects_copy_hash_mismatch_and_symlink(tmp_path: Path) -> None:

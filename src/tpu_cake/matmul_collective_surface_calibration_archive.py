@@ -223,8 +223,8 @@ def _tar_stream(archive: Path, zstd_path: Path) -> Iterator[tarfile.TarFile]:
         if not stat.S_ISREG(status.st_mode):
             raise ValueError("MATMUL_COLLECTIVE_SURFACE_CALIBRATION_ARCHIVE_INVALID")
         process = subprocess.Popen(
-            [str(zstd_path), "-dc", "--", f"/dev/fd/{descriptor}"],
-            pass_fds=(descriptor,),
+            [str(zstd_path), "-dc"],
+            stdin=descriptor,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

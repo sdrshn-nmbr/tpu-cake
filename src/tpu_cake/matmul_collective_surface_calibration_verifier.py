@@ -681,8 +681,8 @@ def _tar_inventory(archive: Path, parent: dict[str, Any]) -> tuple[tuple[str, in
         if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
             raise ValueError("SURFACE_CALIBRATION_INDEPENDENT_PARENT_ARCHIVE_INVALID")
         process = subprocess.Popen(
-            [str(_ZSTD_PATH), "-dc", "--", f"/dev/fd/{descriptor}"],
-            pass_fds=(descriptor,),
+            [str(_ZSTD_PATH), "-dc"],
+            stdin=descriptor,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
