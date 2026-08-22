@@ -26,6 +26,7 @@ from tpu_cake.inkling_decode_profile import (
 )
 from tpu_cake.matmul_collective_confirmation import MatmulCollectiveConfirmationContract
 from tpu_cake.matmul_collective_confirmation_runner import (
+    finalize_matmul_collective_confirmation,
     run_matmul_collective_confirmation,
     validate_matmul_collective_confirmation,
 )
@@ -256,6 +257,12 @@ def _parser() -> argparse.ArgumentParser:
     verify_matmul_collective = commands.add_parser("verify-matmul-collective-confirmation")
     verify_matmul_collective.add_argument("run_root", type=Path)
     verify_matmul_collective.add_argument("--contract", required=True, type=Path)
+
+    finalize_matmul_collective = commands.add_parser(
+        "finalize-matmul-collective-confirmation"
+    )
+    finalize_matmul_collective.add_argument("run_root", type=Path)
+    finalize_matmul_collective.add_argument("--contract", required=True, type=Path)
 
     finalize_rpa = commands.add_parser("finalize-rpa-run")
     finalize_rpa.add_argument("run_root", type=Path)
@@ -814,6 +821,19 @@ def main() -> None:
         result = validate_matmul_collective_confirmation(args.run_root, contract)
         print(
             "MATMUL_COLLECTIVE_CONFIRMATION_REPLAYED "
+            f"confirmation_id={result.confirmation_id} "
+            f"decision={result.statistics.decision} "
+            f"selected_strategy={result.statistics.selected_strategy} "
+            f"scope={result.claim_scope}"
+        )
+        code = 0
+    elif args.command == "finalize-matmul-collective-confirmation":
+        contract = MatmulCollectiveConfirmationContract.model_validate_json(
+            args.contract.read_text()
+        )
+        result = finalize_matmul_collective_confirmation(args.run_root, contract)
+        print(
+            "MATMUL_COLLECTIVE_CONFIRMATION_FINALIZED "
             f"confirmation_id={result.confirmation_id} "
             f"decision={result.statistics.decision} "
             f"selected_strategy={result.statistics.selected_strategy} "

@@ -116,7 +116,7 @@ def _semantic_compiler_hlo(value: str) -> str:
 
 
 def _plan_manifest(plan: PallasMatmulPlan) -> dict[str, object]:
-    return asdict(plan)
+    return json.loads(json.dumps(asdict(plan)))
 
 
 def _write_text(path: Path, value: str) -> None:
@@ -284,24 +284,45 @@ def _require_source(
     }
 
 
-def _source_manifest() -> tuple[SourceFileContract, ...]:
+def _source_manifest(commit: str | None = None) -> tuple[SourceFileContract, ...]:
     repository_root = Path(__file__).resolve().parents[2]
-    tracked = {
-        Path(value)
-        for value in _git(repository_root, "ls-files", "src/tpu_cake").splitlines()
-        if value.endswith(".py")
-    }
-    tracked.update(
-        {
-            Path("src/tpu_cake/matmul_collective_confirmation.py"),
-            Path("src/tpu_cake/matmul_collective_confirmation_runner.py"),
-        }
+    tree = (
+        _git(repository_root, "ls-files", "src/tpu_cake")
+        if commit is None
+        else _git(
+            repository_root,
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit,
+            "--",
+            "src/tpu_cake",
+        )
     )
+    tracked = {Path(value) for value in tree.splitlines() if value.endswith(".py")}
+    if commit is None:
+        tracked.update(
+            {
+                Path("src/tpu_cake/matmul_collective_confirmation.py"),
+                Path("src/tpu_cake/matmul_collective_confirmation_runner.py"),
+            }
+        )
     names = tuple(sorted(tracked))
     return tuple(
         SourceFileContract(
             path=name.relative_to("src").as_posix(),
-            sha256=_sha256(repository_root / name),
+            sha256=(
+                _sha256(repository_root / name)
+                if commit is None
+                else hashlib.sha256(
+                    subprocess.run(
+                        ["git", "show", f"{commit}:{name.as_posix()}"],
+                        cwd=repository_root,
+                        check=True,
+                        capture_output=True,
+                    ).stdout
+                ).hexdigest()
+            ),
         )
         for name in names
     )
@@ -1069,11 +1090,15 @@ def _validate_source(
         SourceFileContract.model_validate(value)
         for value in json.loads((root / "source_manifest.json").read_text())
     )
-    commit = _git(repository_root, "rev-parse", "HEAD")
+    commit = identity.source_commit
+    uv_lock_blob = subprocess.run(
+        ["git", "show", f"{commit}:uv.lock"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    ).stdout
     if (
-        _git(repository_root, "status", "--porcelain=v1")
-        or commit != identity.source_commit
-        or result.source_commit != identity.source_commit
+        result.source_commit != identity.source_commit
         or state.get("git_commit") != commit
         or state.get("git_dirty") is not False
         or state.get("git_status") != []
@@ -1087,8 +1112,8 @@ def _validate_source(
         }
         or result.source_manifest_sha256 != _sha256(root / "source_manifest.json")
         or result.source_manifest != manifest
-        or manifest != _source_manifest()
-        or state.get("uv_lock_sha256") != _sha256(repository_root / "uv.lock")
+        or manifest != _source_manifest(commit)
+        or state.get("uv_lock_sha256") != hashlib.sha256(uv_lock_blob).hexdigest()
     ):
         raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_SOURCE_MISMATCH")
     for source in manifest:
@@ -1399,12 +1424,18 @@ def _validate(
         receipt = MatmulCollectiveConfirmationReceipt.model_validate_json(
             (root / "receipt.json").read_text()
         )
+        if receipt.verifier_source_manifest != _source_manifest(receipt.verifier_commit):
+            raise ValueError(
+                "MATMUL_COLLECTIVE_CONFIRMATION_VERIFIER_SOURCE_MISMATCH"
+            )
         _validate_manifest(root, receipt.artifacts)
         expected_receipt = MatmulCollectiveConfirmationReceipt(
             confirmation_id=contract.confirmation_id,
             run_id=result.run_id,
             result_sha256=_sha256(root / "result.json"),
             ledger_sha256=_sha256(root / "ledger.sqlite"),
+            verifier_commit=receipt.verifier_commit,
+            verifier_source_manifest=receipt.verifier_source_manifest,
             artifacts=_artifact_manifest(root),
         )
         if receipt != expected_receipt:
@@ -1507,11 +1538,15 @@ def _publish_receipt(
     contract: MatmulCollectiveConfirmationContract,
     result: MatmulCollectiveConfirmationResult,
 ) -> MatmulCollectiveConfirmationResult:
+    repository_root = Path(__file__).resolve().parents[2]
+    verifier_commit, _ = _require_source(repository_root, contract)
     receipt = MatmulCollectiveConfirmationReceipt(
         confirmation_id=contract.confirmation_id,
         run_id=result.run_id,
         result_sha256=_sha256(root / "result.json"),
         ledger_sha256=_sha256(root / "ledger.sqlite"),
+        verifier_commit=verifier_commit,
+        verifier_source_manifest=_source_manifest(verifier_commit),
         artifacts=_artifact_manifest(root),
     )
     _write_json_atomic(root / "receipt.json", receipt.model_dump(mode="json"))
@@ -1539,7 +1574,7 @@ def _execute_confirmation(
     )
     _source_state(repository_root, root)
     _write_json(root / "source_authority.json", source_authority)
-    manifest = _source_manifest()
+    manifest = _source_manifest(identity.source_commit)
     _write_json(
         root / "source_manifest.json",
         [value.model_dump(mode="json") for value in manifest],
@@ -1865,3 +1900,46 @@ def validate_matmul_collective_confirmation(
         require_accepted=True,
         require_receipt=True,
     )
+
+
+def finalize_matmul_collective_confirmation(
+    root: Path,
+    contract: MatmulCollectiveConfirmationContract,
+) -> MatmulCollectiveConfirmationResult:
+    canonical = default_matmul_collective_confirmation_contract(contract.runtime)
+    if contract != canonical:
+        raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_EXTERNAL_CONTRACT_MISMATCH")
+    _reject_symlink_components(root)
+    root = root.resolve()
+    _require_safe_root(root)
+    identity = MatmulCollectiveConfirmationRunIdentity.model_validate_json(
+        (root / "run_identity.json").read_text()
+    )
+    with _exclusive_run_lock(identity.run_id):
+        if (root / "receipt.json").is_file():
+            return validate_matmul_collective_confirmation(root, contract)
+        state = _prepare_output_root(root, identity, contract)
+        if state not in {RunState.TIMED, RunState.ACCEPTED}:
+            raise ValueError("MATMUL_COLLECTIVE_CONFIRMATION_NOT_READY_TO_FINALIZE")
+        result = _validate(
+            root,
+            contract,
+            require_accepted=state is RunState.ACCEPTED,
+            require_receipt=False,
+        )
+        if state is RunState.TIMED:
+            _record_state(
+                root / "ledger.sqlite",
+                result.run_id,
+                RunState.ACCEPTED,
+                {
+                    "result_sha256": _sha256(root / "result.json"),
+                    "candidate_promoted": result.statistics.candidate_promoted,
+                    "selected_strategy": result.statistics.selected_strategy,
+                },
+            )
+            seal_ledger(
+                root / "ledger.sqlite",
+                "MATMUL_COLLECTIVE_CONFIRMATION_LEDGER_SIDECARS",
+            )
+        return _publish_receipt(root, contract, result)

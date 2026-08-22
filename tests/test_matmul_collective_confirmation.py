@@ -21,6 +21,7 @@ from tpu_cake.matmul_collective_confirmation import (
 from tpu_cake.matmul_collective_confirmation_runner import (
     _assessment,
     _host_matches_contract,
+    _plan_manifest,
     _plan_sources,
     _prepare_output_root,
     _semantic_compiler_hlo,
@@ -184,6 +185,9 @@ def test_matmul_collective_plan_replay_does_not_build_executables(
     assert tuple(value.strategy for value in sources) == (
         contract.baseline,
         contract.candidate,
+    )
+    assert json.loads(json.dumps(_plan_manifest(sources[0].plan))) == _plan_manifest(
+        sources[0].plan
     )
 
 
@@ -377,9 +381,18 @@ def test_matmul_collective_confirmation_cli_is_explicit() -> None:
             "contract.json",
         ]
     )
+    finalize = _parser().parse_args(
+        [
+            "finalize-matmul-collective-confirmation",
+            "/tmp/output",
+            "--contract",
+            "contract.json",
+        ]
+    )
 
     assert run.command == "confirm-matmul-collective"
     assert verify.command == "verify-matmul-collective-confirmation"
+    assert finalize.command == "finalize-matmul-collective-confirmation"
 
 
 def test_matmul_collective_confirmation_rejects_changed_diagnostic_authority() -> None:

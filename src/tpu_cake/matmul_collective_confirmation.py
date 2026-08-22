@@ -462,6 +462,8 @@ class MatmulCollectiveConfirmationReceipt(BaseModel):
     status: Literal["passed"] = "passed"
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     ledger_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    verifier_source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
     artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
 
 
