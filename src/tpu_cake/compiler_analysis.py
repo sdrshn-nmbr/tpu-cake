@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from tpu_cake.artifacts import file_sha256, write_json
 
 COMPILER_EXECUTABLE_ANALYSIS_SCHEMA = "compiler-executable-analysis-v2"
+COMPILER_COLLECTIVE_STRATEGY_SURFACE_SCHEMA = "compiler-collective-strategy-surface-v1"
 
 _MEMORY_FIELDS = (
     "generated_code_size_in_bytes",
@@ -125,6 +126,45 @@ class CompilerExecutableAnalysis(BaseModel):
             raise ValueError("compiler cost metrics must be sorted")
         if len(names) != len(set(names)):
             raise ValueError("compiler cost metric names must be unique")
+        return self
+
+
+class CompilerCollectiveStrategyPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rows: int = Field(gt=0)
+    columns: int = Field(gt=0)
+    payload_bytes_per_device: int = Field(gt=0)
+    stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_analysis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    collectives: CompilerCollectiveAnalysis
+
+    @model_validator(mode="after")
+    def payload_matches_shape(self) -> CompilerCollectiveStrategyPoint:
+        if self.payload_bytes_per_device != self.rows * self.columns * 2:
+            raise ValueError("BF16 compiler strategy payload does not match shape")
+        return self
+
+
+class CompilerCollectiveStrategySurface(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    surface_schema: str = COMPILER_COLLECTIVE_STRATEGY_SURFACE_SCHEMA
+    mesh_axes: tuple[tuple[str, int], ...]
+    dtype: str
+    points: tuple[CompilerCollectiveStrategyPoint, ...] = Field(min_length=3)
+
+    @model_validator(mode="after")
+    def surface_is_canonical(self) -> CompilerCollectiveStrategySurface:
+        if self.surface_schema != COMPILER_COLLECTIVE_STRATEGY_SURFACE_SCHEMA:
+            raise ValueError("compiler collective strategy surface schema mismatch")
+        if self.mesh_axes != (("d", 2), ("t", 4)) or self.dtype != "bfloat16":
+            raise ValueError("compiler collective strategy surface geometry mismatch")
+        columns = tuple(point.columns for point in self.points)
+        if columns != tuple(sorted(set(columns))):
+            raise ValueError("compiler collective strategy surface points must be sorted and unique")
         return self
 
 
@@ -256,7 +296,7 @@ def capture_compiler_analysis(
     executable_hlo = executable.as_text()
     if not isinstance(executable_hlo, str) or not executable_hlo:
         raise TypeError("COMPILER_ANALYSIS_EXECUTABLE_HLO_INVALID")
-    if executable_hlo != compiler_hlo:
+    if executable_hlo.rstrip("\n") != compiler_hlo.rstrip("\n"):
         raise ValueError("COMPILER_ANALYSIS_EXECUTABLE_HLO_MISMATCH")
     return CompilerExecutableAnalysis(
         stablehlo_sha256=_text_artifact_sha256(stablehlo),
@@ -289,4 +329,10 @@ def validate_compiler_analysis(
         or analysis.compiler_hlo_sha256 != file_sha256(compiler_hlo_path)
     ):
         raise ValueError("COMPILER_ANALYSIS_PROGRAM_MISMATCH")
+    observed_collectives = analyze_compiler_collectives(
+        stablehlo=stablehlo_path.read_text(),
+        compiler_hlo=compiler_hlo_path.read_text(),
+    )
+    if analysis.collectives != observed_collectives:
+        raise ValueError("COMPILER_ANALYSIS_COLLECTIVE_MISMATCH")
     return analysis

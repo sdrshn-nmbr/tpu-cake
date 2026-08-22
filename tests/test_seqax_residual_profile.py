@@ -14,6 +14,7 @@ from pydantic import ValidationError
 import tpu_cake.seqax_residual_profile as profile_model
 import tpu_cake.seqax_residual_profile_runner as profile_runner
 from tpu_cake.cli import _parser
+from tpu_cake.compiler_analysis import capture_compiler_analysis
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.identity import array_sha256, arrays_sha256
 from tpu_cake.runner import RunMode, _runtime_identity
@@ -41,6 +42,33 @@ from tpu_cake.seqax_residual_profile_runner import (
 from tpu_cake.seqax_runner import expected_seqax_profiler_contract
 from tpu_cake.workloads.seqax_forward import SeqaxResidualNormStrategy
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
+
+
+def _compiler_analysis(stablehlo: str, compiler_hlo: str):
+    memory = SimpleNamespace(
+        generated_code_size_in_bytes=100,
+        argument_size_in_bytes=200,
+        output_size_in_bytes=80,
+        alias_size_in_bytes=0,
+        temp_size_in_bytes=40,
+        host_generated_code_size_in_bytes=0,
+        host_argument_size_in_bytes=0,
+        host_output_size_in_bytes=0,
+        host_alias_size_in_bytes=0,
+        host_temp_size_in_bytes=0,
+        peak_memory_in_bytes=320,
+        serialized_buffer_assignment_proto=b"residual-profile-fixture",
+    )
+    executable = SimpleNamespace(
+        as_text=lambda: compiler_hlo,
+        cost_analysis=lambda: {"bytes accessed": 512.0, "flops": 1024.0},
+        memory_analysis=lambda: memory,
+    )
+    return capture_compiler_analysis(
+        executable,
+        stablehlo=stablehlo.rstrip("\n"),
+        compiler_hlo=compiler_hlo.rstrip("\n"),
+    )
 
 
 def test_seqax_residual_profile_external_contract_matches_factory() -> None:
@@ -367,6 +395,8 @@ def test_seqax_residual_profile_runner_builds_and_replays_a_closed_receipt(
             pallas_compiler_hlo=pallas_compiler,
             control_stablehlo=control_stable,
             control_compiler_hlo=control_compiler,
+            pallas_compiler_analysis=_compiler_analysis(pallas_stable, pallas_compiler),
+            control_compiler_analysis=_compiler_analysis(control_stable, control_compiler),
         )
 
     def correctness_observation(*, root, compiled, host_inputs, seed):
@@ -544,6 +574,19 @@ def test_seqax_residual_profile_runner_builds_and_replays_a_closed_receipt(
     monkeypatch.setattr(profile_runner, "_replay_correctness", replay_correctness)
     monkeypatch.setattr(profile_runner, "_capture_candidate_phase", capture_phase)
     monkeypatch.setattr(profile_runner, "_replay_candidate_profiles", replay_profiles)
+    monkeypatch.setattr(
+        profile_runner,
+        "_capture_compiler_strategy_surface",
+        lambda output, _devices: profile_runner._write_json(
+            output / "compiler_strategy_surface.json",
+            {"fixture": True},
+        ),
+    )
+    monkeypatch.setattr(
+        profile_runner,
+        "_validate_compiler_strategy_surface",
+        lambda output: json.loads((output / "compiler_strategy_surface.json").read_text()),
+    )
 
     root = tmp_path / "run"
     result = run_seqax_residual_profile(root, contract)

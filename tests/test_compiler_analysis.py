@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from tpu_cake.compiler_analysis import (
+    CompilerCollectiveStrategyPoint,
+    CompilerCollectiveStrategySurface,
     CompilerExecutableAnalysis,
     analyze_compiler_collectives,
     capture_compiler_analysis,
+    validate_compiler_analysis,
 )
 
 
@@ -176,6 +181,61 @@ def test_compiler_analysis_rejects_mutated_metric_order() -> None:
 
     with pytest.raises(ValueError, match="metrics must be sorted"):
         CompilerExecutableAnalysis.model_validate(payload)
+
+
+def test_compiler_analysis_replay_rejects_forged_collective_strategy(
+    tmp_path: Path,
+) -> None:
+    stablehlo = '"stablehlo.reduce_scatter"(%arg0)'
+    compiler_hlo = "%rs = bf16[8] reduce-scatter(%arg0)"
+    analysis = capture_compiler_analysis(
+        _Executable({"flops": 2.0}, _memory(), compiler_hlo=compiler_hlo),
+        stablehlo=stablehlo,
+        compiler_hlo=compiler_hlo,
+    )
+    payload = analysis.model_dump(mode="json")
+    payload["collectives"]["compiler_reduce_scatter_count"] = 0
+    stablehlo_path = tmp_path / "stablehlo.txt"
+    compiler_hlo_path = tmp_path / "compiler_hlo.txt"
+    analysis_path = tmp_path / "analysis.json"
+    stablehlo_path.write_text(stablehlo + "\n")
+    compiler_hlo_path.write_text(compiler_hlo + "\n")
+    analysis_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="COLLECTIVE_MISMATCH"):
+        validate_compiler_analysis(
+            analysis_path,
+            stablehlo_path=stablehlo_path,
+            compiler_hlo_path=compiler_hlo_path,
+        )
+
+
+def test_compiler_collective_surface_rejects_unsorted_or_false_bf16_shapes() -> None:
+    collectives = analyze_compiler_collectives(
+        stablehlo='"stablehlo.reduce_scatter"(%arg0)',
+        compiler_hlo="%rs = bf16[8] reduce-scatter(%arg0)",
+    )
+
+    def point(columns: int, *, payload_bytes: int | None = None):
+        return CompilerCollectiveStrategyPoint(
+            rows=128,
+            columns=columns,
+            payload_bytes_per_device=payload_bytes or 128 * columns * 2,
+            stablehlo_sha256="1" * 64,
+            compiler_hlo_sha256="2" * 64,
+            compiler_analysis_sha256="3" * 64,
+            output_sha256="4" * 64,
+            collectives=collectives,
+        )
+
+    with pytest.raises(ValueError, match="payload does not match shape"):
+        point(96, payload_bytes=1)
+    with pytest.raises(ValueError, match="sorted and unique"):
+        CompilerCollectiveStrategySurface(
+            mesh_axes=(("d", 2), ("t", 4)),
+            dtype="bfloat16",
+            points=(point(128), point(96), point(100)),
+        )
 
 
 @pytest.mark.parametrize(

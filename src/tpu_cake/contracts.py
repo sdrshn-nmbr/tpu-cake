@@ -54,6 +54,7 @@ class ArtifactRole(StrEnum):
     PLAN_MANIFEST = "plan_manifest"
     STABLEHLO = "stablehlo"
     COMPILER_HLO = "compiler_hlo"
+    COMPILER_ANALYSIS = "compiler_analysis"
     CORRECTNESS_INPUT = "correctness_input"
     CORRECTNESS_OUTPUT = "correctness_output"
     ORACLE_OUTPUT = "oracle_output"

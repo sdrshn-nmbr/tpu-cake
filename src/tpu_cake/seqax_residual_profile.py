@@ -244,6 +244,8 @@ class SeqaxResidualCandidateResult(BaseModel):
     pallas_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     control_stablehlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     control_compiler_hlo_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pallas_compiler_analysis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    control_compiler_analysis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     cost_model_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     timing_input_sha256: tuple[str, ...] = Field(min_length=13, max_length=13)
     timing_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -334,6 +336,7 @@ class SeqaxResidualProfileResult(BaseModel):
     source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_manifest: tuple[SourceFileContract, ...]
+    compiler_strategy_surface_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidates: tuple[SeqaxResidualCandidateResult, ...] = Field(min_length=2, max_length=2)
     comparison: SeqaxResidualProfileComparison
     correctness_scope: str = "independent-bf16-numerical-diagnostic-on-fixed-surface"
@@ -396,22 +399,22 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "a9910167578c14c0d0a0a944a64477dfa471282024134d961e3994eb24e39cc5"
             ),
             pallas_source_sha256=(
-                "2a68cd7c25a02f306bbbee11acc3845ce60d57bab9b5149cb5c04cf24905a2c7"
+                "7226cc31e4e279ec3ef68c9c25a262978774cbddd6b0891c84ed890f29ef024f"
             ),
             pallas_manifest_sha256=(
-                "eaaf2c271d6aa58d55379c026e70e370e1b34296371ff987bfc101a8f01c6228"
+                "8de9903ccd4e74e4ded51589cbde9ec869f5a85d34de4ac3a1acbaadff772665"
             ),
             pallas_stablehlo_sha256=(
-                "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae"
+                "11e044eb217cf74dd9ba968290b0326511b2e454b222daf7688c33404462a3d5"
             ),
             pallas_compiler_hlo_sha256=(
-                "ec878d40b14ea707d673a7b76ea4f21f7ac8736aeeebe12d9aaabefe0d72a318"
+                "9a4f95b321c0d342eb850c08316f1cc7869eb064c21d362881dd1b7e4e0cfd46"
             ),
             control_stablehlo_sha256=(
                 "05f377de78b292c90d020b8d865285c807ed2e5d3814c0b4977da09c629cffa6"
             ),
             control_compiler_hlo_sha256=(
-                "70c8ed1607151a9b6894430ad2df0373a9cf4fb1b06f830c820b6daff62a88da"
+                "1d1b379f1b31534cf1a4de4d8616358d40bf10089e4d29aee2a26aedfaffed6e"
             ),
             expected_pallas_regions=9,
             expected_all_gathers=17,
@@ -434,22 +437,22 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "e9e2c0006672bab2a5981b109dc5eff67c30cb53664ed521175752f3ca748701"
             ),
             pallas_source_sha256=(
-                "565900d77461b23e889603ca5beeb85aff0b3ce045dbeb508988308d77a4eac1"
+                "01918b28a8df579c63b3590da07d993302ce9336fadb3574ab31310ee957e7ea"
             ),
             pallas_manifest_sha256=(
-                "4b29f8cd1d0ff96de8d910c1e8bad0f6fc4f409a13e738cf080f6ea3ec58a453"
+                "cb1e97845fc0fe78ed5d74a7e956cabed246fd14262261c0a21329ba4082f27f"
             ),
             pallas_stablehlo_sha256=(
-                "741390690a9448d24e65bf350d50743b9afc56f88b2594cdf9daa7b6e9f88909"
+                "015f34a68e49c654f714cbde064d0e7f66082e20d15b702ba4aa5502b48757c8"
             ),
             pallas_compiler_hlo_sha256=(
-                "b4596c4bab7071eab8f98ba18afbbbb0747fd040ca70ee982edfad0515a5ff17"
+                "85b3cc1138d01cac9a528a056fd759a377b5185d845f53a0210b87520fbab288"
             ),
             control_stablehlo_sha256=(
                 "e3a7902d71030a1cb180d4d44b77f290d0f3e0933f09df9d84d301cbeba416b2"
             ),
             control_compiler_hlo_sha256=(
-                "a6c6e7437611907d9f3564901660eb29f334a8f800d53e040e99d3c4d160b7ba"
+                "f36bd56bef8b331e1bac2f183d345c5b06488527d6ebe19c6e5f335bce8518ad"
             ),
             expected_pallas_regions=9,
             expected_all_gathers=15,

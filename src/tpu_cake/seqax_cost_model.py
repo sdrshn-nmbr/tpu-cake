@@ -14,6 +14,7 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.ir import Block, Operation, SSAValue
 
+from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis
 from tpu_cake.cost_model import HardwareRateModel
 from tpu_cake.dialects.distributed_tensor import (
     AllGatherOp,
@@ -111,6 +112,7 @@ class SeqaxCostModelReport(BaseModel):
     hardware: HardwareRateModel
     counts: SeqaxPhysicalCounts
     collectives: tuple[CollectiveTraffic, ...]
+    compiler_collectives: CompilerCollectiveAnalysis | None
     balance: DeviceBalance
     predicted_limiting_resource: str
     approximations: tuple[str, ...]
@@ -827,6 +829,7 @@ def estimate_seqax_forward(
         hardware=hardware,
         counts=counts,
         collectives=collectives,
+        compiler_collectives=None,
         balance=DeviceBalance(
             derivable=True,
             devices=mesh_devices,

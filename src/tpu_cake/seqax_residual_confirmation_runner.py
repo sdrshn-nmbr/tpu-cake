@@ -20,6 +20,7 @@ import jax
 import numpy as np
 
 from tpu_cake.canonical import canonical_text
+from tpu_cake.compiler_analysis import write_compiler_analysis
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
@@ -253,6 +254,8 @@ def _expected_files(
         "pallas_compiler_hlo.txt",
         "control_stablehlo.txt",
         "control_compiler_hlo.txt",
+        "pallas_compiler_analysis.json",
+        "control_compiler_analysis.json",
         "pre_timing_output.npy",
         "post_timing_output.npy",
     )
@@ -421,6 +424,8 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "pallas_compiler_hlo.txt": ArtifactRole.COMPILER_HLO,
         "control_stablehlo.txt": ArtifactRole.STABLEHLO,
         "control_compiler_hlo.txt": ArtifactRole.COMPILER_HLO,
+        "pallas_compiler_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
+        "control_compiler_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
         "pre_timing_output.npy": ArtifactRole.CORRECTNESS_OUTPUT,
         "post_timing_output.npy": ArtifactRole.CORRECTNESS_OUTPUT,
         "cpu.npy": ArtifactRole.ORACLE_OUTPUT,
@@ -893,6 +898,14 @@ def _execute_confirmation(
         _write_text(candidate_root / "pallas_compiler_hlo.txt", value.pallas_compiler_hlo)
         _write_text(candidate_root / "control_stablehlo.txt", value.control_stablehlo)
         _write_text(candidate_root / "control_compiler_hlo.txt", value.control_compiler_hlo)
+        write_compiler_analysis(
+            candidate_root / "pallas_compiler_analysis.json",
+            value.pallas_compiler_analysis,
+        )
+        write_compiler_analysis(
+            candidate_root / "control_compiler_analysis.json",
+            value.control_compiler_analysis,
+        )
     _record_state(
         ledger_path,
         run_id,
@@ -954,7 +967,10 @@ def _execute_confirmation(
     statistics_record = confirmation_statistics(contract, rounds)
     _write_json(root / "rounds.json", [value.model_dump(mode="json") for value in rounds])
     post_outputs = []
-    for candidate in (contract.baseline, contract.candidate):
+    for candidate in (
+        SeqaxResidualNormStrategy.STANDARD,
+        SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+    ):
         output = _execute(compiled_by_candidate[candidate].pallas_executable, resident[candidate])
         expected_hash = next(value.sha256 for value in pre_outputs if value.candidate is candidate)
         if array_sha256(output) != expected_hash:

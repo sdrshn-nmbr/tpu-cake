@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 import tpu_cake.seqax_residual_confirmation_runner as confirmation_runner
 from tpu_cake.cli import _parser
+from tpu_cake.compiler_analysis import capture_compiler_analysis
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.identity import array_sha256, arrays_sha256
 from tpu_cake.runner import _runtime_identity
@@ -42,6 +43,33 @@ from tpu_cake.seqax_residual_profile_runner import (
     _save_inputs,
 )
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
+
+
+def _compiler_analysis(stablehlo: str, compiler_hlo: str):
+    memory = SimpleNamespace(
+        generated_code_size_in_bytes=100,
+        argument_size_in_bytes=200,
+        output_size_in_bytes=80,
+        alias_size_in_bytes=0,
+        temp_size_in_bytes=40,
+        host_generated_code_size_in_bytes=0,
+        host_argument_size_in_bytes=0,
+        host_output_size_in_bytes=0,
+        host_alias_size_in_bytes=0,
+        host_temp_size_in_bytes=0,
+        peak_memory_in_bytes=320,
+        serialized_buffer_assignment_proto=b"residual-confirmation-fixture",
+    )
+    executable = SimpleNamespace(
+        as_text=lambda: compiler_hlo,
+        cost_analysis=lambda: {"bytes accessed": 512.0, "flops": 1024.0},
+        memory_analysis=lambda: memory,
+    )
+    return capture_compiler_analysis(
+        executable,
+        stablehlo=stablehlo.rstrip("\n"),
+        compiler_hlo=compiler_hlo.rstrip("\n"),
+    )
 
 
 def _rounds(
@@ -79,7 +107,7 @@ def test_seqax_residual_confirmation_contract_is_canonical_json() -> None:
     assert saved.source_profile_archive_sha256 == SOURCE_PROFILE_ARCHIVE_SHA256
     assert saved.source_profile_receipt_sha256 == SOURCE_PROFILE_RECEIPT_SHA256
     assert (
-        saved.confirmation_id == "6aeae1c3c7e6ed733fa29eaa286a32fa90d545649bd41c6e277b27cccf8fd004"
+        saved.confirmation_id == "9cebd837c7ee307766867ef97f671d9d6807093c48c34ec7eda9d571912f5b77"
     )
     assert saved.analysis_index == 3
     assert not saved.allow_early_stopping
@@ -273,6 +301,8 @@ def test_seqax_residual_confirmation_runner_builds_and_replays_a_closed_receipt(
             pallas_compiler_hlo=pallas_compiler,
             control_stablehlo=control_stable,
             control_compiler_hlo=control_compiler,
+            pallas_compiler_analysis=_compiler_analysis(pallas_stable, pallas_compiler),
+            control_compiler_analysis=_compiler_analysis(control_stable, control_compiler),
         )
 
     def correctness_observation(*, root, compiled, host_inputs, seed):

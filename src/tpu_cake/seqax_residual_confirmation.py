@@ -89,8 +89,8 @@ class SeqaxResidualConfirmationContract(BaseModel):
         if self.compilation_source_root != SEQAX_RESIDUAL_PROFILE_COMPILATION_ROOT:
             raise ValueError("Seqax residual confirmation compilation root mismatch")
         if (self.baseline, self.candidate) != (
-            SeqaxResidualNormStrategy.STANDARD,
             SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+            SeqaxResidualNormStrategy.STANDARD,
         ):
             raise ValueError("Seqax residual confirmation candidate pair mismatch")
         if self.timing_seed != SEQAX_RESIDUAL_PROFILE_TIMING_SEED:
@@ -287,8 +287,8 @@ def default_seqax_residual_confirmation_contract(
         source_profile_result_sha256=SOURCE_PROFILE_RESULT_SHA256,
         numerical_contract_id=default_seqax_bf16_validation_contract().contract_id,
         compilation_source_root=SEQAX_RESIDUAL_PROFILE_COMPILATION_ROOT,
-        baseline=SeqaxResidualNormStrategy.STANDARD,
-        candidate=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+        baseline=SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+        candidate=SeqaxResidualNormStrategy.STANDARD,
         timing_seed=SEQAX_RESIDUAL_PROFILE_TIMING_SEED,
         correctness_seeds=SEQAX_PALLAS_CORRECTNESS_SEEDS,
         warmup_iterations=5,

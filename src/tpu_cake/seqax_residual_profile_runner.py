@@ -17,10 +17,19 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.sharding import NamedSharding
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from xdsl.dialects.builtin import ModuleOp
 
 from tpu_cake.canonical import canonical_text
+from tpu_cake.compiler_analysis import (
+    CompilerCollectiveStrategyPoint,
+    CompilerCollectiveStrategySurface,
+    CompilerExecutableAnalysis,
+    capture_compiler_analysis,
+    validate_compiler_analysis,
+    write_compiler_analysis,
+)
 from tpu_cake.contracts import (
     ArtifactReference,
     ArtifactRole,
@@ -93,6 +102,8 @@ from tpu_cake.workloads.seqax_oracle import (
 )
 from tpu_cake.xprof_evidence import assess_capture
 
+_COMPILER_STRATEGY_SURFACE_COLUMNS = (96, 100, 104, 108, 112, 116, 120, 124, 128)
+
 
 @dataclass(frozen=True)
 class PreparedResidualProfile:
@@ -112,6 +123,8 @@ class CompiledResidualProfile:
     pallas_compiler_hlo: str
     control_stablehlo: str
     control_compiler_hlo: str
+    pallas_compiler_analysis: CompilerExecutableAnalysis
+    control_compiler_analysis: CompilerExecutableAnalysis
 
 
 def _sha256(path: Path) -> str:
@@ -169,6 +182,7 @@ def _source_manifest() -> tuple[SourceFileContract, ...]:
     paths = (
         package / "canonical.py",
         package / "cli.py",
+        package / "compiler_analysis.py",
         package / "contracts.py",
         package / "cost_model.py",
         package / "dtensor_interpreter.py",
@@ -350,11 +364,11 @@ def _compile(
     resident = _resident_inputs(host_inputs, prepared, mesh)
     pallas_lowered = pallas_callable.lower(*resident)
     pallas_stablehlo = _canonical_hlo(str(pallas_lowered.compiler_ir(dialect="stablehlo")))
-    pallas_compiler_hlo = _canonical_hlo(_compiler_hlo(pallas_lowered))
+    pallas_pre_optimization_hlo = _canonical_hlo(_compiler_hlo(pallas_lowered))
     expected = prepared.expected
     _validate_compiled_program(
         pallas_stablehlo,
-        pallas_compiler_hlo,
+        pallas_pre_optimization_hlo,
         pallas_region_count=prepared.plan.pallas_region_count,
         pallas_vector_region_count=prepared.plan.pallas_vector_region_count,
         all_gather_count=expected.expected_all_gathers,
@@ -381,7 +395,10 @@ def _compile(
     ).build(devices=devices)
     control_lowered = control_callable.lower(*resident)
     control_stablehlo = _canonical_hlo(str(control_lowered.compiler_ir(dialect="stablehlo")))
-    control_compiler_hlo = _canonical_hlo(_compiler_hlo(control_lowered))
+    pallas_executable = pallas_lowered.compile()
+    control_executable = control_lowered.compile()
+    pallas_compiler_hlo = _canonical_hlo(pallas_executable.as_text())
+    control_compiler_hlo = _canonical_hlo(control_executable.as_text())
     identities = (
         _text_sha256(pallas_stablehlo),
         _text_sha256(pallas_compiler_hlo),
@@ -401,14 +418,137 @@ def _compile(
         )
     return CompiledResidualProfile(
         prepared=prepared,
-        pallas_executable=pallas_lowered.compile(),
-        control_executable=control_lowered.compile(),
+        pallas_executable=pallas_executable,
+        control_executable=control_executable,
         mesh=mesh,
         pallas_stablehlo=pallas_stablehlo,
         pallas_compiler_hlo=pallas_compiler_hlo,
         control_stablehlo=control_stablehlo,
         control_compiler_hlo=control_compiler_hlo,
+        pallas_compiler_analysis=capture_compiler_analysis(
+        pallas_executable,
+        stablehlo=pallas_stablehlo.rstrip("\n"),
+        compiler_hlo=pallas_compiler_hlo.rstrip("\n"),
+        ),
+        control_compiler_analysis=capture_compiler_analysis(
+        control_executable,
+        stablehlo=control_stablehlo.rstrip("\n"),
+        compiler_hlo=control_compiler_hlo.rstrip("\n"),
+        ),
     )
+
+
+def _capture_compiler_strategy_surface(
+    root: Path,
+    devices: tuple[Any, ...],
+) -> CompilerCollectiveStrategySurface:
+    mesh = Mesh(np.asarray(devices, dtype=object).reshape(2, 4), ("d", "t"))
+    points = []
+    for columns in _COMPILER_STRATEGY_SURFACE_COLUMNS:
+        value = jax.device_put(
+            jnp.ones((128, columns), jnp.bfloat16),
+            NamedSharding(mesh, P()),
+        )
+        residual = jax.device_put(
+            jnp.ones((128, columns), jnp.bfloat16),
+            NamedSharding(mesh, P(None, "t")),
+        )
+
+        def boundary(argument: jax.Array, local_residual: jax.Array) -> jax.Array:
+            shard = jax.lax.psum_scatter(
+                argument,
+                "t",
+                scatter_dimension=1,
+                tiled=True,
+            ) * jnp.bfloat16(0.25)
+            shard = (shard + local_residual) * jnp.bfloat16(0.5)
+            return jax.lax.all_gather(
+                shard,
+                "t",
+                axis=1,
+                tiled=True,
+                to="invarying",
+            )
+
+        mapped = jax.shard_map(
+            boundary,
+            mesh=mesh,
+            in_specs=(P(), P(None, "t")),
+            out_specs=P(),
+            axis_names={"t"},
+        )
+        lowered = jax.jit(mapped).lower(value, residual)
+        stablehlo = _canonical_hlo(str(lowered.compiler_ir(dialect="stablehlo")))
+        executable = lowered.compile()
+        compiler_hlo = _canonical_hlo(executable.as_text())
+        analysis = capture_compiler_analysis(
+            executable,
+            stablehlo=stablehlo.rstrip("\n"),
+            compiler_hlo=compiler_hlo.rstrip("\n"),
+        )
+        output = np.asarray(executable(value, residual))
+        output_f32 = output.astype(np.float32)
+        if not np.array_equal(output_f32, np.ones((128, columns), dtype=np.float32)):
+            raise ValueError(
+                f"SEQAX_RESIDUAL_COMPILER_SURFACE_OUTPUT_MISMATCH columns={columns}"
+            )
+        point_root = root / "compiler_strategy_surface" / str(columns)
+        _write_text(point_root / "stablehlo.txt", stablehlo)
+        _write_text(point_root / "compiler_hlo.txt", compiler_hlo)
+        write_compiler_analysis(point_root / "compiler_analysis.json", analysis)
+        _save_array(point_root / "output.npy", output_f32)
+        points.append(
+            CompilerCollectiveStrategyPoint(
+                rows=128,
+                columns=columns,
+                payload_bytes_per_device=128 * columns * 2,
+                stablehlo_sha256=_sha256(point_root / "stablehlo.txt"),
+                compiler_hlo_sha256=_sha256(point_root / "compiler_hlo.txt"),
+                compiler_analysis_sha256=_sha256(point_root / "compiler_analysis.json"),
+                output_sha256=_sha256(point_root / "output.npy"),
+                collectives=analysis.collectives,
+            )
+        )
+    surface = CompilerCollectiveStrategySurface(
+        mesh_axes=(("d", 2), ("t", 4)),
+        dtype="bfloat16",
+        points=tuple(points),
+    )
+    _write_json(root / "compiler_strategy_surface.json", surface.model_dump(mode="json"))
+    return surface
+
+
+def _validate_compiler_strategy_surface(root: Path) -> CompilerCollectiveStrategySurface:
+    surface = CompilerCollectiveStrategySurface.model_validate_json(
+        (root / "compiler_strategy_surface.json").read_text()
+    )
+    if tuple(point.columns for point in surface.points) != _COMPILER_STRATEGY_SURFACE_COLUMNS:
+        raise ValueError("SEQAX_RESIDUAL_COMPILER_SURFACE_POINTS_MISMATCH")
+    for point in surface.points:
+        point_root = root / "compiler_strategy_surface" / str(point.columns)
+        analysis = validate_compiler_analysis(
+            point_root / "compiler_analysis.json",
+            stablehlo_path=point_root / "stablehlo.txt",
+            compiler_hlo_path=point_root / "compiler_hlo.txt",
+        )
+        output = _load_array(point_root / "output.npy")
+        if (
+            point.stablehlo_sha256 != _sha256(point_root / "stablehlo.txt")
+            or point.compiler_hlo_sha256 != _sha256(point_root / "compiler_hlo.txt")
+            or point.compiler_analysis_sha256 != _sha256(
+                point_root / "compiler_analysis.json"
+            )
+            or point.output_sha256 != _sha256(point_root / "output.npy")
+            or point.collectives != analysis.collectives
+            or not np.array_equal(
+                output,
+                np.ones((point.rows, point.columns), dtype=np.float32),
+            )
+        ):
+            raise ValueError(
+                f"SEQAX_RESIDUAL_COMPILER_SURFACE_REPLAY_MISMATCH columns={point.columns}"
+            )
+    return surface
 
 
 def _execute(executable: Any, inputs: tuple[jax.Array, ...]) -> np.ndarray:
@@ -482,8 +622,11 @@ def _expected_profile(
     )
 
 
-def _cost_report(prepared: PreparedResidualProfile) -> SeqaxCostModelReport:
-    return estimate_seqax_forward(
+def _cost_report(
+    prepared: PreparedResidualProfile,
+    compiler_analysis: CompilerExecutableAnalysis,
+) -> SeqaxCostModelReport:
+    report = estimate_seqax_forward(
         prepared.distributed,
         hardware=tpu7x_tensorcore_rates(),
         source=MetricSource(
@@ -493,6 +636,9 @@ def _cost_report(prepared: PreparedResidualProfile) -> SeqaxCostModelReport:
             field="canonical distributed tensor program",
         ),
         expected_schedule_sha256=prepared.plan.distributed_schedule_sha256,
+    )
+    return report.model_copy(
+        update={"compiler_collectives": compiler_analysis.collectives}
     )
 
 
@@ -762,12 +908,23 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "source_state.json": ArtifactRole.SOURCE_STATE,
         "source_diff.patch": ArtifactRole.SOURCE_DIFF,
         "source_manifest.json": ArtifactRole.BACKEND_MANIFEST,
+        "compiler_strategy_surface.json": ArtifactRole.COST_MODEL_INPUT,
         "comparison.json": ArtifactRole.SEARCH_EVIDENCE,
         "result.json": ArtifactRole.TRACE_RESULT,
         "ledger.sqlite": ArtifactRole.EXECUTION_LEDGER,
     }
     if relative in fixed:
         return fixed[relative]
+    if relative.startswith("compiler_strategy_surface/"):
+        surface_roles = {
+            "stablehlo.txt": ArtifactRole.STABLEHLO,
+            "compiler_hlo.txt": ArtifactRole.COMPILER_HLO,
+            "compiler_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
+            "output.npy": ArtifactRole.CORRECTNESS_OUTPUT,
+        }
+        if path.name in surface_roles:
+            return surface_roles[path.name]
+        raise ValueError(f"SEQAX_RESIDUAL_PROFILE_ARTIFACT_UNRECOGNIZED path={relative}")
     if not relative.startswith("candidates/"):
         raise ValueError(f"SEQAX_RESIDUAL_PROFILE_ARTIFACT_UNRECOGNIZED path={relative}")
     name = path.name
@@ -780,6 +937,8 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "pallas_compiler_hlo.txt": ArtifactRole.COMPILER_HLO,
         "control_stablehlo.txt": ArtifactRole.STABLEHLO,
         "control_compiler_hlo.txt": ArtifactRole.COMPILER_HLO,
+        "pallas_compiler_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
+        "control_compiler_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
         "cost_model.json": ArtifactRole.COST_MODEL,
         "timing_output.npy": ArtifactRole.CORRECTNESS_OUTPUT,
         "cpu.npy": ArtifactRole.CORRECTNESS_OUTPUT,
@@ -911,6 +1070,16 @@ def _expected_plan_files(root: Path, prepared: PreparedResidualProfile) -> None:
         all_gather_count=expected.expected_all_gathers,
         all_reduce_count=expected.expected_all_reduces,
         reduce_scatter_count=expected.expected_reduce_scatters,
+    )
+    validate_compiler_analysis(
+        candidate_root / "pallas_compiler_analysis.json",
+        stablehlo_path=candidate_root / "pallas_stablehlo.txt",
+        compiler_hlo_path=candidate_root / "pallas_compiler_hlo.txt",
+    )
+    validate_compiler_analysis(
+        candidate_root / "control_compiler_analysis.json",
+        stablehlo_path=candidate_root / "control_stablehlo.txt",
+        compiler_hlo_path=candidate_root / "control_compiler_hlo.txt",
     )
 
 
@@ -1269,10 +1438,16 @@ def _validate(
     )
     if result.run_id != expected_run_id:
         raise ValueError("SEQAX_RESIDUAL_PROFILE_RUN_ID_MISMATCH")
+    _validate_compiler_strategy_surface(root)
+    if result.compiler_strategy_surface_sha256 != _sha256(
+        root / "compiler_strategy_surface.json"
+    ):
+        raise ValueError("SEQAX_RESIDUAL_COMPILER_SURFACE_IDENTITY_MISMATCH")
     prepared = _prepare_candidates(trusted_contract)
     replayed_candidates = []
     for value, saved in zip(prepared, result.candidates, strict=True):
         expected = value.expected
+        candidate_root = root / "candidates" / expected.candidate
         if (
             saved.candidate is not expected.candidate
             or saved.distributed_schedule_sha256 != expected.distributed_schedule_sha256
@@ -1283,14 +1458,22 @@ def _validate(
             or saved.pallas_compiler_hlo_sha256 != expected.pallas_compiler_hlo_sha256
             or saved.control_stablehlo_sha256 != expected.control_stablehlo_sha256
             or saved.control_compiler_hlo_sha256 != expected.control_compiler_hlo_sha256
+            or saved.pallas_compiler_analysis_sha256
+            != _sha256(candidate_root / "pallas_compiler_analysis.json")
+            or saved.control_compiler_analysis_sha256
+            != _sha256(candidate_root / "control_compiler_analysis.json")
         ):
             raise ValueError(
                 f"SEQAX_RESIDUAL_PROFILE_CANDIDATE_IDENTITY_MISMATCH candidate={expected.candidate}"
             )
         _expected_plan_files(root, value)
         _replay_correctness(root=root, prepared=value, saved=saved.correctness)
-        candidate_root = root / "candidates" / expected.candidate
-        cost_report = _cost_report(value)
+        compiler_analysis = validate_compiler_analysis(
+            candidate_root / "pallas_compiler_analysis.json",
+            stablehlo_path=candidate_root / "pallas_stablehlo.txt",
+            compiler_hlo_path=candidate_root / "pallas_compiler_hlo.txt",
+        )
+        cost_report = _cost_report(value, compiler_analysis)
         if (
             json.loads((candidate_root / "cost_model.json").read_text())
             != cost_report.model_dump(mode="json")
@@ -1469,6 +1652,15 @@ def run_seqax_residual_profile(
         _write_text(candidate_root / "pallas_compiler_hlo.txt", value.pallas_compiler_hlo)
         _write_text(candidate_root / "control_stablehlo.txt", value.control_stablehlo)
         _write_text(candidate_root / "control_compiler_hlo.txt", value.control_compiler_hlo)
+        write_compiler_analysis(
+            candidate_root / "pallas_compiler_analysis.json",
+            value.pallas_compiler_analysis,
+        )
+        write_compiler_analysis(
+            candidate_root / "control_compiler_analysis.json",
+            value.control_compiler_analysis,
+        )
+    _capture_compiler_strategy_surface(root, devices)
     with ExperimentLedger(ledger_path) as ledger:
         ledger.transition(
             run_id,
@@ -1518,7 +1710,7 @@ def run_seqax_residual_profile(
                 f"candidate={value.prepared.expected.candidate}"
             )
         _save_array(candidate_root / "timing_output.npy", timing_output)
-        cost_report = _cost_report(value.prepared)
+        cost_report = _cost_report(value.prepared, value.pallas_compiler_analysis)
         if int(_cost_metric(cost_report, "seqax_ici_bidirectional_bytes_per_device")) != (
             value.prepared.expected.expected_ring_equivalent_ici_bytes_per_device
         ):
@@ -1581,6 +1773,12 @@ def run_seqax_residual_profile(
                 pallas_compiler_hlo_sha256=_sha256(candidate_root / "pallas_compiler_hlo.txt"),
                 control_stablehlo_sha256=_sha256(candidate_root / "control_stablehlo.txt"),
                 control_compiler_hlo_sha256=_sha256(candidate_root / "control_compiler_hlo.txt"),
+                pallas_compiler_analysis_sha256=_sha256(
+                    candidate_root / "pallas_compiler_analysis.json"
+                ),
+                control_compiler_analysis_sha256=_sha256(
+                    candidate_root / "control_compiler_analysis.json"
+                ),
                 cost_model_sha256=_sha256(candidate_root / "cost_model.json"),
                 timing_input_sha256=arrays_sha256(timing_host_inputs),
                 timing_output_sha256=array_sha256(timing_output),
@@ -1600,6 +1798,9 @@ def run_seqax_residual_profile(
         source_state_sha256=_sha256(root / "source_state.json"),
         source_manifest_sha256=_sha256(root / "source_manifest.json"),
         source_manifest=manifest,
+        compiler_strategy_surface_sha256=_sha256(
+            root / "compiler_strategy_surface.json"
+        ),
         candidates=tuple(candidate_results),
         comparison=comparison,
     )
