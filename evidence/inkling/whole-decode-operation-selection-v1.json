@@ -1,0 +1,410 @@
+{
+  "schema_version": "inkling-decode-operation-selection-v1",
+  "report_id": "3596011de95c59863415556812fa83c55b7d7d8c0c90fe5d4a05e66d55006af5",
+  "contract_id": "2ea6bf7290bf1ffc2f761f3b941b28890119ecc64943d6f4416272f6ed9d35b3",
+  "profile_contract_id": "9cf382bff0443cd2d2dc91b3871fac1d5759f38ad81f66ea9addc743a375a42c",
+  "profile_request_sha256": "75be93143a0838aaa865bd935c7133bea85c0eaeb1ffa6c607e96db1a56c7073",
+  "prompt_corpus_sha256": "8a4205e9c7db38890b8a8efb82f0f8dceef7e3d11f06378bc34dafb0afd8fff6",
+  "xplane_sha256": "ac03e0594d17e36602e776cd2f3818c3e92c1da011948e82ac3ad2be0a5404cb",
+  "op_profile_sha256": "b828bd1a5b2d7e75c8ba99669029a55ebaec95fea3ddf5b0b81aadab90db3cfa",
+  "hlo_stats_sha256": "bf2ef9aa8cecd73a5b950c2152c69e34644aa6e4d37382eb022c9f3b6e61f363",
+  "producer_source_sha256": "a7b2ac87f5153b600802ac7a3ef1f859aeb19483b1b8b989bf5f3883a39cf2b9",
+  "verifier_source_sha256": "03045974534a1f7a048349993487f9b1fab83112b5daf9cca9a0909b09f2dc98",
+  "uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+  "main_program_name": "jit_jitted_run_model(16089689990988916858)",
+  "main_program_id": "16089689990988916858",
+  "main_program_semantic_hlo_sha256": "59b0140305f4e5c9780bbc3c8bdbbd8fbcba84669b9ae7fd3e3baee35602038a",
+  "main_program_raw_time_ps": 11930644036307,
+  "attributed_raw_time_ps": 11930430317942,
+  "unattributed_raw_time_ps": 213718365,
+  "unattributed_device_op_share_of_main_program": "0.000017913397160255413647629306238248562140309396070471",
+  "selection_rule": "largest-xprof-device-op-self-time-partition",
+  "operation_ranking": [
+    {
+      "rank": 1,
+      "key": "custom-call-family/gmm_v2-g_32-m_288-k_4096-n_2048-tm_128-tk_4096-tn_2048",
+      "source": "custom-call-family",
+      "raw_time_ps": 2941661857105,
+      "occurrences": 40362,
+      "device_op_share_of_main_program": "0.24656354243350295800183192992997596106566944597364",
+      "member_names": [
+        "gmm_v2-g_32-m_288-k_4096-n_2048-tm_128-tk_4096-tn_2048.83 and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 2,
+      "key": "xprof-category/async-done",
+      "source": "xprof-category",
+      "raw_time_ps": 2083737661092,
+      "occurrences": 170157,
+      "device_op_share_of_main_program": "0.17465424789733297059165723465796991187341491453537",
+      "member_names": [
+        "async-done"
+      ]
+    },
+    {
+      "rank": 3,
+      "key": "custom-call-family/gmm_v2-g_32-m_288-k_2048-n_4096-tm_128-tk_2048-tn_4096",
+      "source": "custom-call-family",
+      "raw_time_ps": 1495844894392,
+      "occurrences": 20179,
+      "device_op_share_of_main_program": "0.12537838609884654473884045992545913041126324380798",
+      "member_names": [
+        "gmm_v2-g_32-m_288-k_2048-n_4096-tm_128-tk_2048-tn_4096.41 and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 4,
+      "key": "custom-call-family/RPAd-p_128-bq_1_1-bkv_512_512-sw_512",
+      "source": "custom-call-family",
+      "raw_time_ps": 1326878398602,
+      "occurrences": 17680,
+      "device_op_share_of_main_program": "0.11121599090242580520428120145468781222410538790525",
+      "member_names": [
+        "RPAd-p_128-bq_1_1-bkv_512_512-sw_512.4 and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 5,
+      "key": "xprof-category/custom fusion",
+      "source": "xprof-category",
+      "raw_time_ps": 872606428028,
+      "occurrences": 252289,
+      "device_op_share_of_main_program": "0.073139926509625858270099582536156007744408753360150",
+      "member_names": [
+        "custom fusion"
+      ]
+    },
+    {
+      "rank": 6,
+      "key": "xprof-category/all-reduce",
+      "source": "xprof-category",
+      "raw_time_ps": 660712135691,
+      "occurrences": 62590,
+      "device_op_share_of_main_program": "0.055379419055697197263182260652957347689955175715644",
+      "member_names": [
+        "all-reduce"
+      ]
+    },
+    {
+      "rank": 7,
+      "key": "custom-call-family/ragged_causal_conv1d_kernel",
+      "source": "custom-call-family",
+      "raw_time_ps": 541323766829,
+      "occurrences": 84828,
+      "device_op_share_of_main_program": "0.045372551991464899534835159995448682069907098065107",
+      "member_names": [
+        "ragged_causal_conv1d_kernel.149 and its duplicate(s)",
+        "ragged_causal_conv1d_kernel.2 and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 8,
+      "key": "xprof-category/convolution fusion",
+      "source": "xprof-category",
+      "raw_time_ps": 459089274709,
+      "occurrences": 193911,
+      "device_op_share_of_main_program": "0.038479840091776474579902940480619817335102471586147",
+      "member_names": [
+        "convolution fusion"
+      ]
+    },
+    {
+      "rank": 9,
+      "key": "xprof-category/loop fusion",
+      "source": "xprof-category",
+      "raw_time_ps": 391335537262,
+      "occurrences": 824411,
+      "device_op_share_of_main_program": "0.032800872783656834605388552871258065440828962631005",
+      "member_names": [
+        "loop fusion"
+      ]
+    },
+    {
+      "rank": 10,
+      "key": "custom-call-family/RPAd-p_128-bq_1_1-bkv_4096_4096",
+      "source": "custom-call-family",
+      "raw_time_ps": 292144117633,
+      "occurrences": 3530,
+      "device_op_share_of_main_program": "0.024486869002541291746257228073240540941868324964150",
+      "member_names": [
+        "RPAd-p_128-bq_1_1-bkv_4096_4096.1 and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 11,
+      "key": "xprof-category/data formatting",
+      "source": "xprof-category",
+      "raw_time_ps": 283417531037,
+      "occurrences": 523354,
+      "device_op_share_of_main_program": "0.023755425958105174350946640838514694686728309050958",
+      "member_names": [
+        "data formatting"
+      ]
+    },
+    {
+      "rank": 12,
+      "key": "xprof-category/sort",
+      "source": "xprof-category",
+      "raw_time_ps": 176444404014,
+      "occurrences": 40364,
+      "device_op_share_of_main_program": "0.014789176801943747366179760654673077992335079089804",
+      "member_names": [
+        "sort"
+      ]
+    },
+    {
+      "rank": 13,
+      "key": "xprof-category/slice",
+      "source": "xprof-category",
+      "raw_time_ps": 117192898242,
+      "occurrences": 105878,
+      "device_op_share_of_main_program": "0.0098228476086757656897489335112409247151600321295887",
+      "member_names": [
+        "slice"
+      ]
+    },
+    {
+      "rank": 14,
+      "key": "xprof-category/copy-done",
+      "source": "xprof-category",
+      "raw_time_ps": 84547752653,
+      "occurrences": 1289727,
+      "device_op_share_of_main_program": "0.0070866042433004169547336892815244460613938306137518",
+      "member_names": [
+        "copy-done"
+      ]
+    },
+    {
+      "rank": 15,
+      "key": "custom-call-family/RPAm-p_128-bq_32_32-bkv_2048_1024-sw_512",
+      "source": "custom-call-family",
+      "raw_time_ps": 45021945994,
+      "occurrences": 17680,
+      "device_op_share_of_main_program": "0.0037736391981011655057799884047873661293879104883452",
+      "member_names": [
+        "RPAm-p_128-bq_32_32-bkv_2048_1024-sw_512.4 and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 16,
+      "key": "xprof-category/dynamic-slice",
+      "source": "xprof-category",
+      "raw_time_ps": 44513247087,
+      "occurrences": 42416,
+      "device_op_share_of_main_program": "0.0037310011891678722309442862356052028410102506160976",
+      "member_names": [
+        "dynamic-slice"
+      ]
+    },
+    {
+      "rank": 17,
+      "key": "xprof-category/pad",
+      "source": "xprof-category",
+      "raw_time_ps": 41412231623,
+      "occurrences": 21214,
+      "device_op_share_of_main_program": "0.0034710809824662828569519523265169480273779997098218",
+      "member_names": [
+        "pad"
+      ]
+    },
+    {
+      "rank": 18,
+      "key": "xprof-category/collective-permute-start",
+      "source": "xprof-category",
+      "raw_time_ps": 11597877169,
+      "occurrences": 13752,
+      "device_op_share_of_main_program": "0.00097210822263288274806187545836733438136761021581787",
+      "member_names": [
+        "collective-permute-start"
+      ]
+    },
+    {
+      "rank": 19,
+      "key": "xprof-category/copy-start",
+      "source": "xprof-category",
+      "raw_time_ps": 11494528947,
+      "occurrences": 1289759,
+      "device_op_share_of_main_program": "0.00096344580493895997232682328671696405736079175352158",
+      "member_names": [
+        "copy-start"
+      ]
+    },
+    {
+      "rank": 20,
+      "key": "xprof-category/dynamic-update-slice",
+      "source": "xprof-category",
+      "raw_time_ps": 10994731538,
+      "occurrences": 85184,
+      "device_op_share_of_main_program": "0.00092155389973425932098453753485682715215986468010711",
+      "member_names": [
+        "dynamic-update-slice"
+      ]
+    },
+    {
+      "rank": 21,
+      "key": "custom-call-family/RPAm-p_128-bq_32_32-bkv_2048_1024",
+      "source": "custom-call-family",
+      "raw_time_ps": 10341719060,
+      "occurrences": 3530,
+      "device_op_share_of_main_program": "0.00086681984883032062213217904852805726875194874169601",
+      "member_names": [
+        "RPAm-p_128-bq_32_32-bkv_2048_1024.2 and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 22,
+      "key": "xprof-category/reverse",
+      "source": "xprof-category",
+      "raw_time_ps": 8523526310,
+      "occurrences": 21214,
+      "device_op_share_of_main_program": "0.00071442298370996944762094479268900802101212522820334",
+      "member_names": [
+        "reverse"
+      ]
+    },
+    {
+      "rank": 23,
+      "key": "custom-call-family/prepare_start_all-reduce",
+      "source": "custom-call-family",
+      "raw_time_ps": 7423939859,
+      "occurrences": 125713,
+      "device_op_share_of_main_program": "0.00062225809741768133028328093113874818770432422164462",
+      "member_names": [
+        "prepare_start_all-reduce.255.cloned.1.call-start and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 24,
+      "key": "xprof-category/broadcast",
+      "source": "xprof-category",
+      "raw_time_ps": 3584654261,
+      "occurrences": 5626,
+      "device_op_share_of_main_program": "0.00030045773305207003796932446659608119991645713966767",
+      "member_names": [
+        "broadcast"
+      ]
+    },
+    {
+      "rank": 25,
+      "key": "xprof-category/non-fusion elementwise",
+      "source": "xprof-category",
+      "raw_time_ps": 2076155993,
+      "occurrences": 44476,
+      "device_op_share_of_main_program": "0.00017401876937086552414538439122427330057122727626107",
+      "member_names": [
+        "non-fusion elementwise"
+      ]
+    },
+    {
+      "rank": 26,
+      "key": "custom-call-family/prepare_done_sparse-core-data-format-call",
+      "source": "custom-call-family",
+      "raw_time_ps": 1818568956,
+      "occurrences": 125705,
+      "device_op_share_of_main_program": "0.00015242839786903222982506617679157322263813680180862",
+      "member_names": [
+        "prepare_done_sparse-core-data-format-call.1.cloned.1.call-start and its duplicate(s)"
+      ]
+    },
+    {
+      "rank": 27,
+      "key": "xprof-category/async-start",
+      "source": "xprof-category",
+      "raw_time_ps": 1726610627,
+      "occurrences": 170169,
+      "device_op_share_of_main_program": "0.00014472065562811422049891497863366754307206153445553",
+      "member_names": [
+        "async-start"
+      ]
+    },
+    {
+      "rank": 28,
+      "key": "xprof-category/collective-permute-done",
+      "source": "xprof-category",
+      "raw_time_ps": 1266267244,
+      "occurrences": 13752,
+      "device_op_share_of_main_program": "0.00010613569897371266608587216519244386961491269254965",
+      "member_names": [
+        "collective-permute-done"
+      ]
+    },
+    {
+      "rank": 29,
+      "key": "xprof-category/reduce-window",
+      "source": "xprof-category",
+      "raw_time_ps": 1232559303,
+      "occurrences": 1024,
+      "device_op_share_of_main_program": "0.00010331037446504230905705583747746338828865707177280",
+      "member_names": [
+        "reduce-window"
+      ]
+    },
+    {
+      "rank": 30,
+      "key": "xprof-category/iota",
+      "source": "xprof-category",
+      "raw_time_ps": 454536006,
+      "occurrences": 146398,
+      "device_op_share_of_main_program": "0.000038098195253899858625959992844248017106527295836948",
+      "member_names": [
+        "iota"
+      ]
+    },
+    {
+      "rank": 31,
+      "key": "custom-call-family/custom-call",
+      "source": "custom-call-family",
+      "raw_time_ps": 10560676,
+      "occurrences": 22734,
+      "device_op_share_of_main_program": "8.8517233167480717334980206912457837785570777530474E-7",
+      "member_names": [
+        "custom-call.1125 and its duplicate(s)",
+        "custom-call.1154 and its duplicate(s)",
+        "custom-call.80 and its duplicate(s)",
+        "custom-call.82"
+      ]
+    }
+  ],
+  "winner_partition_key": "custom-call-family/gmm_v2-g_32-m_288-k_4096-n_2048-tm_128-tk_4096-tn_2048",
+  "winner_raw_time_ps": 2941661857105,
+  "winner_device_op_share_of_main_program": "0.24656354243350295800183192992997596106566944597364",
+  "candidate_hlo_prefix": "gmm_v2-",
+  "candidate_raw_time_ps": 4437506751497,
+  "candidate_occurrences": 60541,
+  "candidate_hlo_rows": 120,
+  "candidate_device_op_share_of_main_program": "0.37194192853234950274067238985543509147693268978162",
+  "candidate_kernel_families": [
+    {
+      "name": "gmm_v2-g_32-m_288-k_2048-n_4096-tm_128-tk_2048-tn_4096",
+      "raw_time_ps": 1495844894392,
+      "occurrences": 20179,
+      "hlo_rows": 40,
+      "device_op_share_of_main_program": "0.12537838609884654473884045992545913041126324380798",
+      "operational_intensity_min": "8.88289156626506",
+      "operational_intensity_max": "8.88289156626506",
+      "dma_stall_percent_min": "0.0",
+      "dma_stall_percent_max": "0.0",
+      "bound_by": [
+        "HBM"
+      ]
+    },
+    {
+      "name": "gmm_v2-g_32-m_288-k_4096-n_2048-tm_128-tk_4096-tn_2048",
+      "raw_time_ps": 2941661857105,
+      "occurrences": 40362,
+      "hlo_rows": 80,
+      "device_op_share_of_main_program": "0.24656354243350295800183192992997596106566944597364",
+      "operational_intensity_min": "8.9215876089061",
+      "operational_intensity_max": "8.9215876089061",
+      "dma_stall_percent_min": "0.0",
+      "dma_stall_percent_max": "0.0",
+      "bound_by": [
+        "HBM"
+      ]
+    }
+  ],
+  "attribution_scope": "xprof-summed-device-op-self-time",
+  "is_end_to_end_latency": false,
+  "bound_classification_source": "xprof-hlo-stats"
+}

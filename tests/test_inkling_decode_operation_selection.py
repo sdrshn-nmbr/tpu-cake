@@ -498,3 +498,44 @@ def test_operation_selection_contract_is_committed_and_module_cli_is_public() ->
         .command
         == "verify"
     )
+
+
+def test_committed_report_binds_the_documented_claim() -> None:
+    report_path = Path("evidence/inkling/whole-decode-operation-selection-v1.json")
+    report = InklingDecodeOperationSelectionReport.model_validate_json(report_path.read_text())
+    contract = InklingDecodeOperationSelectionContract.model_validate_json(
+        Path("contracts/inkling-whole-decode-operation-selection-v1.json").read_text()
+    )
+    claim = contract.expected_claim
+
+    assert report.contract_id == contract.contract_id
+    assert report.main_program_raw_time_ps == claim.main_program_raw_time_ps
+    assert report.winner_raw_time_ps == claim.winner_raw_time_ps
+    assert report.candidate_raw_time_ps == claim.candidate_raw_time_ps
+    assert report.candidate_occurrences == claim.candidate_occurrences
+    assert report.candidate_hlo_rows == claim.candidate_hlo_rows
+    assert (
+        min(family.operational_intensity_min for family in report.candidate_kernel_families)
+        == claim.candidate_operational_intensity_min
+    )
+    assert (
+        max(family.operational_intensity_max for family in report.candidate_kernel_families)
+        == claim.candidate_operational_intensity_max
+    )
+    assert report.producer_source_sha256 == _sha256(
+        Path("src/tpu_cake/inkling_decode_operation_selection.py")
+    )
+    assert report.verifier_source_sha256 == _sha256(
+        Path("src/tpu_cake/inkling_decode_operation_selection_verifier.py")
+    )
+    assert report.uv_lock_sha256 == _sha256(Path("uv.lock"))
+    assert (
+        _sha256(report_path) == "963aa9e779d97772a3853be614c514405722829709e63957dd55222646589739"
+    )
+    assert (
+        "The committed replay is report "
+        "`3596011de95c59863415556812fa83c55b7d7d8c0c90fe5d4a05e66d55006af5` "
+        "with file SHA-256 "
+        "`963aa9e779d97772a3853be614c514405722829709e63957dd55222646589739`."
+        in Path("README.md").read_text()
+    )
