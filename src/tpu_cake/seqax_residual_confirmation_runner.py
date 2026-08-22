@@ -23,7 +23,7 @@ from tpu_cake.canonical import canonical_text
 from tpu_cake.compiler_analysis import write_compiler_analysis
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history
+from tpu_cake.ledger import ExperimentLedger, RunState, read_ledger_history, seal_ledger
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_numerical import default_seqax_bf16_validation_contract
 from tpu_cake.seqax_pallas_search_runner import _validate_output_abi
@@ -44,7 +44,6 @@ from tpu_cake.seqax_residual_profile import default_seqax_residual_profile_contr
 from tpu_cake.seqax_residual_profile_runner import (
     CompiledResidualProfile,
     PreparedResidualProfile,
-    _close_ledger,
     _compile,
     _correctness_observation,
     _device_inventory,
@@ -395,7 +394,7 @@ def _record_failure(root: Path, run_id: str, error: Exception) -> None:
                     RunState.REJECTED,
                     {"error_type": type(error).__name__, "error": str(error)},
                 )
-        _close_ledger(ledger_path)
+        seal_ledger(ledger_path, "SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS")
 
 
 def _artifact_role(path: Path) -> ArtifactRole:
@@ -1013,7 +1012,7 @@ def _execute_confirmation(
             include_accepted=False,
         )[-1][1],
     )
-    _close_ledger(ledger_path)
+    seal_ledger(ledger_path, "SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS")
     _validate(
         root,
         contract,
@@ -1029,7 +1028,7 @@ def _execute_confirmation(
             "winner": winner,
         },
     )
-    _close_ledger(ledger_path)
+    seal_ledger(ledger_path, "SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS")
     return _publish_receipt(root, contract, result)
 
 
@@ -1094,7 +1093,10 @@ def run_seqax_residual_confirmation(
                             "winner": result.winner,
                         },
                     )
-                    _close_ledger(root / "ledger.sqlite")
+                    seal_ledger(
+                        root / "ledger.sqlite",
+                        "SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS",
+                    )
                 return _publish_receipt(root, contract, result)
             return _execute_confirmation(root, contract, device_inventory, identity)
         except Exception as error:

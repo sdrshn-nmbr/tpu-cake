@@ -397,10 +397,10 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "a9910167578c14c0d0a0a944a64477dfa471282024134d961e3994eb24e39cc5"
             ),
             pallas_source_sha256=(
-                "7226cc31e4e279ec3ef68c9c25a262978774cbddd6b0891c84ed890f29ef024f"
+                "388ab7f77ad3fdbfaac8ef6fee1128c75451cd799425ffe3094d2e229d067521"
             ),
             pallas_manifest_sha256=(
-                "8de9903ccd4e74e4ded51589cbde9ec869f5a85d34de4ac3a1acbaadff772665"
+                "f4b44fd9f53539243a49b7bb3d82e4228c88daafaf001ef6cb688d5081549d2e"
             ),
             pallas_stablehlo_sha256=(
                 "aa7b6af57d8ab77c06747c46a31091998cdb449c5e0ff0894d425ddfd06641ae"
@@ -438,10 +438,10 @@ def _candidate_contracts() -> tuple[SeqaxResidualProfileCandidateContract, ...]:
                 "e9e2c0006672bab2a5981b109dc5eff67c30cb53664ed521175752f3ca748701"
             ),
             pallas_source_sha256=(
-                "01918b28a8df579c63b3590da07d993302ce9336fadb3574ab31310ee957e7ea"
+                "8de41b8416f59918c493a7c1988c510a852bce7c43ea5219771e56a88a22fb25"
             ),
             pallas_manifest_sha256=(
-                "cb1e97845fc0fe78ed5d74a7e956cabed246fd14262261c0a21329ba4082f27f"
+                "5abfdd9106efd2d2137022286fcbba74775ba6f6b1271d96686569bea2ae6dd5"
             ),
             pallas_stablehlo_sha256=(
                 "741390690a9448d24e65bf350d50743b9afc56f88b2594cdf9daa7b6e9f88909"

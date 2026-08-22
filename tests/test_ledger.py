@@ -4,7 +4,13 @@ import hashlib
 
 import pytest
 
-from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
+from tpu_cake.ledger import (
+    EvidenceRun,
+    ExperimentLedger,
+    RunState,
+    finalize_ledger,
+    read_ledger_history,
+)
 
 RUN_ID = "1" * 64
 
@@ -108,3 +114,35 @@ def test_finalize_ledger_checkpoints_wal_and_preserves_history(tmp_path) -> None
 
     assert finalize_ledger(path) == ()
     assert read_ledger_history(path, RUN_ID)[0].state is RunState.CREATED
+
+
+def test_evidence_run_records_and_seals_a_replayable_history(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite"
+    clock = iter(range(100, 200)).__next__
+    run = EvidenceRun(path, RUN_ID, clock_ns=clock)
+
+    created = run.create({"schedule": "a"})
+    verified = run.transition(RunState.VERIFIED, {"verified": True})
+    assert run.transition(RunState.VERIFIED, {"verified": True}) == verified
+    run.seal("TEST_LEDGER_SIDECARS paths={paths}")
+
+    history = read_ledger_history(path, RUN_ID)
+    assert history == (created, verified)
+    assert [event.timestamp_ns for event in history] == [100, 101]
+
+
+def test_evidence_run_preserves_conflicting_completion_and_sidecar_failures(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "ledger.sqlite"
+    run = EvidenceRun(path, RUN_ID)
+    run.create({"schedule": "a"})
+    run.transition(RunState.VERIFIED, {"verified": True})
+
+    with pytest.raises(ValueError, match="conflicting duplicate"):
+        run.transition(RunState.VERIFIED, {"verified": False})
+
+    sidecar = path.with_name(f"{path.name}-wal")
+    monkeypatch.setattr("tpu_cake.ledger.finalize_ledger", lambda _path: (sidecar,))
+    with pytest.raises(ValueError, match="TEST_LEDGER_SIDECARS"):
+        run.seal("TEST_LEDGER_SIDECARS paths={paths}")

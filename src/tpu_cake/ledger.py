@@ -183,6 +183,34 @@ class ExperimentLedger:
         )
 
 
+class EvidenceRun:
+    def __init__(
+        self,
+        path: Path,
+        run_id: str,
+        *,
+        clock_ns: Callable[[], int] = time.time_ns,
+    ) -> None:
+        self.path = path
+        self.run_id = run_id
+        self._clock_ns = clock_ns
+
+    def create(self, payload: Mapping[str, object]) -> LedgerEvent:
+        with ExperimentLedger(self.path, clock_ns=self._clock_ns) as ledger:
+            return ledger.create(self.run_id, payload)
+
+    def transition(
+        self,
+        state: RunState,
+        payload: Mapping[str, object],
+    ) -> LedgerEvent:
+        with ExperimentLedger(self.path, clock_ns=self._clock_ns) as ledger:
+            return ledger.transition(self.run_id, state, payload)
+
+    def seal(self, sidecar_error: str) -> None:
+        seal_ledger(self.path, sidecar_error)
+
+
 def finalize_ledger(path: Path) -> tuple[Path, ...]:
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -192,6 +220,12 @@ def finalize_ledger(path: Path) -> tuple[Path, ...]:
         path.with_name(f"{path.name}-wal"),
     )
     return tuple(sidecar for sidecar in sidecars if sidecar.exists())
+
+
+def seal_ledger(path: Path, sidecar_error: str) -> None:
+    present = finalize_ledger(path)
+    if present:
+        raise ValueError(sidecar_error.format(paths=present))
 
 
 def read_ledger_history(path: Path, run_id: str) -> tuple[LedgerEvent, ...]:

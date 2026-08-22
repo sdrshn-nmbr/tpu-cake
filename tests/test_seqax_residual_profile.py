@@ -561,6 +561,7 @@ def test_seqax_residual_profile_runner_builds_and_replays_a_closed_receipt(
     monkeypatch.setattr(
         profile_runner, "_validate_compiled_program", lambda *_args, **_kwargs: None
     )
+
     def stablehlo_inspector(text: str):
         residual = text.startswith("residual_all_reduce")
         counts = (
@@ -576,7 +577,12 @@ def test_seqax_residual_profile_runner_builds_and_replays_a_closed_receipt(
                 "stablehlo.reduce_scatter": 3,
             }
         )
-        return SimpleNamespace(live_public_main_operation_count=counts.__getitem__)
+        return SimpleNamespace(
+            live_collective_counts=lambda: {
+                name: counts[f"stablehlo.{name}"]
+                for name in ("all_gather", "all_reduce", "reduce_scatter")
+            }
+        )
 
     monkeypatch.setattr(profile_runner.StableHloInspector, "parse", stablehlo_inspector)
     monkeypatch.setattr(profile_runner, "_resident_inputs", lambda inputs, _prepared, _mesh: inputs)

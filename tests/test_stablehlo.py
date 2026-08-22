@@ -48,6 +48,11 @@ module @fixture {
 
     assert inspector.public_main_operation_count("stablehlo.all_gather") == 3
     assert inspector.live_public_main_operation_count("stablehlo.all_gather") == 2
+    assert inspector.live_collective_counts() == {
+        "all_gather": 2,
+        "all_reduce": 0,
+        "reduce_scatter": 0,
+    }
 
 
 def test_inspector_rejects_missing_public_main() -> None:

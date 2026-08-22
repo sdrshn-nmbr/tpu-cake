@@ -100,6 +100,12 @@ class StableHloInspector:
             for operation in self.operations(self._public_main)
         )
 
+    def live_collective_counts(self) -> dict[str, int]:
+        return {
+            name: self.live_public_main_operation_count(f"stablehlo.{name}")
+            for name in ("all_gather", "all_reduce", "reduce_scatter")
+        }
+
     @property
     def functions(self) -> tuple[ir.Operation, ...]:
         return self._functions

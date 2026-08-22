@@ -40,7 +40,7 @@ from tpu_cake.contracts import (
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
 from tpu_cake.jax_lowering import lower_distributed_program_to_jax_mesh
-from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.metrics import MetricSource
 from tpu_cake.runner import RunMode, _runtime_identity, _source_state
 from tpu_cake.seqax_cost_model import SeqaxCostModelReport, estimate_seqax_forward
@@ -275,11 +275,6 @@ def _preflight_root(root: Path) -> None:
             raise ValueError(f"SEQAX_RESIDUAL_PROFILE_HARDLINK path={path}")
 
 
-def _close_ledger(path: Path) -> None:
-    if finalize_ledger(path):
-        raise ValueError("SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS")
-
-
 def _parameters(contract: SeqaxResidualProfileContract) -> dict[str, int | Any]:
     parameters = dict(contract.parameters)
     parameters["numerical_semantics"] = SeqaxNumericalSemantics(parameters["numerical_semantics"])
@@ -376,10 +371,9 @@ def _compile(
         all_reduce_count=expected.expected_all_reduces,
         reduce_scatter_count=expected.expected_reduce_scatters,
     )
-    stable_counts = (
-        pallas_stablehlo.count("stablehlo.all_gather"),
-        pallas_stablehlo.count("stablehlo.all_reduce"),
-        pallas_stablehlo.count("stablehlo.reduce_scatter"),
+    collective_counts = StableHloInspector.parse(pallas_stablehlo).live_collective_counts()
+    stable_counts = tuple(
+        collective_counts[name] for name in ("all_gather", "all_reduce", "reduce_scatter")
     )
     expected_counts = (
         expected.expected_all_gathers,
@@ -494,9 +488,7 @@ def _capture_compiler_strategy_surface(
         output = np.asarray(executable(value, residual))
         output_f32 = output.astype(np.float32)
         if not np.array_equal(output_f32, np.ones((128, columns), dtype=np.float32)):
-            raise ValueError(
-                f"SEQAX_RESIDUAL_COMPILER_SURFACE_OUTPUT_MISMATCH columns={columns}"
-            )
+            raise ValueError(f"SEQAX_RESIDUAL_COMPILER_SURFACE_OUTPUT_MISMATCH columns={columns}")
         point_root = root / "compiler_strategy_surface" / str(columns)
         _write_text(point_root / "stablehlo.txt", stablehlo)
         _write_text(point_root / "compiler_hlo.txt", compiler_hlo)
@@ -540,9 +532,7 @@ def _validate_compiler_strategy_surface(root: Path) -> CompilerCollectiveStrateg
         if (
             point.stablehlo_sha256 != _sha256(point_root / "stablehlo.txt")
             or point.compiler_hlo_sha256 != _sha256(point_root / "compiler_hlo.txt")
-            or point.compiler_analysis_sha256 != _sha256(
-                point_root / "compiler_analysis.json"
-            )
+            or point.compiler_analysis_sha256 != _sha256(point_root / "compiler_analysis.json")
             or point.output_sha256 != _sha256(point_root / "output.npy")
             or point.collectives != analysis.collectives
             or not np.array_equal(
@@ -642,9 +632,7 @@ def _cost_report(
         ),
         expected_schedule_sha256=prepared.plan.distributed_schedule_sha256,
     )
-    return report.model_copy(
-        update={"compiler_collectives": compiler_analysis.collectives}
-    )
+    return report.model_copy(update={"compiler_collectives": compiler_analysis.collectives})
 
 
 def _profile_summary(
@@ -1063,13 +1051,11 @@ def _expected_plan_files(root: Path, prepared: PreparedResidualProfile) -> None:
         raise ValueError(
             f"SEQAX_RESIDUAL_PROFILE_PLAN_REPLAY_MISMATCH candidate={expected.candidate}"
         )
-    stablehlo = StableHloInspector.parse(
-        (candidate_root / "pallas_stablehlo.txt").read_text()
-    )
-    replayed_collectives = (
-        stablehlo.live_public_main_operation_count("stablehlo.all_gather"),
-        stablehlo.live_public_main_operation_count("stablehlo.all_reduce"),
-        stablehlo.live_public_main_operation_count("stablehlo.reduce_scatter"),
+    stablehlo = StableHloInspector.parse((candidate_root / "pallas_stablehlo.txt").read_text())
+    collective_counts = stablehlo.live_collective_counts()
+    replayed_collectives = tuple(
+        collective_counts[name]
+        for name in ("all_gather", "all_reduce", "reduce_scatter")
     )
     expected_collectives = (
         expected.expected_all_gathers,
@@ -1454,9 +1440,7 @@ def _validate(
     if result.run_id != expected_run_id:
         raise ValueError("SEQAX_RESIDUAL_PROFILE_RUN_ID_MISMATCH")
     _validate_compiler_strategy_surface(root)
-    if result.compiler_strategy_surface_sha256 != _sha256(
-        root / "compiler_strategy_surface.json"
-    ):
+    if result.compiler_strategy_surface_sha256 != _sha256(root / "compiler_strategy_surface.json"):
         raise ValueError("SEQAX_RESIDUAL_COMPILER_SURFACE_IDENTITY_MISMATCH")
     prepared = _prepare_candidates(trusted_contract)
     replayed_candidates = []
@@ -1605,47 +1589,41 @@ def run_seqax_residual_profile(
         _json_sha256([value.model_dump(mode="json") for value in device_inventory]),
     )
     ledger_path = root / "ledger.sqlite"
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.create(
-            run_id,
-            {
-                "profile_id": contract.profile_id,
-                "devices": [value.model_dump(mode="json") for value in device_inventory],
-            },
-        )
+    evidence_run = EvidenceRun(ledger_path, run_id)
+    evidence_run.create(
+        {
+            "profile_id": contract.profile_id,
+            "devices": [value.model_dump(mode="json") for value in device_inventory],
+        }
+    )
     prepared = _prepare_candidates(contract)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.VERIFIED,
-            {
-                "numerical_contract_id": contract.numerical_contract_id,
-                "distributed_schedules": {
-                    value.expected.candidate: value.plan.distributed_schedule_sha256
-                    for value in prepared
-                },
+    evidence_run.transition(
+        RunState.VERIFIED,
+        {
+            "numerical_contract_id": contract.numerical_contract_id,
+            "distributed_schedules": {
+                value.expected.candidate: value.plan.distributed_schedule_sha256
+                for value in prepared
             },
-        )
+        },
+    )
     for value in prepared:
         candidate_root = root / "candidates" / value.expected.candidate
         _write_text(candidate_root / "distributed.xdsl", canonical_text(value.distributed))
         _write_text(candidate_root / "physical.xdsl", canonical_text(value.physical))
         _write_text(candidate_root / "lowered_pallas.py", value.plan.render_executable_source())
         _write_json(candidate_root / "plan_manifest.json", value.plan.manifest())
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.LOWERED,
-            {
-                "physical_schedules": {
-                    value.expected.candidate: value.plan.physical_schedule_sha256
-                    for value in prepared
-                },
-                "pallas_sources": {
-                    value.expected.candidate: value.plan.source_sha256() for value in prepared
-                },
+    evidence_run.transition(
+        RunState.LOWERED,
+        {
+            "physical_schedules": {
+                value.expected.candidate: value.plan.physical_schedule_sha256 for value in prepared
             },
-        )
+            "pallas_sources": {
+                value.expected.candidate: value.plan.source_sha256() for value in prepared
+            },
+        },
+    )
     scenario = next(
         value
         for value in default_seqax_bf16_validation_contract().scenarios
@@ -1674,22 +1652,20 @@ def run_seqax_residual_profile(
             value.control_compiler_analysis,
         )
     _capture_compiler_strategy_surface(root, devices)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COMPILED,
-            {
-                "compiled_hlo": {
-                    value.prepared.expected.candidate: {
-                        "pallas_stablehlo_sha256": _text_sha256(value.pallas_stablehlo),
-                        "pallas_compiler_hlo_sha256": _text_sha256(value.pallas_compiler_hlo),
-                        "control_stablehlo_sha256": _text_sha256(value.control_stablehlo),
-                        "control_compiler_hlo_sha256": _text_sha256(value.control_compiler_hlo),
-                    }
-                    for value in compiled
+    evidence_run.transition(
+        RunState.COMPILED,
+        {
+            "compiled_hlo": {
+                value.prepared.expected.candidate: {
+                    "pallas_stablehlo_sha256": _text_sha256(value.pallas_stablehlo),
+                    "pallas_compiler_hlo_sha256": _text_sha256(value.pallas_compiler_hlo),
+                    "control_stablehlo_sha256": _text_sha256(value.control_stablehlo),
+                    "control_compiler_hlo_sha256": _text_sha256(value.control_compiler_hlo),
                 }
-            },
-        )
+                for value in compiled
+            }
+        },
+    )
     executions = []
     correctness_by_candidate = {}
     for value in compiled:
@@ -1745,8 +1721,7 @@ def run_seqax_residual_profile(
         ]
         for candidate, observations in correctness_by_candidate.items()
     }
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(run_id, RunState.CORRECT, {"correctness": correctness_payload})
+    evidence_run.transition(RunState.CORRECT, {"correctness": correctness_payload})
     candidate_results = []
     for value, resident, timing_output, cost_report in executions:
         expected = value.prepared.expected
@@ -1811,33 +1786,27 @@ def run_seqax_residual_profile(
         source_state_sha256=_sha256(root / "source_state.json"),
         source_manifest_sha256=_sha256(root / "source_manifest.json"),
         source_manifest=manifest,
-        compiler_strategy_surface_sha256=_sha256(
-            root / "compiler_strategy_surface.json"
-        ),
+        compiler_strategy_surface_sha256=_sha256(root / "compiler_strategy_surface.json"),
         candidates=tuple(candidate_results),
         comparison=comparison,
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COUNTERED,
-            _ledger_payloads(
-                contract=contract,
-                result=result,
-                root=root,
-                require_accepted=False,
-            )[-1][1],
-        )
-    _close_ledger(ledger_path)
+    evidence_run.transition(
+        RunState.COUNTERED,
+        _ledger_payloads(
+            contract=contract,
+            result=result,
+            root=root,
+            require_accepted=False,
+        )[-1][1],
+    )
+    evidence_run.seal("SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS")
     _validate(root, contract, require_accepted=False)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.ACCEPTED,
-            {"result_sha256": _sha256(root / "result.json")},
-        )
-    _close_ledger(ledger_path)
+    evidence_run.transition(
+        RunState.ACCEPTED,
+        {"result_sha256": _sha256(root / "result.json")},
+    )
+    evidence_run.seal("SEQAX_RESIDUAL_PROFILE_LEDGER_SIDECARS")
     receipt = SeqaxResidualProfileReceipt(
         status="passed",
         profile_id=contract.profile_id,

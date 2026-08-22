@@ -40,7 +40,7 @@ from tpu_cake.compiler_analysis import (
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, SourceFileContract
 from tpu_cake.dialects.distributed_tensor import AllGatherOp
 from tpu_cake.identity import array_sha256, arrays_sha256, semantic_sha256
-from tpu_cake.ledger import ExperimentLedger, RunState, finalize_ledger, read_ledger_history
+from tpu_cake.ledger import EvidenceRun, ExperimentLedger, RunState, read_ledger_history
 from tpu_cake.runner import _runtime_identity, _source_state
 from tpu_cake.seqax_pallas_lowering import (
     SeqaxPallasPlan,
@@ -185,12 +185,6 @@ def _preflight_existing_root(root: Path) -> None:
             raise ValueError(f"SEQAX_WEIGHT_PLACEMENT_SYMLINK path={path}")
         if path.is_file() and path.stat().st_nlink != 1:
             raise ValueError(f"SEQAX_WEIGHT_PLACEMENT_HARDLINK path={path}")
-
-
-def _close_ledger(path: Path) -> None:
-    present = finalize_ledger(path)
-    if present:
-        raise ValueError(f"SEQAX_WEIGHT_PLACEMENT_LEDGER_SIDECARS paths={present}")
 
 
 def prepare_weight_placement_candidates(
@@ -628,37 +622,32 @@ def run_seqax_weight_placement(
     _write_json(root / "memory.json", [value.model_dump(mode="json") for value in memory])
     run_id = semantic_sha256("seqax-weight-placement-run-v1", contract.search_id)
     ledger_path = root / "ledger.sqlite"
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.create(run_id, {"search_id": contract.search_id})
+    evidence_run = EvidenceRun(ledger_path, run_id)
+    evidence_run.create({"search_id": contract.search_id})
 
     prepared = prepare_weight_placement_candidates(contract)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.VERIFIED,
-            {
-                "distributed_schedules": {
-                    value.candidate.name: value.plan.distributed_schedule_sha256
-                    for value in prepared
-                }
-            },
-        )
+    evidence_run.transition(
+        RunState.VERIFIED,
+        {
+            "distributed_schedules": {
+                value.candidate.name: value.plan.distributed_schedule_sha256 for value in prepared
+            }
+        },
+    )
     for value in prepared:
         plan_root = root / "plans" / value.candidate.name
         _write_text(plan_root / "distributed.xdsl", canonical_text(value.distributed))
         _write_text(plan_root / "physical.xdsl", canonical_text(value.physical))
         _write_text(plan_root / "lowered_pallas.py", value.plan.render_executable_source())
         _write_json(plan_root / "plan_manifest.json", value.plan.manifest())
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.LOWERED,
-            {
-                "pallas_sources": {
-                    value.candidate.name: value.plan.source_sha256() for value in prepared
-                }
-            },
-        )
+    evidence_run.transition(
+        RunState.LOWERED,
+        {
+            "pallas_sources": {
+                value.candidate.name: value.plan.source_sha256() for value in prepared
+            }
+        },
+    )
 
     timing_host_inputs = tuple(
         np.asarray(value)
@@ -674,29 +663,23 @@ def run_seqax_weight_placement(
             value.compiler_analysis,
         )
     plan_records = tuple(_plan_record(root, value) for value in compiled)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.COMPILED,
-            {"plans": [value.model_dump(mode="json") for value in plan_records]},
-        )
+    evidence_run.transition(
+        RunState.COMPILED,
+        {"plans": [value.model_dump(mode="json") for value in plan_records]},
+    )
 
     correctness = _candidate_correctness(root / "correctness", contract, compiled)
     _write_json(
         root / "correctness.json",
         [value.model_dump(mode="json") for value in correctness],
     )
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.CORRECT,
-            {
-                "candidate_output_sha256": {
-                    value.name: value.output_sha256 for value in correctness
-                },
-                "cpu_oracle_passed": correctness[0].cpu_oracle_passed,
-            },
-        )
+    evidence_run.transition(
+        RunState.CORRECT,
+        {
+            "candidate_output_sha256": {value.name: value.output_sha256 for value in correctness},
+            "cpu_oracle_passed": correctness[0].cpu_oracle_passed,
+        },
+    )
 
     compiled_by_name = {value.prepared.candidate.name: value for value in compiled}
     timing_inputs = {
@@ -751,26 +734,22 @@ def run_seqax_weight_placement(
         correctness_scope="incumbent-bit-exact",
     )
     _write_json(root / "result.json", result.model_dump(mode="json"))
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.TIMED,
-            {
-                "round_count": len(rounds),
-                "confirmation_round_count": len(confirmation_rounds),
-                "provisional_winner": provisional,
-                "winner": winner,
-            },
-        )
-    _close_ledger(ledger_path)
+    evidence_run.transition(
+        RunState.TIMED,
+        {
+            "round_count": len(rounds),
+            "confirmation_round_count": len(confirmation_rounds),
+            "provisional_winner": provisional,
+            "winner": winner,
+        },
+    )
+    evidence_run.seal("SEQAX_WEIGHT_PLACEMENT_LEDGER_SIDECARS paths={paths}")
     _validate(root, contract, require_accepted=False)
-    with ExperimentLedger(ledger_path) as ledger:
-        ledger.transition(
-            run_id,
-            RunState.ACCEPTED,
-            {"result_sha256": _sha256(root / "result.json"), "winner": winner},
-        )
-    _close_ledger(ledger_path)
+    evidence_run.transition(
+        RunState.ACCEPTED,
+        {"result_sha256": _sha256(root / "result.json"), "winner": winner},
+    )
+    evidence_run.seal("SEQAX_WEIGHT_PLACEMENT_LEDGER_SIDECARS paths={paths}")
     _build_receipt(root, contract)
     return validate_seqax_weight_placement(root, contract)
 

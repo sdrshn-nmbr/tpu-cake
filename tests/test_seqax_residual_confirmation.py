@@ -107,7 +107,7 @@ def test_seqax_residual_confirmation_contract_is_canonical_json() -> None:
     assert saved.source_profile_archive_sha256 == SOURCE_PROFILE_ARCHIVE_SHA256
     assert saved.source_profile_receipt_sha256 == SOURCE_PROFILE_RECEIPT_SHA256
     assert (
-        saved.confirmation_id == "61f2f13559dc513cada3da329fe2e1f5f7d1294bccd47206c0f69ba962343a31"
+        saved.confirmation_id == "6ebc96fb66243c325e1bd0156873f8c376ad724d81034604334e82e8b4ca3311"
     )
     assert saved.analysis_index == 3
     assert not saved.allow_early_stopping
