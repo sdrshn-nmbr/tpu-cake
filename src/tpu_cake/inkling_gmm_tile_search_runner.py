@@ -7,6 +7,7 @@ import logging
 import re
 import subprocess
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -87,6 +88,7 @@ class HloArtifacts:
     compiler_hlo_path: Path
     compiler_hlo_sha256: str
     gmm_scope_labels: tuple[str, ...]
+    gmm_custom_call_counts: Mapping[str, int]
 
 
 @dataclass(frozen=True)
@@ -201,11 +203,36 @@ def extract_gmm_scope_labels(compiler_hlo: str) -> tuple[str, ...]:
     return tuple(sorted(set(re.findall(_GMM_SCOPE_PATTERN, compiler_hlo))))
 
 
-def _scope_instruction_lines(compiler_hlo: str) -> tuple[str, ...]:
+def _entry_gmm_custom_call_lines(compiler_hlo: str) -> tuple[str, ...]:
+    lines = compiler_hlo.splitlines()
+    entry_indices = tuple(
+        index for index, line in enumerate(lines) if re.match(r"^ENTRY\s+%?\S+", line)
+    )
+    if len(entry_indices) != 1:
+        return ()
     return tuple(
         line.strip()
-        for line in compiler_hlo.splitlines()
-        if re.search(_GMM_SCOPE_PATTERN, line) and "=" in line
+        for line in lines[entry_indices[0] + 1 :]
+        if re.match(r"^\s*(?:ROOT\s+)?%?[^=\s]+\s*=", line)
+        and re.search(_GMM_SCOPE_PATTERN, line)
+        and "custom-call(" in line
+        and 'custom_call_target="tpu_custom_call"' in line
+    )
+
+
+def expected_gmm_custom_call_counts(
+    contract: InklingGmmTileSearchContract,
+    policy: GmmPolicyPair,
+) -> Counter[str]:
+    per_layer = Counter(expected_gmm_scope_labels(contract, policy))
+    return Counter({label: count * _LAYER_COUNT for label, count in per_layer.items()})
+
+
+def observed_gmm_custom_call_counts(compiler_hlo: str) -> Counter[str]:
+    return Counter(
+        match.group()
+        for line in _entry_gmm_custom_call_lines(compiler_hlo)
+        if (match := re.search(_GMM_SCOPE_PATTERN, line)) is not None
     )
 
 
@@ -225,14 +252,14 @@ def validate_gmm_scope_labels(
             expected=expected,
             observed=observed,
         )
-    instruction_lines = _scope_instruction_lines(compiler_hlo)
-    instruction_scopes = extract_gmm_scope_labels("\n".join(instruction_lines))
-    if instruction_scopes != expected:
+    expected_counts = expected_gmm_custom_call_counts(contract, policy)
+    observed_counts = observed_gmm_custom_call_counts(compiler_hlo)
+    if observed_counts != expected_counts:
         _fail(
-            "COMPILED_SCOPE_INSTRUCTION_MISMATCH",
+            "COMPILED_CUSTOM_CALL_COUNT_MISMATCH",
             policy=policy.name,
-            expected=expected,
-            observed=instruction_scopes,
+            expected=dict(expected_counts),
+            observed=dict(observed_counts),
         )
     return observed
 
@@ -765,6 +792,7 @@ def compile_chain(
             f"INKLING_GMM_RUNNER_COMPILE policy={policy.name}"
         ) from error
     scopes = validate_gmm_scope_labels(contract, policy, compiler_hlo)
+    custom_call_counts = observed_gmm_custom_call_counts(compiler_hlo)
     slug = _policy_slug(policy)
     stablehlo_path = hlo_root / f"{slug}.stablehlo.mlir"
     compiler_hlo_path = hlo_root / f"{slug}.compiler-hlo.txt"
@@ -779,6 +807,7 @@ def compile_chain(
             compiler_hlo_path=compiler_hlo_path,
             compiler_hlo_sha256=_sha256_text(compiler_hlo),
             gmm_scope_labels=scopes,
+            gmm_custom_call_counts=dict(custom_call_counts),
         ),
     )
 
@@ -960,6 +989,7 @@ def write_raw_observations(
                 ).as_posix(),
                 "compiler_hlo_sha256": compiled.hlo.compiler_hlo_sha256,
                 "gmm_scope_labels": compiled.hlo.gmm_scope_labels,
+                "gmm_custom_call_counts": compiled.hlo.gmm_custom_call_counts,
                 "stablehlo_bytes": compiled.hlo.stablehlo_path.stat().st_size,
                 "compiler_hlo_bytes": compiled.hlo.compiler_hlo_path.stat().st_size,
             }

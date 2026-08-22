@@ -18,6 +18,7 @@ from tpu_cake.inkling_gmm_tile_search import (
 )
 from tpu_cake.inkling_gmm_tile_search_verifier import (
     _estimated_operand_bytes_per_device,
+    _expected_custom_call_counts,
     _expected_policies,
     _expected_scopes,
     _screening_orders,
@@ -90,10 +91,12 @@ def _contract(report: InklingGmmRouteCorpusReport, report_raw: bytes):
     )
 
 
-def _hlo_text(scopes: tuple[str, ...]) -> str:
+def _hlo_text(custom_call_counts: dict[str, int]) -> str:
     instructions = "\n".join(
-        f'  %scope-{index} = f32[] custom-call(), metadata={{op_name="{scope}"}}'
-        for index, scope in enumerate(scopes)
+        f"  %{scope}.{index} = f32[] custom-call(), "
+        f'custom_call_target="tpu_custom_call", metadata={{op_name="{scope}"}}'
+        for scope, count in custom_call_counts.items()
+        for index in range(count)
     )
     return (
         "HloModule test_module\n\n"
@@ -128,7 +131,8 @@ def _bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
     compiled = []
     for index, policy in enumerate(_expected_policies(contract)):
         stablehlo = "module @jit_chain {\n  func.func public @main() {\n    return\n  }\n}\n"
-        compiler_hlo = _hlo_text(_expected_scopes(contract, policy))
+        custom_call_counts = _expected_custom_call_counts(contract, policy)
+        compiler_hlo = _hlo_text(custom_call_counts)
         stablehlo_path = hlo_root / f"{index}.stablehlo.mlir"
         compiler_hlo_path = hlo_root / f"{index}.compiler-hlo.txt"
         stablehlo_path.write_text(stablehlo)
@@ -141,6 +145,7 @@ def _bundle(tmp_path: Path) -> tuple[dict[str, Path], dict[str, object]]:
                 "compiler_hlo_path": compiler_hlo_path.relative_to(tmp_path).as_posix(),
                 "compiler_hlo_sha256": hashlib.sha256(compiler_hlo.encode()).hexdigest(),
                 "gmm_scope_labels": list(_expected_scopes(contract, policy)),
+                "gmm_custom_call_counts": custom_call_counts,
                 "stablehlo_bytes": len(stablehlo.encode()),
                 "compiler_hlo_bytes": len(compiler_hlo.encode()),
             }
@@ -341,6 +346,27 @@ def test_verifier_rejects_scope_metadata_outside_an_hlo_instruction(tmp_path: Pa
     _write_json(paths["raw"], raw)
 
     with pytest.raises(ValueError, match="COMPILER_HLO_SCOPE_INSTRUCTION"):
+        _verify(paths)
+
+
+def test_verifier_rejects_a_missing_custom_call_with_rebound_artifact_hash(
+    tmp_path: Path,
+) -> None:
+    paths, raw = _bundle(tmp_path)
+    item = raw["compiled_policies"][0]
+    hlo_path = tmp_path / item["compiler_hlo_path"]
+    lines = hlo_path.read_text().splitlines()
+    custom_call = next(
+        index for index, line in enumerate(lines) if "gmm_v2-" in line and "custom-call(" in line
+    )
+    del lines[custom_call]
+    forged = "\n".join(lines) + "\n"
+    hlo_path.write_text(forged)
+    item["compiler_hlo_sha256"] = hashlib.sha256(forged.encode()).hexdigest()
+    item["compiler_hlo_bytes"] = len(forged.encode())
+    _write_json(paths["raw"], raw)
+
+    with pytest.raises(ValueError, match="COMPILER_HLO_CUSTOM_CALL_COUNTS"):
         _verify(paths)
 
 

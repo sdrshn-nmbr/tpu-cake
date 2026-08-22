@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import statistics
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,7 @@ _COMPILED_POLICY_KEYS = {
     "compiler_hlo_path",
     "compiler_hlo_sha256",
     "gmm_scope_labels",
+    "gmm_custom_call_counts",
     "stablehlo_bytes",
     "compiler_hlo_bytes",
 }
@@ -395,6 +397,37 @@ def _expected_scopes(
     return tuple(sorted(set(labels)))
 
 
+def _expected_custom_call_counts(
+    contract: InklingGmmTileSearchContract,
+    policy: GmmPolicyPair,
+) -> dict[str, int]:
+    gate_up = _expected_scopes(
+        contract,
+        GmmPolicyPair(gate_up=policy.gate_up, down=policy.down),
+    )
+    labels = []
+    for operation, arm in (
+        (GmmOperation.GATE, policy.gate_up),
+        (GmmOperation.UP, policy.gate_up),
+        (GmmOperation.DOWN, policy.down),
+    ):
+        kernel = next(
+            kernel for kernel in contract.production_abi.kernels if kernel.operation is operation
+        )
+        tile_m, tile_k, tile_n = _arm_tiles(contract, arm, operation)
+        labels.append(
+            f"gmm_v2-g_32-m_{contract.production_abi.m}-k_{kernel.k}-n_{kernel.n}"
+            f"-tm_{tile_m}-tk_{tile_k}-tn_{tile_n}"
+        )
+    counts = Counter(labels)
+    expected = {
+        label: count * len(contract.corpus.layer_indices) for label, count in sorted(counts.items())
+    }
+    if tuple(expected) != gate_up:
+        _fail("EXPECTED_CUSTOM_CALL_SCOPE_INVENTORY")
+    return expected
+
+
 def _artifact_path(root: Path, value: object, *, label: str) -> Path:
     if not isinstance(value, str) or not value:
         _fail(f"{label}_PATH")
@@ -431,6 +464,7 @@ def _verify_compiler_hlo(
     expected_sha256: str,
     expected_bytes: int,
     expected_scopes: tuple[str, ...],
+    expected_custom_call_counts: dict[str, int],
 ) -> None:
     raw = path.read_bytes()
     if len(raw) != expected_bytes or _sha256(raw) != expected_sha256:
@@ -452,6 +486,26 @@ def _verify_compiler_hlo(
     scope_lines = [line for line in lines if _SCOPE_PATTERN.search(line)]
     if not scope_lines or any(_HLO_INSTRUCTION_PATTERN.match(line) is None for line in scope_lines):
         _fail("COMPILER_HLO_SCOPE_INSTRUCTION", path=path)
+    entry_index = lines.index(entry_lines[0])
+    custom_call_lines = [
+        line
+        for line in lines[entry_index + 1 :]
+        if _HLO_INSTRUCTION_PATTERN.match(line)
+        and _SCOPE_PATTERN.search(line)
+        and "custom-call(" in line
+        and 'custom_call_target="tpu_custom_call"' in line
+    ]
+    observed_counts = Counter(
+        match.group()
+        for line in custom_call_lines
+        if (match := _SCOPE_PATTERN.search(line)) is not None
+    )
+    if dict(observed_counts) != expected_custom_call_counts:
+        _fail(
+            "COMPILER_HLO_CUSTOM_CALL_COUNTS",
+            expected=expected_custom_call_counts,
+            observed=dict(observed_counts),
+        )
 
 
 def _verify_compiled_policies(
@@ -495,6 +549,9 @@ def _verify_compiled_policies(
         expected_scopes = _expected_scopes(contract, policy)
         if item["gmm_scope_labels"] != list(expected_scopes):
             _fail("COMPILED_POLICY_SCOPE_BINDING", policy=policy.name)
+        expected_counts = _expected_custom_call_counts(contract, policy)
+        if item["gmm_custom_call_counts"] != expected_counts:
+            _fail("COMPILED_POLICY_CUSTOM_CALL_COUNT_BINDING", policy=policy.name)
         stablehlo = _artifact_path(artifact_root, item["stablehlo_path"], label="STABLEHLO")
         compiler_hlo = _artifact_path(
             artifact_root, item["compiler_hlo_path"], label="COMPILER_HLO"
@@ -511,6 +568,7 @@ def _verify_compiled_policies(
             expected_sha256=item["compiler_hlo_sha256"],
             expected_bytes=item["compiler_hlo_bytes"],
             expected_scopes=expected_scopes,
+            expected_custom_call_counts=expected_counts,
         )
         verified.append(
             {
@@ -518,6 +576,7 @@ def _verify_compiled_policies(
                 "stablehlo_sha256": item["stablehlo_sha256"],
                 "compiler_hlo_sha256": item["compiler_hlo_sha256"],
                 "gmm_scope_labels": list(expected_scopes),
+                "gmm_custom_call_counts": expected_counts,
             }
         )
     return verified
