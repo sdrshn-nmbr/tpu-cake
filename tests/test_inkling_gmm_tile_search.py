@@ -14,11 +14,14 @@ from tpu_cake.inkling_gmm_route_corpus import (
 from tpu_cake.inkling_gmm_tile_search import (
     GMM_CORRECTNESS_SEEDS,
     GMM_IMPLEMENTATION_SOURCE_PATHS,
+    GMM_OPERAND_SEED,
     GmmArmName,
     GmmOperation,
+    GmmSearchFamily,
     InklingGmmTileSearchContract,
     default_gmm_tile_search_contract,
     local_active_span,
+    screening_orders,
     validate_route_corpus_binding,
 )
 
@@ -78,6 +81,10 @@ def _contract() -> tuple[InklingGmmTileSearchContract, InklingGmmRouteCorpusRepo
         accepted_route_report_id=report.report_id,
         accepted_route_report_sha256=hashlib.sha256(raw).hexdigest(),
         accepted_route_corpus_sha256=report.corpus_sha256,
+        tpu_cake_git_commit="d" * 40,
+        tpu_cake_uv_lock_sha256="e" * 64,
+        runner_source_sha256="f" * 64,
+        verifier_source_sha256="0" * 64,
         inkling_git_commit="a" * 40,
         inkling_uv_lock_sha256="b" * 64,
         implementation_source_manifest=_source_manifest(),
@@ -103,6 +110,9 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
     assert contract.production_abi.expert_location == "trivial-identity-no-redundant-experts"
     assert contract.production_abi.lhs_distribution == "same-global-expert-sorted-lhs-per-device"
     assert contract.target_runtime.device_type == "TPU v7x"
+    assert contract.target_runtime.accelerator_type == "tpu7x-8"
+    assert contract.target_runtime.topology == "2x2x1"
+    assert contract.target_runtime.host_count == 1
     assert (
         contract.target_runtime.server_tp_size,
         contract.target_runtime.server_ep_size,
@@ -151,12 +161,40 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
     )
 
     assert contract.search.can_promote is False
+    assert contract.search.claim_scope == "best-validated-result-from-two-one-factor-screens"
+    assert contract.search.families == (GmmSearchFamily.GATE_UP, GmmSearchFamily.DOWN)
+    assert contract.search.gate_up_screen == (
+        "candidate-gate-up-silu-multiply-incumbent-down-full-chain"
+    )
+    assert contract.search.down_screen == (
+        "incumbent-gate-up-silu-multiply-candidate-down-full-chain"
+    )
+    assert contract.search.warmup_full_corpus_blocks_per_arm == 1
+    assert contract.search.screening_rounds_per_family == 10
     assert contract.search.order == "balanced-forward-reverse-latin-square"
+    assert contract.search.score == "median-full-corpus-duration"
+    assert contract.search.finalist_rule == "lowest-family-median"
+    assert contract.search.tie_rule == "incumbent-then-declaration-order"
     assert contract.search.layer_weight_banks == 40
     assert contract.search.layer_weight_banks_are_distinct is True
+    assert contract.search.layer_input_banks == 40
+    assert contract.search.layer_input_banks_are_distinct is True
+    assert contract.search.layer_inputs_reused_across_completion_steps is True
+    assert contract.search.operand_seed == GMM_OPERAND_SEED
+    assert contract.search.operand_generation == "jax-stateless-uniform-v1"
+    assert contract.search.minimum_free_device_bytes == 80 * 1024**3
     assert contract.search.executables_resident is True
     assert contract.search.operands_resident is True
-    assert contract.search.operands_shared_across_arms is True
+    assert contract.search.external_operands_shared_across_arms is True
+    assert contract.search.candidate_intermediates_shared_across_arms is False
+    assert contract.search.free_memory_checked_before_allocation is True
+    assert contract.search.residency_checked_before_timing is True
+    assert contract.search.compilation_excluded_from_timing is True
+    assert contract.search.dispatch == (
+        "64-host-dispatched-completion-executions-with-40-unrolled-layer-chains"
+    )
+    assert contract.search.synchronization == "block-until-ready-on-chain-liveness-output"
+    assert contract.search.output_liveness == "one-down-output-scalar-per-layer"
     assert contract.search.compiler_preflight == (
         "reachable-exact-gmm-v2-scope-label-per-operation"
     )
@@ -175,8 +213,17 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
     assert contract.confirmation.allow_retry is False
     assert contract.confirmation.executables_resident is True
     assert contract.confirmation.operands_resident is True
+    assert contract.confirmation.candidate == "combined-gate-up-and-down-family-finalists"
+    assert contract.confirmation.combined_failure_rule == "no-promotion-no-fallback"
+    assert contract.confirmation.screening_samples_reused is False
     assert contract.correctness.seeds == GMM_CORRECTNESS_SEEDS
     assert contract.correctness.numerical_contract_id == "c" * 64
+    assert contract.correctness.profile_count == 5
+    assert contract.correctness.require_all_expert_shards_covered is True
+    assert contract.correctness.compare_complete_active_spans is True
+    assert contract.correctness.cpu_oracle_rows_per_expert_shard == 1
+    assert contract.correctness.cpu_oracle_down_columns == (0, 2047, 2048, 4095)
+    assert contract.correctness.cpu_oracle_seeded_interior_columns_per_row == 4
     assert contract.correctness.tolerances_frozen_before_timing is True
 
 
@@ -194,10 +241,18 @@ def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
         (("corpus", "groups_are_independent_samples"), True),
         (("search", "can_promote"), True),
         (("search", "layer_weight_banks"), 1),
-        (("search", "operands_shared_across_arms"), False),
+        (("search", "screening_rounds_per_family"), 5),
+        (("search", "families"), (GmmSearchFamily.DOWN, GmmSearchFamily.GATE_UP)),
+        (("search", "operand_seed"), GMM_OPERAND_SEED + 1),
+        (("search", "layer_input_banks"), 2_560),
+        (("search", "external_operands_shared_across_arms"), False),
+        (("search", "candidate_intermediates_shared_across_arms"), True),
+        (("search", "compilation_excluded_from_timing"), False),
         (("confirmation", "paired_rounds"), 30),
         (("confirmation", "allow_retry"), True),
+        (("confirmation", "combined_failure_rule"), "confirm-hybrids"),
         (("correctness", "seeds"), GMM_CORRECTNESS_SEEDS[:-1]),
+        (("correctness", "cpu_oracle_down_columns"), (0, 4095)),
     ),
 )
 def test_contract_rejects_relaxed_or_changed_claims(
@@ -324,3 +379,16 @@ def test_local_active_span_uses_global_contiguous_expert_order() -> None:
         local_active_span(group_sizes[:-1], device_index=0)
     with pytest.raises(ValueError, match="device index"):
         local_active_span(group_sizes, device_index=8)
+
+
+def test_screening_orders_are_exact_balanced_forward_reverse_latin_squares() -> None:
+    contract, _ = _contract()
+
+    for family in GmmSearchFamily:
+        orders = screening_orders(contract, family)
+        assert len(orders) == 10
+        assert orders[0] == tuple(GmmArmName)
+        assert orders[5] == tuple(reversed(tuple(GmmArmName)))
+        for arm in GmmArmName:
+            positions = [order.index(arm) for order in orders]
+            assert sorted(positions) == [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]

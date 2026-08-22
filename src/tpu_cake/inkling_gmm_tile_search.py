@@ -16,6 +16,7 @@ GMM_LAYER_INDICES = tuple(range(2, 42))
 GMM_CORRECTNESS_SEEDS = tuple(
     semantic_seed(INKLING_GMM_TILE_SEARCH_SCHEMA, "correctness", str(index)) for index in range(5)
 )
+GMM_OPERAND_SEED = semantic_seed(INKLING_GMM_TILE_SEARCH_SCHEMA, "operands")
 GMM_IMPLEMENTATION_SOURCE_PATHS = (
     "engine/sglang-jax/python/sgl_jax/srt/models/inkling.py",
     "engine/sglang-jax/python/sgl_jax/srt/configs/model_config.py",
@@ -45,6 +46,11 @@ class GmmArmName(StrEnum):
     SPARSE_M32 = "sparse-m32"
     SPLIT_N = "split-n"
     SPARSE_M64_SPLIT_N = "sparse-m64-split-n"
+
+
+class GmmSearchFamily(StrEnum):
+    GATE_UP = "gate-up"
+    DOWN = "down"
 
 
 class RouteCorpusBinding(BaseModel):
@@ -151,25 +157,76 @@ class GmmSearchProtocol(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     can_promote: Literal[False] = False
-    selection_unit: Literal["full-corpus-block"] = "full-corpus-block"
+    claim_scope: Literal["best-validated-result-from-two-one-factor-screens"] = (
+        "best-validated-result-from-two-one-factor-screens"
+    )
+    families: tuple[GmmSearchFamily, GmmSearchFamily] = (
+        GmmSearchFamily.GATE_UP,
+        GmmSearchFamily.DOWN,
+    )
+    gate_up_screen: Literal["candidate-gate-up-silu-multiply-incumbent-down-full-chain"] = (
+        "candidate-gate-up-silu-multiply-incumbent-down-full-chain"
+    )
+    down_screen: Literal["incumbent-gate-up-silu-multiply-candidate-down-full-chain"] = (
+        "incumbent-gate-up-silu-multiply-candidate-down-full-chain"
+    )
+    selection_unit: Literal["one-full-corpus-chain-block"] = "one-full-corpus-chain-block"
+    warmup_full_corpus_blocks_per_arm: Literal[1] = 1
+    screening_rounds_per_family: Literal[10] = 10
     order: Literal["balanced-forward-reverse-latin-square"] = (
         "balanced-forward-reverse-latin-square"
     )
+    score: Literal["median-full-corpus-duration"] = "median-full-corpus-duration"
+    finalist_rule: Literal["lowest-family-median"] = "lowest-family-median"
+    tie_rule: Literal["incumbent-then-declaration-order"] = "incumbent-then-declaration-order"
     layer_weight_banks: Literal[40] = 40
     layer_weight_banks_are_distinct: Literal[True] = True
     layer_weight_bank_order: Literal["moe-layer-order"] = "moe-layer-order"
+    layer_input_banks: Literal[40] = 40
+    layer_input_banks_are_distinct: Literal[True] = True
+    layer_inputs_reused_across_completion_steps: Literal[True] = True
+    operand_seed: int
+    operand_generation: Literal["jax-stateless-uniform-v1"] = "jax-stateless-uniform-v1"
+    minimum_free_device_bytes: Literal[85899345920] = 85_899_345_920
     executables_resident: Literal[True] = True
     operands_resident: Literal[True] = True
-    operands_shared_across_arms: Literal[True] = True
+    external_operands_shared_across_arms: Literal[True] = True
+    candidate_intermediates_shared_across_arms: Literal[False] = False
+    free_memory_checked_before_allocation: Literal[True] = True
+    residency_checked_before_timing: Literal[True] = True
+    compilation_excluded_from_timing: Literal[True] = True
+    dispatch: Literal["64-host-dispatched-completion-executions-with-40-unrolled-layer-chains"] = (
+        "64-host-dispatched-completion-executions-with-40-unrolled-layer-chains"
+    )
+    timer: Literal["host-monotonic-ns-around-one-full-corpus-block"] = (
+        "host-monotonic-ns-around-one-full-corpus-block"
+    )
+    synchronization: Literal["block-until-ready-on-chain-liveness-output"] = (
+        "block-until-ready-on-chain-liveness-output"
+    )
+    output_liveness: Literal["one-down-output-scalar-per-layer"] = (
+        "one-down-output-scalar-per-layer"
+    )
     compiler_preflight: Literal["reachable-exact-gmm-v2-scope-label-per-operation"] = (
         "reachable-exact-gmm-v2-scope-label-per-operation"
     )
+
+    @model_validator(mode="after")
+    def protocol_is_exact(self) -> GmmSearchProtocol:
+        if self.families != tuple(GmmSearchFamily):
+            raise ValueError("GMM search family inventory mismatch")
+        if self.operand_seed != GMM_OPERAND_SEED:
+            raise ValueError("GMM operand seed is not canonical")
+        return self
 
 
 class GmmTargetRuntime(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     device_type: Literal["TPU v7x"] = "TPU v7x"
+    accelerator_type: Literal["tpu7x-8"] = "tpu7x-8"
+    topology: Literal["2x2x1"] = "2x2x1"
+    host_count: Literal[1] = 1
     device_count: Literal[8] = 8
     server_tp_size: Literal[8] = 8
     server_ep_size: Literal[8] = 8
@@ -187,7 +244,13 @@ class GmmConfirmationProtocol(BaseModel):
     order_balance: Literal["alternating-ab-ba"] = "alternating-ab-ba"
     samples_per_arm_per_round: Literal[5] = 5
     samples_synchronized: Literal[True] = True
-    sample_unit: Literal["full-corpus-block"] = "full-corpus-block"
+    sample_unit: Literal["one-full-corpus-chain-block"] = "one-full-corpus-chain-block"
+    candidate: Literal["combined-gate-up-and-down-family-finalists"] = (
+        "combined-gate-up-and-down-family-finalists"
+    )
+    baseline: Literal["all-incumbent"] = "all-incumbent"
+    combined_failure_rule: Literal["no-promotion-no-fallback"] = "no-promotion-no-fallback"
+    screening_samples_reused: Literal[False] = False
     within_round_reduction: Literal["median-of-five-synchronized-full-corpus-blocks"] = (
         "median-of-five-synchronized-full-corpus-blocks"
     )
@@ -211,8 +274,19 @@ class GmmCorrectnessProtocol(BaseModel):
 
     numerical_contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     seeds: tuple[int, ...]
-    comparison: Literal["final-down-output-vs-incumbent"] = "final-down-output-vs-incumbent"
-    cpu_oracle: Literal["fixed-order-active-spans"] = "fixed-order-active-spans"
+    profile_count: Literal[5] = 5
+    profile_selection: Literal[
+        "max-skew-max-nonzero-three-semantic-hash-with-all-shard-coverage"
+    ] = "max-skew-max-nonzero-three-semantic-hash-with-all-shard-coverage"
+    require_all_expert_shards_covered: Literal[True] = True
+    comparison: Literal["gate-up-intermediates-and-final-down-vs-incumbent"] = (
+        "gate-up-intermediates-and-final-down-vs-incumbent"
+    )
+    compare_complete_active_spans: Literal[True] = True
+    cpu_oracle: Literal["fixed-fp32-k-order-selected-rows"] = "fixed-fp32-k-order-selected-rows"
+    cpu_oracle_rows_per_expert_shard: Literal[1] = 1
+    cpu_oracle_down_columns: tuple[int, ...] = (0, 2047, 2048, 4095)
+    cpu_oracle_seeded_interior_columns_per_row: Literal[4] = 4
     absolute_tolerance: float = Field(gt=0)
     relative_tolerance: float = Field(gt=0)
     tolerances_frozen_before_timing: Literal[True] = True
@@ -223,6 +297,8 @@ class GmmCorrectnessProtocol(BaseModel):
     def seeds_are_exact(self) -> GmmCorrectnessProtocol:
         if self.seeds != GMM_CORRECTNESS_SEEDS:
             raise ValueError("GMM correctness seeds are not canonical")
+        if self.cpu_oracle_down_columns != (0, 2047, 2048, 4095):
+            raise ValueError("GMM CPU oracle boundary columns are not canonical")
         return self
 
 
@@ -232,6 +308,10 @@ class InklingGmmTileSearchContract(BaseModel):
     schema_version: Literal["inkling-gmm-tile-search-v1"] = INKLING_GMM_TILE_SEARCH_SCHEMA
     name: str = Field(min_length=1)
     route_corpus: RouteCorpusBinding
+    tpu_cake_git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    tpu_cake_uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runner_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verifier_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     inkling_git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     inkling_uv_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     implementation_source_manifest: tuple[SourceFileContract, ...] = Field(min_length=1)
@@ -273,6 +353,10 @@ def default_gmm_tile_search_contract(
     accepted_route_report_id: str,
     accepted_route_report_sha256: str,
     accepted_route_corpus_sha256: str,
+    tpu_cake_git_commit: str,
+    tpu_cake_uv_lock_sha256: str,
+    runner_source_sha256: str,
+    verifier_source_sha256: str,
     inkling_git_commit: str,
     inkling_uv_lock_sha256: str,
     implementation_source_manifest: tuple[SourceFileContract, ...],
@@ -296,6 +380,10 @@ def default_gmm_tile_search_contract(
             report_sha256=accepted_route_report_sha256,
             corpus_sha256=accepted_route_corpus_sha256,
         ),
+        tpu_cake_git_commit=tpu_cake_git_commit,
+        tpu_cake_uv_lock_sha256=tpu_cake_uv_lock_sha256,
+        runner_source_sha256=runner_source_sha256,
+        verifier_source_sha256=verifier_source_sha256,
         inkling_git_commit=inkling_git_commit,
         inkling_uv_lock_sha256=inkling_uv_lock_sha256,
         implementation_source_manifest=implementation_source_manifest,
@@ -327,7 +415,7 @@ def default_gmm_tile_search_contract(
             GmmTileArm(name=GmmArmName.SPLIT_N, tile_m=128, tile_n="N/2"),
             GmmTileArm(name=GmmArmName.SPARSE_M64_SPLIT_N, tile_m=64, tile_n="N/2"),
         ),
-        search=GmmSearchProtocol(),
+        search=GmmSearchProtocol(operand_seed=GMM_OPERAND_SEED),
         confirmation=GmmConfirmationProtocol(),
         correctness=GmmCorrectnessProtocol(
             numerical_contract_id=numerical_contract_id,
@@ -346,6 +434,22 @@ def local_active_span(group_sizes: tuple[int, ...], *, device_index: int) -> tup
     first_group = device_index * 32
     start = sum(group_sizes[:first_group])
     return start, start + sum(group_sizes[first_group : first_group + 32])
+
+
+def screening_orders(
+    contract: InklingGmmTileSearchContract,
+    family: GmmSearchFamily,
+) -> tuple[tuple[GmmArmName, ...], ...]:
+    if family not in contract.search.families:
+        raise ValueError("GMM search family is not declared")
+    names = tuple(arm.name for arm in contract.arms)
+    orders = []
+    for round_index in range(contract.search.screening_rounds_per_family):
+        square = round_index // len(names)
+        basis = names if square % 2 == 0 else tuple(reversed(names))
+        offset = round_index % len(names)
+        orders.append(basis[offset:] + basis[:offset])
+    return tuple(orders)
 
 
 def validate_route_corpus_binding(
