@@ -1,0 +1,326 @@
+import hashlib
+import json
+
+import pytest
+from pydantic import ValidationError
+
+from tpu_cake.contracts import SourceFileContract
+from tpu_cake.identity import model_identity_sha256
+from tpu_cake.inkling_gmm_route_corpus import (
+    InklingGmmRouteCorpusReport,
+    RouteGroupSizes,
+    _json_sha256,
+)
+from tpu_cake.inkling_gmm_tile_search import (
+    GMM_CORRECTNESS_SEEDS,
+    GMM_IMPLEMENTATION_SOURCE_PATHS,
+    GmmArmName,
+    GmmOperation,
+    InklingGmmTileSearchContract,
+    default_gmm_tile_search_contract,
+    local_active_span,
+    validate_route_corpus_binding,
+)
+
+
+def _source_manifest() -> tuple[SourceFileContract, ...]:
+    return tuple(
+        SourceFileContract(path=path, sha256=f"{index + 1:064x}")
+        for index, path in enumerate(GMM_IMPLEMENTATION_SOURCE_PATHS)
+    )
+
+
+def _route_report() -> tuple[InklingGmmRouteCorpusReport, bytes]:
+    groups = []
+    counts = (1,) * 32 + (0,) * 224
+    counts = (257, *counts[1:])
+    for completion_step in range(2, 66):
+        for layer_index in range(2, 42):
+            groups.append(
+                RouteGroupSizes(
+                    completion_step=completion_step,
+                    layer_index=layer_index,
+                    group_sizes=counts,
+                )
+            )
+    provisional = InklingGmmRouteCorpusReport(
+        report_id="0" * 64,
+        contract_id="1" * 64,
+        capture_id="2" * 64,
+        capture_sha256="3" * 64,
+        producer_source_sha256="4" * 64,
+        verifier_source_sha256="5" * 64,
+        server_launch_receipt_id="6" * 64,
+        server_launch_receipt_sha256="7" * 64,
+        request_sha256="8" * 64,
+        model_weight_manifest_sha256="9" * 64,
+        concurrency=48,
+        selected_completion_steps=tuple(range(2, 66)),
+        first_moe_layer=2,
+        num_layers=42,
+        num_experts_per_token=6,
+        num_routed_experts=256,
+        request_state_slots=tuple(range(48)),
+        recurrent_state_slots=tuple(range(48, 96)),
+        group_sizes=tuple(groups),
+        corpus_sha256=_json_sha256([group.model_dump(mode="json") for group in groups]),
+    )
+    report = provisional.model_copy(
+        update={"report_id": model_identity_sha256(provisional, exclude={"report_id"})}
+    )
+    raw = (json.dumps(report.model_dump(mode="json"), sort_keys=True) + "\n").encode()
+    return report, raw
+
+
+def _contract() -> tuple[InklingGmmTileSearchContract, InklingGmmRouteCorpusReport]:
+    report, raw = _route_report()
+    contract = default_gmm_tile_search_contract(
+        accepted_route_report_id=report.report_id,
+        accepted_route_report_sha256=hashlib.sha256(raw).hexdigest(),
+        accepted_route_corpus_sha256=report.corpus_sha256,
+        inkling_git_commit="a" * 40,
+        inkling_uv_lock_sha256="b" * 64,
+        implementation_source_manifest=_source_manifest(),
+        numerical_contract_id="c" * 64,
+        absolute_tolerance=0.02,
+        relative_tolerance=0.02,
+    )
+    return contract, report
+
+
+def test_default_contract_fixes_the_production_abi_and_protocol() -> None:
+    contract, _ = _contract()
+
+    assert tuple(source.path for source in contract.implementation_source_manifest) == (
+        GMM_IMPLEMENTATION_SOURCE_PATHS
+    )
+    assert (contract.production_abi.m, contract.production_abi.global_group_count) == (288, 256)
+    assert (
+        contract.production_abi.device_count,
+        contract.production_abi.local_experts_per_device,
+    ) == (8, 32)
+    assert contract.production_abi.group_offset_rule == "device_index*32"
+    assert contract.production_abi.expert_location == "trivial-identity-no-redundant-experts"
+    assert contract.production_abi.lhs_distribution == "same-global-expert-sorted-lhs-per-device"
+    assert contract.target_runtime.device_type == "TPU v7x"
+    assert (
+        contract.target_runtime.server_tp_size,
+        contract.target_runtime.server_ep_size,
+        contract.target_runtime.gmm_expert_axis_size,
+        contract.target_runtime.gmm_tensor_axis_size,
+    ) == (8, 8, 8, 1)
+
+    gate, up, down = contract.production_abi.kernels
+    assert (gate.operation, up.operation, down.operation) == (
+        GmmOperation.GATE,
+        GmmOperation.UP,
+        GmmOperation.DOWN,
+    )
+    assert (gate.lhs_dtype, gate.rhs_dtype, gate.accumulator_dtype, gate.output_dtype) == (
+        "bf16",
+        "bf16",
+        "fp32",
+        "fp32",
+    )
+    assert (gate.k, gate.n, gate.zero_initialize) == (4096, 2048, False)
+    assert (up.k, up.n, up.zero_initialize) == (4096, 2048, False)
+    assert (down.lhs_dtype, down.rhs_dtype, down.accumulator_dtype, down.output_dtype) == (
+        "fp32",
+        "bf16",
+        "fp32",
+        "fp32",
+    )
+    assert (down.k, down.n, down.zero_initialize) == (2048, 4096, True)
+    assert all(
+        not kernel.quantized and not kernel.has_scale and not kernel.has_bias
+        for kernel in contract.production_abi.kernels
+    )
+
+    assert contract.corpus.completion_steps == tuple(range(2, 66))
+    assert contract.corpus.layer_indices == tuple(range(2, 42))
+    assert contract.corpus.group_count == 64 * 40
+    assert contract.corpus.timing_unit == "one-ordered-64-step-by-40-layer-corpus-block"
+    assert contract.corpus.groups_are_independent_samples is False
+    assert tuple(arm.name for arm in contract.arms) == tuple(GmmArmName)
+    assert tuple((arm.tile_m, arm.tile_k, arm.tile_n) for arm in contract.arms) == (
+        (128, "K", "N"),
+        (64, "K", "N"),
+        (32, "K", "N"),
+        (128, "K", "N/2"),
+        (64, "K", "N/2"),
+    )
+
+    assert contract.search.can_promote is False
+    assert contract.search.order == "balanced-forward-reverse-latin-square"
+    assert contract.search.layer_weight_banks == 40
+    assert contract.search.layer_weight_banks_are_distinct is True
+    assert contract.search.executables_resident is True
+    assert contract.search.operands_resident is True
+    assert contract.search.operands_shared_across_arms is True
+    assert contract.search.compiler_preflight == (
+        "reachable-exact-gmm-v2-scope-label-per-operation"
+    )
+    assert contract.confirmation.paired_rounds == 32
+    assert contract.confirmation.samples_per_arm_per_round == 5
+    assert contract.confirmation.bootstrap_samples == 100_000
+    assert contract.confirmation.bootstrap_seed_rule == "semantic-seed(search-id,finalist)"
+    assert (
+        contract.confirmation.within_round_reduction
+        == "median-of-five-synchronized-full-corpus-blocks"
+    )
+    assert contract.confirmation.confidence_level == 0.99
+    assert contract.confirmation.minimum_practical_improvement == 0.03
+    assert contract.confirmation.lower_bound_must_exceed_threshold is True
+    assert contract.confirmation.allow_early_stopping is False
+    assert contract.confirmation.allow_retry is False
+    assert contract.confirmation.executables_resident is True
+    assert contract.confirmation.operands_resident is True
+    assert contract.correctness.seeds == GMM_CORRECTNESS_SEEDS
+    assert contract.correctness.numerical_contract_id == "c" * 64
+    assert contract.correctness.tolerances_frozen_before_timing is True
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("production_abi", "m"), 287),
+        (("production_abi", "local_experts_per_device"), 31),
+        (("production_abi", "kernels", 0, "output_dtype"), "bf16"),
+        (("production_abi", "kernels", 2, "zero_initialize"), False),
+        (("production_abi", "expert_location"), "dynamic-eplb"),
+        (("target_runtime", "device_type"), "TPU v6e"),
+        (("target_runtime", "gmm_tensor_axis_size"), 8),
+        (("arms", 1, "tile_m"), 128),
+        (("corpus", "groups_are_independent_samples"), True),
+        (("search", "can_promote"), True),
+        (("search", "layer_weight_banks"), 1),
+        (("search", "operands_shared_across_arms"), False),
+        (("confirmation", "paired_rounds"), 30),
+        (("confirmation", "allow_retry"), True),
+        (("correctness", "seeds"), GMM_CORRECTNESS_SEEDS[:-1]),
+    ),
+)
+def test_contract_rejects_relaxed_or_changed_claims(
+    path: tuple[object, ...], value: object
+) -> None:
+    contract, _ = _contract()
+    payload = contract.model_dump(mode="json", exclude={"search_id"})
+    target = payload
+    for key in path[:-1]:
+        target = target[key]  # type: ignore[index]
+    target[path[-1]] = value  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        InklingGmmTileSearchContract.model_validate(payload)
+
+
+def test_contract_rejects_an_incomplete_or_reordered_source_manifest() -> None:
+    contract, _ = _contract()
+    payload = contract.model_dump(mode="json", exclude={"search_id"})
+    payload["implementation_source_manifest"] = list(
+        reversed(payload["implementation_source_manifest"][:-1])
+    )
+
+    with pytest.raises(ValidationError, match="source manifest"):
+        InklingGmmTileSearchContract.model_validate(payload)
+
+
+def test_route_binding_accepts_only_the_exact_complete_corpus() -> None:
+    contract, report = _contract()
+    raw = (json.dumps(report.model_dump(mode="json"), sort_keys=True) + "\n").encode()
+
+    validate_route_corpus_binding(contract, report, report_bytes=raw)
+
+    with pytest.raises(ValueError, match="report content hash"):
+        validate_route_corpus_binding(contract, report, report_bytes=raw + b" ")
+    unrelated = b"{}\n"
+    unrelated_contract = contract.model_copy(
+        update={
+            "route_corpus": contract.route_corpus.model_copy(
+                update={"report_sha256": hashlib.sha256(unrelated).hexdigest()}
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="bytes do not encode"):
+        validate_route_corpus_binding(unrelated_contract, report, report_bytes=unrelated)
+    with pytest.raises(ValueError, match="report identity"):
+        validate_route_corpus_binding(
+            contract.model_copy(
+                update={
+                    "route_corpus": contract.route_corpus.model_copy(update={"report_id": "f" * 64})
+                }
+            ),
+            report,
+            report_bytes=raw,
+        )
+    provisional = report.model_copy(update={"report_id": "0" * 64})
+    provisional_raw = (
+        json.dumps(provisional.model_dump(mode="json"), sort_keys=True) + "\n"
+    ).encode()
+    provisional_contract = contract.model_copy(
+        update={
+            "route_corpus": contract.route_corpus.model_copy(
+                update={
+                    "report_id": "0" * 64,
+                    "report_sha256": hashlib.sha256(provisional_raw).hexdigest(),
+                }
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="final identity"):
+        validate_route_corpus_binding(
+            provisional_contract,
+            provisional,
+            report_bytes=provisional_raw,
+        )
+
+    wrong_workload_provisional = report.model_copy(
+        update={
+            "report_id": "0" * 64,
+            "concurrency": 96,
+            "num_experts_per_token": 3,
+            "request_state_slots": tuple(range(96)),
+            "recurrent_state_slots": tuple(range(96, 192)),
+        }
+    )
+    wrong_workload = wrong_workload_provisional.model_copy(
+        update={
+            "report_id": model_identity_sha256(
+                wrong_workload_provisional,
+                exclude={"report_id"},
+            )
+        }
+    )
+    wrong_workload_raw = (
+        json.dumps(wrong_workload.model_dump(mode="json"), sort_keys=True) + "\n"
+    ).encode()
+    wrong_workload_contract = contract.model_copy(
+        update={
+            "route_corpus": contract.route_corpus.model_copy(
+                update={
+                    "report_id": wrong_workload.report_id,
+                    "report_sha256": hashlib.sha256(wrong_workload_raw).hexdigest(),
+                }
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="production workload"):
+        validate_route_corpus_binding(
+            wrong_workload_contract,
+            wrong_workload,
+            report_bytes=wrong_workload_raw,
+        )
+
+
+def test_local_active_span_uses_global_contiguous_expert_order() -> None:
+    group_sizes = tuple(range(256))
+
+    assert local_active_span(group_sizes, device_index=0) == (0, sum(range(32)))
+    assert local_active_span(group_sizes, device_index=3) == (
+        sum(range(96)),
+        sum(range(128)),
+    )
+    with pytest.raises(ValueError, match="256"):
+        local_active_span(group_sizes[:-1], device_index=0)
+    with pytest.raises(ValueError, match="device index"):
+        local_active_span(group_sizes, device_index=8)
