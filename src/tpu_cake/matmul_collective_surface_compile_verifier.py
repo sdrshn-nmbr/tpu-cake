@@ -35,7 +35,7 @@ _EXPECTED_SOURCE_HASHES = {
     "tpu_cake/identity.py": "ab9813b80a2f13e54494fcb045048edf047f5509d1a20cf5f971c71ce6cf78e8",
     "tpu_cake/ledger.py": "ddeff9309596d5248a1c7b90bf03ea26ee0d3afb93473c0d0b1bf84b4c21da06",
     "tpu_cake/lowering.py": "3615333950614198e0cbdb978342382440717bbfc1b291bcde6d7c4da503f64e",
-    "tpu_cake/matmul_collective_surface_prediction.py": "47236ca8680c222f37654d45a83aa81311a4d7863fd98b72e285e1b1711af29b",
+    "tpu_cake/matmul_collective_surface_prediction.py": "32e94beca6e487bdc76dd7d3ea9932146cfb6d4f7e7c8105cbb0a5852ff5f382",
     "tpu_cake/matmul_collective_surface_runner.py": "cf7687d700742c3f4d50424e9a9364d8138df643efcf70f6dca7aeead3713d04",
     "tpu_cake/metrics.py": "a87f0bbc26f291e6bcec9932c356b866f529224042b0f673b434687d6666ccc0",
     "tpu_cake/pallas_lowering.py": "b40cd73db7cd4c12b6639064e5dd04b8e3b53be68eec72b34a5b3adace061ad5",
@@ -59,7 +59,7 @@ _EXPECTED_EXECUTOR_SOURCE_SHA256 = (
     "ff56e0fe18a7c14cf83183fe088888d2ec587ff8965742c81d89011fa15fa00d"
 )
 _EXPECTED_WORKER_SOURCE_SHA256 = "72dac9fce071cab017923af197795e8fe9fd5f68fe881f60c9c2844de45621fc"
-_EXPECTED_DESIGN_ID = "3a1524c26f46ba03d0bb7e8adc43b2833ccda2618cead6f43829ec885a9b2b8b"
+_EXPECTED_DESIGN_ID = "f2f8a0eeba4842167780cd3d79043443d0d02392ed037a5250df1a2218691d83"
 _EXPECTED_ARM_IDENTITIES = {
     ("calibration-0", "xla_reduce_scatter"): (
         "f2c111506ca8dd3452910374780297deebae99200f8c6fe1784f4b8d7d33d04d",

@@ -26,7 +26,8 @@
     "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
   },
   "compiler_environment": {
-    "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true"
+    "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true",
+    "TPU_LIBRARY_PATH": "/home/sudarshan/tpu-cake-main/.venv/lib/python3.12/site-packages/libtpu/libtpu.so"
   },
   "mesh_size": 8,
   "attempt_registry_root": "/home/sudarshan/tpu-cake-evidence/matmul-collective-surface-attempts-v1",

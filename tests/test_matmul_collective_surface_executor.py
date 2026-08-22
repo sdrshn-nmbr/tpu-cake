@@ -524,9 +524,12 @@ def test_worker_subprocess_environment_is_canonical(
         compilation_cache_dir=cache_root,
     )
 
-    assert all(key not in environment for key in injected)
+    assert all(
+        key not in environment for key in injected if key not in contract.compiler_environment
+    )
     assert environment["PATH"] == "/usr/bin:/bin"
     assert environment["LIBTPU_INIT_ARGS"] == contract.compiler_environment["LIBTPU_INIT_ARGS"]
+    assert environment["TPU_LIBRARY_PATH"] == contract.compiler_environment["TPU_LIBRARY_PATH"]
     assert environment["JAX_COMPILATION_CACHE_DIR"] == str(cache_root)
 
 
@@ -581,7 +584,7 @@ def test_worker_launcher_uses_the_required_subcommand(
     )
 
 
-@pytest.mark.parametrize("key", ["XLA_FLAGS", "TPU_LIBRARY_PATH"])
+@pytest.mark.parametrize("key", ["XLA_FLAGS"])
 def test_worker_authority_rejects_undeclared_compiler_environment(
     key: str,
     monkeypatch: pytest.MonkeyPatch,
