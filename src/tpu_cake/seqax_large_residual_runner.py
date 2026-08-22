@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 import jax
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis
 from tpu_cake.contracts import RuntimeIdentity
@@ -16,7 +17,7 @@ from tpu_cake.physical_cost_model import analyze_physical_kernel
 from tpu_cake.runner import _runtime_identity
 from tpu_cake.seqax_large_residual import (
     SeqaxLargeResidualContract,
-    default_seqax_large_residual_contract,
+    pending_seqax_large_residual_contract,
 )
 from tpu_cake.seqax_residual_profile_runner import (
     _compile,
@@ -28,6 +29,10 @@ from tpu_cake.seqax_residual_profile_runner import (
 )
 from tpu_cake.workloads.seqax_forward import SeqaxResidualNormStrategy
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
+
+SEQAX_LARGE_RESIDUAL_COMPILER_CAPTURE_RECORD_SCHEMA = (
+    "seqax-large-residual-compiler-capture-record-v1"
+)
 
 
 class SeqaxLargeResidualCompilerCaptureCandidate(BaseModel):
@@ -85,6 +90,37 @@ class SeqaxLargeResidualCompilerCapture(BaseModel):
         return model_identity_sha256(self)
 
 
+class SeqaxLargeResidualCompilerCaptureRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[SEQAX_LARGE_RESIDUAL_COMPILER_CAPTURE_RECORD_SCHEMA] = (
+        SEQAX_LARGE_RESIDUAL_COMPILER_CAPTURE_RECORD_SCHEMA
+    )
+    pending_contract_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    capture_paths: tuple[str, str]
+    capture_invocation_ids: tuple[str, str]
+    capture_log_sha256: tuple[str, str]
+    capture: SeqaxLargeResidualCompilerCapture
+
+    @model_validator(mode="after")
+    def captures_are_independent_and_identical(self) -> SeqaxLargeResidualCompilerCaptureRecord:
+        if (
+            len(set(self.capture_paths)) != 2
+            or len(set(self.capture_invocation_ids)) != 2
+            or self.capture_log_sha256[0] != self.capture_log_sha256[1]
+            or self.capture.contract_id != self.pending_contract_id
+            or self.capture.source_commit != self.source_commit
+        ):
+            raise ValueError("Seqax large residual compiler capture record mismatch")
+        return self
+
+    @computed_field
+    @property
+    def record_id(self) -> str:
+        return model_identity_sha256(self)
+
+
 def _require_clean_repository(repository_root: Path) -> str:
     status = subprocess.run(
         ["git", "status", "--porcelain=v1"],
@@ -117,7 +153,7 @@ def capture_seqax_large_residual_compiler(
 ) -> SeqaxLargeResidualCompilerCapture:
     repository_root = Path(__file__).resolve().parents[2]
     runtime = _runtime_identity()
-    canonical = default_seqax_large_residual_contract(runtime)
+    canonical = pending_seqax_large_residual_contract(runtime)
     if contract != canonical or contract.compiler_identity_status != "pending":
         raise ValueError("SEQAX_LARGE_RESIDUAL_CAPTURE_CONTRACT_MISMATCH")
     if repository_root.resolve() != Path(contract.compilation_source_root):

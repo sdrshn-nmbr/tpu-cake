@@ -98,7 +98,11 @@ class SeqaxLargeResidualContract(BaseModel):
 
     @model_validator(mode="after")
     def protocol_is_canonical(self) -> SeqaxLargeResidualContract:
-        expected = default_seqax_large_residual_contract(self.runtime)
+        expected = (
+            pending_seqax_large_residual_contract(self.runtime)
+            if self.compiler_identity_status == "pending"
+            else default_seqax_large_residual_contract(self.runtime)
+        )
         if self.model_dump(
             exclude={"candidates"}, exclude_computed_fields=True
         ) != expected.model_dump(
@@ -171,7 +175,7 @@ def _parameters() -> dict[str, int | str]:
     }
 
 
-def _pending_plans() -> tuple[SeqaxLargeResidualPlanContract, ...]:
+def _plans(*, pinned: bool) -> tuple[SeqaxLargeResidualPlanContract, ...]:
     zero = "0" * 64
     return (
         SeqaxLargeResidualPlanContract(
@@ -188,9 +192,29 @@ def _pending_plans() -> tuple[SeqaxLargeResidualPlanContract, ...]:
             pallas_manifest_sha256=(
                 "a503daf982286e87327b23b25ac28f6af5dce463dffccad55387ed8db8d343b4"
             ),
-            pallas_stablehlo_sha256=zero,
-            control_stablehlo_sha256=zero,
-            expected_pallas_compiler_collectives=_zero_collectives(),
+            pallas_stablehlo_sha256=(
+                "7005eaeb33ec2e2ebeb81b0505272ed6dd29c2756d58fd62ef8b5118922e26a2"
+                if pinned
+                else zero
+            ),
+            control_stablehlo_sha256=(
+                "b992773e3707220c70307df8e1770b034f4f7b12a1675489c8c41975ce710581"
+                if pinned
+                else zero
+            ),
+            expected_pallas_compiler_collectives=(
+                CompilerCollectiveAnalysis(
+                    stablehlo_reduce_scatter_count=3,
+                    stablehlo_all_gather_count=17,
+                    compiler_reduce_scatter_count=3,
+                    compiler_all_reduce_count=0,
+                    compiler_all_gather_count=17,
+                    sparse_core_reduce_scatter_count=3,
+                    sparse_core_all_gather_count=17,
+                )
+                if pinned
+                else _zero_collectives()
+            ),
             expected_pallas_regions=9,
             expected_all_gathers=17,
             expected_all_reduces=0,
@@ -212,9 +236,29 @@ def _pending_plans() -> tuple[SeqaxLargeResidualPlanContract, ...]:
             pallas_manifest_sha256=(
                 "18308733f03c8a7e0ee0a0c7b6c21c759c6e63475e918b17203072179eb196e5"
             ),
-            pallas_stablehlo_sha256=zero,
-            control_stablehlo_sha256=zero,
-            expected_pallas_compiler_collectives=_zero_collectives(),
+            pallas_stablehlo_sha256=(
+                "95acf0b2cb90e01a54c74df3794d4b17bb9ad93d0d3f1ec840f066e6ec194cec"
+                if pinned
+                else zero
+            ),
+            control_stablehlo_sha256=(
+                "9ab615dfddcfb0630e1a0b08125311eb2d761166a64d59dadaa9d47650549553"
+                if pinned
+                else zero
+            ),
+            expected_pallas_compiler_collectives=(
+                CompilerCollectiveAnalysis(
+                    stablehlo_reduce_scatter_count=1,
+                    stablehlo_all_gather_count=15,
+                    compiler_reduce_scatter_count=1,
+                    compiler_all_reduce_count=2,
+                    compiler_all_gather_count=15,
+                    sparse_core_reduce_scatter_count=1,
+                    sparse_core_all_gather_count=15,
+                )
+                if pinned
+                else _zero_collectives()
+            ),
             expected_pallas_regions=9,
             expected_all_gathers=15,
             expected_all_reduces=2,
@@ -225,13 +269,17 @@ def _pending_plans() -> tuple[SeqaxLargeResidualPlanContract, ...]:
     )
 
 
-def default_seqax_large_residual_contract(runtime: RuntimeIdentity) -> SeqaxLargeResidualContract:
+def _contract(
+    runtime: RuntimeIdentity,
+    *,
+    pinned: bool,
+) -> SeqaxLargeResidualContract:
     return SeqaxLargeResidualContract.model_construct(
         identity_schema=SEMANTIC_IDENTITY_SCHEMA,
         question=SEQAX_LARGE_RESIDUAL_QUESTION,
         claim_scope=SEQAX_LARGE_RESIDUAL_SCOPE,
         compilation_source_root=SEQAX_LARGE_RESIDUAL_COMPILATION_ROOT,
-        compiler_identity_status="pending",
+        compiler_identity_status="pinned" if pinned else "pending",
         compile_capture_count=2,
         scaling_book_sources=(
             "https://jax-ml.github.io/scaling-book/sharding/",
@@ -263,5 +311,15 @@ def default_seqax_large_residual_contract(runtime: RuntimeIdentity) -> SeqaxLarg
         device_kind="TPU7x",
         device_count=8,
         mesh={"d": 2, "t": 4},
-        candidates=_pending_plans(),
+        candidates=_plans(pinned=pinned),
     )
+
+
+def pending_seqax_large_residual_contract(
+    runtime: RuntimeIdentity,
+) -> SeqaxLargeResidualContract:
+    return _contract(runtime, pinned=False)
+
+
+def default_seqax_large_residual_contract(runtime: RuntimeIdentity) -> SeqaxLargeResidualContract:
+    return _contract(runtime, pinned=True)

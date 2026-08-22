@@ -10,10 +10,12 @@ from tpu_cake.runner import _runtime_identity
 from tpu_cake.seqax_large_residual import (
     SeqaxLargeResidualContract,
     default_seqax_large_residual_contract,
+    pending_seqax_large_residual_contract,
 )
 from tpu_cake.seqax_large_residual_runner import (
     SeqaxLargeResidualCompilerCapture,
     SeqaxLargeResidualCompilerCaptureCandidate,
+    SeqaxLargeResidualCompilerCaptureRecord,
 )
 from tpu_cake.seqax_residual_profile_runner import _prepare_candidates
 from tpu_cake.workloads.seqax_forward import SeqaxResidualNormStrategy
@@ -86,6 +88,16 @@ def test_large_residual_external_contract_matches_factory() -> None:
     assert saved == default_seqax_large_residual_contract(saved.runtime)
 
 
+def test_large_residual_compiler_capture_record_binds_two_clean_processes() -> None:
+    record = SeqaxLargeResidualCompilerCaptureRecord.model_validate_json(
+        Path("contracts/seqax-large-residual-compiler-captures-v1.json").read_text()
+    )
+
+    assert record.capture_log_sha256[0] == record.capture_log_sha256[1]
+    assert record.capture.contract_id == record.pending_contract_id
+    assert len(record.record_id) == 64
+
+
 def test_large_residual_static_schedules_fit_and_match_contract() -> None:
     contract = default_seqax_large_residual_contract(_runtime_identity())
     prepared = _prepare_candidates(contract)
@@ -110,12 +122,22 @@ def test_large_residual_contract_rejects_parameter_mutation() -> None:
 
 
 def test_large_residual_contract_rejects_nonzero_pending_identity() -> None:
-    contract = default_seqax_large_residual_contract(_runtime_identity())
+    contract = pending_seqax_large_residual_contract(_runtime_identity())
     payload = contract.model_dump(exclude_computed_fields=True)
     payload["candidates"][0]["pallas_stablehlo_sha256"] = "1" * 64
 
     with pytest.raises(ValidationError, match="must be zero"):
         SeqaxLargeResidualContract.model_validate(payload)
+
+
+def test_large_residual_pending_contract_identity_matches_capture_record() -> None:
+    record = SeqaxLargeResidualCompilerCaptureRecord.model_validate_json(
+        Path("contracts/seqax-large-residual-compiler-captures-v1.json").read_text()
+    )
+
+    assert pending_seqax_large_residual_contract(record.capture.runtime).contract_id == (
+        record.pending_contract_id
+    )
 
 
 def test_large_residual_capture_rejects_rewritten_standard_reduce_scatter() -> None:

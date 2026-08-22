@@ -1,0 +1,98 @@
+{
+  "schema_version": "seqax-large-residual-compiler-capture-record-v1",
+  "pending_contract_id": "239208189874a1cbfb07320c1dc61529b757000ea8a8c51a871a7a831efc81c4",
+  "source_commit": "9ccd3705c63ab772f8a4c325eb407ba35037f749",
+  "capture_paths": [
+    "/home/sudarshan/tpu-cake-evidence/seqax-large-residual-compile-9ccd370-a.log",
+    "/home/sudarshan/tpu-cake-evidence/seqax-large-residual-compile-9ccd370-b.log"
+  ],
+  "capture_invocation_ids": [
+    "4206cd2d9dff42e199aeb04ebb27ef61",
+    "4f85b0144dc249abbe22131b9afa2a3a"
+  ],
+  "capture_log_sha256": [
+    "81e9fe9e432ac46f961a48d219a470925449a9a8fbd7778f6ce7a118a45cbf6b",
+    "81e9fe9e432ac46f961a48d219a470925449a9a8fbd7778f6ce7a118a45cbf6b"
+  ],
+  "capture": {
+    "contract_id": "239208189874a1cbfb07320c1dc61529b757000ea8a8c51a871a7a831efc81c4",
+    "source_commit": "9ccd3705c63ab772f8a4c325eb407ba35037f749",
+    "uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+    "runtime": {
+      "python": "3.12.3",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "libtpu": "0.0.44.1",
+      "xla": " --xla_tpu_use_enhanced_launch_barrier=true"
+    },
+    "device_ids": [0, 1, 2, 3, 4, 5, 6, 7],
+    "candidates": [
+      {
+        "candidate": "standard",
+        "distributed_schedule_sha256": "b72a0fa72040601cae8d24185ebb6d0890f9b08e4be059e046426bee16c69ca0",
+        "physical_schedule_sha256": "c725424e3a7c4c71feb175f1d6243704dceeafd6f72a7cb9c71c67790bca2820",
+        "pallas_source_sha256": "a90357c41554d452fdfeaee05d451cc9a9a1a79a5d4c5d7f2ec73d7448e1b5db",
+        "pallas_manifest_sha256": "a503daf982286e87327b23b25ac28f6af5dce463dffccad55387ed8db8d343b4",
+        "pallas_stablehlo_sha256": "7005eaeb33ec2e2ebeb81b0505272ed6dd29c2756d58fd62ef8b5118922e26a2",
+        "pallas_compiler_hlo_sha256": "598bf8882a6cdc2956b22dc922ba517ad1b4189b9aff2d21358055a4dd2ae269",
+        "control_stablehlo_sha256": "b992773e3707220c70307df8e1770b034f4f7b12a1675489c8c41975ce710581",
+        "control_compiler_hlo_sha256": "7fe517c59281ddf82dc80a5020a1b2ad9e2608cadde23f78466a31b4ac2617a0",
+        "pallas_compiler_collectives": {
+          "stablehlo_reduce_scatter_count": 3,
+          "stablehlo_all_gather_count": 17,
+          "compiler_reduce_scatter_count": 3,
+          "compiler_all_reduce_count": 0,
+          "compiler_all_gather_count": 17,
+          "sparse_core_reduce_scatter_count": 3,
+          "sparse_core_all_gather_count": 17
+        },
+        "control_compiler_collectives": {
+          "stablehlo_reduce_scatter_count": 3,
+          "stablehlo_all_gather_count": 14,
+          "compiler_reduce_scatter_count": 3,
+          "compiler_all_reduce_count": 0,
+          "compiler_all_gather_count": 14,
+          "sparse_core_reduce_scatter_count": 3,
+          "sparse_core_all_gather_count": 14
+        },
+        "pallas_peak_memory_bytes": 21296640,
+        "control_peak_memory_bytes": 21292544,
+        "physical_peak_vmem_bytes_per_device": 12357632,
+        "ring_equivalent_ici_bytes_per_device": 23154688
+      },
+      {
+        "candidate": "residual_all_reduce",
+        "distributed_schedule_sha256": "3b4129d67948a82620f9fa595f9690fd00705ee95af6bbc9641e486071c865c0",
+        "physical_schedule_sha256": "b9b692967b4a82d15362ddcd0201e2427cb10cb4b1ac26bfc5dadfde8cc52ddc",
+        "pallas_source_sha256": "069d5499a03523d2b945f532f91f53b4b3f7dbbdb9ac5ea396e8e4ec76b08e3f",
+        "pallas_manifest_sha256": "18308733f03c8a7e0ee0a0c7b6c21c759c6e63475e918b17203072179eb196e5",
+        "pallas_stablehlo_sha256": "95acf0b2cb90e01a54c74df3794d4b17bb9ad93d0d3f1ec840f066e6ec194cec",
+        "pallas_compiler_hlo_sha256": "3e2c6d0c797e763c7c2ff844f7f60db2fe1c88c189dfe8eea49a4c55ae45fc4a",
+        "control_stablehlo_sha256": "9ab615dfddcfb0630e1a0b08125311eb2d761166a64d59dadaa9d47650549553",
+        "control_compiler_hlo_sha256": "1a309e5b2f7719f76f4557e44a1a16d2516a7a742bf3e499549ee311efd8b09f",
+        "pallas_compiler_collectives": {
+          "stablehlo_reduce_scatter_count": 1,
+          "stablehlo_all_gather_count": 15,
+          "compiler_reduce_scatter_count": 1,
+          "compiler_all_reduce_count": 2,
+          "compiler_all_gather_count": 15,
+          "sparse_core_reduce_scatter_count": 1,
+          "sparse_core_all_gather_count": 15
+        },
+        "control_compiler_collectives": {
+          "stablehlo_reduce_scatter_count": 1,
+          "stablehlo_all_gather_count": 12,
+          "compiler_reduce_scatter_count": 1,
+          "compiler_all_reduce_count": 2,
+          "compiler_all_gather_count": 12,
+          "sparse_core_reduce_scatter_count": 1,
+          "sparse_core_all_gather_count": 12
+        },
+        "pallas_peak_memory_bytes": 27630080,
+        "control_peak_memory_bytes": 26831360,
+        "physical_peak_vmem_bytes_per_device": 13391872,
+        "ring_equivalent_ici_bytes_per_device": 26300416
+      }
+    ]
+  }
+}
