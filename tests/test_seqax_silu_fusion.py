@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -50,11 +51,14 @@ def _plans(contract: SeqaxSiluFusionDesignContract):
 
 
 def test_seqax_silu_fusion_design_is_canonical() -> None:
-    saved = SeqaxSiluFusionDesignContract.model_validate_json(
-        Path("contracts/seqax-silu-fusion-design-v1.json").read_text()
-    )
+    path = Path("contracts/seqax-silu-fusion-design-v1.json")
+    saved = SeqaxSiluFusionDesignContract.model_validate_json(path.read_text())
 
     assert saved == default_seqax_silu_fusion_design_contract(saved.runtime)
+    assert saved.design_id == "ec6ca7194ce8430035e94210d9fb2a75c99bf5749c50ab579dedf4fd1914996b"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        "e6c7fd18da0edba925b2bc6e0725c25b51f233f06013a9147c5eca0c977d0bff"
+    )
     assert saved.baseline is SeqaxFeedForwardFusion.SEPARATE
     assert saved.candidate is SeqaxFeedForwardFusion.SILU_MULTIPLY
     assert saved.vector_execution is SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL
@@ -67,14 +71,11 @@ def test_seqax_silu_fusion_design_binds_one_ring_byte_failure() -> None:
     design = SeqaxSiluFusionDesignContract.model_validate_json(
         Path("contracts/seqax-silu-fusion-design-v1.json").read_text()
     )
-    ledger = json.loads(
-        Path("contracts/seqax-silu-fusion-compiler-failure-v1.json").read_text()
-    )
+    ledger = json.loads(Path("contracts/seqax-silu-fusion-compiler-failure-v1.json").read_text())
     matches = tuple(
         attempt
         for attempt in ledger["attempts"]
-        if attempt["failed_design_id"]
-        == design.compiler_ring_equivalent_bytes_source_design_id
+        if attempt["failed_design_id"] == design.compiler_ring_equivalent_bytes_source_design_id
     )
 
     assert len(matches) == 1

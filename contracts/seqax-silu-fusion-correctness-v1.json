@@ -2,6 +2,7 @@
   "schema_version": "seqax-silu-fusion-correctness-v1",
   "identity_schema": "length-prefixed-v2",
   "claim_scope": "fixed-seqax-silu-fusion-full-output-and-strict-mlp-checkpoint-equivalence",
+  "compiler_evidence_status": "pending-rebind",
   "compiler_design_path": "contracts/seqax-silu-fusion-design-v1.json",
   "compiler_design_id": "f77778c8c49b090c0c8717f81c32a6269e07b5b9d2fd505e36b243e5bbfc143a",
   "compiler_design_sha256": "bff54167ee3aa491903cf97bfdf5d4851415f5a0673c1bf2bc210851bc5f4dd8",
@@ -75,6 +76,38 @@
     "down_float32",
     "down_bfloat16"
   ],
+  "checkpoint_capture_modes": {
+    "separate": [
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "instrumented-projection-only-all-reduce",
+      "instrumented-projection-only-all-reduce"
+    ],
+    "silu_multiply": [
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "reconstructed-strict-bf16-silu-from-gate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "executed-model-intermediate",
+      "instrumented-projection-only-all-reduce",
+      "instrumented-projection-only-all-reduce"
+    ]
+  },
   "output_shape": [
     256,
     1,

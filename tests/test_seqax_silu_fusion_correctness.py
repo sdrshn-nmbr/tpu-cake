@@ -23,9 +23,7 @@ _CONTRACT_PATH = _ROOT / "contracts/seqax-silu-fusion-correctness-v1.json"
 
 
 def _contract() -> SeqaxSiluFusionCorrectnessContract:
-    return SeqaxSiluFusionCorrectnessContract.model_validate_json(
-        _CONTRACT_PATH.read_text()
-    )
+    return SeqaxSiluFusionCorrectnessContract.model_validate_json(_CONTRACT_PATH.read_text())
 
 
 def test_seqax_silu_fusion_correctness_contract_is_canonical() -> None:
@@ -36,6 +34,7 @@ def test_seqax_silu_fusion_correctness_contract_is_canonical() -> None:
     assert contract.output_shape == (256, 1, 16)
     assert not contract.allow_retry
     assert not contract.allow_resume
+    assert contract.compiler_evidence_status == "pending-rebind"
     assert contract.correctness_claim_identity_scope == "contract-id"
     assert contract.correctness_claim_reservation == "exclusive-create-only"
     assert not contract.timing_authorized
@@ -54,30 +53,21 @@ def test_seqax_silu_fusion_correctness_contract_is_canonical_json() -> None:
     assert _CONTRACT_PATH.read_text() == canonical + "\n"
 
 
-def test_seqax_silu_fusion_correctness_binds_compiler_evidence() -> None:
+def test_seqax_silu_fusion_correctness_marks_compiler_evidence_pending_rebind() -> None:
     contract = _contract()
     design_path = _ROOT / contract.compiler_design_path
     pair_path = _ROOT / contract.compiler_pair_record_path
     design = SeqaxSiluFusionDesignContract.model_validate_json(design_path.read_text())
     pair = SeqaxSiluFusionCompilerPair.model_validate_json(pair_path.read_text())
 
-    assert hashlib.sha256(design_path.read_bytes()).hexdigest() == (
-        contract.compiler_design_sha256
-    )
-    assert hashlib.sha256(pair_path.read_bytes()).hexdigest() == (
-        contract.compiler_pair_sha256
-    )
-    assert design.design_id == contract.compiler_design_id == pair.design_id
+    assert hashlib.sha256(design_path.read_bytes()).hexdigest() != contract.compiler_design_sha256
+    assert hashlib.sha256(pair_path.read_bytes()).hexdigest() == (contract.compiler_pair_sha256)
+    assert design.design_id != contract.compiler_design_id == pair.design_id
     assert pair.pair_id == contract.compiler_pair_id
-    assert tuple(capture.capture_id for capture in pair.captures) == (
-        contract.compiler_capture_ids
-    )
-    assert pair.captures[0].candidate_semantic_ids == (
-        contract.candidate_semantic_ids
-    )
-    assert pair.captures[1].candidate_semantic_ids == (
-        contract.candidate_semantic_ids
-    )
+    assert tuple(capture.capture_id for capture in pair.captures) == (contract.compiler_capture_ids)
+    assert pair.captures[0].candidate_semantic_ids == (contract.candidate_semantic_ids)
+    assert pair.captures[1].candidate_semantic_ids == (contract.candidate_semantic_ids)
+    assert contract.compiler_evidence_status == "pending-rebind"
     assert not pair.model_outputs_executed
     assert not pair.correctness_outputs_collected
     assert not pair.timing_collected
@@ -151,6 +141,7 @@ def test_seqax_silu_fusion_correctness_binds_current_lock() -> None:
         ("profile_authorized", True),
         ("independent_replay_required", False),
         ("archive_required", False),
+        ("compiler_evidence_status", "verified"),
         ("compiler_capture_ids", ("0" * 64, "1" * 64)),
         ("correctness_seeds", (1, 2, 3, 4, 5)),
         ("candidates", ("silu_multiply", "separate")),

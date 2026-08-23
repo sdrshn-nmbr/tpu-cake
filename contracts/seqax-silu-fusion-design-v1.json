@@ -141,8 +141,8 @@
       "candidate": "separate",
       "distributed_schedule_sha256": "700def05668c4c06bc85fc5ebf9cab378ba8c78f6eda59e5499ea3f9b30b42fd",
       "physical_schedule_sha256": "66893256ed29d9b19717d4da2fbda664dba8c42ef61885b6d8eb715893e593f6",
-      "pallas_source_sha256": "994d344b9c0680d050ad709a1ed5b66f20ee54f51e4c9df01a8683b96e112127",
-      "pallas_manifest_sha256": "df3ee329ff3842a3b0d8d069a9dd627c7988cde8e4fd336ba079e22363bfc80c",
+      "pallas_source_sha256": "768957404c81f8e06678ea09c665cfad767602b68cbd32bb7e4ecbcde31677a0",
+      "pallas_manifest_sha256": "8db1fb9cb98deabb5d166dad0e94d308ed78c7d1ea009fd3d35a4cc3d7495def",
       "expected_strict_vector_kernels": [
         "seqax_strict_bf16_silu",
         "seqax_strict_bf16_multiply"
@@ -166,8 +166,8 @@
       "candidate": "silu_multiply",
       "distributed_schedule_sha256": "d6e5a96a416584c8afa5b625beaa38e276af42a4fae492e822885a6a216640bd",
       "physical_schedule_sha256": "f9b0aaaac12d3f5d32825610632c1f8f41bc4828542d86b9d2a361e473a09ef7",
-      "pallas_source_sha256": "3ab75da76e74f4221922a1538ee15905fdde4e842633080869f7ef11e3c49db4",
-      "pallas_manifest_sha256": "e0643c5e1b4baa4a0710b80ebb263249eba5fd08d67ab78b8e159c405ee0e51f",
+      "pallas_source_sha256": "fc32b7f3a48438bb48cfb9e48fea800360f44dbd7b694595f17eb1a957f084ff",
+      "pallas_manifest_sha256": "c32f823721296356b697d798f107df2fb41c2a933d845062d3f075cd91c19457",
       "expected_strict_vector_kernels": [
         "seqax_strict_bf16_silu_multiply"
       ],

@@ -881,6 +881,89 @@ class SeqaxBf16NumericalScenario(BaseModel):
         return self
 
 
+class SeqaxBf16CheckpointContract(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    parameters: SeqaxBf16ScenarioParameters
+    inputs: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=13, max_length=13)
+    output: SeqaxNumericalTensorContract
+    rms_input_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    rms_mean_square_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    rms_inverse_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    normalized_float32_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    normalized_input_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    gate_float32_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    gate_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    silu_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    up_float32_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    up_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    hidden_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    down_float32_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+    down_bfloat16_checkpoints: tuple[SeqaxNumericalTensorContract, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def checkpoint_abi_is_canonical(self) -> SeqaxBf16CheckpointContract:
+        if (
+            self.inputs,
+            self.output,
+            self.rms_input_checkpoints,
+            self.rms_mean_square_checkpoints,
+            self.rms_inverse_checkpoints,
+            self.normalized_float32_checkpoints,
+            self.normalized_input_checkpoints,
+            self.gate_float32_checkpoints,
+            self.gate_checkpoints,
+            self.silu_checkpoints,
+            self.up_float32_checkpoints,
+            self.up_checkpoints,
+            self.hidden_checkpoints,
+            self.down_float32_checkpoints,
+            self.down_bfloat16_checkpoints,
+        ) != _scenario_abi(self.parameters):
+            raise ValueError("Seqax BF16 checkpoint ABI mismatch")
+        return self
+
+
+def seqax_bf16_checkpoint_contract(
+    parameters: SeqaxBf16ScenarioParameters,
+) -> SeqaxBf16CheckpointContract:
+    (
+        inputs,
+        output,
+        rms_input_checkpoints,
+        rms_mean_square_checkpoints,
+        rms_inverse_checkpoints,
+        normalized_float32_checkpoints,
+        normalized_input_checkpoints,
+        gate_float32_checkpoints,
+        gate_checkpoints,
+        silu_checkpoints,
+        up_float32_checkpoints,
+        up_checkpoints,
+        hidden_checkpoints,
+        down_float32_checkpoints,
+        down_bfloat16_checkpoints,
+    ) = _scenario_abi(parameters)
+    return SeqaxBf16CheckpointContract(
+        parameters=parameters,
+        inputs=inputs,
+        output=output,
+        rms_input_checkpoints=rms_input_checkpoints,
+        rms_mean_square_checkpoints=rms_mean_square_checkpoints,
+        rms_inverse_checkpoints=rms_inverse_checkpoints,
+        normalized_float32_checkpoints=normalized_float32_checkpoints,
+        normalized_input_checkpoints=normalized_input_checkpoints,
+        gate_float32_checkpoints=gate_float32_checkpoints,
+        gate_checkpoints=gate_checkpoints,
+        silu_checkpoints=silu_checkpoints,
+        up_float32_checkpoints=up_float32_checkpoints,
+        up_checkpoints=up_checkpoints,
+        hidden_checkpoints=hidden_checkpoints,
+        down_float32_checkpoints=down_float32_checkpoints,
+        down_bfloat16_checkpoints=down_bfloat16_checkpoints,
+    )
+
+
 class SeqaxBf16ActivationMutantStablehloContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -1836,9 +1919,16 @@ def _assess_seqax_bf16_outputs(
     seed: int,
     inputs: tuple[np.ndarray, ...],
     policy: SeqaxBf16NumericalPolicy,
-    scenario: SeqaxBf16NumericalScenario,
+    scenario: SeqaxBf16NumericalScenario | SeqaxBf16CheckpointContract,
+    declared_seeds: tuple[int, ...] | None = None,
 ) -> tuple[SeqaxBf16OutputAssessment, tuple[np.ndarray, ...]]:
-    if type(seed) is not int or seed not in scenario.seeds:
+    if declared_seeds is None:
+        if not isinstance(scenario, SeqaxBf16NumericalScenario):
+            raise ValueError("Seqax BF16 checkpoint assessment requires declared seeds")
+        seeds = scenario.seeds
+    else:
+        seeds = declared_seeds
+    if type(seed) is not int or seed not in seeds:
         raise ValueError("Seqax BF16 numerical seed is not declared by the scenario")
     validate_seqax_numerical_inputs(inputs, scenario)
     expected_inputs = tuple(
@@ -1921,7 +2011,8 @@ def assess_seqax_bf16_forward(
     pallas_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
     control_down_bfloat16_checkpoints: tuple[np.ndarray, ...],
     policy: SeqaxBf16NumericalPolicy,
-    scenario: SeqaxBf16NumericalScenario,
+    scenario: SeqaxBf16NumericalScenario | SeqaxBf16CheckpointContract,
+    declared_seeds: tuple[int, ...] | None = None,
 ) -> SeqaxBf16NumericalAssessment:
     output_assessment, expected_inputs = _assess_seqax_bf16_outputs(
         pallas,
@@ -1930,6 +2021,7 @@ def assess_seqax_bf16_forward(
         inputs=inputs,
         policy=policy,
         scenario=scenario,
+        declared_seeds=declared_seeds,
     )
     pallas_rms_inputs = _validate_bf16_checkpoints(
         pallas_rms_input_checkpoints,
@@ -2357,6 +2449,49 @@ def assess_seqax_bf16_forward(
         control_down_bfloat16_matches_float32=control_down_bfloat16_matches,
         down_bfloat16_cross_path_max_ulp=down_bfloat16_cross_path_max_ulp,
         checkpoint_values_consistent=checkpoint_values_consistent,
+    )
+
+
+def assess_seqax_bf16_candidate_checkpoints(
+    output: np.ndarray,
+    *,
+    seed: int,
+    inputs: tuple[np.ndarray, ...],
+    checkpoints: tuple[tuple[np.ndarray, ...], ...],
+    policy: SeqaxBf16NumericalPolicy,
+    contract: SeqaxBf16CheckpointContract,
+    declared_seeds: tuple[int, ...],
+) -> SeqaxBf16NumericalAssessment:
+    names = (
+        "rms_input",
+        "rms_mean_square",
+        "rms_inverse",
+        "normalized_float32",
+        "normalized_input",
+        "gate_float32",
+        "gate",
+        "silu",
+        "up_float32",
+        "up",
+        "hidden",
+        "down_float32",
+        "down_bfloat16",
+    )
+    if len(checkpoints) != len(names):
+        raise ValueError("Seqax BF16 candidate checkpoint count mismatch")
+    evidence: dict[str, object] = {}
+    for name, values in zip(names, checkpoints, strict=True):
+        evidence[f"pallas_{name}_checkpoints"] = values
+        evidence[f"control_{name}_checkpoints"] = values
+    return assess_seqax_bf16_forward(
+        output,
+        output,
+        seed=seed,
+        inputs=inputs,
+        policy=policy,
+        scenario=contract,
+        declared_seeds=declared_seeds,
+        **evidence,
     )
 
 

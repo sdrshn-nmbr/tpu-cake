@@ -87,27 +87,17 @@ class SeqaxSiluFusionDesignContract(BaseModel):
     compiler_failure_receipt_required: Literal[True]
     compiler_failure_independent_replay_required: Literal[True]
     compiler_collective_gate_error_includes_observed_values: Literal[True]
-    compiler_buffer_assignment_policy: Literal[
-        "record-when-backend-exposes-serialized-proto"
-    ]
+    compiler_buffer_assignment_policy: Literal["record-when-backend-exposes-serialized-proto"]
     compiler_buffer_assignment_affects_semantic_identity: Literal[False]
     compiler_ring_equivalent_bytes_policy: Literal[
         "require-exact-positive-integral-physical-model-value"
     ]
     compiler_ring_equivalent_bytes_source_design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    compiler_ring_equivalent_bytes_source_failure_receipt_id: str = Field(
-        pattern=r"^[0-9a-f]{64}$"
-    )
-    compiler_ring_equivalent_bytes_source_archive_sha256: str = Field(
-        pattern=r"^[0-9a-f]{64}$"
-    )
-    compiler_collective_policy: Literal[
-        "pinned-entry-reachable-strategy-and-candidate-parity"
-    ]
+    compiler_ring_equivalent_bytes_source_failure_receipt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_ring_equivalent_bytes_source_archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_collective_policy: Literal["pinned-entry-reachable-strategy-and-candidate-parity"]
     compiler_collective_strategy_source_design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    compiler_collective_strategy_source_failure_receipt_id: str = Field(
-        pattern=r"^[0-9a-f]{64}$"
-    )
+    compiler_collective_strategy_source_failure_receipt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     compiler_collective_strategy_source_archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     capture_ordinals: tuple[Literal[0], Literal[1]]
     ordinal_one_requires_ordinal_zero_replay_seal: Literal[True]
@@ -238,10 +228,10 @@ def _plans() -> tuple[SeqaxSiluFusionPlanContract, SeqaxSiluFusionPlanContract]:
                 "66893256ed29d9b19717d4da2fbda664dba8c42ef61885b6d8eb715893e593f6"
             ),
             pallas_source_sha256=(
-                "994d344b9c0680d050ad709a1ed5b66f20ee54f51e4c9df01a8683b96e112127"
+                "768957404c81f8e06678ea09c665cfad767602b68cbd32bb7e4ecbcde31677a0"
             ),
             pallas_manifest_sha256=(
-                "df3ee329ff3842a3b0d8d069a9dd627c7988cde8e4fd336ba079e22363bfc80c"
+                "8db1fb9cb98deabb5d166dad0e94d308ed78c7d1ea009fd3d35a4cc3d7495def"
             ),
             expected_strict_vector_kernels=(
                 "seqax_strict_bf16_silu",
@@ -261,10 +251,10 @@ def _plans() -> tuple[SeqaxSiluFusionPlanContract, SeqaxSiluFusionPlanContract]:
                 "f9b0aaaac12d3f5d32825610632c1f8f41bc4828542d86b9d2a361e473a09ef7"
             ),
             pallas_source_sha256=(
-                "3ab75da76e74f4221922a1538ee15905fdde4e842633080869f7ef11e3c49db4"
+                "fc32b7f3a48438bb48cfb9e48fea800360f44dbd7b694595f17eb1a957f084ff"
             ),
             pallas_manifest_sha256=(
-                "e0643c5e1b4baa4a0710b80ebb263249eba5fd08d67ab78b8e159c405ee0e51f"
+                "c32f823721296356b697d798f107df2fb41c2a933d845062d3f075cd91c19457"
             ),
             expected_strict_vector_kernels=("seqax_strict_bf16_silu_multiply",),
             expected_strict_vector_regions=1,

@@ -296,10 +296,154 @@ for fusion in (SeqaxFeedForwardFusion.SEPARATE, SeqaxFeedForwardFusion.SILU_MULT
     outputs = executable(*inputs)
     jax.block_until_ready(outputs)
     assert len(outputs) == 14
+    expected_shapes = (
+        (2, 1, 32),
+        (2, 1, 1),
+        (2, 1, 1),
+        (2, 1, 32),
+        (2, 1, 32),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 32),
+        (2, 1, 32),
+    )
+    expected_dtypes = (
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.float32,
+        jnp.float32,
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.bfloat16,
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.bfloat16,
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.bfloat16,
+    )
+    assert tuple(value.shape for value in outputs[1:]) == expected_shapes
+    assert tuple(value.dtype for value in outputs[1:]) == expected_dtypes
     results.append(outputs)
 
 for baseline, candidate in zip(*results, strict=True):
     np.testing.assert_array_equal(np.asarray(candidate), np.asarray(baseline))
+"""
+    environment = os.environ.copy()
+    environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.getcwd(),
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=180,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_residual_all_reduce_exposes_complete_strict_mlp_checkpoints() -> None:
+    script = r"""
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.sharding import PartitionSpec
+
+from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
+from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxFeedForwardFusion,
+    SeqaxFeedForwardVectorExecution,
+    SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
+    seqax_forward_schedule,
+)
+from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
+
+parameters = {
+    "batch": 2,
+    "sequence": 1,
+    "model": 32,
+    "vocabulary": 16,
+    "feed_forward": 64,
+    "query_groups": 2,
+    "key_value_heads": 4,
+    "head": 8,
+    "layers": 1,
+    "data_mesh": 2,
+    "tensor_mesh": 4,
+    "rope_max_timescale": 256,
+}
+common = {
+    **parameters,
+    "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    "feed_forward_vector_execution": SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL,
+    "residual_norm_strategy": SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
+}
+checkpoint_specs = (
+    *((PartitionSpec("d", None, None),) * 5),
+    *((PartitionSpec("d", None, "t"),) * 6),
+    *((PartitionSpec("d", None, None),) * 2),
+)
+devices = jax.devices("cpu")
+assert len(devices) == 8
+inputs = tuple(jnp.asarray(value) for value in seqax_forward_inputs(seed=9173, **parameters))
+results = []
+for fusion in (SeqaxFeedForwardFusion.SEPARATE, SeqaxFeedForwardFusion.SILU_MULTIPLY):
+    distributed = seqax_forward_schedule(**common, feed_forward_fusion=fusion)
+    physical = lower_seqax_forward_to_physical(distributed).module
+    plan = lower_seqax_physical_to_pallas(distributed, physical)
+    executable, _mesh = plan.build_with_strict_mlp_checkpoints(
+        expected_layers=1,
+        checkpoint_specs=checkpoint_specs,
+        interpret=True,
+        devices=devices,
+    )
+    outputs = executable(*inputs)
+    jax.block_until_ready(outputs)
+    assert len(outputs) == 14
+    expected_shapes = (
+        (2, 1, 32),
+        (2, 1, 1),
+        (2, 1, 1),
+        (2, 1, 32),
+        (2, 1, 32),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 64),
+        (2, 1, 32),
+        (2, 1, 32),
+    )
+    expected_dtypes = (
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.float32,
+        jnp.float32,
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.bfloat16,
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.bfloat16,
+        jnp.bfloat16,
+        jnp.float32,
+        jnp.bfloat16,
+    )
+    assert tuple(value.shape for value in outputs[1:]) == expected_shapes
+    assert tuple(value.dtype for value in outputs[1:]) == expected_dtypes
+    results.append(outputs)
+
+for separate, fused in zip(*results, strict=True):
+    np.testing.assert_array_equal(np.asarray(fused), np.asarray(separate))
 """
     environment = os.environ.copy()
     environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"

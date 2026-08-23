@@ -612,11 +612,37 @@ def execute_seqax_physical_program_jax(
                 strict_mlp_checkpoints
                 and len(strict_mlp_checkpoints[-1]) == 11
                 and operation.kind.data is CollectiveKind.REDUCE_SCATTER
+                and operation.reducer.data == "sum"
                 and strict_down_partial_buffer is not None
                 and operation.source == strict_down_partial_buffer
             ):
                 strict_mlp_checkpoints[-1].append(result)
                 strict_down_reduced_buffer = operation.destination
+            elif (
+                strict_mlp_checkpoints
+                and len(strict_mlp_checkpoints[-1]) == 11
+                and operation.kind.data is CollectiveKind.ALL_REDUCE
+                and operation.reducer.data == "sum"
+                and strict_down_partial_buffer is not None
+            ):
+                residual_inject = buffer_writers.get(operation.source)
+                if (
+                    isinstance(residual_inject, VectorComputeOp)
+                    and residual_inject.function.data == "residual_inject"
+                    and len(residual_inject.inputs) == 2
+                    and residual_inject.inputs[0] == strict_down_partial_buffer
+                    and _configuration(residual_inject).get("mesh_axis") == operation.mesh_axis.data
+                ):
+                    down_float32 = jax.lax.psum(
+                        environment[strict_down_partial_buffer],
+                        operation.mesh_axis.data,
+                    )
+                    down_bfloat16 = jnp.asarray(down_float32, dtype=jnp.bfloat16)
+                    strict_mlp_checkpoints[-1].extend((down_float32, down_bfloat16))
+                    strict_silu_buffer = None
+                    strict_hidden_buffer = None
+                    strict_down_partial_buffer = None
+                    strict_down_reduced_buffer = None
             continue
         if isinstance(operation, YieldOp):
             if pending_dma:
