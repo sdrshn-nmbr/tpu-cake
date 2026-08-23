@@ -96,6 +96,9 @@ class SeqaxSiluFusionDesignContract(BaseModel):
     candidate_compiler_requirement: Literal[
         "one-live-strict-fused-vector-custom-call-with-distinct-gate-up-and-live-down-use"
     ]
+    gate_projection_pallas_region: Literal[5]
+    up_projection_pallas_region: Literal[6]
+    down_projection_pallas_region: Literal[7]
     compiler_names_are_evidence_not_semantic_identity: Literal[True]
     dead_custom_call_decoys_forbidden: Literal[True]
     identical_reachable_collectives_required: Literal[True]
@@ -275,6 +278,9 @@ def default_seqax_silu_fusion_design_contract(
         candidate_compiler_requirement=(
             "one-live-strict-fused-vector-custom-call-with-distinct-gate-up-and-live-down-use"
         ),
+        gate_projection_pallas_region=5,
+        up_projection_pallas_region=6,
+        down_projection_pallas_region=7,
         compiler_names_are_evidence_not_semantic_identity=True,
         dead_custom_call_decoys_forbidden=True,
         identical_reachable_collectives_required=True,
