@@ -23,12 +23,12 @@ from tpu_cake.seqax_silu_fusion import (
 )
 from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerAttemptClaim,
+    SeqaxSiluFusionCompilerFailure,
     SeqaxSiluFusionCompilerFailureReceipt,
     SeqaxSiluFusionCompilerFailureReplaySeal,
     SeqaxSiluFusionCompilerReceipt,
     SeqaxSiluFusionCompilerReplaySeal,
     SeqaxSiluFusionCompilerSourceAuthority,
-    SeqaxSiluFusionCompilerWorkerFailure,
     SeqaxSiluFusionCompilerWorkerRequest,
     SeqaxSiluFusionCompilerWorkerResult,
 )
@@ -242,12 +242,7 @@ def _claim_lock(design: SeqaxSiluFusionDesignContract, ordinal: int) -> Iterator
         os.close(descriptor)
 
 
-def _claim_capture(
-    root: Path,
-    design: SeqaxSiluFusionDesignContract,
-    ordinal: int,
-    source: SeqaxSiluFusionCompilerSourceAuthority,
-) -> tuple[Path, SeqaxSiluFusionCompilerAttemptClaim]:
+def _claim_registry(design: SeqaxSiluFusionDesignContract) -> Path:
     registry = Path(design.compiler_claim_registry_root)
     _reject_links_in_path(registry.parent)
     if not registry.exists():
@@ -256,6 +251,36 @@ def _claim_capture(
     status = registry.lstat()
     if not stat.S_ISDIR(status.st_mode) or status.st_uid != os.getuid() or status.st_mode & 0o077:
         raise ValueError("SEQAX_SILU_FUSION_CLAIM_REGISTRY_INVALID")
+    return registry
+
+
+def _claim_path(design: SeqaxSiluFusionDesignContract, ordinal: int) -> Path:
+    return _claim_registry(design) / (
+        f"{design.compiler_claim_key}-{design.design_id}-{ordinal}.json"
+    )
+
+
+def _require_claim_slot_unused(
+    design: SeqaxSiluFusionDesignContract,
+    ordinal: int,
+) -> Path:
+    claim_path = _claim_path(design, ordinal)
+    if claim_path.exists():
+        raise ValueError("SEQAX_SILU_FUSION_CAPTURE_PERMANENTLY_CLAIMED")
+    if _replay_seal_path(design, ordinal).exists():
+        raise ValueError("SEQAX_SILU_FUSION_CAPTURE_REPLAY_SEAL_EXISTS")
+    if _failure_replay_seal_path(design, ordinal).exists():
+        raise ValueError("SEQAX_SILU_FUSION_CAPTURE_FAILURE_REPLAY_SEAL_EXISTS")
+    return claim_path
+
+
+def _prepare_claim(
+    root: Path,
+    design: SeqaxSiluFusionDesignContract,
+    ordinal: int,
+    source: SeqaxSiluFusionCompilerSourceAuthority,
+) -> tuple[Path, SeqaxSiluFusionCompilerAttemptClaim]:
+    claim_path = _require_claim_slot_unused(design, ordinal)
     invocation_id = os.urandom(16).hex()
     claim = SeqaxSiluFusionCompilerAttemptClaim(
         design_id=design.design_id,
@@ -265,7 +290,13 @@ def _claim_capture(
         source_tree=source.source_tree,
         output_root=str(root),
     )
-    claim_path = registry / (f"{design.compiler_claim_key}-{design.design_id}-{ordinal}.json")
+    return claim_path, claim
+
+
+def _reserve_claim(
+    claim_path: Path,
+    claim: SeqaxSiluFusionCompilerAttemptClaim,
+) -> None:
     try:
         _write_json_exclusive(
             claim_path,
@@ -273,9 +304,6 @@ def _claim_capture(
         )
     except FileExistsError as error:
         raise ValueError("SEQAX_SILU_FUSION_CAPTURE_PERMANENTLY_CLAIMED") from error
-    root.mkdir(mode=0o700, exist_ok=False)
-    _fsync_directory(root.parent)
-    return claim_path, claim
 
 
 def _replay_seal_path(design: SeqaxSiluFusionDesignContract, ordinal: int) -> Path:
@@ -352,6 +380,17 @@ def _require_prior_replay_seal(
         or seal.output_root != claim.output_root
     ):
         raise ValueError("SEQAX_SILU_FUSION_PRIOR_REPLAY_SEAL_MISMATCH")
+    replay = _independent_verify(prior_root)
+    expected_replay = {
+        "capture_id": capture.capture_id,
+        "receipt_id": receipt.receipt_id,
+        "semantic_pair_id": capture.semantic_pair_id,
+    }
+    if replay != expected_replay:
+        raise ValueError(
+            "SEQAX_SILU_FUSION_PRIOR_INDEPENDENT_REPLAY_MISMATCH "
+            f"expected={expected_replay} observed={replay}"
+        )
 
 
 def _seal_replay(
@@ -398,8 +437,10 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "source.json": ArtifactRole.SOURCE_STATE,
         "source_manifest.json": ArtifactRole.SOURCE_STATE,
         "worker_request.json": ArtifactRole.INVOCATION,
+        "controller-failure.json": ArtifactRole.COMPILER_ANALYSIS,
         "worker-failure.json": ArtifactRole.COMPILER_ANALYSIS,
         "worker-result.json": ArtifactRole.COMPILER_ANALYSIS,
+        "receipt.json": ArtifactRole.COMPILER_ANALYSIS,
         "ledger.sqlite": ArtifactRole.EXECUTION_LEDGER,
     }
     if value in fixed:
@@ -529,36 +570,56 @@ def _independent_verify_failure(
     return json.loads(completed.stdout)
 
 
-def _record_worker_failure(
+def _record_failure(
     root: Path,
     design: SeqaxSiluFusionDesignContract,
     claim: SeqaxSiluFusionCompilerAttemptClaim,
     source: SeqaxSiluFusionCompilerSourceAuthority,
-    completed: subprocess.CompletedProcess[str],
+    *,
+    stage: str,
+    error: BaseException,
+    completed: subprocess.CompletedProcess[str] | None,
 ) -> tuple[SeqaxSiluFusionCompilerFailureReceipt, SeqaxSiluFusionCompilerFailureReplaySeal]:
-    failure = SeqaxSiluFusionCompilerWorkerFailure(
-        returncode=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        worker_process_started=True,
+    failure = SeqaxSiluFusionCompilerFailure(
+        stage=stage,
+        error_type=type(error).__name__,
+        error_message=str(error) or repr(error),
+        returncode=None if completed is None else completed.returncode,
+        stdout="" if completed is None else completed.stdout,
+        stderr="" if completed is None else completed.stderr,
+        worker_process_started=completed is not None,
         model_outputs_executed=False,
         correctness_outputs_collected=False,
         timing_collected=False,
         profile_collected=False,
     )
+    failure_payload = failure.model_dump(mode="json", exclude_computed_fields=True)
+    _write_json_exclusive(root / "controller-failure.json", failure_payload)
     _write_json_exclusive(
         root / "worker-failure.json",
-        failure.model_dump(mode="json", exclude_computed_fields=True),
+        failure_payload,
     )
     state = EvidenceRun(root / "ledger.sqlite", claim.claim_id).current_state()
-    if state not in {RunState.CREATED, RunState.VERIFIED, RunState.LOWERED}:
+    if state not in {RunState.CREATED, RunState.VERIFIED, RunState.LOWERED, RunState.COMPILED}:
         raise ValueError(f"SEQAX_SILU_FUSION_FAILURE_LEDGER_STATE_INVALID state={state}")
-    artifacts = build_artifact_manifest(root, role_for_path=_artifact_role)
+    incomplete_receipt = None
+    if (root / "receipt.json").exists():
+        incomplete_receipt = SeqaxSiluFusionCompilerReceipt.model_validate_json(
+            (root / "receipt.json").read_text()
+        )
+    artifacts = build_artifact_manifest(
+        root,
+        role_for_path=_artifact_role,
+        excluded_paths=(),
+    )
     receipt = SeqaxSiluFusionCompilerFailureReceipt(
         claim=claim,
         source=source,
         final_ledger_state=state,
         failure=failure,
+        incomplete_success_receipt_id=(
+            None if incomplete_receipt is None else incomplete_receipt.receipt_id
+        ),
         artifacts=artifacts,
         independent_replay_required=True,
         independent_replay_performed_at_receipt_creation=False,
@@ -623,22 +684,32 @@ def run_capture(
     source, blobs = _source_authority(repository_root, design)
     if ordinal == 1:
         _require_prior_replay_seal(design, source)
-    with _claim_lock(design, ordinal):
-        claim_path, claim = _claim_capture(root, design, ordinal, source)
+    claim_path, claim = _prepare_claim(root, design, ordinal, source)
+    request = SeqaxSiluFusionCompilerWorkerRequest(claim=claim, design=design, source=source)
+    request_payload = request.wire_payload()
+    if (
+        SeqaxSiluFusionCompilerWorkerRequest.model_validate_json(json.dumps(request_payload))
+        != request
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_WORKER_REQUEST_ROUNDTRIP_MISMATCH")
+    root.mkdir(mode=0o700, exist_ok=False)
+    _fsync_directory(root.parent)
     _write_json_exclusive(
         root / "attempt_claim.json",
         claim.model_dump(mode="json", exclude_computed_fields=True),
     )
     _write_bytes_exclusive(root / "contract.json", blobs[_DESIGN_RELATIVE_PATH.as_posix()])
-    _write_json_exclusive(root / "source.json", source.model_dump(mode="json"))
+    _write_json_exclusive(
+        root / "source.json",
+        source.model_dump(mode="json", exclude_computed_fields=True),
+    )
     _write_json_exclusive(
         root / "source_manifest.json",
         [value.model_dump(mode="json") for value in source.source_manifest],
     )
     _write_source_bundle(root, blobs)
-    request = SeqaxSiluFusionCompilerWorkerRequest(claim=claim, design=design, source=source)
     request_path = root / "worker_request.json"
-    _write_json_exclusive(request_path, request.wire_payload())
+    _write_json_exclusive(request_path, request_payload)
     EvidenceRun(root / "ledger.sqlite", claim.claim_id).create(
         {
             "claim_id": claim.claim_id,
@@ -647,54 +718,84 @@ def run_capture(
             "capture_ordinal": ordinal,
         }
     )
-    completed = _launch_worker(root, request_path, design)
-    if completed.returncode != 0:
-        failure_receipt, failure_replay_seal = _record_worker_failure(
+    stage = "claim-reservation"
+    completed: subprocess.CompletedProcess[str] | None = None
+    try:
+        with _claim_lock(design, ordinal):
+            if _require_claim_slot_unused(design, ordinal) != claim_path:
+                raise ValueError("SEQAX_SILU_FUSION_CLAIM_PATH_MISMATCH")
+            _reserve_claim(claim_path, claim)
+        stage = "worker-launch"
+        completed = _launch_worker(root, request_path, design)
+        if completed.returncode != 0:
+            stage = "worker-process"
+            raise RuntimeError(
+                "SEQAX_SILU_FUSION_WORKER_FAILED "
+                f"returncode={completed.returncode} stderr={completed.stderr.strip()}"
+            )
+        stage = "worker-result"
+        result = SeqaxSiluFusionCompilerWorkerResult.model_validate_json(
+            (root / "worker-result.json").read_text()
+        )
+        if (
+            result.capture.design_id != design.design_id
+            or result.capture.capture_ordinal != ordinal
+            or result.capture.invocation_id != claim.invocation_id
+            or result.capture.claim_id != claim.claim_id
+            or result.capture.source != source
+        ):
+            raise ValueError("SEQAX_SILU_FUSION_WORKER_RESULT_MISMATCH")
+        stage = "receipt"
+        artifacts = build_artifact_manifest(root, role_for_path=_artifact_role)
+        receipt = SeqaxSiluFusionCompilerReceipt(
+            capture=result.capture,
+            final_ledger_state=RunState.COMPILED,
+            artifacts=artifacts,
+        )
+        _write_json_exclusive(
+            root / "receipt.json",
+            receipt.model_dump(mode="json", exclude_computed_fields=True),
+        )
+        stage = "independent-replay"
+        replay = _independent_verify(root)
+        expected_replay = {
+            "capture_id": receipt.capture.capture_id,
+            "receipt_id": receipt.receipt_id,
+            "semantic_pair_id": receipt.capture.semantic_pair_id,
+        }
+        if replay != expected_replay:
+            raise ValueError(
+                "SEQAX_SILU_FUSION_INDEPENDENT_REPLAY_MISMATCH "
+                f"expected={expected_replay} observed={replay}"
+            )
+        stage = "replay-seal"
+        _seal_replay(design, claim, receipt)
+    except BaseException as error:
+        try:
+            reserved_claim = SeqaxSiluFusionCompilerAttemptClaim.model_validate_json(
+                claim_path.read_text()
+            )
+        except (OSError, ValueError):
+            reserved_claim = None
+        if reserved_claim != claim:
+            raise
+        failure_receipt, failure_replay_seal = _record_failure(
             root,
             design,
             claim,
             source,
-            completed,
+            stage=stage,
+            error=error,
+            completed=completed,
         )
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
         raise RuntimeError(
-            "SEQAX_SILU_FUSION_WORKER_FAILED "
+            "SEQAX_SILU_FUSION_CAPTURE_FAILED "
             f"failure_receipt_id={failure_receipt.failure_receipt_id} "
             f"failure_replay_seal_id={failure_replay_seal.failure_replay_seal_id} "
-            f"stderr={completed.stderr.strip()}"
-        )
-    result = SeqaxSiluFusionCompilerWorkerResult.model_validate_json(
-        (root / "worker-result.json").read_text()
-    )
-    if (
-        result.capture.design_id != design.design_id
-        or result.capture.capture_ordinal != ordinal
-        or result.capture.invocation_id != claim.invocation_id
-        or result.capture.claim_id != claim.claim_id
-        or result.capture.source != source
-    ):
-        raise ValueError("SEQAX_SILU_FUSION_WORKER_RESULT_MISMATCH")
-    artifacts = build_artifact_manifest(root, role_for_path=_artifact_role)
-    receipt = SeqaxSiluFusionCompilerReceipt(
-        capture=result.capture,
-        final_ledger_state=RunState.COMPILED,
-        artifacts=artifacts,
-    )
-    _write_json_exclusive(
-        root / "receipt.json",
-        receipt.model_dump(mode="json", exclude_computed_fields=True),
-    )
-    replay = _independent_verify(root)
-    expected_replay = {
-        "capture_id": receipt.capture.capture_id,
-        "receipt_id": receipt.receipt_id,
-        "semantic_pair_id": receipt.capture.semantic_pair_id,
-    }
-    if replay != expected_replay:
-        raise ValueError(
-            f"SEQAX_SILU_FUSION_INDEPENDENT_REPLAY_MISMATCH expected={expected_replay} "
-            f"observed={replay}"
-        )
-    _seal_replay(design, claim, receipt)
+            f"stage={stage} error={str(error) or repr(error)}"
+        ) from error
     return receipt
 
 

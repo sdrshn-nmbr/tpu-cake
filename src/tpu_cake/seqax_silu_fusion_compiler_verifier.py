@@ -39,6 +39,7 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerAttemptClaim,
     SeqaxSiluFusionCompilerCandidate,
     SeqaxSiluFusionCompilerDevice,
+    SeqaxSiluFusionCompilerFailure,
     SeqaxSiluFusionCompilerFailureReceipt,
     SeqaxSiluFusionCompilerFailureReplaySeal,
     SeqaxSiluFusionCompilerHostIdentity,
@@ -46,7 +47,6 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerReceipt,
     SeqaxSiluFusionCompilerReplaySeal,
     SeqaxSiluFusionCompilerSourceAuthority,
-    SeqaxSiluFusionCompilerWorkerFailure,
     SeqaxSiluFusionCompilerWorkerRequest,
     SeqaxSiluFusionCompilerWorkerResult,
     analyze_seqax_silu_fusion_compiler_hlo,
@@ -83,8 +83,10 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "source.json": ArtifactRole.SOURCE_STATE,
         "source_manifest.json": ArtifactRole.SOURCE_STATE,
         "worker_request.json": ArtifactRole.INVOCATION,
+        "controller-failure.json": ArtifactRole.COMPILER_ANALYSIS,
         "worker-failure.json": ArtifactRole.COMPILER_ANALYSIS,
         "worker-result.json": ArtifactRole.COMPILER_ANALYSIS,
+        "receipt.json": ArtifactRole.COMPILER_ANALYSIS,
         "ledger.sqlite": ArtifactRole.EXECUTION_LEDGER,
     }
     if value in fixed:
@@ -529,9 +531,7 @@ def _replay_failed_collective_gate(
             None,
         )
         if replayed_failure is None or replayed_failure != expected_failure:
-            raise ValueError(
-                "SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_GATE_REPLAY_MISMATCH"
-            ) from error
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_GATE_REPLAY_MISMATCH") from error
         return replayed_failure
     return None
 
@@ -759,9 +759,17 @@ def verify_failure(
     request = SeqaxSiluFusionCompilerWorkerRequest.model_validate_json(
         (root / "worker_request.json").read_text()
     )
-    failure = SeqaxSiluFusionCompilerWorkerFailure.model_validate_json(
+    failure = SeqaxSiluFusionCompilerFailure.model_validate_json(
         (root / "worker-failure.json").read_text()
     )
+    controller_failure = SeqaxSiluFusionCompilerFailure.model_validate_json(
+        (root / "controller-failure.json").read_text()
+    )
+    success_receipt = None
+    if (root / "receipt.json").exists():
+        success_receipt = SeqaxSiluFusionCompilerReceipt.model_validate_json(
+            (root / "receipt.json").read_text()
+        )
     if (
         receipt.claim != claim
         or receipt.source != source
@@ -769,14 +777,15 @@ def verify_failure(
         or request.design != design
         or request.source != source
         or receipt.failure != failure
+        or controller_failure != failure
         or claim.design_id != design.design_id
         or claim.source_commit != source.source_commit
         or claim.source_tree != source.source_tree
         or claim.output_root != str(root)
         or source.runtime != design.runtime
         or file_sha256(root / "contract.json") != source.design_file_sha256
-        or (root / "worker-result.json").exists()
-        or (root / "receipt.json").exists()
+        or receipt.incomplete_success_receipt_id
+        != (None if success_receipt is None else success_receipt.receipt_id)
     ):
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_LINKAGE_MISMATCH")
     external_claim_path = _registry_file(
@@ -788,17 +797,25 @@ def verify_failure(
         != claim
     ):
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_EXTERNAL_CLAIM_MISMATCH")
-    if (
-        _failure_ledger_state(root, design, claim, receipt.final_ledger_state)
-        is not receipt.final_ledger_state
-    ):
+    if receipt.final_ledger_state is RunState.COMPILED:
+        result = SeqaxSiluFusionCompilerWorkerResult.model_validate_json(
+            (root / "worker-result.json").read_text()
+        )
+        observed_state = _ledger_state(root, design, claim, result.capture)
+    else:
+        observed_state = _failure_ledger_state(
+            root,
+            design,
+            claim,
+            receipt.final_ledger_state,
+        )
+    if observed_state is not receipt.final_ledger_state:
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_LEDGER_STATE_MISMATCH")
     plans = _plans(design)
-    if "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH" in failure.stderr:
+    diagnostic = f"{failure.error_message}\n{failure.stdout}\n{failure.stderr}"
+    if "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH" in diagnostic:
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_DIAGNOSTIC_OBSOLETE")
-    collective_failures = tuple(
-        value for value in _COLLECTIVE_GATE_FAILURES if value in failure.stderr
-    )
+    collective_failures = tuple(value for value in _COLLECTIVE_GATE_FAILURES if value in diagnostic)
     if len(collective_failures) > 1:
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_DIAGNOSTIC_AMBIGUOUS")
     collective_failure = collective_failures[0] if collective_failures else None

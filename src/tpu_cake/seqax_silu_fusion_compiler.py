@@ -296,22 +296,39 @@ class SeqaxSiluFusionCompilerWorkerResult(BaseModel):
         return self.model_dump(mode="json", exclude_computed_fields=True)
 
 
-class SeqaxSiluFusionCompilerWorkerFailure(BaseModel):
+class SeqaxSiluFusionCompilerFailure(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    returncode: int
+    stage: Literal[
+        "claim-reservation",
+        "worker-launch",
+        "worker-process",
+        "worker-result",
+        "receipt",
+        "independent-replay",
+        "replay-seal",
+    ]
+    error_type: str = Field(min_length=1)
+    error_message: str = Field(min_length=1)
+    returncode: int | None
     stdout: str
     stderr: str
-    worker_process_started: Literal[True]
+    worker_process_started: bool
     model_outputs_executed: Literal[False]
     correctness_outputs_collected: Literal[False]
     timing_collected: Literal[False]
     profile_collected: Literal[False]
 
     @model_validator(mode="after")
-    def process_failed_with_diagnostic(self) -> SeqaxSiluFusionCompilerWorkerFailure:
-        if self.returncode == 0 or not (self.stdout or self.stderr):
+    def failure_is_honest(self) -> SeqaxSiluFusionCompilerFailure:
+        if not self.worker_process_started and self.returncode is not None:
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_RETURN_CODE_INVALID")
+        if self.stage == "worker-process" and (
+            not self.worker_process_started or self.returncode is None or self.returncode == 0
+        ):
             raise ValueError("SEQAX_SILU_FUSION_WORKER_FAILURE_INVALID")
+        if self.worker_process_started and self.stage != "worker-process" and self.returncode != 0:
+            raise ValueError("SEQAX_SILU_FUSION_CONTROLLER_RETURN_CODE_INVALID")
         return self
 
 
@@ -323,8 +340,17 @@ class SeqaxSiluFusionCompilerFailureReceipt(BaseModel):
     )
     claim: SeqaxSiluFusionCompilerAttemptClaim
     source: SeqaxSiluFusionCompilerSourceAuthority
-    final_ledger_state: Literal[RunState.CREATED, RunState.VERIFIED, RunState.LOWERED]
-    failure: SeqaxSiluFusionCompilerWorkerFailure
+    final_ledger_state: Literal[
+        RunState.CREATED,
+        RunState.VERIFIED,
+        RunState.LOWERED,
+        RunState.COMPILED,
+    ]
+    failure: SeqaxSiluFusionCompilerFailure
+    incomplete_success_receipt_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
     independent_replay_required: Literal[True]
     independent_replay_performed_at_receipt_creation: Literal[False]
@@ -335,11 +361,11 @@ class SeqaxSiluFusionCompilerFailureReceipt(BaseModel):
     def artifacts_are_failed_compile_only(self) -> SeqaxSiluFusionCompilerFailureReceipt:
         if any(
             value.role not in SEQAX_SILU_FUSION_COMPILER_ARTIFACT_ROLES for value in self.artifacts
-        ) or any(
-            value.path in {"receipt.json", "worker-result.json", "failure-receipt.json"}
-            for value in self.artifacts
-        ):
+        ) or any(value.path == "failure-receipt.json" for value in self.artifacts):
             raise ValueError("SEQAX_SILU_FUSION_FAILURE_ARTIFACT_INVALID")
+        paths = {value.path for value in self.artifacts}
+        if ("receipt.json" in paths) != (self.incomplete_success_receipt_id is not None):
+            raise ValueError("SEQAX_SILU_FUSION_INCOMPLETE_RECEIPT_MISMATCH")
         if self.ordinal_one_launched != (self.claim.capture_ordinal == 1):
             raise ValueError("SEQAX_SILU_FUSION_FAILURE_ORDINAL_MISMATCH")
         return self

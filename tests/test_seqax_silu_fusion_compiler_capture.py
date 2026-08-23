@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from tpu_cake import seqax_silu_fusion_compiler_runner as compiler_runner
 from tpu_cake.compiler_analysis import (
     CompilerCollectiveAnalysis,
     CompilerCostMetric,
@@ -23,7 +25,10 @@ from tpu_cake.compiler_analysis import (
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity, SourceFileContract
 from tpu_cake.ledger import EvidenceRun, RunState
 from tpu_cake.seqax_contract_types import SeqaxFeedForwardFusion
-from tpu_cake.seqax_silu_fusion import default_seqax_silu_fusion_design_contract
+from tpu_cake.seqax_silu_fusion import (
+    SeqaxSiluFusionDesignContract,
+    default_seqax_silu_fusion_design_contract,
+)
 from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerAnalysis,
     SeqaxSiluFusionCompilerAttemptClaim,
@@ -31,6 +36,7 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerCandidate,
     SeqaxSiluFusionCompilerCapture,
     SeqaxSiluFusionCompilerDevice,
+    SeqaxSiluFusionCompilerFailure,
     SeqaxSiluFusionCompilerFailureReceipt,
     SeqaxSiluFusionCompilerFailureReplaySeal,
     SeqaxSiluFusionCompilerHostIdentity,
@@ -50,10 +56,11 @@ from tpu_cake.seqax_silu_fusion_compiler_runner import (
     _artifact_role as _runner_artifact_role,
 )
 from tpu_cake.seqax_silu_fusion_compiler_runner import (
-    _claim_capture,
-    _record_worker_failure,
+    _prepare_claim,
+    _record_failure,
     _require_prior_replay_seal,
     _require_safe_new_root,
+    _reserve_claim,
     _subprocess_environment,
 )
 from tpu_cake.seqax_silu_fusion_compiler_verifier import (
@@ -164,9 +171,7 @@ def _compiler_candidate(
     analysis = CompilerExecutableAnalysis(
         stablehlo_sha256="9" * 64,
         compiler_hlo_sha256="a" * 64,
-        cost_metrics=(
-            CompilerCostMetric(name="flops", raw_value=1.0, value=1.0, available=True),
-        ),
+        cost_metrics=(CompilerCostMetric(name="flops", raw_value=1.0, value=1.0, available=True),),
         memory=memory,
         collectives=collectives,
     )
@@ -599,12 +604,13 @@ def test_claim_is_permanent_for_one_full_design_identity(tmp_path: Path) -> None
     )
     source = SimpleNamespace(source_commit="1" * 40, source_tree="2" * 40)
 
-    claim_path, claim = _claim_capture(tmp_path / "capture", design, 0, source)
+    claim_path, claim = _prepare_claim(tmp_path / "capture", design, 0, source)
+    _reserve_claim(claim_path, claim)
 
     assert claim_path.name == f"seqax-silu-fusion-design-v1-{'a' * 64}-0.json"
     assert claim.design_id == design.design_id
     with pytest.raises(ValueError, match="CAPTURE_PERMANENTLY_CLAIMED"):
-        _claim_capture(tmp_path / "other-capture", design, 0, source)
+        _prepare_claim(tmp_path / "other-capture", design, 0, source)
 
 
 def test_worker_request_wire_payload_excludes_nested_computed_fields() -> None:
@@ -737,10 +743,20 @@ def test_failed_worker_gets_an_immutable_replay_bound_receipt(
         stderr="compiler gate failed",
     )
 
-    receipt, replay_seal = _record_worker_failure(tmp_path, design, claim, source, completed)
+    error = RuntimeError("worker failed")
+    receipt, replay_seal = _record_failure(
+        tmp_path,
+        design,
+        claim,
+        source,
+        stage="worker-process",
+        error=error,
+        completed=completed,
+    )
 
     assert receipt.final_ledger_state is RunState.CREATED
     assert receipt.failure.stderr == "compiler gate failed"
+    assert receipt.failure.error_message == "worker failed"
     assert receipt.independent_replay_required
     assert not receipt.independent_replay_performed_at_receipt_creation
     assert replay_seal.independent_replay_performed
@@ -748,6 +764,7 @@ def test_failed_worker_gets_an_immutable_replay_bound_receipt(
     assert not receipt.retry_authorized
     assert {value.path for value in receipt.artifacts} == {
         "ledger.sqlite",
+        "controller-failure.json",
         "worker-failure.json",
     }
     assert (tmp_path / "failure-receipt.json").is_file()
@@ -767,6 +784,113 @@ def test_failed_worker_gets_an_immutable_replay_bound_receipt(
             retry_authorized=False,
             ordinal_one_launched=False,
         )
+
+
+def test_post_worker_empty_controller_failure_is_frozen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    design_path = _ROOT / "contracts/seqax-silu-fusion-design-v1.json"
+    design = SeqaxSiluFusionDesignContract.model_validate_json(design_path.read_text())
+    source = SeqaxSiluFusionCompilerSourceAuthority(
+        source_commit="1" * 40,
+        source_tree="2" * 40,
+        branch="main",
+        origin_main_commit="1" * 40,
+        remote_main_commit="1" * 40,
+        remote_url=design.source_remote_url,
+        source_root=design.compilation_source_root,
+        uv_lock_sha256="3" * 64,
+        cli_sha256="355040b20f7e48683811b009fc77f460652617fafcdc44c68a3d7309fd71f740",
+        design_file_sha256=hashlib.sha256(design_path.read_bytes()).hexdigest(),
+        runner_source_sha256="5" * 64,
+        worker_source_sha256="6" * 64,
+        compiler_source_sha256="7" * 64,
+        pair_source_sha256="8" * 64,
+        source_manifest=(
+            SourceFileContract(
+                path="contracts/seqax-silu-fusion-design-v1.json",
+                sha256=hashlib.sha256(design_path.read_bytes()).hexdigest(),
+            ),
+        ),
+        runtime=design.runtime,
+    )
+    root = tmp_path / "run"
+    claim = SeqaxSiluFusionCompilerAttemptClaim(
+        design_id=design.design_id,
+        capture_ordinal=0,
+        invocation_id="a" * 32,
+        source_commit=source.source_commit,
+        source_tree=source.source_tree,
+        output_root=str(root),
+    )
+    claim_path = tmp_path / "registry" / "claim.json"
+    blobs = {
+        "contracts/seqax-silu-fusion-design-v1.json": design_path.read_bytes(),
+    }
+
+    class EmptyFailureParser:
+        @classmethod
+        def model_validate_json(cls, _value: str) -> None:
+            raise RuntimeError()
+
+    def launch_worker(path: Path, *_args: object) -> subprocess.CompletedProcess[str]:
+        run = EvidenceRun(path / "ledger.sqlite", claim.claim_id)
+        for state in (RunState.VERIFIED, RunState.LOWERED, RunState.COMPILED):
+            run.transition(state, {"state": state.value})
+        (path / "worker-result.json").write_text("{}")
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    def reserve_claim(path: Path, value: SeqaxSiluFusionCompilerAttemptClaim) -> None:
+        path.parent.mkdir()
+        path.write_text(value.model_dump_json(exclude_computed_fields=True))
+
+    def verify_failure(path: Path, *, allow_missing_seal: bool) -> dict[str, str]:
+        receipt = SeqaxSiluFusionCompilerFailureReceipt.model_validate_json(
+            (path / "failure-receipt.json").read_text()
+        )
+        payload = {"failure_receipt_id": receipt.failure_receipt_id}
+        seal_path = tmp_path / "registry" / "failure-replay.json"
+        if seal_path.exists():
+            seal = SeqaxSiluFusionCompilerFailureReplaySeal.model_validate_json(
+                seal_path.read_text()
+            )
+            payload["failure_replay_seal_id"] = seal.failure_replay_seal_id
+        elif not allow_missing_seal:
+            raise AssertionError("failure replay seal required")
+        return payload
+
+    monkeypatch.setattr(compiler_runner, "_require_safe_new_root", lambda *_: root)
+    monkeypatch.setattr(compiler_runner, "_source_authority", lambda *_: (source, blobs))
+    monkeypatch.setattr(compiler_runner, "_claim_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(compiler_runner, "_prepare_claim", lambda *_: (claim_path, claim))
+    monkeypatch.setattr(compiler_runner, "_require_claim_slot_unused", lambda *_: claim_path)
+    monkeypatch.setattr(compiler_runner, "_reserve_claim", reserve_claim)
+    monkeypatch.setattr(compiler_runner, "_launch_worker", launch_worker)
+    monkeypatch.setattr(
+        compiler_runner,
+        "SeqaxSiluFusionCompilerWorkerResult",
+        EmptyFailureParser,
+    )
+    monkeypatch.setattr(compiler_runner, "_independent_verify_failure", verify_failure)
+    monkeypatch.setattr(
+        compiler_runner,
+        "_failure_replay_seal_path",
+        lambda *_: tmp_path / "registry" / "failure-replay.json",
+    )
+
+    with pytest.raises(RuntimeError, match="stage=worker-result"):
+        compiler_runner.run_capture(root, design_path, 0)
+
+    failure = SeqaxSiluFusionCompilerFailure.model_validate_json(
+        (root / "controller-failure.json").read_text()
+    )
+    assert failure.stage == "worker-result"
+    assert failure.returncode == 0
+    assert failure.error_type == "RuntimeError"
+    assert failure.error_message == "RuntimeError()"
+    assert (root / "failure-receipt.json").is_file()
+    assert (tmp_path / "registry" / "failure-replay.json").is_file()
 
 
 def test_artifact_roles_require_exact_candidate_paths() -> None:
@@ -894,7 +1018,7 @@ def test_ledger_replays_payload_hashes(tmp_path: Path) -> None:
         _ledger_state(tmp_path, design, claim, capture)
 
 
-def test_parent_runner_claims_before_launch_and_never_imports_jax() -> None:
+def test_parent_runner_stages_evidence_then_claims_before_launch_and_never_imports_jax() -> None:
     path = _ROOT / "src/tpu_cake/seqax_silu_fusion_compiler_runner.py"
     source = path.read_text()
     module = ast.parse(source)
@@ -919,7 +1043,10 @@ def test_parent_runner_claims_before_launch_and_never_imports_jax() -> None:
     }
 
     assert not any(value == "jax" or value.startswith("jax.") for value in imports)
-    assert calls["_claim_capture"] < calls["_launch_worker"]
+    assert calls["_prepare_claim"] < calls["_reserve_claim"] < calls["_launch_worker"]
+    assert source.index('EvidenceRun(root / "ledger.sqlite"') < source.index(
+        "_reserve_claim(claim_path, claim)"
+    )
 
     probe = subprocess.run(
         [
@@ -994,9 +1121,7 @@ def test_worker_persists_compiler_evidence_before_collective_gate() -> None:
         'candidate_root / "compiler_hlo.txt"',
     ):
         assert artifact in compile_source
-    collective_gate = qualify_source.index(
-        "validate_seqax_silu_fusion_compiler_collectives("
-    )
+    collective_gate = qualify_source.index("validate_seqax_silu_fusion_compiler_collectives(")
     for artifact in (
         'candidate_root / "compiler_analysis.json"',
         'candidate_root / "reachable_collectives.json"',
@@ -1010,9 +1135,7 @@ def test_worker_persists_compiler_evidence_before_collective_gate() -> None:
     assert qualify_source.count("executable.memory_analysis()") == 1
     assert "_CompilerAnalysisExecutable(executable, runtime_memory)" in qualify_source
     assert qualify_source.count("exact_integral_ring_equivalent_bytes(") == 1
-    verifier_source = (
-        _ROOT / "src/tpu_cake/seqax_silu_fusion_compiler_verifier.py"
-    ).read_text()
+    verifier_source = (_ROOT / "src/tpu_cake/seqax_silu_fusion_compiler_verifier.py").read_text()
     assert verifier_source.count("exact_integral_ring_equivalent_bytes(") == 1
     assert worker_source.index("tuple(_compile_raw") < worker_source.index(
         "tuple(_qualify_compiled"
