@@ -13,6 +13,7 @@ from pathlib import Path
 from tpu_cake.artifacts import file_sha256, validate_artifact_manifest
 from tpu_cake.canonical import canonical_text
 from tpu_cake.compiler_analysis import (
+    CompilerCollectiveAnalysis,
     analyze_compiler_collectives,
     validate_compiler_analysis,
 )
@@ -36,11 +37,15 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerAnalysis,
     SeqaxSiluFusionCompilerAttemptClaim,
     SeqaxSiluFusionCompilerCandidate,
+    SeqaxSiluFusionCompilerDevice,
+    SeqaxSiluFusionCompilerFailureReceipt,
+    SeqaxSiluFusionCompilerFailureReplaySeal,
     SeqaxSiluFusionCompilerHostIdentity,
     SeqaxSiluFusionCompilerPair,
     SeqaxSiluFusionCompilerReceipt,
     SeqaxSiluFusionCompilerReplaySeal,
     SeqaxSiluFusionCompilerSourceAuthority,
+    SeqaxSiluFusionCompilerWorkerFailure,
     SeqaxSiluFusionCompilerWorkerRequest,
     SeqaxSiluFusionCompilerWorkerResult,
     analyze_seqax_silu_fusion_compiler_hlo,
@@ -71,6 +76,7 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "source.json": ArtifactRole.SOURCE_STATE,
         "source_manifest.json": ArtifactRole.SOURCE_STATE,
         "worker_request.json": ArtifactRole.INVOCATION,
+        "worker-failure.json": ArtifactRole.COMPILER_ANALYSIS,
         "worker-result.json": ArtifactRole.COMPILER_ANALYSIS,
         "ledger.sqlite": ArtifactRole.EXECUTION_LEDGER,
     }
@@ -88,6 +94,7 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "pre_optimization_hlo.txt": ArtifactRole.COMPILER_HLO,
         "compiler_hlo.txt": ArtifactRole.COMPILER_HLO,
         "compiler_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
+        "reachable_collectives.json": ArtifactRole.COMPILER_ANALYSIS,
         "buffer_assignment.pb": ArtifactRole.COMPILER_ANALYSIS,
         "fusion_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
     }
@@ -236,6 +243,88 @@ def _ledger_state(
     return RunState.COMPILED
 
 
+def _failure_ledger_state(
+    root: Path,
+    design: SeqaxSiluFusionDesignContract,
+    claim: SeqaxSiluFusionCompilerAttemptClaim,
+    final_state: RunState,
+) -> RunState:
+    connection = sqlite3.connect(f"file:{root / 'ledger.sqlite'}?mode=ro&immutable=1", uri=True)
+    try:
+        columns = connection.execute("PRAGMA table_info(events)").fetchall()
+        rows = connection.execute(
+            "SELECT sequence, run_id, state, timestamp_ns, payload_sha256 "
+            "FROM events ORDER BY sequence"
+        ).fetchall()
+    finally:
+        connection.close()
+    expected_columns = [
+        (0, "sequence", "INTEGER", 0, None, 1),
+        (1, "run_id", "TEXT", 1, None, 0),
+        (2, "state", "TEXT", 1, None, 0),
+        (3, "timestamp_ns", "INTEGER", 1, None, 0),
+        (4, "payload_sha256", "TEXT", 1, None, 0),
+    ]
+    host = SeqaxSiluFusionCompilerHostIdentity(
+        project=design.project,
+        numeric_project_id=design.numeric_project_id,
+        zone=design.zone,
+        hostname=design.hostname,
+        instance_hostname=design.instance_hostname,
+        machine_type=design.machine_type,
+        instance_id=design.instance_id,
+        cpu_platform=design.cpu_platform,
+    )
+    devices = tuple(
+        SeqaxSiluFusionCompilerDevice(
+            id=index,
+            process_index=0,
+            platform="tpu",
+            device_kind="TPU7x",
+        )
+        for index in range(8)
+    )
+    states = (RunState.CREATED, RunState.VERIFIED, RunState.LOWERED)
+    payloads = (
+        {
+            "claim_id": claim.claim_id,
+            "claim_path": str(
+                Path(design.compiler_claim_registry_root)
+                / (f"{design.compiler_claim_key}-{design.design_id}-{claim.capture_ordinal}.json")
+            ),
+            "design_id": design.design_id,
+            "capture_ordinal": claim.capture_ordinal,
+        },
+        {
+            "runtime": design.runtime.model_dump(mode="json"),
+            "host": host.model_dump(mode="json"),
+            "devices": [value.model_dump(mode="json") for value in devices],
+        },
+        {"plan_sha256": [value.physical_schedule_sha256 for value in design.candidates]},
+    )
+    try:
+        count = states.index(final_state) + 1
+    except ValueError as error:
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_LEDGER_STATE_INVALID") from error
+    expected_rows = [
+        (index, claim.claim_id, state.value, payload_sha256(payload))
+        for index, (state, payload) in enumerate(
+            zip(states[:count], payloads[:count], strict=True),
+            start=1,
+        )
+    ]
+    observed_rows = [(row[0], row[1], row[2], row[4]) for row in rows]
+    timestamps = [row[3] for row in rows]
+    if (
+        columns != expected_columns
+        or observed_rows != expected_rows
+        or any(not isinstance(value, int) or value < 0 for value in timestamps)
+        or timestamps != sorted(timestamps)
+    ):
+        raise ValueError(f"SEQAX_SILU_FUSION_FAILURE_LEDGER_MISMATCH rows={rows}")
+    return final_state
+
+
 def _plans(design: SeqaxSiluFusionDesignContract):
     parameters = dict(design.parameters)
     parameters["numerical_semantics"] = SeqaxNumericalSemantics(parameters["numerical_semantics"])
@@ -329,6 +418,30 @@ def _validate_candidate(
         stablehlo=stablehlo,
         compiler_hlo=live_seqax_silu_fusion_compiler_hlo(compiler_hlo),
     )
+    recorded_reachable_collectives = CompilerCollectiveAnalysis.model_validate_json(
+        (candidate_root / "reachable_collectives.json").read_text()
+    )
+    if recorded_reachable_collectives != reachable_collectives:
+        raise ValueError("SEQAX_SILU_FUSION_REACHABLE_COLLECTIVE_REPLAY_MISMATCH")
+    required_collectives = (
+        expected.expected_all_gathers,
+        expected.expected_all_reduces,
+        expected.expected_reduce_scatters,
+        expected.expected_all_gathers,
+        expected.expected_reduce_scatters,
+    )
+    observed_collectives = (
+        reachable_collectives.compiler_all_gather_count,
+        reachable_collectives.compiler_all_reduce_count,
+        reachable_collectives.compiler_reduce_scatter_count,
+        reachable_collectives.sparse_core_all_gather_count,
+        reachable_collectives.sparse_core_reduce_scatter_count,
+    )
+    if observed_collectives != required_collectives:
+        raise ValueError(
+            "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH "
+            f"required={required_collectives} observed={observed_collectives}"
+        )
     buffer_assignment = (candidate_root / "buffer_assignment.pb").read_bytes()
     observed = SeqaxSiluFusionCompilerCandidate(
         candidate=expected.candidate,
@@ -373,6 +486,101 @@ def _validate_candidate(
         }
     ):
         raise ValueError("SEQAX_SILU_FUSION_STATIC_BOUNDARY_REPLAY_MISMATCH")
+
+
+def _validate_failed_candidate(
+    root: Path,
+    expected,
+    distributed,
+    physical,
+    plan,
+) -> None:
+    candidate_root = root / "candidates" / expected.candidate.value
+    if not candidate_root.exists():
+        return
+    required_raw = {
+        "distributed.xdsl",
+        "physical.xdsl",
+        "lowered_pallas.py",
+        "plan_manifest.json",
+        "physical_resources.json",
+        "stablehlo.txt",
+        "pre_optimization_hlo.txt",
+    }
+    observed = {path.name for path in candidate_root.iterdir() if path.is_file()}
+    if not required_raw.issubset(observed):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_RAW_ARTIFACT_SET_MISMATCH")
+    if (candidate_root / "distributed.xdsl").read_text() != canonical_text(distributed):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_DISTRIBUTED_IR_MISMATCH")
+    if (candidate_root / "physical.xdsl").read_text() != canonical_text(physical):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_PHYSICAL_IR_MISMATCH")
+    if (candidate_root / "lowered_pallas.py").read_text() != plan.render_executable_source():
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_PALLAS_SOURCE_MISMATCH")
+    if json.loads((candidate_root / "plan_manifest.json").read_text()) != plan.manifest():
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_PALLAS_MANIFEST_MISMATCH")
+    resources = PhysicalKernelResourceReport.model_validate_json(
+        (candidate_root / "physical_resources.json").read_text()
+    )
+    if resources != analyze_physical_kernel(physical, hardware=tpu7x_tensorcore_rates()):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_RESOURCE_REPLAY_MISMATCH")
+    compiler_hlo_path = candidate_root / "compiler_hlo.txt"
+    analysis_names = (
+        "compiler_analysis.json",
+        "reachable_collectives.json",
+        "fusion_analysis.json",
+        "buffer_assignment.pb",
+    )
+    presence = tuple((candidate_root / name).is_file() for name in analysis_names)
+    if any(presence[index] and not presence[index - 1] for index in range(1, len(presence))):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_ANALYSIS_PREFIX_MISMATCH")
+    if not compiler_hlo_path.is_file():
+        if any(presence):
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_COMPILER_HLO_MISSING")
+        return
+    stablehlo_path = candidate_root / "stablehlo.txt"
+    compiler_hlo = compiler_hlo_path.read_text()
+    if not compiler_hlo:
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_COMPILER_HLO_EMPTY")
+    if not presence[0]:
+        return
+    compiler_analysis = validate_compiler_analysis(
+        candidate_root / "compiler_analysis.json",
+        stablehlo_path=stablehlo_path,
+        compiler_hlo_path=compiler_hlo_path,
+    )
+    if not presence[1]:
+        return
+    replayed_collectives = analyze_compiler_collectives(
+        stablehlo=stablehlo_path.read_text(),
+        compiler_hlo=live_seqax_silu_fusion_compiler_hlo(compiler_hlo),
+    )
+    recorded_collectives = CompilerCollectiveAnalysis.model_validate_json(
+        (candidate_root / "reachable_collectives.json").read_text()
+    )
+    if recorded_collectives != replayed_collectives:
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_REPLAY_MISMATCH")
+    if not presence[2]:
+        return
+    recorded_fusion = SeqaxSiluFusionCompilerAnalysis.model_validate_json(
+        (candidate_root / "fusion_analysis.json").read_text()
+    )
+    replayed_fusion = analyze_seqax_silu_fusion_compiler_hlo(
+        compiler_hlo,
+        expected.candidate,
+        expected_schedule_sha256=expected.physical_schedule_sha256,
+    )
+    if recorded_fusion != replayed_fusion:
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_GRAPH_REPLAY_MISMATCH")
+    if not presence[3]:
+        return
+    buffer_assignment = (candidate_root / "buffer_assignment.pb").read_bytes()
+    memory = compiler_analysis.memory
+    if (
+        not memory.buffer_assignment_available
+        or memory.buffer_assignment_size_bytes != len(buffer_assignment)
+        or memory.buffer_assignment_sha256 != hashlib.sha256(buffer_assignment).hexdigest()
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_BUFFER_ASSIGNMENT_MISMATCH")
 
 
 def verify_capture(root: Path, design_path: Path) -> SeqaxSiluFusionCompilerReceipt:
@@ -465,6 +673,111 @@ def verify_capture(root: Path, design_path: Path) -> SeqaxSiluFusionCompilerRece
     return receipt
 
 
+def verify_failure(
+    root: Path,
+    design_path: Path,
+) -> SeqaxSiluFusionCompilerFailureReceipt:
+    root = root.resolve(strict=True)
+    _preflight_root(root)
+    design = SeqaxSiluFusionDesignContract.model_validate_json(design_path.read_text())
+    if design != default_seqax_silu_fusion_design_contract(design.runtime):
+        raise ValueError("SEQAX_SILU_FUSION_DESIGN_NONCANONICAL")
+    receipt = SeqaxSiluFusionCompilerFailureReceipt.model_validate_json(
+        (root / "failure-receipt.json").read_text()
+    )
+    validate_artifact_manifest(
+        root,
+        receipt.artifacts,
+        role_for_path=_artifact_role,
+        duplicate_error="SEQAX_SILU_FUSION_FAILURE_ARTIFACT_DUPLICATE",
+        closed_world_error="SEQAX_SILU_FUSION_FAILURE_ARTIFACT_SET_MISMATCH",
+        mismatch_error=lambda path: f"SEQAX_SILU_FUSION_FAILURE_ARTIFACT_MISMATCH path={path}",
+        symlink_error="SEQAX_SILU_FUSION_FAILURE_ARTIFACT_SYMLINK",
+        excluded_paths=("failure-receipt.json",),
+    )
+    source = SeqaxSiluFusionCompilerSourceAuthority.model_validate_json(
+        (root / "source.json").read_text()
+    )
+    _validate_source_bundle(root, source)
+    claim = SeqaxSiluFusionCompilerAttemptClaim.model_validate_json(
+        (root / "attempt_claim.json").read_text()
+    )
+    request = SeqaxSiluFusionCompilerWorkerRequest.model_validate_json(
+        (root / "worker_request.json").read_text()
+    )
+    failure = SeqaxSiluFusionCompilerWorkerFailure.model_validate_json(
+        (root / "worker-failure.json").read_text()
+    )
+    if (
+        receipt.claim != claim
+        or receipt.source != source
+        or request.claim != claim
+        or request.design != design
+        or request.source != source
+        or receipt.failure != failure
+        or claim.design_id != design.design_id
+        or claim.source_commit != source.source_commit
+        or claim.source_tree != source.source_tree
+        or claim.output_root != str(root)
+        or source.runtime != design.runtime
+        or file_sha256(root / "contract.json") != source.design_file_sha256
+        or (root / "worker-result.json").exists()
+        or (root / "receipt.json").exists()
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_LINKAGE_MISMATCH")
+    external_claim_path = _registry_file(
+        design,
+        f"{design.compiler_claim_key}-{design.design_id}-{claim.capture_ordinal}.json",
+    )
+    if (
+        SeqaxSiluFusionCompilerAttemptClaim.model_validate_json(external_claim_path.read_text())
+        != claim
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_EXTERNAL_CLAIM_MISMATCH")
+    if (
+        _failure_ledger_state(root, design, claim, receipt.final_ledger_state)
+        is not receipt.final_ledger_state
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_LEDGER_STATE_MISMATCH")
+    plans = _plans(design)
+    for expected, distributed, physical, plan in plans:
+        _validate_failed_candidate(root, expected, distributed, physical, plan)
+    if "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH" in failure.stderr and any(
+        not (root / "candidates" / expected.candidate.value / "compiler_hlo.txt").is_file()
+        for expected, *_values in plans
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_PAIRED_RAW_COMPILER_HLO_MISSING")
+    return receipt
+
+
+def verify_failure_replay_seal(
+    receipt: SeqaxSiluFusionCompilerFailureReceipt,
+    design: SeqaxSiluFusionDesignContract,
+) -> SeqaxSiluFusionCompilerFailureReplaySeal | None:
+    claim = receipt.claim
+    name = (
+        f"{design.compiler_claim_key}-{design.design_id}-{claim.capture_ordinal}."
+        "failure-replay.json"
+    )
+    path = Path(design.compiler_claim_registry_root) / name
+    if not path.exists():
+        return None
+    seal = SeqaxSiluFusionCompilerFailureReplaySeal.model_validate_json(
+        _registry_file(design, name).read_text()
+    )
+    if (
+        seal.design_id != design.design_id
+        or seal.capture_ordinal != claim.capture_ordinal
+        or seal.claim_id != claim.claim_id
+        or seal.failure_receipt_id != receipt.failure_receipt_id
+        or seal.source_commit != receipt.source.source_commit
+        or seal.source_tree != receipt.source.source_tree
+        or seal.output_root != claim.output_root
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_REPLAY_SEAL_MISMATCH")
+    return seal
+
+
 def verify_pair(pair_path: Path, design_path: Path) -> SeqaxSiluFusionCompilerPair:
     if not pair_path.is_absolute():
         raise ValueError("SEQAX_SILU_FUSION_PAIR_PATH_NOT_ABSOLUTE")
@@ -513,8 +826,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--root", type=Path)
+    target.add_argument("--failed-root", type=Path)
     target.add_argument("--pair", type=Path)
     parser.add_argument("--design", type=Path, required=True)
+    parser.add_argument("--allow-missing-failure-seal", action="store_true")
     arguments = parser.parse_args()
     if arguments.pair is not None:
         pair = verify_pair(arguments.pair, arguments.design)
@@ -527,6 +842,17 @@ def main() -> None:
                 sort_keys=True,
             )
         )
+        return
+    if arguments.failed_root is not None:
+        receipt = verify_failure(arguments.failed_root, arguments.design)
+        design = SeqaxSiluFusionDesignContract.model_validate_json(arguments.design.read_text())
+        seal = verify_failure_replay_seal(receipt, design)
+        if seal is None and not arguments.allow_missing_failure_seal:
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_REPLAY_SEAL_MISSING")
+        payload = {"failure_receipt_id": receipt.failure_receipt_id}
+        if seal is not None:
+            payload["failure_replay_seal_id"] = seal.failure_replay_seal_id
+        print(json.dumps(payload, sort_keys=True))
         return
     receipt = verify_capture(arguments.root, arguments.design)
     print(

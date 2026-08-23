@@ -30,6 +30,10 @@ _COMPUTATION_REFERENCES = (
 SEQAX_SILU_FUSION_COMPILER_CLAIM_SCHEMA = "seqax-silu-fusion-compiler-claim-v1"
 SEQAX_SILU_FUSION_COMPILER_CAPTURE_SCHEMA = "seqax-silu-fusion-compiler-capture-v1"
 SEQAX_SILU_FUSION_COMPILER_RECEIPT_SCHEMA = "seqax-silu-fusion-compiler-receipt-v1"
+SEQAX_SILU_FUSION_COMPILER_FAILURE_RECEIPT_SCHEMA = "seqax-silu-fusion-compiler-failure-receipt-v1"
+SEQAX_SILU_FUSION_COMPILER_FAILURE_REPLAY_SEAL_SCHEMA = (
+    "seqax-silu-fusion-compiler-failure-replay-seal-v1"
+)
 SEQAX_SILU_FUSION_COMPILER_PAIR_SCHEMA = "seqax-silu-fusion-compiler-pair-v1"
 SEQAX_SILU_FUSION_COMPILER_REPLAY_SEAL_SCHEMA = "seqax-silu-fusion-compiler-replay-seal-v1"
 SEQAX_SILU_FUSION_COMPILER_ARTIFACT_ROLES = frozenset(
@@ -249,6 +253,89 @@ class SeqaxSiluFusionCompilerWorkerResult(BaseModel):
 
     def wire_payload(self) -> dict[str, object]:
         return self.model_dump(mode="json", exclude_computed_fields=True)
+
+
+class SeqaxSiluFusionCompilerWorkerFailure(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    returncode: int
+    stdout: str
+    stderr: str
+    worker_process_started: Literal[True]
+    model_outputs_executed: Literal[False]
+    correctness_outputs_collected: Literal[False]
+    timing_collected: Literal[False]
+    profile_collected: Literal[False]
+
+    @model_validator(mode="after")
+    def process_failed_with_diagnostic(self) -> SeqaxSiluFusionCompilerWorkerFailure:
+        if self.returncode == 0 or not (self.stdout or self.stderr):
+            raise ValueError("SEQAX_SILU_FUSION_WORKER_FAILURE_INVALID")
+        return self
+
+
+class SeqaxSiluFusionCompilerFailureReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[SEQAX_SILU_FUSION_COMPILER_FAILURE_RECEIPT_SCHEMA] = (
+        SEQAX_SILU_FUSION_COMPILER_FAILURE_RECEIPT_SCHEMA
+    )
+    claim: SeqaxSiluFusionCompilerAttemptClaim
+    source: SeqaxSiluFusionCompilerSourceAuthority
+    final_ledger_state: Literal[RunState.CREATED, RunState.VERIFIED, RunState.LOWERED]
+    failure: SeqaxSiluFusionCompilerWorkerFailure
+    artifacts: tuple[ArtifactReference, ...] = Field(min_length=1)
+    independent_replay_required: Literal[True]
+    independent_replay_performed_at_receipt_creation: Literal[False]
+    retry_authorized: Literal[False]
+    ordinal_one_launched: bool
+
+    @model_validator(mode="after")
+    def artifacts_are_failed_compile_only(self) -> SeqaxSiluFusionCompilerFailureReceipt:
+        if any(
+            value.role not in SEQAX_SILU_FUSION_COMPILER_ARTIFACT_ROLES for value in self.artifacts
+        ) or any(
+            value.path in {"receipt.json", "worker-result.json", "failure-receipt.json"}
+            for value in self.artifacts
+        ):
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_ARTIFACT_INVALID")
+        if self.ordinal_one_launched != (self.claim.capture_ordinal == 1):
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_ORDINAL_MISMATCH")
+        return self
+
+    @computed_field
+    @property
+    def failure_receipt_id(self) -> str:
+        return json_sha256(self.model_dump(exclude_computed_fields=True, mode="json"))
+
+
+class SeqaxSiluFusionCompilerFailureReplaySeal(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal[SEQAX_SILU_FUSION_COMPILER_FAILURE_REPLAY_SEAL_SCHEMA] = (
+        SEQAX_SILU_FUSION_COMPILER_FAILURE_REPLAY_SEAL_SCHEMA
+    )
+    design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    capture_ordinal: int = Field(ge=0, le=1)
+    claim_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failure_receipt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    source_tree: str = Field(pattern=r"^[0-9a-f]{40}$")
+    output_root: str
+    independent_replay_performed: Literal[True]
+    retry_authorized: Literal[False]
+    ordinal_one_launched: bool
+
+    @model_validator(mode="after")
+    def ordinal_matches_launch_state(self) -> SeqaxSiluFusionCompilerFailureReplaySeal:
+        if self.ordinal_one_launched != (self.capture_ordinal == 1):
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_REPLAY_ORDINAL_MISMATCH")
+        return self
+
+    @computed_field
+    @property
+    def failure_replay_seal_id(self) -> str:
+        return json_sha256(self.model_dump(exclude_computed_fields=True, mode="json"))
 
 
 class SeqaxSiluFusionCompilerReceipt(BaseModel):

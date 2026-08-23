@@ -77,6 +77,11 @@ class SeqaxSiluFusionDesignContract(BaseModel):
     compiler_claim_registry_root: str
     compiler_claim_key: Literal["seqax-silu-fusion-design-v1"]
     compiler_claim_identity_scope: Literal["design-id-and-ordinal"]
+    compiler_failure_evidence_policy: Literal["persist-raw-ir-and-analysis-before-semantic-gates"]
+    compile_both_raw_candidates_before_semantic_gates: Literal[True]
+    compiler_failure_receipt_required: Literal[True]
+    compiler_failure_independent_replay_required: Literal[True]
+    compiler_collective_gate_error_includes_observed_values: Literal[True]
     capture_ordinals: tuple[Literal[0], Literal[1]]
     ordinal_one_requires_ordinal_zero_replay_seal: Literal[True]
     allow_compile_retry: Literal[False]
@@ -255,6 +260,7 @@ def default_seqax_silu_fusion_design_contract(
             "PATH": "/usr/bin:/bin",
             "PYTHONHASHSEED": "0",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONSAFEPATH": "1",
         },
         compiler_environment={
@@ -269,6 +275,11 @@ def default_seqax_silu_fusion_design_contract(
         compiler_claim_registry_root="/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-claims",
         compiler_claim_key="seqax-silu-fusion-design-v1",
         compiler_claim_identity_scope="design-id-and-ordinal",
+        compiler_failure_evidence_policy=("persist-raw-ir-and-analysis-before-semantic-gates"),
+        compile_both_raw_candidates_before_semantic_gates=True,
+        compiler_failure_receipt_required=True,
+        compiler_failure_independent_replay_required=True,
+        compiler_collective_gate_error_includes_observed_values=True,
         capture_ordinals=(0, 1),
         ordinal_one_requires_ordinal_zero_replay_seal=True,
         allow_compile_retry=False,

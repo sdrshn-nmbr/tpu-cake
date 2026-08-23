@@ -23,9 +23,12 @@ from tpu_cake.seqax_silu_fusion import (
 )
 from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerAttemptClaim,
+    SeqaxSiluFusionCompilerFailureReceipt,
+    SeqaxSiluFusionCompilerFailureReplaySeal,
     SeqaxSiluFusionCompilerReceipt,
     SeqaxSiluFusionCompilerReplaySeal,
     SeqaxSiluFusionCompilerSourceAuthority,
+    SeqaxSiluFusionCompilerWorkerFailure,
     SeqaxSiluFusionCompilerWorkerRequest,
     SeqaxSiluFusionCompilerWorkerResult,
 )
@@ -281,6 +284,15 @@ def _replay_seal_path(design: SeqaxSiluFusionDesignContract, ordinal: int) -> Pa
     )
 
 
+def _failure_replay_seal_path(
+    design: SeqaxSiluFusionDesignContract,
+    ordinal: int,
+) -> Path:
+    return Path(design.compiler_claim_registry_root) / (
+        f"{design.compiler_claim_key}-{design.design_id}-{ordinal}.failure-replay.json"
+    )
+
+
 def _private_registry_file(registry: Path, name: str) -> Path:
     if registry.is_symlink() or not registry.is_dir():
         raise ValueError("SEQAX_SILU_FUSION_CLAIM_REGISTRY_INVALID")
@@ -386,6 +398,7 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "source.json": ArtifactRole.SOURCE_STATE,
         "source_manifest.json": ArtifactRole.SOURCE_STATE,
         "worker_request.json": ArtifactRole.INVOCATION,
+        "worker-failure.json": ArtifactRole.COMPILER_ANALYSIS,
         "worker-result.json": ArtifactRole.COMPILER_ANALYSIS,
         "ledger.sqlite": ArtifactRole.EXECUTION_LEDGER,
     }
@@ -403,6 +416,7 @@ def _artifact_role(path: Path) -> ArtifactRole:
         "pre_optimization_hlo.txt": ArtifactRole.COMPILER_HLO,
         "compiler_hlo.txt": ArtifactRole.COMPILER_HLO,
         "compiler_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
+        "reachable_collectives.json": ArtifactRole.COMPILER_ANALYSIS,
         "buffer_assignment.pb": ArtifactRole.COMPILER_ANALYSIS,
         "fusion_analysis.json": ArtifactRole.COMPILER_ANALYSIS,
     }
@@ -416,13 +430,14 @@ def _launch_worker(
     root: Path,
     request_path: Path,
     design: SeqaxSiluFusionDesignContract,
-) -> None:
+) -> subprocess.CompletedProcess[str]:
     bundle = root / "source" / "committed"
     environment = _subprocess_environment(design)
     environment["PYTHONPATH"] = str(bundle / "src")
-    subprocess.run(
+    return subprocess.run(
         [
             sys.executable,
+            "-B",
             "-P",
             "-m",
             "tpu_cake.seqax_silu_fusion_compiler_worker",
@@ -433,7 +448,9 @@ def _launch_worker(
         ],
         cwd=bundle,
         env=environment,
-        check=True,
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -446,12 +463,14 @@ def _independent_verify(root: Path) -> dict[str, object]:
         "PATH": "/usr/bin:/bin",
         "PYTHONHASHSEED": "0",
         "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": str(bundled / "src"),
         "PYTHONSAFEPATH": "1",
     }
     completed = subprocess.run(
         [
             sys.executable,
+            "-B",
             "-P",
             "-m",
             _VERIFIER_MODULE,
@@ -467,6 +486,123 @@ def _independent_verify(root: Path) -> dict[str, object]:
         text=True,
     )
     return json.loads(completed.stdout)
+
+
+def _independent_verify_failure(
+    root: Path,
+    *,
+    allow_missing_seal: bool,
+) -> dict[str, object]:
+    bundled = root / "source" / "committed"
+    environment = {
+        "HOME": "/nonexistent",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+        "PYTHONHASHSEED": "0",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": str(bundled / "src"),
+        "PYTHONSAFEPATH": "1",
+    }
+    arguments = [
+        sys.executable,
+        "-B",
+        "-P",
+        "-m",
+        _VERIFIER_MODULE,
+        "--failed-root",
+        str(root),
+        "--design",
+        str(bundled / _DESIGN_RELATIVE_PATH),
+    ]
+    if allow_missing_seal:
+        arguments.append("--allow-missing-failure-seal")
+    completed = subprocess.run(
+        arguments,
+        cwd="/",
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def _record_worker_failure(
+    root: Path,
+    design: SeqaxSiluFusionDesignContract,
+    claim: SeqaxSiluFusionCompilerAttemptClaim,
+    source: SeqaxSiluFusionCompilerSourceAuthority,
+    completed: subprocess.CompletedProcess[str],
+) -> tuple[SeqaxSiluFusionCompilerFailureReceipt, SeqaxSiluFusionCompilerFailureReplaySeal]:
+    failure = SeqaxSiluFusionCompilerWorkerFailure(
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        worker_process_started=True,
+        model_outputs_executed=False,
+        correctness_outputs_collected=False,
+        timing_collected=False,
+        profile_collected=False,
+    )
+    _write_json_exclusive(
+        root / "worker-failure.json",
+        failure.model_dump(mode="json", exclude_computed_fields=True),
+    )
+    state = EvidenceRun(root / "ledger.sqlite", claim.claim_id).current_state()
+    if state not in {RunState.CREATED, RunState.VERIFIED, RunState.LOWERED}:
+        raise ValueError(f"SEQAX_SILU_FUSION_FAILURE_LEDGER_STATE_INVALID state={state}")
+    artifacts = build_artifact_manifest(root, role_for_path=_artifact_role)
+    receipt = SeqaxSiluFusionCompilerFailureReceipt(
+        claim=claim,
+        source=source,
+        final_ledger_state=state,
+        failure=failure,
+        artifacts=artifacts,
+        independent_replay_required=True,
+        independent_replay_performed_at_receipt_creation=False,
+        retry_authorized=False,
+        ordinal_one_launched=claim.capture_ordinal == 1,
+    )
+    _write_json_exclusive(
+        root / "failure-receipt.json",
+        receipt.model_dump(mode="json", exclude_computed_fields=True),
+    )
+    replay = _independent_verify_failure(root, allow_missing_seal=True)
+    expected_replay = {"failure_receipt_id": receipt.failure_receipt_id}
+    if replay != expected_replay:
+        raise ValueError(
+            "SEQAX_SILU_FUSION_FAILURE_REPLAY_MISMATCH "
+            f"expected={expected_replay} observed={replay}"
+        )
+    replay_seal = SeqaxSiluFusionCompilerFailureReplaySeal(
+        design_id=design.design_id,
+        capture_ordinal=claim.capture_ordinal,
+        claim_id=claim.claim_id,
+        failure_receipt_id=receipt.failure_receipt_id,
+        source_commit=source.source_commit,
+        source_tree=source.source_tree,
+        output_root=str(root),
+        independent_replay_performed=True,
+        retry_authorized=False,
+        ordinal_one_launched=claim.capture_ordinal == 1,
+    )
+    _write_json_exclusive(
+        _failure_replay_seal_path(design, claim.capture_ordinal),
+        replay_seal.model_dump(mode="json", exclude_computed_fields=True),
+    )
+    sealed_replay = _independent_verify_failure(root, allow_missing_seal=False)
+    expected_sealed_replay = {
+        "failure_receipt_id": receipt.failure_receipt_id,
+        "failure_replay_seal_id": replay_seal.failure_replay_seal_id,
+    }
+    if sealed_replay != expected_sealed_replay:
+        raise ValueError(
+            "SEQAX_SILU_FUSION_FAILURE_SEAL_REPLAY_MISMATCH "
+            f"expected={expected_sealed_replay} observed={sealed_replay}"
+        )
+    return receipt, replay_seal
 
 
 def run_capture(
@@ -511,7 +647,21 @@ def run_capture(
             "capture_ordinal": ordinal,
         }
     )
-    _launch_worker(root, request_path, design)
+    completed = _launch_worker(root, request_path, design)
+    if completed.returncode != 0:
+        failure_receipt, failure_replay_seal = _record_worker_failure(
+            root,
+            design,
+            claim,
+            source,
+            completed,
+        )
+        raise RuntimeError(
+            "SEQAX_SILU_FUSION_WORKER_FAILED "
+            f"failure_receipt_id={failure_receipt.failure_receipt_id} "
+            f"failure_replay_seal_id={failure_replay_seal.failure_replay_seal_id} "
+            f"stderr={completed.stderr.strip()}"
+        )
     result = SeqaxSiluFusionCompilerWorkerResult.model_validate_json(
         (root / "worker-result.json").read_text()
     )

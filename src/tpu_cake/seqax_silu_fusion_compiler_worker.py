@@ -57,6 +57,16 @@ class _PreparedCandidate:
     plan: SeqaxPallasPlan
 
 
+@dataclass(frozen=True)
+class _CompiledCandidate:
+    prepared: _PreparedCandidate
+    executable: Any
+    stablehlo: str
+    pre_optimization_hlo: str
+    compiler_hlo: str
+    resources: Any
+
+
 class _RejectMetadataRedirects(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl) -> None:
         raise ValueError(f"SEQAX_SILU_FUSION_METADATA_REDIRECT code={code} url={newurl}")
@@ -293,54 +303,17 @@ def _validate_stablehlo(prepared: _PreparedCandidate, stablehlo: str) -> None:
         raise ValueError("SEQAX_SILU_FUSION_STABLEHLO_EINSUM_COUNT_MISMATCH")
 
 
-def _compile(
+def _compile_raw(
     root: Path,
     prepared: _PreparedCandidate,
     devices: tuple[Any, ...],
-) -> SeqaxSiluFusionCompilerCandidate:
+) -> _CompiledCandidate:
     expected = prepared.expected
     candidate_root = root / "candidates" / expected.candidate.value
     callable_value, mesh = prepared.plan.build(interpret=False, devices=devices)
     lowered = callable_value.lower(*_abstract_inputs(prepared, mesh))
     stablehlo = _canonical_hlo(str(lowered.compiler_ir(dialect="stablehlo")))
     pre_optimization_hlo = _canonical_hlo(lowered.compiler_ir(dialect="hlo").as_hlo_text())
-    _validate_stablehlo(prepared, stablehlo)
-    executable = lowered.compile()
-    compiler_hlo = _canonical_hlo(executable.as_text())
-    compiler_analysis = capture_compiler_analysis(
-        executable,
-        stablehlo=stablehlo.rstrip("\n"),
-        compiler_hlo=compiler_hlo.rstrip("\n"),
-    )
-    reachable_collectives = analyze_compiler_collectives(
-        stablehlo=stablehlo,
-        compiler_hlo=live_seqax_silu_fusion_compiler_hlo(compiler_hlo),
-    )
-    required_collectives = (
-        expected.expected_all_gathers,
-        expected.expected_all_reduces,
-        expected.expected_reduce_scatters,
-        expected.expected_all_gathers,
-        expected.expected_reduce_scatters,
-    )
-    observed_collectives = (
-        reachable_collectives.compiler_all_gather_count,
-        reachable_collectives.compiler_all_reduce_count,
-        reachable_collectives.compiler_reduce_scatter_count,
-        reachable_collectives.sparse_core_all_gather_count,
-        reachable_collectives.sparse_core_reduce_scatter_count,
-    )
-    if observed_collectives != required_collectives:
-        raise ValueError("SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH")
-    fusion_analysis = analyze_seqax_silu_fusion_compiler_hlo(
-        compiler_hlo,
-        expected.candidate,
-        expected_schedule_sha256=expected.physical_schedule_sha256,
-    )
-    memory = executable.memory_analysis()
-    buffer_assignment = memory.serialized_buffer_assignment_proto
-    if not isinstance(buffer_assignment, bytes) or not buffer_assignment:
-        raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_UNAVAILABLE")
     resources = analyze_physical_kernel(
         prepared.physical,
         hardware=tpu7x_tensorcore_rates(),
@@ -367,16 +340,82 @@ def _compile(
         candidate_root / "pre_optimization_hlo.txt",
         pre_optimization_hlo.encode(),
     )
+    executable = lowered.compile()
+    compiler_hlo = _canonical_hlo(executable.as_text())
     _write_bytes_exclusive(candidate_root / "compiler_hlo.txt", compiler_hlo.encode())
+    return _CompiledCandidate(
+        prepared=prepared,
+        executable=executable,
+        stablehlo=stablehlo,
+        pre_optimization_hlo=pre_optimization_hlo,
+        compiler_hlo=compiler_hlo,
+        resources=resources,
+    )
+
+
+def _qualify_compiled(
+    root: Path,
+    compiled: _CompiledCandidate,
+) -> SeqaxSiluFusionCompilerCandidate:
+    prepared = compiled.prepared
+    expected = prepared.expected
+    candidate_root = root / "candidates" / expected.candidate.value
+    executable = compiled.executable
+    stablehlo = compiled.stablehlo
+    pre_optimization_hlo = compiled.pre_optimization_hlo
+    compiler_hlo = compiled.compiler_hlo
+    resources = compiled.resources
+    compiler_analysis = capture_compiler_analysis(
+        executable,
+        stablehlo=stablehlo.rstrip("\n"),
+        compiler_hlo=compiler_hlo.rstrip("\n"),
+    )
+    reachable_collectives = analyze_compiler_collectives(
+        stablehlo=stablehlo,
+        compiler_hlo=live_seqax_silu_fusion_compiler_hlo(compiler_hlo),
+    )
     _write_json_exclusive(
         candidate_root / "compiler_analysis.json",
         compiler_analysis.model_dump(mode="json"),
     )
-    _write_bytes_exclusive(candidate_root / "buffer_assignment.pb", buffer_assignment)
+    _write_json_exclusive(
+        candidate_root / "reachable_collectives.json",
+        reachable_collectives.model_dump(mode="json"),
+    )
+    fusion_analysis = analyze_seqax_silu_fusion_compiler_hlo(
+        compiler_hlo,
+        expected.candidate,
+        expected_schedule_sha256=expected.physical_schedule_sha256,
+    )
     _write_json_exclusive(
         candidate_root / "fusion_analysis.json",
         fusion_analysis.model_dump(mode="json", exclude_computed_fields=True),
     )
+    memory = executable.memory_analysis()
+    buffer_assignment = memory.serialized_buffer_assignment_proto
+    if not isinstance(buffer_assignment, bytes) or not buffer_assignment:
+        raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_UNAVAILABLE")
+    _write_bytes_exclusive(candidate_root / "buffer_assignment.pb", buffer_assignment)
+    _validate_stablehlo(prepared, stablehlo)
+    required_collectives = (
+        expected.expected_all_gathers,
+        expected.expected_all_reduces,
+        expected.expected_reduce_scatters,
+        expected.expected_all_gathers,
+        expected.expected_reduce_scatters,
+    )
+    observed_collectives = (
+        reachable_collectives.compiler_all_gather_count,
+        reachable_collectives.compiler_all_reduce_count,
+        reachable_collectives.compiler_reduce_scatter_count,
+        reachable_collectives.sparse_core_all_gather_count,
+        reachable_collectives.sparse_core_reduce_scatter_count,
+    )
+    if observed_collectives != required_collectives:
+        raise ValueError(
+            "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH "
+            f"required={required_collectives} observed={observed_collectives}"
+        )
     return SeqaxSiluFusionCompilerCandidate(
         candidate=expected.candidate,
         distributed_schedule_sha256=prepared.plan.distributed_schedule_sha256,
@@ -425,7 +464,8 @@ def run_worker(root: Path, request: SeqaxSiluFusionCompilerWorkerRequest) -> Non
         {"plan_sha256": [value.expected.physical_schedule_sha256 for value in prepared]},
     )
     jax_devices = tuple(jax.devices())
-    candidates = tuple(_compile(root, value, jax_devices) for value in prepared)
+    compiled = tuple(_compile_raw(root, value, jax_devices) for value in prepared)
+    candidates = tuple(_qualify_compiled(root, value) for value in compiled)
     capture = SeqaxSiluFusionCompilerCapture(
         design_id=request.design.design_id,
         capture_ordinal=request.claim.capture_ordinal,

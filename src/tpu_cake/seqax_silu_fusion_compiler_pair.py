@@ -92,6 +92,7 @@ def _verifier_environment(bundle: Path) -> dict[str, str]:
         "PATH": "/usr/bin:/bin",
         "PYTHONHASHSEED": "0",
         "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": str(bundle / "src"),
         "PYTHONSAFEPATH": "1",
     }
@@ -102,6 +103,7 @@ def _independent_verify_capture(root: Path) -> dict[str, object]:
     completed = subprocess.run(
         [
             sys.executable,
+            "-B",
             "-P",
             "-m",
             _VERIFIER_MODULE,
@@ -123,6 +125,7 @@ def _independent_verify_pair(pair_path: Path, bundle: Path) -> dict[str, object]
     completed = subprocess.run(
         [
             sys.executable,
+            "-B",
             "-P",
             "-m",
             _VERIFIER_MODULE,
