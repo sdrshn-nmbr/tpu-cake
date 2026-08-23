@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +40,7 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerSourceAuthority,
     SeqaxSiluFusionCompilerWorkerRequest,
     SeqaxSiluFusionCompilerWorkerResult,
+    exact_integral_ring_equivalent_bytes,
 )
 from tpu_cake.seqax_silu_fusion_compiler_pair import (
     _safe_pair_path,
@@ -288,6 +290,13 @@ def test_candidate_accepts_backend_without_serialized_buffer_assignment() -> Non
     payload["reachable_collectives"]["compiler_all_reduce_count"] = 1
     with pytest.raises(ValidationError, match="COLLECTIVE_REACHABILITY_MISMATCH"):
         SeqaxSiluFusionCompilerCandidate.model_validate(payload)
+
+
+def test_ring_equivalent_bytes_require_an_exact_integer() -> None:
+    assert exact_integral_ring_equivalent_bytes(Decimal(323744)) == 323_744
+    for value in (Decimal("323744.5"), Decimal(0), Decimal("NaN"), Decimal("Infinity")):
+        with pytest.raises(ValueError, match="RING_EQUIVALENT_BYTES_INVALID"):
+            exact_integral_ring_equivalent_bytes(value)
 
 
 def test_capture_rejects_candidate_collective_strategy_drift() -> None:
@@ -984,6 +993,11 @@ def test_worker_persists_compiler_evidence_before_collective_gate() -> None:
     assert "SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_UNAVAILABLE" not in buffer_source
     assert qualify_source.count("executable.memory_analysis()") == 1
     assert "_CompilerAnalysisExecutable(executable, runtime_memory)" in qualify_source
+    assert qualify_source.count("exact_integral_ring_equivalent_bytes(") == 1
+    verifier_source = (
+        _ROOT / "src/tpu_cake/seqax_silu_fusion_compiler_verifier.py"
+    ).read_text()
+    assert verifier_source.count("exact_integral_ring_equivalent_bytes(") == 1
     assert worker_source.index("tuple(_compile_raw") < worker_source.index(
         "tuple(_qualify_compiled"
     )

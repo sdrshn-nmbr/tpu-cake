@@ -162,6 +162,57 @@
       "retry_authorized": false,
       "replacement_requires_new_design_id": true,
       "conclusion": "compiler-capture-failed-frozen-at-invalid-live-collective-renderer-v1"
+    },
+    {
+      "failed_design_id": "7976ead60e18819bc18db6b715d2d057c0bc6367ad8fcc056227108dbde964cc",
+      "invocation_id": "03b231f352de745e1d8a04ec398040e3",
+      "source_commit": "1bb32cdfda704f688d63c27cb3096380a2b24cf2",
+      "source_tree": "11cadcc68dd05194eab045eec6049d5ef4510311",
+      "design_file_sha256": "4256a2527ef8950cb6b006450cc0ae86043bbe169d05575c2132a563716a584f",
+      "runner_source_sha256": "a1b6282c430e323bc58febbfe2b1a283b1a15e2e976c54f9172d2430143c55d5",
+      "worker_source_sha256": "75c5c1dff68ffbdfcd99a282cb53be88544c8b4e41abdfa46bfadcac9e04eff2",
+      "uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+      "claim_path": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-claims/seqax-silu-fusion-design-v1-7976ead60e18819bc18db6b715d2d057c0bc6367ad8fcc056227108dbde964cc-0.json",
+      "claim_sha256": "578a02daf45945b8841739fafcbd3dddb09b46cfecfa902255a23503f4055c9b",
+      "failure_root": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-7976ead-0-c4a72e19",
+      "worker_request_sha256": "531c74df3987687ed2b5e4e819142124c7c42e40707fd6ac49217aec7da9f1c4",
+      "failure_receipt_id": "ca503bdc16f1ed9d806992c826861e035efb869db2226f75c7c0f6de0d640b9a",
+      "failure_receipt_sha256": "a6253cecf2e2c651d105234ec45c2367ac011db42d1e800f98da82d2fb5b6631",
+      "failure_replay_seal_id": "05325bbbbaacd65af39b3a7890a41b5ac92366546f2c85d7fb65ef83385fe5b8",
+      "failure_replay_seal_sha256": "bcceb007d0510ad7ba2c666504bf36d7a6849190a9eab1d4ac6977798b1aa0b7",
+      "archive_path": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-7976ead-0-c4a72e19.failed.tar.zst",
+      "archive_sha256": "87847b73fdee50523e17c1d884b6bf10bc9e6a067298a1e7d12097989f7af606",
+      "archive_member_count": 167,
+      "failure_phase": "both-candidates-compiled-baseline-qualified-candidate-assembly",
+      "error": "SeqaxSiluFusionCompilerCandidate.ring_equivalent_ici_bytes_per_device rejected exact Decimal('323744') under strict int validation",
+      "worker_module_loaded": true,
+      "jax_imported": true,
+      "device_query_started": true,
+      "compilation_started": true,
+      "compiled_candidates": [
+        "separate",
+        "silu_multiply"
+      ],
+      "analyzed_candidate": "separate",
+      "compiler_observation_persisted": true,
+      "reachable_compiler_collectives": {
+        "all_gather": 9,
+        "all_reduce": 5,
+        "reduce_scatter": 0,
+        "sparse_core_all_gather": 9,
+        "sparse_core_reduce_scatter": 0
+      },
+      "collective_strategy_gate_passed": true,
+      "independent_failure_replay_passed": true,
+      "model_outputs_executed": false,
+      "correctness_outputs_collected": false,
+      "timing_collected": false,
+      "profile_collected": false,
+      "ordinal_one_capture_launched": false,
+      "claim_consumed": true,
+      "retry_authorized": false,
+      "replacement_requires_new_design_id": true,
+      "conclusion": "compiler-capture-failed-frozen-at-ring-byte-type-boundary-v1"
     }
   ]
 }

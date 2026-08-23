@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -55,6 +56,12 @@ SEQAX_SILU_FUSION_COMPILER_ARTIFACT_ROLES = frozenset(
         ArtifactRole.SOURCE_STATE,
     }
 )
+
+
+def exact_integral_ring_equivalent_bytes(value: Decimal) -> int:
+    if not value.is_finite() or value <= 0 or value != value.to_integral_value():
+        raise ValueError("SEQAX_SILU_FUSION_RING_EQUIVALENT_BYTES_INVALID")
+    return int(value)
 
 
 def validate_seqax_silu_fusion_compiler_collectives(

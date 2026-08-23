@@ -91,6 +91,16 @@ class SeqaxSiluFusionDesignContract(BaseModel):
         "record-when-backend-exposes-serialized-proto"
     ]
     compiler_buffer_assignment_affects_semantic_identity: Literal[False]
+    compiler_ring_equivalent_bytes_policy: Literal[
+        "require-exact-positive-integral-physical-model-value"
+    ]
+    compiler_ring_equivalent_bytes_source_design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_ring_equivalent_bytes_source_failure_receipt_id: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
+    compiler_ring_equivalent_bytes_source_archive_sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
     compiler_collective_policy: Literal[
         "pinned-entry-reachable-strategy-and-candidate-parity"
     ]
@@ -304,6 +314,18 @@ def default_seqax_silu_fusion_design_contract(
         compiler_collective_gate_error_includes_observed_values=True,
         compiler_buffer_assignment_policy="record-when-backend-exposes-serialized-proto",
         compiler_buffer_assignment_affects_semantic_identity=False,
+        compiler_ring_equivalent_bytes_policy=(
+            "require-exact-positive-integral-physical-model-value"
+        ),
+        compiler_ring_equivalent_bytes_source_design_id=(
+            "7976ead60e18819bc18db6b715d2d057c0bc6367ad8fcc056227108dbde964cc"
+        ),
+        compiler_ring_equivalent_bytes_source_failure_receipt_id=(
+            "ca503bdc16f1ed9d806992c826861e035efb869db2226f75c7c0f6de0d640b9a"
+        ),
+        compiler_ring_equivalent_bytes_source_archive_sha256=(
+            "87847b73fdee50523e17c1d884b6bf10bc9e6a067298a1e7d12097989f7af606"
+        ),
         compiler_collective_policy="pinned-entry-reachable-strategy-and-candidate-parity",
         compiler_collective_strategy_source_design_id=(
             "1fcdb1b7768d98530b747b2ba9ea6f45270fee4bd6da1137f674285c2e5f24ec"

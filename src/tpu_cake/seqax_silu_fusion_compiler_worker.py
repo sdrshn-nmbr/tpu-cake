@@ -38,6 +38,7 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerWorkerRequest,
     SeqaxSiluFusionCompilerWorkerResult,
     analyze_seqax_silu_fusion_compiler_hlo,
+    exact_integral_ring_equivalent_bytes,
     live_seqax_silu_fusion_compiler_hlo,
     validate_seqax_silu_fusion_compiler_collectives,
 )
@@ -454,7 +455,9 @@ def _qualify_compiled(
         allocated_vmem_bytes_per_device=resources.memory.allocated_vmem_bytes_per_device,
         peak_live_vmem_bytes_per_device=resources.memory.peak_live_vmem_bytes_per_device,
         ring_equivalent_ici_bytes_per_device=(
-            resources.devices[0].collective_ring_equivalent_bytes
+            exact_integral_ring_equivalent_bytes(
+                resources.devices[0].collective_ring_equivalent_bytes
+            )
         ),
     )
 

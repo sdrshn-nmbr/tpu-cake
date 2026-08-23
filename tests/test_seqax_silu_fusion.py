@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -60,6 +61,29 @@ def test_seqax_silu_fusion_design_is_canonical() -> None:
     assert saved.residual_norm_strategy is SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE
     assert saved.compiler_capture_status == "pending"
     assert not saved.timing_authorized
+
+
+def test_seqax_silu_fusion_design_binds_one_ring_byte_failure() -> None:
+    design = SeqaxSiluFusionDesignContract.model_validate_json(
+        Path("contracts/seqax-silu-fusion-design-v1.json").read_text()
+    )
+    ledger = json.loads(
+        Path("contracts/seqax-silu-fusion-compiler-failure-v1.json").read_text()
+    )
+    matches = tuple(
+        attempt
+        for attempt in ledger["attempts"]
+        if attempt["failed_design_id"]
+        == design.compiler_ring_equivalent_bytes_source_design_id
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["failure_receipt_id"] == (
+        design.compiler_ring_equivalent_bytes_source_failure_receipt_id
+    )
+    assert matches[0]["archive_sha256"] == (
+        design.compiler_ring_equivalent_bytes_source_archive_sha256
+    )
 
 
 def test_seqax_silu_fusion_static_plans_replay() -> None:
