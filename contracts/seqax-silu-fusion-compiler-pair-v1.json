@@ -1,0 +1,57 @@
+{
+  "captures": [
+    {
+      "candidate_semantic_ids": [
+        "5851109941f77d2781e3a66efbb8052064cad1551be32054f2d8d3263697c6ef",
+        "927de445547f6342fb558ba3c159f9dc99871b48604b4b5be9e729035781f9f9"
+      ],
+      "capture_id": "e2b4fd712ff671e386707883f4d12bfc864e444487779d292a5d41752d6f8d49",
+      "capture_ordinal": 0,
+      "capture_root": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-f77778c-0-d83a19e4",
+      "claim_id": "c8be87c426c5a3046cfac95a713360c55f164a56746849f4932eb3a552f2ed5e",
+      "compiler_environment_id": "8fe7ea1b35be40d18e54f060c8cc1ce31d6010e29a1d38083d2c0e609df30340",
+      "device_inventory_id": "ebc670df35651362f2c51eab3cd8ab746aa30c7c4e047810ade8f175e7b25521",
+      "host_id": "648bb568bf22c2a1875647598a074965f722ac46961f10e4636a0e5aad2b911e",
+      "invocation_id": "75c529f42e4928b21c87f7b59729423d",
+      "receipt_id": "824039fb9d91cd3cbcfe3424ad4b21e1d78c78584c39bf8025e2bc5c93d5fea8",
+      "replay_seal_id": "0357acba4803fbc9188c045d61381ad47e0e982539befec69ab371e12bb94024",
+      "semantic_pair_id": "a1090a31f6289235566b50a698970850baa3cb128695f2846d20f9e881cb1bfc",
+      "source_authority_id": "0a996a79349efa641eac4238575f3aa231b4003ab7ce5b14c2d9f624ab1298f5",
+      "source_commit": "01d10940d87c9a1d6385bf9444864c69a87b11ab",
+      "source_tree": "45e82800158c26a7d3ffa5ca4a26724adf46b827",
+      "worker_environment_id": "e026ab37f125a1cfc6ef977c36045731d4c348c4f6957c3b119c8b313f609cc0",
+      "worker_nonce": "e15f15bee9a94c78fb0c6364a429e3b5",
+      "worker_pid": 3277745
+    },
+    {
+      "candidate_semantic_ids": [
+        "5851109941f77d2781e3a66efbb8052064cad1551be32054f2d8d3263697c6ef",
+        "927de445547f6342fb558ba3c159f9dc99871b48604b4b5be9e729035781f9f9"
+      ],
+      "capture_id": "9bd531b3b5f377598a91abf26b8fc890980fd1042c66d15b129d0f7ad1f0633e",
+      "capture_ordinal": 1,
+      "capture_root": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-f77778c-1-4a8b6d20",
+      "claim_id": "44676a3f6a17f36f2aafd722765a2451c5a71826cbda6e8d91ca43289f897599",
+      "compiler_environment_id": "8fe7ea1b35be40d18e54f060c8cc1ce31d6010e29a1d38083d2c0e609df30340",
+      "device_inventory_id": "ebc670df35651362f2c51eab3cd8ab746aa30c7c4e047810ade8f175e7b25521",
+      "host_id": "648bb568bf22c2a1875647598a074965f722ac46961f10e4636a0e5aad2b911e",
+      "invocation_id": "337e7afff3d1415932193a08cf99c52f",
+      "receipt_id": "b71a7ebf41c9239e65ddcd3da6db1ed51814502336b29d5a896862e625ecf0b6",
+      "replay_seal_id": "3cd5120b8a1b01ecc0fed64d54dc74fb0e595456409a7d7dc65cd9cae21d5a4a",
+      "semantic_pair_id": "a1090a31f6289235566b50a698970850baa3cb128695f2846d20f9e881cb1bfc",
+      "source_authority_id": "0a996a79349efa641eac4238575f3aa231b4003ab7ce5b14c2d9f624ab1298f5",
+      "source_commit": "01d10940d87c9a1d6385bf9444864c69a87b11ab",
+      "source_tree": "45e82800158c26a7d3ffa5ca4a26724adf46b827",
+      "worker_environment_id": "e026ab37f125a1cfc6ef977c36045731d4c348c4f6957c3b119c8b313f609cc0",
+      "worker_nonce": "a5381e1fec5aa0db00640e3df19c82db",
+      "worker_pid": 3280691
+    }
+  ],
+  "correctness_outputs_collected": false,
+  "design_id": "f77778c8c49b090c0c8717f81c32a6269e07b5b9d2fd505e36b243e5bbfc143a",
+  "independent_replay_performed": true,
+  "model_outputs_executed": false,
+  "profile_collected": false,
+  "schema_version": "seqax-silu-fusion-compiler-pair-v1",
+  "timing_collected": false
+}

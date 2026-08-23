@@ -211,6 +211,22 @@ def test_pair_requires_two_independent_same_semantic_captures() -> None:
         )
 
 
+def test_tracked_compiler_pair_is_the_replayed_tpu_record() -> None:
+    path = _ROOT / "contracts/seqax-silu-fusion-compiler-pair-v1.json"
+    pair = SeqaxSiluFusionCompilerPair.model_validate_json(path.read_text())
+
+    assert pair.design_id == "f77778c8c49b090c0c8717f81c32a6269e07b5b9d2fd505e36b243e5bbfc143a"
+    assert pair.pair_id == "63266abcb56a719a891b2d09a8e9b9b5b93143bf751fd0c69d16e3880c44b021"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        "4241e7035e3d90b6a12c476fbbbfba870ef76db9f6e2ff9222be9e120997dfb4"
+    )
+    assert tuple(value.capture_ordinal for value in pair.captures) == (0, 1)
+    assert pair.captures[0].candidate_semantic_ids == pair.captures[1].candidate_semantic_ids
+    assert not pair.model_outputs_executed
+    assert not pair.correctness_outputs_collected
+    assert not pair.timing_collected
+
+
 def test_candidate_semantic_identity_excludes_raw_compiler_hashes() -> None:
     collectives = CompilerCollectiveAnalysis(
         stablehlo_reduce_scatter_count=1,
