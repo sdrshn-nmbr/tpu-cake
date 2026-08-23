@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis, analyze_compiler_collectives
 from tpu_cake.seqax_contract_types import SeqaxFeedForwardFusion
 from tpu_cake.seqax_silu_fusion_compiler import (
     analyze_seqax_silu_fusion_compiler_hlo,
+    live_seqax_silu_fusion_compiler_hlo,
+    validate_seqax_silu_fusion_compiler_collectives,
 )
 
 _SCHEDULE = "1" * 64
@@ -147,6 +152,91 @@ def test_compiler_analysis_is_independent_of_generated_instruction_names() -> No
     )
 
     assert original.semantic_id == renamed.semantic_id
+
+
+def test_live_compiler_hlo_preserves_collective_instruction_syntax() -> None:
+    hlo = _compiler_hlo(SeqaxFeedForwardFusion.SILU_MULTIPLY)
+    hlo = hlo.replace(
+        "  ROOT %down_projection",
+        "  %live_collective = bf16[128,1,1024] all-reduce(%vector_boundary)\n"
+        "  ROOT %down_projection",
+    ).replace(
+        "custom-call(%vector_boundary, %down_weight)",
+        "custom-call(%live_collective, %down_weight)",
+    )
+
+    live_hlo = live_seqax_silu_fusion_compiler_hlo(hlo)
+    collectives = analyze_compiler_collectives(stablehlo="", compiler_hlo=live_hlo)
+
+    assert "%live_collective = bf16[128,1,1024] all-reduce(" in live_hlo
+    assert collectives.compiler_all_reduce_count == 1
+
+
+def test_live_compiler_hlo_excludes_dead_collectives() -> None:
+    hlo = _compiler_hlo(
+        SeqaxFeedForwardFusion.SILU_MULTIPLY,
+        extra_entry_instruction=(
+            "  %dead_collective = bf16[128,1,1024] all-reduce(%vector_boundary)"
+        ),
+    )
+    hlo = hlo.replace(
+        "  ROOT %down_projection",
+        "  %live_collective = bf16[128,1,1024] all-reduce(%vector_boundary)\n"
+        "  ROOT %down_projection",
+    ).replace(
+        "custom-call(%vector_boundary, %down_weight)",
+        "custom-call(%live_collective, %down_weight)",
+    )
+    whole = analyze_compiler_collectives(stablehlo="", compiler_hlo=hlo)
+    reachable = analyze_compiler_collectives(
+        stablehlo="",
+        compiler_hlo=live_seqax_silu_fusion_compiler_hlo(hlo),
+    )
+    expected = SimpleNamespace(
+        expected_all_gathers=0,
+        expected_reduce_scatters=0,
+        expected_compiler_all_gathers=0,
+        expected_compiler_all_reduces=1,
+        expected_compiler_reduce_scatters=0,
+        expected_sparse_core_all_gathers=0,
+        expected_sparse_core_reduce_scatters=0,
+    )
+
+    assert whole.compiler_all_reduce_count == 2
+    assert reachable.compiler_all_reduce_count == 1
+    with pytest.raises(ValueError, match="COLLECTIVE_REACHABILITY_MISMATCH"):
+        validate_seqax_silu_fusion_compiler_collectives(expected, whole, reachable)
+
+
+def test_compiler_collective_gate_requires_reachability_and_pinned_strategy() -> None:
+    expected = SimpleNamespace(
+        expected_all_gathers=15,
+        expected_reduce_scatters=1,
+        expected_compiler_all_gathers=9,
+        expected_compiler_all_reduces=5,
+        expected_compiler_reduce_scatters=0,
+        expected_sparse_core_all_gathers=9,
+        expected_sparse_core_reduce_scatters=0,
+    )
+    observed = CompilerCollectiveAnalysis(
+        stablehlo_reduce_scatter_count=1,
+        stablehlo_all_gather_count=15,
+        compiler_reduce_scatter_count=0,
+        compiler_all_reduce_count=5,
+        compiler_all_gather_count=9,
+        sparse_core_reduce_scatter_count=0,
+        sparse_core_all_gather_count=9,
+    )
+
+    validate_seqax_silu_fusion_compiler_collectives(expected, observed, observed)
+
+    unreachable = observed.model_copy(update={"compiler_all_gather_count": 8})
+    with pytest.raises(ValueError, match="COLLECTIVE_REACHABILITY_MISMATCH"):
+        validate_seqax_silu_fusion_compiler_collectives(expected, observed, unreachable)
+
+    changed = observed.model_copy(update={"compiler_all_reduce_count": 4})
+    with pytest.raises(ValueError, match="COLLECTIVE_STRATEGY_MISMATCH"):
+        validate_seqax_silu_fusion_compiler_collectives(expected, changed, changed)
 
 
 def test_compiler_analysis_rejects_dead_strict_call_in_entry() -> None:

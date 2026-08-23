@@ -111,6 +111,57 @@
       "retry_authorized": false,
       "replacement_requires_new_design_id": true,
       "conclusion": "compiler-capture-failed-frozen-at-optional-buffer-assignment-gate-v1"
+    },
+    {
+      "failed_design_id": "1fcdb1b7768d98530b747b2ba9ea6f45270fee4bd6da1137f674285c2e5f24ec",
+      "invocation_id": "bd1ec5b6f18c7af3139efdbe96bf9c9f",
+      "source_commit": "83e3423053ea087bfd783751457a0e5533f11e8d",
+      "source_tree": "72ca35b6323cdd1290718f701479c73931f94bca",
+      "design_file_sha256": "8783c957d70cbbff7e8b0e61159b32a37b1e8a4d66d8daaedbfdc04eff8aa55b",
+      "runner_source_sha256": "a1b6282c430e323bc58febbfe2b1a283b1a15e2e976c54f9172d2430143c55d5",
+      "worker_source_sha256": "2bf0e729e2e0da42c550445c23f1fa9799479efd3a67a7b361f68d6ec16dd4b4",
+      "uv_lock_sha256": "03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
+      "claim_path": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-claims/seqax-silu-fusion-design-v1-1fcdb1b7768d98530b747b2ba9ea6f45270fee4bd6da1137f674285c2e5f24ec-0.json",
+      "claim_sha256": "60362cda89fd73376937d2c5512cca2d678444990938c2d578a63dbb1ba29469",
+      "failure_root": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-1fcdb1b-0-b9b8d109",
+      "worker_request_sha256": "fbab6242fbae9467267c775b93eb73dd9cf03658cac357dea90aa4bd91f784c1",
+      "failure_receipt_id": "383e65eb51c9c9f170ac5b9eb903811af90cc88466ce4f58ae70df713b0023be",
+      "failure_receipt_sha256": "4bcb701802b347df188f20305575cd3fbbdd46f22984c46df0e0fe54020c36ed",
+      "failure_replay_seal_id": "e762c894d4f7fb95aa3165bd1d0b39eaf802c941ddf0a578a75a66200d3b8751",
+      "failure_replay_seal_sha256": "a28d0ac598de2bb1c0641e39ea80e161ba49af324b2a659e7e0de9145fa825a1",
+      "archive_path": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-1fcdb1b-0-b9b8d109.failed.tar.zst",
+      "archive_sha256": "7989d7800bdd6de124e6e8f2496c280f96db96233a35667f738266069492f5a0",
+      "archive_member_count": 167,
+      "failure_phase": "both-candidates-compiled-baseline-live-collective-gate",
+      "error": "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH required=(15, 2, 1, 15, 1) observed=(0, 0, 0, 0, 0)",
+      "worker_module_loaded": true,
+      "jax_imported": true,
+      "device_query_started": true,
+      "compilation_started": true,
+      "compiled_candidates": [
+        "separate",
+        "silu_multiply"
+      ],
+      "analyzed_candidate": "separate",
+      "compiler_observation_persisted": true,
+      "whole_program_compiler_collectives": {
+        "all_gather": 9,
+        "all_reduce": 5,
+        "reduce_scatter": 0,
+        "sparse_core_all_gather": 9,
+        "sparse_core_reduce_scatter": 0
+      },
+      "archived_raw_hlo_replay_collectives_identical_between_candidates": true,
+      "independent_failure_replay_passed": true,
+      "model_outputs_executed": false,
+      "correctness_outputs_collected": false,
+      "timing_collected": false,
+      "profile_collected": false,
+      "ordinal_one_capture_launched": false,
+      "claim_consumed": true,
+      "retry_authorized": false,
+      "replacement_requires_new_design_id": true,
+      "conclusion": "compiler-capture-failed-frozen-at-invalid-live-collective-renderer-v1"
     }
   ]
 }

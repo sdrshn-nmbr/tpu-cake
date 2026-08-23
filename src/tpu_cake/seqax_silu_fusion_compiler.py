@@ -12,7 +12,10 @@ from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity,
 from tpu_cake.identity import json_sha256
 from tpu_cake.ledger import RunState
 from tpu_cake.seqax_contract_types import SeqaxFeedForwardFusion
-from tpu_cake.seqax_silu_fusion import SeqaxSiluFusionDesignContract
+from tpu_cake.seqax_silu_fusion import (
+    SeqaxSiluFusionDesignContract,
+    SeqaxSiluFusionPlanContract,
+)
 
 _VECTOR_SHAPE = "bf16[128,1,1024]"
 _STRICT_KERNELS = {
@@ -52,6 +55,34 @@ SEQAX_SILU_FUSION_COMPILER_ARTIFACT_ROLES = frozenset(
         ArtifactRole.SOURCE_STATE,
     }
 )
+
+
+def validate_seqax_silu_fusion_compiler_collectives(
+    expected: SeqaxSiluFusionPlanContract,
+    whole_program: CompilerCollectiveAnalysis,
+    reachable_program: CompilerCollectiveAnalysis,
+) -> None:
+    if whole_program != reachable_program:
+        raise ValueError(
+            "SEQAX_SILU_FUSION_COLLECTIVE_REACHABILITY_MISMATCH "
+            f"whole={whole_program.model_dump(mode='json')} "
+            f"reachable={reachable_program.model_dump(mode='json')}"
+        )
+    required = CompilerCollectiveAnalysis(
+        stablehlo_reduce_scatter_count=expected.expected_reduce_scatters,
+        stablehlo_all_gather_count=expected.expected_all_gathers,
+        compiler_reduce_scatter_count=expected.expected_compiler_reduce_scatters,
+        compiler_all_reduce_count=expected.expected_compiler_all_reduces,
+        compiler_all_gather_count=expected.expected_compiler_all_gathers,
+        sparse_core_reduce_scatter_count=expected.expected_sparse_core_reduce_scatters,
+        sparse_core_all_gather_count=expected.expected_sparse_core_all_gathers,
+    )
+    if reachable_program != required:
+        raise ValueError(
+            "SEQAX_SILU_FUSION_COLLECTIVE_STRATEGY_MISMATCH "
+            f"required={required.model_dump(mode='json')} "
+            f"observed={reachable_program.model_dump(mode='json')}"
+        )
 
 
 def _semantic_instruction_body(body: str) -> str:
@@ -166,6 +197,8 @@ class SeqaxSiluFusionCompilerCandidate(BaseModel):
             or self.fusion_analysis.candidate is not self.candidate
         ):
             raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_MISMATCH")
+        if self.compiler_analysis.collectives != self.reachable_collectives:
+            raise ValueError("SEQAX_SILU_FUSION_COLLECTIVE_REACHABILITY_MISMATCH")
         return self
 
     @computed_field
@@ -763,7 +796,7 @@ def _reachable_and_live(
 def live_seqax_silu_fusion_compiler_hlo(compiler_hlo: str) -> str:
     computations, live = _reachable_and_live(compiler_hlo)
     return "\n".join(
-        instruction.body
+        f"%{instruction.name} = {instruction.body}"
         for computation_name, computation in computations.items()
         for instruction in computation.instructions
         if (computation_name, instruction.name) in live

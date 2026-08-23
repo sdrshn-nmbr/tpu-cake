@@ -52,6 +52,7 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     analyze_seqax_silu_fusion_compiler_hlo,
     live_seqax_silu_fusion_compiler_hlo,
     seqax_silu_fusion_compiler_pair_member,
+    validate_seqax_silu_fusion_compiler_collectives,
 )
 from tpu_cake.stablehlo import StableHloInspector
 from tpu_cake.workloads.seqax_forward import (
@@ -67,6 +68,10 @@ _SOURCE_PATHS = {
     "compiler_source_sha256": "src/tpu_cake/seqax_silu_fusion_compiler.py",
     "pair_source_sha256": "src/tpu_cake/seqax_silu_fusion_compiler_pair.py",
 }
+_COLLECTIVE_GATE_FAILURES = (
+    "SEQAX_SILU_FUSION_COLLECTIVE_REACHABILITY_MISMATCH",
+    "SEQAX_SILU_FUSION_COLLECTIVE_STRATEGY_MISMATCH",
+)
 
 
 def _artifact_role(path: Path) -> ArtifactRole:
@@ -447,25 +452,11 @@ def _validate_candidate(
     )
     if recorded_reachable_collectives != reachable_collectives:
         raise ValueError("SEQAX_SILU_FUSION_REACHABLE_COLLECTIVE_REPLAY_MISMATCH")
-    required_collectives = (
-        expected.expected_all_gathers,
-        expected.expected_all_reduces,
-        expected.expected_reduce_scatters,
-        expected.expected_all_gathers,
-        expected.expected_reduce_scatters,
+    validate_seqax_silu_fusion_compiler_collectives(
+        expected,
+        compiler_analysis.collectives,
+        reachable_collectives,
     )
-    observed_collectives = (
-        reachable_collectives.compiler_all_gather_count,
-        reachable_collectives.compiler_all_reduce_count,
-        reachable_collectives.compiler_reduce_scatter_count,
-        reachable_collectives.sparse_core_all_gather_count,
-        reachable_collectives.sparse_core_reduce_scatter_count,
-    )
-    if observed_collectives != required_collectives:
-        raise ValueError(
-            "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH "
-            f"required={required_collectives} observed={observed_collectives}"
-        )
     memory = compiler_analysis.memory
     _validate_buffer_assignment_artifact(
         candidate_root,
@@ -517,16 +508,42 @@ def _validate_candidate(
         raise ValueError("SEQAX_SILU_FUSION_STATIC_BOUNDARY_REPLAY_MISMATCH")
 
 
+def _replay_failed_collective_gate(
+    expected,
+    compiler_collectives: CompilerCollectiveAnalysis,
+    reachable_collectives: CompilerCollectiveAnalysis,
+    expected_failure: str | None,
+) -> str | None:
+    try:
+        validate_seqax_silu_fusion_compiler_collectives(
+            expected,
+            compiler_collectives,
+            reachable_collectives,
+        )
+    except ValueError as error:
+        replayed_failure = next(
+            (value for value in _COLLECTIVE_GATE_FAILURES if value in str(error)),
+            None,
+        )
+        if replayed_failure is None or replayed_failure != expected_failure:
+            raise ValueError(
+                "SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_GATE_REPLAY_MISMATCH"
+            ) from error
+        return replayed_failure
+    return None
+
+
 def _validate_failed_candidate(
     root: Path,
     expected,
     distributed,
     physical,
     plan,
-) -> None:
+    collective_failure: str | None,
+) -> str | None:
     candidate_root = root / "candidates" / expected.candidate.value
     if not candidate_root.exists():
-        return
+        return None
     required_raw = {
         "distributed.xdsl",
         "physical.xdsl",
@@ -566,20 +583,20 @@ def _validate_failed_candidate(
     if not compiler_hlo_path.is_file():
         if any(presence):
             raise ValueError("SEQAX_SILU_FUSION_FAILURE_COMPILER_HLO_MISSING")
-        return
+        return None
     stablehlo_path = candidate_root / "stablehlo.txt"
     compiler_hlo = compiler_hlo_path.read_text()
     if not compiler_hlo:
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_COMPILER_HLO_EMPTY")
     if not presence[0]:
-        return
+        return None
     compiler_analysis = validate_compiler_analysis(
         candidate_root / "compiler_analysis.json",
         stablehlo_path=stablehlo_path,
         compiler_hlo_path=compiler_hlo_path,
     )
     if not presence[1]:
-        return
+        return None
     replayed_collectives = analyze_compiler_collectives(
         stablehlo=stablehlo_path.read_text(),
         compiler_hlo=live_seqax_silu_fusion_compiler_hlo(compiler_hlo),
@@ -589,8 +606,16 @@ def _validate_failed_candidate(
     )
     if recorded_collectives != replayed_collectives:
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_REPLAY_MISMATCH")
+    replayed_failure = _replay_failed_collective_gate(
+        expected,
+        compiler_analysis.collectives,
+        replayed_collectives,
+        collective_failure,
+    )
     if not presence[2]:
-        return
+        if replayed_failure is not None:
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_ANALYSIS_PREFIX_MISMATCH")
+        return None
     recorded_fusion = SeqaxSiluFusionCompilerAnalysis.model_validate_json(
         (candidate_root / "fusion_analysis.json").read_text()
     )
@@ -606,6 +631,7 @@ def _validate_failed_candidate(
         compiler_analysis.memory,
         required_if_available=False,
     )
+    return replayed_failure
 
 
 def verify_capture(root: Path, design_path: Path) -> SeqaxSiluFusionCompilerReceipt:
@@ -765,13 +791,34 @@ def verify_failure(
     ):
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_LEDGER_STATE_MISMATCH")
     plans = _plans(design)
+    if "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH" in failure.stderr:
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_DIAGNOSTIC_OBSOLETE")
+    collective_failures = tuple(
+        value for value in _COLLECTIVE_GATE_FAILURES if value in failure.stderr
+    )
+    if len(collective_failures) > 1:
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_DIAGNOSTIC_AMBIGUOUS")
+    collective_failure = collective_failures[0] if collective_failures else None
+    replayed_collective_failures = []
     for expected, distributed, physical, plan in plans:
-        _validate_failed_candidate(root, expected, distributed, physical, plan)
-    if "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH" in failure.stderr and any(
-        not (root / "candidates" / expected.candidate.value / "compiler_hlo.txt").is_file()
-        for expected, *_values in plans
-    ):
-        raise ValueError("SEQAX_SILU_FUSION_FAILURE_PAIRED_RAW_COMPILER_HLO_MISSING")
+        replayed = _validate_failed_candidate(
+            root,
+            expected,
+            distributed,
+            physical,
+            plan,
+            collective_failure,
+        )
+        if replayed is not None:
+            replayed_collective_failures.append(replayed)
+    if collective_failure is not None:
+        if any(
+            not (root / "candidates" / expected.candidate.value / "compiler_hlo.txt").is_file()
+            for expected, *_values in plans
+        ):
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_PAIRED_RAW_COMPILER_HLO_MISSING")
+        if collective_failure not in replayed_collective_failures:
+            raise ValueError("SEQAX_SILU_FUSION_FAILURE_COLLECTIVE_GATE_NOT_REPRODUCED")
     return receipt
 
 

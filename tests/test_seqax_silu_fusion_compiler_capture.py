@@ -29,8 +29,10 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerCall,
     SeqaxSiluFusionCompilerCandidate,
     SeqaxSiluFusionCompilerCapture,
+    SeqaxSiluFusionCompilerDevice,
     SeqaxSiluFusionCompilerFailureReceipt,
     SeqaxSiluFusionCompilerFailureReplaySeal,
+    SeqaxSiluFusionCompilerHostIdentity,
     SeqaxSiluFusionCompilerPair,
     SeqaxSiluFusionCompilerPairMember,
     SeqaxSiluFusionCompilerReceipt,
@@ -60,6 +62,7 @@ from tpu_cake.seqax_silu_fusion_compiler_verifier import (
     _ledger_state,
     _preflight_root,
     _registry_file,
+    _replay_failed_collective_gate,
     _validate_buffer_assignment_artifact,
     _validate_stablehlo,
 )
@@ -105,6 +108,81 @@ def _pair() -> SeqaxSiluFusionCompilerPair:
         correctness_outputs_collected=False,
         timing_collected=False,
         profile_collected=False,
+    )
+
+
+def _compiler_candidate(
+    kind: SeqaxFeedForwardFusion,
+    collectives: CompilerCollectiveAnalysis,
+) -> SeqaxSiluFusionCompilerCandidate:
+    kernels = (
+        ("seqax_strict_bf16_silu", "seqax_strict_bf16_multiply")
+        if kind is SeqaxFeedForwardFusion.SEPARATE
+        else ("seqax_strict_bf16_silu_multiply",)
+    )
+    calls = tuple(
+        SeqaxSiluFusionCompilerCall(
+            ordinal=index,
+            kernel=kernel,
+            output_shape="bf16[128,1,1024]",
+            operand_count=1 if kernel == "seqax_strict_bf16_silu" else 2,
+            schedule_sha256="2" * 64,
+            vector_region_index=index,
+            implementation="pallas_full_local",
+            instruction_name=f"fusion-{index}",
+            operand_names=("gate",) if kernel == "seqax_strict_bf16_silu" else ("gate", "up"),
+        )
+        for index, kernel in enumerate(kernels)
+    )
+    memory = CompilerMemoryAnalysis(
+        generated_code_size_in_bytes=1,
+        argument_size_in_bytes=2,
+        output_size_in_bytes=3,
+        alias_size_in_bytes=0,
+        temp_size_in_bytes=4,
+        host_generated_code_size_in_bytes=0,
+        host_argument_size_in_bytes=0,
+        host_output_size_in_bytes=0,
+        host_alias_size_in_bytes=0,
+        host_temp_size_in_bytes=0,
+        peak_memory_in_bytes=5,
+        buffer_assignment_available=False,
+        buffer_assignment_size_bytes=0,
+        buffer_assignment_sha256=None,
+    )
+    fusion = SeqaxSiluFusionCompilerAnalysis(
+        candidate=kind,
+        strict_vector_call_count=len(calls),
+        calls=calls,
+        all_strict_vector_calls_are_live=True,
+        gate_and_up_projection_lineages_are_distinct=True,
+        silu_output_feeds_multiply=kind is SeqaxFeedForwardFusion.SEPARATE,
+        vector_output_feeds_one_down_projection=True,
+    )
+    analysis = CompilerExecutableAnalysis(
+        stablehlo_sha256="9" * 64,
+        compiler_hlo_sha256="a" * 64,
+        cost_metrics=(
+            CompilerCostMetric(name="flops", raw_value=1.0, value=1.0, available=True),
+        ),
+        memory=memory,
+        collectives=collectives,
+    )
+    return SeqaxSiluFusionCompilerCandidate(
+        candidate=kind,
+        distributed_schedule_sha256="1" * 64,
+        physical_schedule_sha256="2" * 64,
+        pallas_source_sha256="3" * 64,
+        pallas_manifest_sha256="4" * 64,
+        pre_optimization_hlo_sha256="5" * 64,
+        compiler_analysis=analysis,
+        reachable_collectives=collectives,
+        fusion_analysis=fusion,
+        buffer_assignment_size_bytes=0,
+        buffer_assignment_sha256=None,
+        allocated_vmem_bytes_per_device=6,
+        peak_live_vmem_bytes_per_device=7,
+        ring_equivalent_ici_bytes_per_device=8,
     )
 
 
@@ -192,22 +270,6 @@ def test_candidate_semantic_identity_excludes_raw_compiler_hashes() -> None:
 
 
 def test_candidate_accepts_backend_without_serialized_buffer_assignment() -> None:
-    memory = CompilerMemoryAnalysis(
-        generated_code_size_in_bytes=1,
-        argument_size_in_bytes=2,
-        output_size_in_bytes=3,
-        alias_size_in_bytes=0,
-        temp_size_in_bytes=4,
-        host_generated_code_size_in_bytes=0,
-        host_argument_size_in_bytes=0,
-        host_output_size_in_bytes=0,
-        host_alias_size_in_bytes=0,
-        host_temp_size_in_bytes=0,
-        peak_memory_in_bytes=5,
-        buffer_assignment_available=False,
-        buffer_assignment_size_bytes=0,
-        buffer_assignment_sha256=None,
-    )
     collectives = CompilerCollectiveAnalysis(
         stablehlo_reduce_scatter_count=1,
         stablehlo_all_gather_count=15,
@@ -217,56 +279,117 @@ def test_candidate_accepts_backend_without_serialized_buffer_assignment() -> Non
         sparse_core_reduce_scatter_count=1,
         sparse_core_all_gather_count=15,
     )
-    fusion = SeqaxSiluFusionCompilerAnalysis(
-        candidate=SeqaxFeedForwardFusion.SILU_MULTIPLY,
-        strict_vector_call_count=1,
-        calls=(
-            SeqaxSiluFusionCompilerCall(
-                ordinal=0,
-                kernel="seqax_strict_bf16_silu_multiply",
-                output_shape="bf16[128,1,1024]",
-                operand_count=2,
-                schedule_sha256="2" * 64,
-                vector_region_index=0,
-                implementation="pallas_full_local",
-                instruction_name="fusion",
-                operand_names=("gate", "up"),
-            ),
-        ),
-        all_strict_vector_calls_are_live=True,
-        gate_and_up_projection_lineages_are_distinct=True,
-        silu_output_feeds_multiply=False,
-        vector_output_feeds_one_down_projection=True,
-    )
-    compiler_analysis = CompilerExecutableAnalysis(
-        stablehlo_sha256="9" * 64,
-        compiler_hlo_sha256="a" * 64,
-        cost_metrics=(
-            CompilerCostMetric(name="flops", raw_value=1.0, value=1.0, available=True),
-        ),
-        memory=memory,
-        collectives=collectives,
-    )
-
-    candidate = SeqaxSiluFusionCompilerCandidate(
-        candidate=SeqaxFeedForwardFusion.SILU_MULTIPLY,
-        distributed_schedule_sha256="1" * 64,
-        physical_schedule_sha256="2" * 64,
-        pallas_source_sha256="3" * 64,
-        pallas_manifest_sha256="4" * 64,
-        pre_optimization_hlo_sha256="5" * 64,
-        compiler_analysis=compiler_analysis,
-        reachable_collectives=collectives,
-        fusion_analysis=fusion,
-        buffer_assignment_size_bytes=0,
-        buffer_assignment_sha256=None,
-        allocated_vmem_bytes_per_device=6,
-        peak_live_vmem_bytes_per_device=7,
-        ring_equivalent_ici_bytes_per_device=8,
-    )
+    candidate = _compiler_candidate(SeqaxFeedForwardFusion.SILU_MULTIPLY, collectives)
 
     assert candidate.buffer_assignment_size_bytes == 0
     assert candidate.buffer_assignment_sha256 is None
+
+    payload = candidate.model_dump(exclude_computed_fields=True)
+    payload["reachable_collectives"]["compiler_all_reduce_count"] = 1
+    with pytest.raises(ValidationError, match="COLLECTIVE_REACHABILITY_MISMATCH"):
+        SeqaxSiluFusionCompilerCandidate.model_validate(payload)
+
+
+def test_capture_rejects_candidate_collective_strategy_drift() -> None:
+    collectives = CompilerCollectiveAnalysis(
+        stablehlo_reduce_scatter_count=1,
+        stablehlo_all_gather_count=15,
+        compiler_reduce_scatter_count=0,
+        compiler_all_reduce_count=5,
+        compiler_all_gather_count=9,
+        sparse_core_reduce_scatter_count=0,
+        sparse_core_all_gather_count=9,
+    )
+    changed = collectives.model_copy(update={"compiler_all_reduce_count": 4})
+    separate = _compiler_candidate(SeqaxFeedForwardFusion.SEPARATE, collectives)
+    fused = _compiler_candidate(SeqaxFeedForwardFusion.SILU_MULTIPLY, changed)
+    runtime = RuntimeIdentity(python="3.12.3")
+    design = default_seqax_silu_fusion_design_contract(runtime)
+    source = SeqaxSiluFusionCompilerSourceAuthority(
+        source_commit="1" * 40,
+        source_tree="2" * 40,
+        branch="main",
+        origin_main_commit="1" * 40,
+        remote_main_commit="1" * 40,
+        remote_url=design.source_remote_url,
+        source_root=design.compilation_source_root,
+        uv_lock_sha256="3" * 64,
+        cli_sha256="355040b20f7e48683811b009fc77f460652617fafcdc44c68a3d7309fd71f740",
+        design_file_sha256="4" * 64,
+        runner_source_sha256="5" * 64,
+        worker_source_sha256="6" * 64,
+        compiler_source_sha256="7" * 64,
+        pair_source_sha256="8" * 64,
+        source_manifest=(SourceFileContract(path="source.py", sha256="9" * 64),),
+        runtime=runtime,
+    )
+
+    with pytest.raises(ValidationError, match="COLLECTIVE_PARITY_MISMATCH"):
+        SeqaxSiluFusionCompilerCapture(
+            design_id="a" * 64,
+            capture_ordinal=0,
+            invocation_id="b" * 32,
+            claim_id="c" * 64,
+            source=source,
+            host=SeqaxSiluFusionCompilerHostIdentity(
+                project="project",
+                numeric_project_id="1",
+                zone="zone",
+                hostname="host",
+                instance_hostname="instance",
+                machine_type="machine",
+                instance_id="2",
+                cpu_platform="platform",
+            ),
+            worker_environment={},
+            compiler_environment={},
+            source_import_root="/source",
+            compile_input_mode="abstract-only",
+            devices=tuple(
+                SeqaxSiluFusionCompilerDevice(
+                    id=index,
+                    process_index=0,
+                    platform="tpu",
+                    device_kind="TPU7x",
+                )
+                for index in range(8)
+            ),
+            worker_pid=1,
+            worker_nonce="d" * 32,
+            candidates=(separate, fused),
+            model_outputs_executed=False,
+            correctness_outputs_collected=False,
+            timing_collected=False,
+            profile_collected=False,
+        )
+
+
+def test_failure_replay_requires_the_recorded_collective_gate() -> None:
+    expected = SimpleNamespace(
+        expected_all_gathers=15,
+        expected_reduce_scatters=1,
+        expected_compiler_all_gathers=9,
+        expected_compiler_all_reduces=5,
+        expected_compiler_reduce_scatters=0,
+        expected_sparse_core_all_gathers=9,
+        expected_sparse_core_reduce_scatters=0,
+    )
+    required = CompilerCollectiveAnalysis(
+        stablehlo_reduce_scatter_count=1,
+        stablehlo_all_gather_count=15,
+        compiler_reduce_scatter_count=0,
+        compiler_all_reduce_count=5,
+        compiler_all_gather_count=9,
+        sparse_core_reduce_scatter_count=0,
+        sparse_core_all_gather_count=9,
+    )
+    changed = required.model_copy(update={"compiler_all_reduce_count": 4})
+    diagnostic = "SEQAX_SILU_FUSION_COLLECTIVE_STRATEGY_MISMATCH"
+
+    assert _replay_failed_collective_gate(expected, changed, changed, diagnostic) == diagnostic
+    with pytest.raises(ValueError, match="COLLECTIVE_GATE_REPLAY_MISMATCH"):
+        _replay_failed_collective_gate(expected, changed, changed, None)
+    assert _replay_failed_collective_gate(expected, required, required, diagnostic) is None
 
 
 def test_verifier_matches_optional_buffer_assignment_artifact(tmp_path: Path) -> None:
@@ -846,7 +969,9 @@ def test_worker_persists_compiler_evidence_before_collective_gate() -> None:
         'candidate_root / "compiler_hlo.txt"',
     ):
         assert artifact in compile_source
-    collective_gate = qualify_source.index("if observed_collectives != required_collectives:")
+    collective_gate = qualify_source.index(
+        "validate_seqax_silu_fusion_compiler_collectives("
+    )
     for artifact in (
         'candidate_root / "compiler_analysis.json"',
         'candidate_root / "reachable_collectives.json"',
@@ -859,7 +984,6 @@ def test_worker_persists_compiler_evidence_before_collective_gate() -> None:
     assert "SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_UNAVAILABLE" not in buffer_source
     assert qualify_source.count("executable.memory_analysis()") == 1
     assert "_CompilerAnalysisExecutable(executable, runtime_memory)" in qualify_source
-    assert "required={required_collectives} observed={observed_collectives}" in qualify_source
     assert worker_source.index("tuple(_compile_raw") < worker_source.index(
         "tuple(_qualify_compiled"
     )

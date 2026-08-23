@@ -52,6 +52,11 @@ class SeqaxSiluFusionPlanContract(BaseModel):
     expected_all_gathers: int = Field(ge=0)
     expected_all_reduces: int = Field(ge=0)
     expected_reduce_scatters: int = Field(ge=0)
+    expected_compiler_all_gathers: Literal[9]
+    expected_compiler_all_reduces: Literal[5]
+    expected_compiler_reduce_scatters: Literal[0]
+    expected_sparse_core_all_gathers: Literal[9]
+    expected_sparse_core_reduce_scatters: Literal[0]
     allocated_vmem_bytes_per_device: int = Field(gt=0)
     peak_live_vmem_bytes_per_device: int = Field(gt=0)
     ring_equivalent_ici_bytes_per_device: int = Field(gt=0)
@@ -86,6 +91,14 @@ class SeqaxSiluFusionDesignContract(BaseModel):
         "record-when-backend-exposes-serialized-proto"
     ]
     compiler_buffer_assignment_affects_semantic_identity: Literal[False]
+    compiler_collective_policy: Literal[
+        "pinned-entry-reachable-strategy-and-candidate-parity"
+    ]
+    compiler_collective_strategy_source_design_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_collective_strategy_source_failure_receipt_id: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
+    compiler_collective_strategy_source_archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     capture_ordinals: tuple[Literal[0], Literal[1]]
     ordinal_one_requires_ordinal_zero_replay_seal: Literal[True]
     allow_compile_retry: Literal[False]
@@ -197,6 +210,11 @@ def _plans() -> tuple[SeqaxSiluFusionPlanContract, SeqaxSiluFusionPlanContract]:
         "expected_all_gathers": 15,
         "expected_all_reduces": 2,
         "expected_reduce_scatters": 1,
+        "expected_compiler_all_gathers": 9,
+        "expected_compiler_all_reduces": 5,
+        "expected_compiler_reduce_scatters": 0,
+        "expected_sparse_core_all_gathers": 9,
+        "expected_sparse_core_reduce_scatters": 0,
         "peak_live_vmem_bytes_per_device": 1_452_304,
         "ring_equivalent_ici_bytes_per_device": 323_744,
     }
@@ -286,6 +304,16 @@ def default_seqax_silu_fusion_design_contract(
         compiler_collective_gate_error_includes_observed_values=True,
         compiler_buffer_assignment_policy="record-when-backend-exposes-serialized-proto",
         compiler_buffer_assignment_affects_semantic_identity=False,
+        compiler_collective_policy="pinned-entry-reachable-strategy-and-candidate-parity",
+        compiler_collective_strategy_source_design_id=(
+            "1fcdb1b7768d98530b747b2ba9ea6f45270fee4bd6da1137f674285c2e5f24ec"
+        ),
+        compiler_collective_strategy_source_failure_receipt_id=(
+            "383e65eb51c9c9f170ac5b9eb903811af90cc88466ce4f58ae70df713b0023be"
+        ),
+        compiler_collective_strategy_source_archive_sha256=(
+            "7989d7800bdd6de124e6e8f2496c280f96db96233a35667f738266069492f5a0"
+        ),
         capture_ordinals=(0, 1),
         ordinal_one_requires_ordinal_zero_replay_seal=True,
         allow_compile_retry=False,

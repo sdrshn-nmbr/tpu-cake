@@ -39,6 +39,7 @@ from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerWorkerResult,
     analyze_seqax_silu_fusion_compiler_hlo,
     live_seqax_silu_fusion_compiler_hlo,
+    validate_seqax_silu_fusion_compiler_collectives,
 )
 from tpu_cake.stablehlo import StableHloInspector
 from tpu_cake.workloads.seqax_forward import (
@@ -433,25 +434,11 @@ def _qualify_compiled(
         runtime_memory.serialized_buffer_assignment_proto,
     )
     _validate_stablehlo(prepared, stablehlo)
-    required_collectives = (
-        expected.expected_all_gathers,
-        expected.expected_all_reduces,
-        expected.expected_reduce_scatters,
-        expected.expected_all_gathers,
-        expected.expected_reduce_scatters,
+    validate_seqax_silu_fusion_compiler_collectives(
+        expected,
+        compiler_analysis.collectives,
+        reachable_collectives,
     )
-    observed_collectives = (
-        reachable_collectives.compiler_all_gather_count,
-        reachable_collectives.compiler_all_reduce_count,
-        reachable_collectives.compiler_reduce_scatter_count,
-        reachable_collectives.sparse_core_all_gather_count,
-        reachable_collectives.sparse_core_reduce_scatter_count,
-    )
-    if observed_collectives != required_collectives:
-        raise ValueError(
-            "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH "
-            f"required={required_collectives} observed={observed_collectives}"
-        )
     return SeqaxSiluFusionCompilerCandidate(
         candidate=expected.candidate,
         distributed_schedule_sha256=prepared.plan.distributed_schedule_sha256,
