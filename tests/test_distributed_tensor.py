@@ -3,7 +3,12 @@ from xdsl.dialects.builtin import ArrayAttr, IntAttr, StringAttr, bf16, f16, f32
 from xdsl.ir import SSAValue
 from xdsl.utils.exceptions import VerifyException
 
-from tpu_cake.dialects.distributed_tensor import MeshAttr, PendingReductionsAttr
+from tpu_cake.dialects.distributed_tensor import (
+    ElementwiseImplementation,
+    ElementwiseMaterialization,
+    MeshAttr,
+    PendingReductionsAttr,
+)
 from tpu_cake.distributed_frontend import DistributedProgramBuilder, tensor
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.workloads.distributed_matmul import distributed_matmul_schedule
@@ -15,6 +20,33 @@ def test_distributed_matmul_verifies_and_hashes_stably() -> None:
     first.verify()
     assert canonical_module_text(first) == canonical_module_text(second)
     assert schedule_sha256(first) == schedule_sha256(second)
+
+
+def test_full_local_vector_requires_strict_bf16_feed_forward_operation() -> None:
+    value = tensor(bf16, (("M", 16),))
+    builder = DistributedProgramBuilder("bad", {"t": 1}, (value,))
+    result = builder.elementwise(
+        builder.inputs[0],
+        result=value,
+        function="silu",
+        implementation=ElementwiseImplementation.PALLAS_FULL_LOCAL,
+    )
+    with pytest.raises(VerifyException, match="strict BF16 materialization"):
+        builder.module(result)
+
+
+def test_full_local_vector_ownership_cannot_escape_feed_forward_pair() -> None:
+    value = tensor(bf16, (("M", 16),))
+    builder = DistributedProgramBuilder("bad", {"t": 1}, (value,))
+    result = builder.elementwise(
+        builder.inputs[0],
+        result=value,
+        function="relu",
+        materialization=ElementwiseMaterialization.STRICT_TYPED,
+        implementation=ElementwiseImplementation.PALLAS_FULL_LOCAL,
+    )
+    with pytest.raises(VerifyException, match="strict typed materialization"):
+        builder.module(result)
 
 
 def test_missing_reduction_is_rejected() -> None:

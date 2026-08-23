@@ -13,12 +13,15 @@ from tpu_cake.dialects.tpu_schedule import (
     KernelOp,
     MxuEinsumOp,
     VectorComputeOp,
+    VectorImplementation,
+    VectorMaterialization,
 )
 from tpu_cake.frontend import canonical_module_text, schedule_sha256
 from tpu_cake.lowering import TPU7X_TARGET, UnsupportedLoweringError
 from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.workloads.seqax_forward import (
     SeqaxFeedForwardFusion,
+    SeqaxFeedForwardVectorExecution,
     SeqaxNumericalSemantics,
     SeqaxResidualNormStrategy,
     seqax_forward_schedule,
@@ -38,6 +41,39 @@ SMALL_SEQAX = {
     "tensor_mesh": 4,
     "rope_max_timescale": 256,
 }
+
+
+@pytest.mark.parametrize(
+    ("fusion", "functions"),
+    (
+        (SeqaxFeedForwardFusion.SEPARATE, ("silu", "multiply")),
+        (SeqaxFeedForwardFusion.SILU_MULTIPLY, ("silu_multiply",)),
+    ),
+)
+def test_strict_feed_forward_vector_ownership_lowers_exactly(
+    fusion: SeqaxFeedForwardFusion,
+    functions: tuple[str, ...],
+) -> None:
+    distributed = seqax_forward_schedule(
+        **{**SMALL_SEQAX, "layers": 1},
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+        feed_forward_fusion=fusion,
+        feed_forward_vector_execution=SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL,
+    )
+    physical = lower_seqax_forward_to_physical(distributed).module
+    owned = tuple(
+        operation
+        for operation in physical.walk()
+        if isinstance(operation, VectorComputeOp) and operation.implementation is not None
+    )
+
+    assert tuple(operation.function.data for operation in owned) == functions
+    assert all(
+        operation.implementation.data is VectorImplementation.PALLAS_FULL_LOCAL
+        and operation.materialization is not None
+        and operation.materialization.data is VectorMaterialization.STRICT_TYPED
+        for operation in owned
+    )
 
 
 def test_complete_seqax_forward_lowers_to_canonical_physical_schedule() -> None:

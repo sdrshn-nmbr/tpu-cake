@@ -16,13 +16,15 @@ import tpu_cake.seqax_residual_profile_runner as profile_runner
 from tpu_cake.cli import _parser
 from tpu_cake.compiler_analysis import capture_compiler_analysis
 from tpu_cake.contracts import RuntimeIdentity
-from tpu_cake.identity import array_sha256, arrays_sha256
+from tpu_cake.identity import array_sha256, arrays_sha256, json_sha256
 from tpu_cake.runner import RunMode, _runtime_identity
 from tpu_cake.seqax_numerical import (
     _assess_output_arrays,
     default_seqax_bf16_validation_contract,
 )
 from tpu_cake.seqax_pallas_diagnostic import SeqaxPallasDiagnosticAttribution
+from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
+from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.seqax_residual_profile import (
     SeqaxResidualCandidateResult,
     SeqaxResidualCorrectnessObservation,
@@ -32,15 +34,17 @@ from tpu_cake.seqax_residual_profile import (
 )
 from tpu_cake.seqax_residual_profile_runner import (
     CompiledResidualProfile,
-    _json_sha256,
-    _prepare_candidates,
     _profile_summary,
     _require_safe_new_root,
     run_seqax_residual_profile,
     validate_seqax_residual_profile,
 )
 from tpu_cake.seqax_runner import expected_seqax_profiler_contract
-from tpu_cake.workloads.seqax_forward import SeqaxResidualNormStrategy
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
+    seqax_forward_schedule,
+)
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
 
 
@@ -132,19 +136,39 @@ def test_seqax_residual_profile_rejects_a_symlinked_output_ancestor(tmp_path: Pa
 
 def test_seqax_residual_profile_plan_contract_binds_both_schedules() -> None:
     contract = default_seqax_residual_profile_contract(_runtime_identity())
-    prepared = _prepare_candidates(contract)
+    parameters = dict(contract.parameters)
+    parameters["numerical_semantics"] = SeqaxNumericalSemantics(parameters["numerical_semantics"])
+    plans = tuple(
+        lower_seqax_physical_to_pallas(
+            distributed,
+            lower_seqax_forward_to_physical(distributed).module,
+        )
+        for expected in contract.candidates
+        for distributed in (
+            seqax_forward_schedule(
+                **parameters,
+                residual_norm_strategy=expected.candidate,
+            ),
+        )
+    )
 
-    assert tuple(value.expected.candidate for value in prepared) == (
+    assert tuple(value.candidate for value in contract.candidates) == (
         SeqaxResidualNormStrategy.STANDARD,
         SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
     )
-    assert tuple(value.plan.pallas_region_count for value in prepared) == (9, 9)
-    assert tuple(value.expected.expected_all_reduces for value in prepared) == (0, 2)
-    assert tuple(value.expected.expected_semantic_all_reduce_rows for value in prepared) == (5, 5)
-    assert all(
-        value.expected.pallas_manifest_sha256 == _json_sha256(value.plan.manifest())
-        for value in prepared
+    assert tuple(plan.pallas_region_count for plan in plans) == (9, 9)
+    assert tuple(value.expected_all_reduces for value in contract.candidates) == (0, 2)
+    assert tuple(value.expected_semantic_all_reduce_rows for value in contract.candidates) == (5, 5)
+    assert tuple(plan.physical_schedule_sha256 for plan in plans) == tuple(
+        value.physical_schedule_sha256 for value in contract.candidates
     )
+
+
+def test_seqax_residual_profile_frozen_contract_rejects_current_source_identity() -> None:
+    contract = default_seqax_residual_profile_contract(_runtime_identity())
+
+    with pytest.raises(ValueError, match="SEQAX_RESIDUAL_PROFILE_PLAN_IDENTITY_MISMATCH"):
+        profile_runner._prepare_candidates(contract)
 
 
 def test_seqax_residual_profile_input_identities_are_per_array() -> None:
@@ -319,9 +343,17 @@ def test_seqax_residual_profile_runner_builds_and_replays_a_closed_receipt(
     tmp_path: Path,
 ) -> None:
     pending = default_seqax_residual_profile_contract(_runtime_identity())
+    parameters = dict(pending.parameters)
+    parameters["numerical_semantics"] = SeqaxNumericalSemantics(parameters["numerical_semantics"])
     hlo_text: dict[SeqaxResidualNormStrategy, tuple[str, str, str, str]] = {}
     candidates = []
     for candidate in pending.candidates:
+        distributed = seqax_forward_schedule(
+            **parameters,
+            residual_norm_strategy=candidate.candidate,
+        )
+        physical = lower_seqax_forward_to_physical(distributed).module
+        plan = lower_seqax_physical_to_pallas(distributed, physical)
         values = tuple(
             f"{candidate.candidate.value}-{name}\n"
             for name in (
@@ -337,6 +369,8 @@ def test_seqax_residual_profile_runner_builds_and_replays_a_closed_receipt(
                 update={
                     "pallas_stablehlo_sha256": hashlib.sha256(values[0].encode()).hexdigest(),
                     "control_stablehlo_sha256": hashlib.sha256(values[2].encode()).hexdigest(),
+                    "pallas_source_sha256": plan.source_sha256(),
+                    "pallas_manifest_sha256": json_sha256(plan.manifest()),
                     "expected_pallas_compiler_collectives": _compiler_analysis(
                         values[0], values[1]
                     ).collectives,

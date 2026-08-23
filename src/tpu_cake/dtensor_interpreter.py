@@ -474,7 +474,12 @@ def _execute_block(
                     else jax.nn.silu(values[0])
                 )
             elif function == "silu_multiply":
-                result = jax.nn.silu(values[0]) * values[1]
+                activated = (
+                    _strict_typed_silu(values[0])
+                    if strict_materialization
+                    else jax.nn.silu(values[0])
+                )
+                result = activated * values[1]
             elif function == "exp":
                 result = jnp.exp(values[0])
             else:
@@ -536,6 +541,42 @@ def _execute_block(
                         )
                     strict_mlp_checkpoints[-1].extend(
                         (environment[up_cast.value], values[up_index], result)
+                    )
+                elif function == "silu_multiply":
+                    gate_cast = operation.values[0].owner
+                    up_cast = operation.values[1].owner
+                    if not isinstance(gate_cast, CastOp) or not isinstance(up_cast, CastOp):
+                        raise UnsupportedInterpretationError(
+                            "strict fused inputs must come from casted projections"
+                        )
+                    gate_projection = gate_cast.value.owner
+                    up_projection = up_cast.value.owner
+                    if not isinstance(gate_projection, (EinsumOp, EinsumLocalOp)) or not isinstance(
+                        up_projection,
+                        (EinsumOp, EinsumLocalOp),
+                    ):
+                        raise UnsupportedInterpretationError(
+                            "strict fused inputs must come from einsum projections"
+                        )
+                    if rms_norm_checkpoints is None:
+                        raise UnsupportedInterpretationError(
+                            "strict fused SiLU multiply needs RMSNorm checkpoint state"
+                        )
+                    rms_checkpoint = rms_norm_checkpoints.get(gate_projection.lhs)
+                    if rms_checkpoint is None or up_projection.lhs != gate_projection.lhs:
+                        raise UnsupportedInterpretationError(
+                            "strict fused projections must share their RMSNorm input"
+                        )
+                    strict_mlp_checkpoints.append(
+                        [
+                            *rms_checkpoint,
+                            environment[gate_cast.value],
+                            values[0],
+                            activated,
+                            environment[up_cast.value],
+                            values[1],
+                            result,
+                        ]
                     )
         elif isinstance(operation, LayerScanOp):
             captures = tuple(environment[value] for value in operation.captures)

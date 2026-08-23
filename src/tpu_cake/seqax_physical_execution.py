@@ -96,6 +96,8 @@ def _vector_compute(
     strict_gate_float32: jax.Array | None = None,
     strict_up_index: int | None = None,
     strict_up_float32: jax.Array | None = None,
+    pallas_silu: Callable[[VectorComputeOp, jax.Array], jax.Array] | None = None,
+    pallas_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array] | None = None,
     pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
     | None = None,
     rms_norm_checkpoints: dict[SSAValue, tuple[jax.Array, ...]] | None = None,
@@ -249,9 +251,31 @@ def _vector_compute(
     elif function == "add":
         result = values[0] + values[1]
     elif function == "multiply":
-        result = values[0] * values[1]
+        if operation.implementation is None:
+            result = values[0] * values[1]
+        elif (
+            operation.implementation.data is VectorImplementation.PALLAS_FULL_LOCAL
+            and pallas_multiply is not None
+        ):
+            result = pallas_multiply(operation, values[0], values[1])
+        else:
+            raise UnsupportedPhysicalExecutionError(
+                "physical strict multiply requires its declared Pallas implementation"
+            )
     elif function == "silu":
-        result = _strict_typed_silu(values[0]) if strict_materialization else jax.nn.silu(values[0])
+        if operation.implementation is None:
+            result = (
+                _strict_typed_silu(values[0]) if strict_materialization else jax.nn.silu(values[0])
+            )
+        elif (
+            operation.implementation.data is VectorImplementation.PALLAS_FULL_LOCAL
+            and pallas_silu is not None
+        ):
+            result = pallas_silu(operation, values[0])
+        else:
+            raise UnsupportedPhysicalExecutionError(
+                "physical strict SiLU requires its declared Pallas implementation"
+            )
     elif function == "silu_multiply":
         if (
             operation.implementation is None
@@ -303,6 +327,29 @@ def _vector_compute(
                     "strict hidden multiply must follow its strict SiLU"
                 )
             strict_mlp_checkpoints[-1].extend((strict_up_float32, values[strict_up_index], result))
+        elif function == "silu_multiply":
+            if (
+                strict_normalized_input is None
+                or strict_rms_checkpoint is None
+                or strict_gate_float32 is None
+                or strict_up_index not in {0, 1}
+                or strict_up_float32 is None
+            ):
+                raise UnsupportedPhysicalExecutionError(
+                    "strict fused SiLU multiply must bind both projection checkpoints"
+                )
+            activated = _strict_typed_silu(values[0])
+            strict_mlp_checkpoints.append(
+                [
+                    *strict_rms_checkpoint,
+                    strict_gate_float32,
+                    values[0],
+                    activated,
+                    strict_up_float32,
+                    values[strict_up_index],
+                    result,
+                ]
+            )
     if tuple(result.shape) != output_type.storage.get_shape():
         raise UnsupportedPhysicalExecutionError(
             f"physical {function} produced {tuple(result.shape)}, "
@@ -317,6 +364,8 @@ def execute_seqax_physical_program_jax(
     *,
     einsum: Callable[[MxuEinsumOp, jax.Array, jax.Array], jax.Array],
     strict_mlp_checkpoints: list[list[jax.Array]] | None = None,
+    pallas_silu: Callable[[VectorComputeOp, jax.Array], jax.Array] | None = None,
+    pallas_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array] | None = None,
     pallas_silu_multiply: Callable[[VectorComputeOp, jax.Array, jax.Array], jax.Array]
     | None = None,
 ) -> tuple[jax.Array, ...]:
@@ -405,7 +454,7 @@ def execute_seqax_physical_program_jax(
             strict_up_float32 = None
             if (
                 strict_mlp_checkpoints is not None
-                and operation.function.data == "silu"
+                and operation.function.data in {"silu", "silu_multiply"}
                 and operation.materialization is not None
             ):
                 gate_cast = buffer_writers.get(operation.inputs[0])
@@ -429,6 +478,19 @@ def execute_seqax_physical_program_jax(
                         "strict SiLU normalized input must come from RMSNorm"
                     )
                 strict_gate_float32 = environment[gate_cast.inputs[0]]
+                if operation.function.data == "silu_multiply":
+                    up_cast = buffer_writers.get(operation.inputs[1])
+                    if (
+                        not isinstance(up_cast, VectorComputeOp)
+                        or up_cast.function.data != "cast"
+                        or len(up_cast.inputs) != 1
+                        or not isinstance(buffer_writers.get(up_cast.inputs[0]), MxuEinsumOp)
+                    ):
+                        raise UnsupportedPhysicalExecutionError(
+                            "strict fused up operand must come from a casted MXU projection"
+                        )
+                    strict_up_index = 1
+                    strict_up_float32 = environment[up_cast.inputs[0]]
             if (
                 strict_mlp_checkpoints
                 and len(strict_mlp_checkpoints[-1]) == 8
@@ -466,6 +528,8 @@ def execute_seqax_physical_program_jax(
                 strict_gate_float32,
                 strict_up_index,
                 strict_up_float32,
+                pallas_silu,
+                pallas_multiply,
                 pallas_silu_multiply,
                 rms_norm_checkpoints,
             )
@@ -481,7 +545,7 @@ def execute_seqax_physical_program_jax(
             elif (
                 strict_mlp_checkpoints
                 and len(strict_mlp_checkpoints[-1]) == 11
-                and operation.function.data == "multiply"
+                and operation.function.data in {"multiply", "silu_multiply"}
                 and operation.materialization is not None
             ):
                 strict_hidden_buffer = operation.output

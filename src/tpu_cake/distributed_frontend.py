@@ -16,6 +16,7 @@ from tpu_cake.dialects.distributed_tensor import (
     DTensorType,
     EinsumLocalOp,
     EinsumOp,
+    ElementwiseImplementation,
     ElementwiseMaterialization,
     ElementwiseOp,
     EmbeddingLookupOp,
@@ -162,6 +163,7 @@ class DistributedProgramBuilder:
         result: DistributedTensorSpec,
         function: str,
         materialization: ElementwiseMaterialization | None = None,
+        implementation: ElementwiseImplementation | None = None,
         source: SourceLocation | None = None,
     ) -> SSAValue:
         operation = attach_source(
@@ -170,6 +172,7 @@ class DistributedProgramBuilder:
                 result.to_type(),
                 function,
                 materialization,
+                implementation,
             ),
             source,
         )

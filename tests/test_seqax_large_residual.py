@@ -17,8 +17,14 @@ from tpu_cake.seqax_large_residual_runner import (
     SeqaxLargeResidualCompilerCaptureCandidate,
     SeqaxLargeResidualCompilerCaptureRecord,
 )
+from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
+from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.seqax_residual_profile_runner import _prepare_candidates
-from tpu_cake.workloads.seqax_forward import SeqaxResidualNormStrategy
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
+    seqax_forward_schedule,
+)
 
 
 def _collectives(reduce_scatters: int) -> CompilerCollectiveAnalysis:
@@ -100,16 +106,37 @@ def test_large_residual_compiler_capture_record_binds_two_clean_processes() -> N
 
 def test_large_residual_static_schedules_fit_and_match_contract() -> None:
     contract = default_seqax_large_residual_contract(_runtime_identity())
-    prepared = _prepare_candidates(contract)
+    parameters = dict(contract.parameters)
+    parameters["numerical_semantics"] = SeqaxNumericalSemantics(parameters["numerical_semantics"])
+    plans = tuple(
+        lower_seqax_physical_to_pallas(
+            distributed,
+            lower_seqax_forward_to_physical(distributed).module,
+        )
+        for expected in contract.candidates
+        for distributed in (
+            seqax_forward_schedule(
+                **parameters,
+                residual_norm_strategy=expected.candidate,
+            ),
+        )
+    )
 
-    assert tuple(value.expected.candidate for value in prepared) == (
+    assert tuple(value.candidate for value in contract.candidates) == (
         SeqaxResidualNormStrategy.STANDARD,
         SeqaxResidualNormStrategy.RESIDUAL_ALL_REDUCE,
     )
-    assert tuple(value.plan.pallas_region_count for value in prepared) == (9, 9)
-    assert tuple(value.plan.physical_schedule_sha256 for value in prepared) == tuple(
-        value.expected.physical_schedule_sha256 for value in prepared
+    assert tuple(plan.pallas_region_count for plan in plans) == (9, 9)
+    assert tuple(plan.physical_schedule_sha256 for plan in plans) == tuple(
+        value.physical_schedule_sha256 for value in contract.candidates
     )
+
+
+def test_large_residual_frozen_contract_rejects_current_source_identity() -> None:
+    contract = default_seqax_large_residual_contract(_runtime_identity())
+
+    with pytest.raises(ValueError, match="SEQAX_RESIDUAL_PROFILE_PLAN_IDENTITY_MISMATCH"):
+        _prepare_candidates(contract)
 
 
 def test_large_residual_contract_rejects_parameter_mutation() -> None:

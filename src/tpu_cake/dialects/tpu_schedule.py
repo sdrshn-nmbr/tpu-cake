@@ -1355,9 +1355,10 @@ class VectorComputeOp(IRDLOperation):
         if function in {"silu", "silu_multiply", "exp"} and not _is_float_buffer(output):
             raise VerifyException("nonlinear physical vector operations require floating point")
         if self.materialization is not None:
-            if function not in {"silu", "multiply"}:
+            if function not in {"silu", "multiply", "silu_multiply"}:
                 raise VerifyException(
-                    "strict typed materialization is only supported for SiLU and multiply"
+                    "strict typed materialization is only supported for SiLU and multiply, "
+                    "including fused SiLU multiply"
                 )
             if not isinstance(output.storage.element_type, BFloat16Type):
                 raise VerifyException("strict typed materialization requires BF16")
@@ -1371,9 +1372,14 @@ class VectorComputeOp(IRDLOperation):
                 )
             if not isinstance(output.storage.element_type, BFloat16Type):
                 raise VerifyException("full-local Pallas fused SiLU multiply requires BF16 buffers")
-        elif self.implementation is not None:
+        elif self.implementation is not None and (
+            function not in {"silu", "multiply"}
+            or self.implementation.data is not VectorImplementation.PALLAS_FULL_LOCAL
+            or self.materialization is None
+            or not isinstance(output.storage.element_type, BFloat16Type)
+        ):
             raise VerifyException(
-                "physical vector implementation is only supported for fused SiLU multiply"
+                "full-local Pallas feed-forward vectors require strict BF16 SiLU or multiply"
             )
         if function in {"cast", "rename_dimension"}:
             source = inputs[0]

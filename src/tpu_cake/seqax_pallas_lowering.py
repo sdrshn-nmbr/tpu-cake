@@ -231,6 +231,101 @@ def _pallas_einsum(
     return value
 
 
+def _validate_full_local_bf16_vector(
+    physical: VectorComputeOp,
+    values: tuple[jax.Array, ...],
+    *,
+    function: str,
+) -> tuple[int, ...]:
+    output_type = physical.output.type
+    assert isinstance(output_type, BufferType)
+    if (
+        physical.function.data != function
+        or physical.implementation is None
+        or physical.implementation.data is not VectorImplementation.PALLAS_FULL_LOCAL
+    ):
+        raise UnsupportedSeqaxPallasLoweringError(
+            "Pallas vector lowering requires the declared full-local implementation"
+        )
+    expected_shape = output_type.storage.get_shape()
+    if (
+        any(tuple(value.shape) != expected_shape for value in values)
+        or not isinstance(output_type.storage.element_type, BFloat16Type)
+        or any(value.dtype != jnp.bfloat16 for value in values)
+    ):
+        raise UnsupportedSeqaxPallasLoweringError(
+            "Pallas feed-forward vectors require matching local BF16 buffers"
+        )
+    return expected_shape
+
+
+def _interpret_setting(interpret: bool):
+    return (
+        pltpu.InterpretParams(detect_races=True, out_of_bounds_reads="raise")
+        if interpret
+        else False
+    )
+
+
+def _pallas_silu(
+    physical: VectorComputeOp,
+    gate: jax.Array,
+    *,
+    interpret: bool,
+    schedule_sha256_value: str,
+    region_index: int = -1,
+) -> jax.Array:
+    expected_shape = _validate_full_local_bf16_vector(physical, (gate,), function="silu")
+
+    def kernel(gate_ref, output_ref) -> None:
+        output_ref[...] = jax.nn.silu(gate_ref[...].astype(jnp.float32)).astype(jnp.bfloat16)
+
+    call = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct(expected_shape, jnp.bfloat16),
+        interpret=_interpret_setting(interpret),
+        name="seqax_strict_bf16_silu",
+        metadata={
+            "schedule_sha256": schedule_sha256_value,
+            "vector_region_index": region_index,
+            "implementation": VectorImplementation.PALLAS_FULL_LOCAL.value,
+        },
+    )
+    return call(gate)
+
+
+def _pallas_multiply(
+    physical: VectorComputeOp,
+    lhs: jax.Array,
+    rhs: jax.Array,
+    *,
+    interpret: bool,
+    schedule_sha256_value: str,
+    region_index: int = -1,
+) -> jax.Array:
+    expected_shape = _validate_full_local_bf16_vector(
+        physical,
+        (lhs, rhs),
+        function="multiply",
+    )
+
+    def kernel(lhs_ref, rhs_ref, output_ref) -> None:
+        output_ref[...] = (lhs_ref[...] * rhs_ref[...]).astype(jnp.bfloat16)
+
+    call = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct(expected_shape, jnp.bfloat16),
+        interpret=_interpret_setting(interpret),
+        name="seqax_strict_bf16_multiply",
+        metadata={
+            "schedule_sha256": schedule_sha256_value,
+            "vector_region_index": region_index,
+            "implementation": VectorImplementation.PALLAS_FULL_LOCAL.value,
+        },
+    )
+    return call(lhs, rhs)
+
+
 def _pallas_silu_multiply(
     physical: VectorComputeOp,
     gate: jax.Array,
@@ -240,47 +335,31 @@ def _pallas_silu_multiply(
     schedule_sha256_value: str,
     region_index: int = -1,
 ) -> jax.Array:
-    gate_type, up_type, output_type = (
-        physical.inputs[0].type,
-        physical.inputs[1].type,
-        physical.output.type,
+    expected_shape = _validate_full_local_bf16_vector(
+        physical,
+        (gate, up),
+        function="silu_multiply",
     )
-    assert isinstance(gate_type, BufferType)
-    assert isinstance(up_type, BufferType)
-    assert isinstance(output_type, BufferType)
-    if (
-        physical.function.data != "silu_multiply"
-        or physical.implementation is None
-        or physical.implementation.data is not VectorImplementation.PALLAS_FULL_LOCAL
-    ):
-        raise UnsupportedSeqaxPallasLoweringError(
-            "Pallas fused vector lowering requires the declared full-local implementation"
-        )
-    expected_shape = output_type.storage.get_shape()
-    if (
-        tuple(gate.shape) != expected_shape
-        or tuple(up.shape) != expected_shape
-        or not isinstance(output_type.storage.element_type, BFloat16Type)
-        or gate.dtype != jnp.bfloat16
-        or up.dtype != jnp.bfloat16
-    ):
-        raise UnsupportedSeqaxPallasLoweringError(
-            "Pallas fused SiLU multiply requires matching local BF16 buffers"
-        )
 
-    def kernel(gate_ref, up_ref, output_ref) -> None:
-        output_ref[...] = jax.nn.silu(gate_ref[...]) * up_ref[...]
+    if physical.materialization is not None:
 
-    interpret_setting = (
-        pltpu.InterpretParams(detect_races=True, out_of_bounds_reads="raise")
-        if interpret
-        else False
-    )
+        def kernel(gate_ref, up_ref, output_ref) -> None:
+            activated = jax.nn.silu(gate_ref[...].astype(jnp.float32)).astype(jnp.bfloat16)
+            output_ref[...] = (activated * up_ref[...]).astype(jnp.bfloat16)
+
+        name = "seqax_strict_bf16_silu_multiply"
+    else:
+
+        def kernel(gate_ref, up_ref, output_ref) -> None:
+            output_ref[...] = jax.nn.silu(gate_ref[...]) * up_ref[...]
+
+        name = "seqax_silu_multiply"
+
     call = pl.pallas_call(
         kernel,
         out_shape=jax.ShapeDtypeStruct(expected_shape, jnp.bfloat16),
-        interpret=interpret_setting,
-        name="seqax_silu_multiply",
+        interpret=_interpret_setting(interpret),
+        name=name,
         metadata={
             "schedule_sha256": schedule_sha256_value,
             "vector_region_index": region_index,
@@ -452,23 +531,52 @@ class SeqaxPallasPlan(RenderedSourceIdentity):
                     region_index=region_index,
                 )
 
-            def silu_multiply(
-                physical_operation: VectorComputeOp,
-                gate: jax.Array,
-                up: jax.Array,
-            ) -> jax.Array:
+            def next_vector(physical_operation: VectorComputeOp) -> int:
                 nonlocal vector_index
                 if vector_index >= len(physical_vectors):
                     raise UnsupportedSeqaxPallasLoweringError(
-                        "distributed program executed more fused vectors than the physical schedule"
+                        "distributed program executed more Pallas vectors than the physical schedule"
                     )
                 region_index = vector_index
                 expected_operation = physical_vectors[region_index]
                 vector_index += 1
                 if physical_operation is not expected_operation:
                     raise UnsupportedSeqaxPallasLoweringError(
-                        "physical execution changed the fused Pallas vector region order"
+                        "physical execution changed the Pallas vector region order"
                     )
+                return region_index
+
+            def silu(physical_operation: VectorComputeOp, gate: jax.Array) -> jax.Array:
+                region_index = next_vector(physical_operation)
+                return _pallas_silu(
+                    physical_operation,
+                    gate,
+                    interpret=interpret,
+                    schedule_sha256_value=self.physical_schedule_sha256,
+                    region_index=region_index,
+                )
+
+            def multiply(
+                physical_operation: VectorComputeOp,
+                lhs: jax.Array,
+                rhs: jax.Array,
+            ) -> jax.Array:
+                region_index = next_vector(physical_operation)
+                return _pallas_multiply(
+                    physical_operation,
+                    lhs,
+                    rhs,
+                    interpret=interpret,
+                    schedule_sha256_value=self.physical_schedule_sha256,
+                    region_index=region_index,
+                )
+
+            def silu_multiply(
+                physical_operation: VectorComputeOp,
+                gate: jax.Array,
+                up: jax.Array,
+            ) -> jax.Array:
+                region_index = next_vector(physical_operation)
                 return _pallas_silu_multiply(
                     physical_operation,
                     gate,
@@ -483,6 +591,8 @@ class SeqaxPallasPlan(RenderedSourceIdentity):
                 inputs,
                 einsum=einsum,
                 strict_mlp_checkpoints=checkpoints,
+                pallas_silu=silu if physical_vectors else None,
+                pallas_multiply=multiply if physical_vectors else None,
                 pallas_silu_multiply=silu_multiply if physical_vectors else None,
             )
             if einsum_index != len(physical_einsums):
@@ -491,7 +601,7 @@ class SeqaxPallasPlan(RenderedSourceIdentity):
                 )
             if vector_index != len(physical_vectors):
                 raise UnsupportedSeqaxPallasLoweringError(
-                    "physical schedule contains unused fused Pallas vector regions"
+                    "physical schedule contains unused Pallas vector regions"
                 )
             if checkpoints is None:
                 return outputs

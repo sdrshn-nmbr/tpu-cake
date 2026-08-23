@@ -8,6 +8,7 @@ from tpu_cake.dialects.distributed_tensor import (
     AllGatherOp,
     AllReduceOp,
     CastOp,
+    ElementwiseImplementation,
     ElementwiseMaterialization,
     ElementwiseOp,
     ProgramOp,
@@ -33,6 +34,7 @@ from tpu_cake.workloads.seqax_forward import (
     REPLICATED_WEIGHT_DATA,
     SEQAX_REVISION,
     SeqaxFeedForwardFusion,
+    SeqaxFeedForwardVectorExecution,
     SeqaxNormScalePlacement,
     SeqaxNumericalSemantics,
     SeqaxResidualNormStrategy,
@@ -226,6 +228,50 @@ def test_seqax_fused_silu_multiply_is_an_explicit_canonical_operation() -> None:
             numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_V1,
             feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY,
         )
+
+
+@pytest.mark.parametrize(
+    ("fusion", "functions"),
+    (
+        (SeqaxFeedForwardFusion.SEPARATE, ("silu", "multiply")),
+        (SeqaxFeedForwardFusion.SILU_MULTIPLY, ("silu_multiply",)),
+    ),
+)
+def test_strict_feed_forward_vector_execution_is_explicit_and_narrow(
+    fusion: SeqaxFeedForwardFusion,
+    functions: tuple[str, ...],
+) -> None:
+    schedule = seqax_forward_schedule(
+        layers=1,
+        numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+        feed_forward_fusion=fusion,
+        feed_forward_vector_execution=SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL,
+    )
+    owned = tuple(
+        operation
+        for operation in schedule.walk()
+        if isinstance(operation, ElementwiseOp) and operation.implementation is not None
+    )
+
+    assert tuple(operation.function.data for operation in owned) == functions
+    assert all(
+        operation.implementation.data is ElementwiseImplementation.PALLAS_FULL_LOCAL
+        and operation.materialization is not None
+        and operation.materialization.data is ElementwiseMaterialization.STRICT_TYPED
+        for operation in owned
+    )
+    assert all(
+        operation.function.data in {"silu", "multiply", "silu_multiply"} for operation in owned
+    )
+
+
+def test_full_local_feed_forward_vectors_reject_looser_numerical_semantics() -> None:
+    with pytest.raises(ValueError, match="hidden BF16 semantics"):
+        seqax_forward_schedule(
+            feed_forward_vector_execution=SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL,
+        )
+    with pytest.raises(TypeError, match="SeqaxFeedForwardVectorExecution"):
+        seqax_forward_schedule(feed_forward_vector_execution="pallas_full_local")
     with pytest.raises(ValueError, match="strict BF16 materialization"):
         seqax_forward_schedule(
             numerical_semantics=SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,

@@ -15,6 +15,7 @@ from tpu_cake.dialects.distributed_tensor import (
     DTensorType,
     EinsumLocalOp,
     EinsumOp,
+    ElementwiseImplementation,
     ElementwiseMaterialization,
     ElementwiseOp,
     EmbeddingLookupOp,
@@ -509,7 +510,14 @@ class _LoweringState:
             implementation=(
                 VectorImplementation.PALLAS_FULL_LOCAL
                 if isinstance(operation, ElementwiseOp)
-                and operation.function.data == "silu_multiply"
+                and (
+                    (
+                        operation.implementation is not None
+                        and operation.implementation.data
+                        is ElementwiseImplementation.PALLAS_FULL_LOCAL
+                    )
+                    or operation.function.data == "silu_multiply"
+                )
                 else None
             ),
         )

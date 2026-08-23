@@ -22,6 +22,8 @@ from tpu_cake.seqax_numerical import (
     _assess_output_arrays,
     default_seqax_bf16_validation_contract,
 )
+from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
+from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
 from tpu_cake.seqax_residual_confirmation import (
     SOURCE_PROFILE_ARCHIVE_SHA256,
     SOURCE_PROFILE_RECEIPT_SHA256,
@@ -39,9 +41,11 @@ from tpu_cake.seqax_residual_confirmation_runner import (
 from tpu_cake.seqax_residual_profile import SeqaxResidualCorrectnessObservation
 from tpu_cake.seqax_residual_profile_runner import (
     CompiledResidualProfile,
+    PreparedResidualProfile,
     _load_inputs,
     _save_inputs,
 )
+from tpu_cake.workloads.seqax_forward import SeqaxNumericalSemantics, seqax_forward_schedule
 from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
 
 
@@ -305,6 +309,28 @@ def test_seqax_residual_confirmation_runner_builds_and_replays_a_closed_receipt(
             control_compiler_analysis=_compiler_analysis(control_stable, control_compiler),
         )
 
+    def prepare_candidates(profile_contract):
+        parameters = dict(profile_contract.parameters)
+        parameters["numerical_semantics"] = SeqaxNumericalSemantics(
+            parameters["numerical_semantics"]
+        )
+        return tuple(
+            PreparedResidualProfile(
+                expected=expected,
+                distributed=distributed,
+                physical=physical,
+                plan=lower_seqax_physical_to_pallas(distributed, physical),
+            )
+            for expected in profile_contract.candidates
+            for distributed in (
+                seqax_forward_schedule(
+                    **parameters,
+                    residual_norm_strategy=expected.candidate,
+                ),
+            )
+            for physical in (lower_seqax_forward_to_physical(distributed).module,)
+        )
+
     def correctness_observation(*, root, compiled, host_inputs, seed):
         output = np.zeros(scenario.output.shape, dtype=np.float32)
         assessment = _assess_output_arrays(
@@ -400,6 +426,7 @@ def test_seqax_residual_confirmation_runner_builds_and_replays_a_closed_receipt(
     monkeypatch.setattr(confirmation_runner.jax, "devices", lambda: devices)
     monkeypatch.setattr(confirmation_runner, "_validate_devices", lambda *_args: None)
     monkeypatch.setattr(confirmation_runner, "_compile", compile_candidate)
+    monkeypatch.setattr(confirmation_runner, "_prepare_candidates", prepare_candidates)
     monkeypatch.setattr(
         confirmation_runner,
         "_resident_inputs",

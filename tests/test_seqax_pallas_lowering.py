@@ -4,6 +4,7 @@ import subprocess
 import sys
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -15,6 +16,7 @@ from tpu_cake.dialects.tpu_schedule import (
     MemorySpace,
     MxuEinsumOp,
     VectorComputeOp,
+    VectorImplementation,
     VectorMaterialization,
 )
 from tpu_cake.frontend import buffer, canonical_module_text
@@ -23,6 +25,9 @@ from tpu_cake.seqax_pallas_lowering import (
     UnsupportedSeqaxPallasLoweringError,
     _einsum_tiles,
     _pallas_einsum,
+    _pallas_multiply,
+    _pallas_silu,
+    _pallas_silu_multiply,
     lower_seqax_physical_to_pallas,
 )
 from tpu_cake.seqax_physical_execution import execute_seqax_physical_program_jax
@@ -33,6 +38,8 @@ from tpu_cake.workloads.seqax_forward import (
     REPLICATED_EMBEDDING_WEIGHT_DATA,
     REPLICATED_FEED_FORWARD_WEIGHT_DATA,
     REPLICATED_WEIGHT_DATA,
+    SeqaxFeedForwardFusion,
+    SeqaxFeedForwardVectorExecution,
     SeqaxNormScalePlacement,
     SeqaxNumericalSemantics,
     seqax_forward_schedule,
@@ -160,6 +167,153 @@ def test_hidden_bf16_materialization_lowers_into_the_physical_schedule() -> None
         for operation in materialized
         if operation.materialization is not None
     )
+
+
+def test_strict_pallas_feed_forward_boundary_matches_separate_kernels() -> None:
+    parameters = {
+        **SMALL_SEQAX,
+        "sequence": 1,
+        "feed_forward": 64,
+        "layers": 1,
+        "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+        "feed_forward_vector_execution": SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL,
+    }
+    separate_distributed = seqax_forward_schedule(
+        **parameters,
+        feed_forward_fusion=SeqaxFeedForwardFusion.SEPARATE,
+    )
+    fused_distributed = seqax_forward_schedule(
+        **parameters,
+        feed_forward_fusion=SeqaxFeedForwardFusion.SILU_MULTIPLY,
+    )
+    separate_physical = lower_seqax_forward_to_physical(separate_distributed).module
+    fused_physical = lower_seqax_forward_to_physical(fused_distributed).module
+    separate = tuple(
+        operation
+        for operation in separate_physical.walk()
+        if isinstance(operation, VectorComputeOp) and operation.implementation is not None
+    )
+    fused = tuple(
+        operation
+        for operation in fused_physical.walk()
+        if isinstance(operation, VectorComputeOp) and operation.implementation is not None
+    )
+    shape = separate[0].output.type.storage.get_shape()
+    gate = jnp.linspace(-8, 8, np.prod(shape), dtype=jnp.bfloat16).reshape(shape)
+    up = jnp.linspace(3, -3, np.prod(shape), dtype=jnp.bfloat16).reshape(shape)
+
+    activated = _pallas_silu(
+        separate[0],
+        gate,
+        interpret=True,
+        schedule_sha256_value="0" * 64,
+        region_index=0,
+    )
+    baseline = _pallas_multiply(
+        separate[1],
+        activated,
+        up,
+        interpret=True,
+        schedule_sha256_value="0" * 64,
+        region_index=1,
+    )
+    candidate = _pallas_silu_multiply(
+        fused[0],
+        gate,
+        up,
+        interpret=True,
+        schedule_sha256_value="1" * 64,
+        region_index=0,
+    )
+
+    assert tuple(operation.function.data for operation in separate) == ("silu", "multiply")
+    assert tuple(operation.function.data for operation in fused) == ("silu_multiply",)
+    assert all(
+        operation.implementation.data is VectorImplementation.PALLAS_FULL_LOCAL
+        for operation in (*separate, *fused)
+    )
+    np.testing.assert_array_equal(np.asarray(candidate), np.asarray(baseline))
+    missing_intermediate_round = (
+        jax.nn.silu(gate.astype(jnp.float32)) * up.astype(jnp.float32)
+    ).astype(jnp.bfloat16)
+    assert np.count_nonzero(np.asarray(missing_intermediate_round) != np.asarray(baseline))
+
+
+def test_strict_pallas_fusion_matches_all_forward_checkpoints_on_eight_devices() -> None:
+    script = r"""
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax.sharding import PartitionSpec
+
+from tpu_cake.seqax_pallas_lowering import lower_seqax_physical_to_pallas
+from tpu_cake.seqax_physical_lowering import lower_seqax_forward_to_physical
+from tpu_cake.workloads.seqax_forward import (
+    SeqaxFeedForwardFusion,
+    SeqaxFeedForwardVectorExecution,
+    SeqaxNumericalSemantics,
+    seqax_forward_schedule,
+)
+from tpu_cake.workloads.seqax_oracle import seqax_forward_inputs
+
+parameters = {
+    "batch": 2,
+    "sequence": 1,
+    "model": 32,
+    "vocabulary": 16,
+    "feed_forward": 64,
+    "query_groups": 2,
+    "key_value_heads": 4,
+    "head": 8,
+    "layers": 1,
+    "data_mesh": 2,
+    "tensor_mesh": 4,
+    "rope_max_timescale": 256,
+}
+common = {
+    **parameters,
+    "numerical_semantics": SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
+    "feed_forward_vector_execution": SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL,
+}
+checkpoint_specs = (
+    *((PartitionSpec("d", None, None),) * 5),
+    *((PartitionSpec("d", None, "t"),) * 8),
+)
+devices = jax.devices("cpu")
+assert len(devices) == 8
+inputs = tuple(jnp.asarray(value) for value in seqax_forward_inputs(seed=9173, **parameters))
+results = []
+for fusion in (SeqaxFeedForwardFusion.SEPARATE, SeqaxFeedForwardFusion.SILU_MULTIPLY):
+    distributed = seqax_forward_schedule(**common, feed_forward_fusion=fusion)
+    physical = lower_seqax_forward_to_physical(distributed).module
+    plan = lower_seqax_physical_to_pallas(distributed, physical)
+    executable, _mesh = plan.build_with_strict_mlp_checkpoints(
+        expected_layers=1,
+        checkpoint_specs=checkpoint_specs,
+        interpret=True,
+        devices=devices,
+    )
+    outputs = executable(*inputs)
+    jax.block_until_ready(outputs)
+    assert len(outputs) == 14
+    results.append(outputs)
+
+for baseline, candidate in zip(*results, strict=True):
+    np.testing.assert_array_equal(np.asarray(candidate), np.asarray(baseline))
+"""
+    environment = os.environ.copy()
+    environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.getcwd(),
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=180,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_replicated_norm_scales_remove_exact_physical_gather_chains() -> None:

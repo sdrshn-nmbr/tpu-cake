@@ -612,7 +612,7 @@ def test_vector_compute_rejects_integer_nonlinear_operations(
         operation.verify()
 
 
-def test_fused_vector_requires_its_declared_pallas_implementation() -> None:
+def test_feed_forward_vectors_require_matching_pallas_declarations() -> None:
     gate = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "gate")
     up = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "up")
     output = AllocOp(_spec((2, 4), ("B", "M")).to_type(), "output")
@@ -622,18 +622,27 @@ def test_fused_vector_requires_its_declared_pallas_implementation() -> None:
         stage=1,
         function="silu_multiply",
     )
-    misplaced = VectorComputeOp(
+    incomplete = VectorComputeOp(
         (gate, up),
         output,
         stage=1,
         function="multiply",
         implementation=VectorImplementation.PALLAS_FULL_LOCAL,
     )
+    strict = VectorComputeOp(
+        (gate, up),
+        output,
+        stage=1,
+        function="multiply",
+        materialization=VectorMaterialization.STRICT_TYPED,
+        implementation=VectorImplementation.PALLAS_FULL_LOCAL,
+    )
 
     with pytest.raises(VerifyException, match="requires the full-local Pallas"):
         missing.verify()
-    with pytest.raises(VerifyException, match="only supported for fused SiLU"):
-        misplaced.verify()
+    with pytest.raises(VerifyException, match="require strict BF16"):
+        incomplete.verify()
+    strict.verify()
 
 
 @pytest.mark.parametrize("dtype", (f16, f32))

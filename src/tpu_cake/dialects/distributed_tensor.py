@@ -45,11 +45,22 @@ class ElementwiseMaterialization(StrEnum):
     STRICT_TYPED = "strict_typed"
 
 
+class ElementwiseImplementation(StrEnum):
+    PALLAS_FULL_LOCAL = "pallas_full_local"
+
+
 @irdl_attr_definition
 class ElementwiseMaterializationAttr(
     EnumAttribute[ElementwiseMaterialization], SpacedOpaqueSyntaxAttribute
 ):
     name = "dtensor.elementwise_materialization"
+
+
+@irdl_attr_definition
+class ElementwiseImplementationAttr(
+    EnumAttribute[ElementwiseImplementation], SpacedOpaqueSyntaxAttribute
+):
+    name = "dtensor.elementwise_implementation"
 
 
 @irdl_attr_definition
@@ -190,6 +201,7 @@ class ElementwiseOp(IRDLOperation):
     result = result_def(DTensorType)
     function = prop_def(StringAttr)
     materialization = opt_prop_def(ElementwiseMaterializationAttr)
+    implementation = opt_prop_def(ElementwiseImplementationAttr)
 
     def __init__(
         self,
@@ -197,10 +209,13 @@ class ElementwiseOp(IRDLOperation):
         result_type: DTensorType,
         function: str,
         materialization: ElementwiseMaterialization | None = None,
+        implementation: ElementwiseImplementation | None = None,
     ) -> None:
         properties: dict[str, Attribute] = {"function": StringAttr(function)}
         if materialization is not None:
             properties["materialization"] = ElementwiseMaterializationAttr(materialization)
+        if implementation is not None:
+            properties["implementation"] = ElementwiseImplementationAttr(implementation)
         super().__init__(
             operands=[list(values)],
             result_types=[result_type],
@@ -242,12 +257,26 @@ class ElementwiseOp(IRDLOperation):
         ):
             raise VerifyException("nonlinear elementwise functions require floating-point values")
         if self.materialization is not None:
-            if self.function.data not in {"silu", "multiply"}:
+            if self.function.data not in {"silu", "multiply", "silu_multiply"}:
                 raise VerifyException(
-                    "strict typed materialization is only supported for SiLU and multiply"
+                    "strict typed materialization is only supported for SiLU and multiply, "
+                    "including fused SiLU multiply"
                 )
             if not isinstance(result.element_type, BFloat16Type):
                 raise VerifyException("strict typed materialization requires BF16")
+        if self.implementation is not None:
+            if self.function.data not in {"silu", "multiply", "silu_multiply"}:
+                raise VerifyException(
+                    "explicit elementwise implementation is limited to the feed-forward pair"
+                )
+            if (
+                self.implementation.data is not ElementwiseImplementation.PALLAS_FULL_LOCAL
+                or self.materialization is None
+                or not isinstance(result.element_type, BFloat16Type)
+            ):
+                raise VerifyException(
+                    "full-local Pallas feed-forward vectors require strict BF16 materialization"
+                )
 
 
 @irdl_op_definition
@@ -1516,6 +1545,7 @@ DistributedTensor = Dialect(
         ReturnOp,
     ],
     [
+        ElementwiseImplementationAttr,
         ElementwiseMaterializationAttr,
         DimensionAttr,
         AxisListAttr,

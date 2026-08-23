@@ -18,7 +18,10 @@ from tpu_cake.contracts import (
     WorkloadContract,
     WorkloadStage,
 )
-from tpu_cake.dialects.distributed_tensor import ElementwiseMaterialization
+from tpu_cake.dialects.distributed_tensor import (
+    ElementwiseImplementation,
+    ElementwiseMaterialization,
+)
 from tpu_cake.distributed_frontend import (
     DistributedProgramBuilder,
     DistributedTensorSpec,
@@ -67,6 +70,11 @@ class SeqaxNumericalSemantics(StrEnum):
 class SeqaxFeedForwardFusion(StrEnum):
     SEPARATE = "separate"
     SILU_MULTIPLY = "silu_multiply"
+
+
+class SeqaxFeedForwardVectorExecution(StrEnum):
+    LEGACY_MIXED = "legacy_mixed"
+    PALLAS_FULL_LOCAL = "pallas_full_local"
 
 
 class SeqaxResidualNormStrategy(StrEnum):
@@ -131,6 +139,9 @@ def seqax_forward_schedule(
     weight_data_placement: SeqaxWeightDataPlacement = SHARDED_WEIGHT_DATA,
     numerical_semantics: SeqaxNumericalSemantics = SeqaxNumericalSemantics.LEGACY_FUSED_V0,
     feed_forward_fusion: SeqaxFeedForwardFusion = SeqaxFeedForwardFusion.SEPARATE,
+    feed_forward_vector_execution: SeqaxFeedForwardVectorExecution = (
+        SeqaxFeedForwardVectorExecution.LEGACY_MIXED
+    ),
     residual_norm_strategy: SeqaxResidualNormStrategy = SeqaxResidualNormStrategy.STANDARD,
 ) -> ModuleOp:
     if not isinstance(norm_scale_placement, SeqaxNormScalePlacement):
@@ -141,6 +152,8 @@ def seqax_forward_schedule(
         raise TypeError("numerical_semantics must be a SeqaxNumericalSemantics")
     if not isinstance(feed_forward_fusion, SeqaxFeedForwardFusion):
         raise TypeError("feed_forward_fusion must be a SeqaxFeedForwardFusion")
+    if not isinstance(feed_forward_vector_execution, SeqaxFeedForwardVectorExecution):
+        raise TypeError("feed_forward_vector_execution must be a SeqaxFeedForwardVectorExecution")
     if not isinstance(residual_norm_strategy, SeqaxResidualNormStrategy):
         raise TypeError("residual_norm_strategy must be a SeqaxResidualNormStrategy")
     if (
@@ -148,11 +161,20 @@ def seqax_forward_schedule(
         and norm_scale_placement is SeqaxNormScalePlacement.REPLICATED
     ):
         raise ValueError("sharded RMSNorm requires sharded normalization scales")
-    if feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY and numerical_semantics in {
-        SeqaxNumericalSemantics.TYPED_BF16_V1,
-        SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2,
-    }:
-        raise ValueError("fused SiLU multiply does not implement strict BF16 materialization")
+    if (
+        feed_forward_vector_execution is SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL
+        and numerical_semantics is not SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2
+    ):
+        raise ValueError("full-local Pallas feed-forward vectors require hidden BF16 semantics")
+    if (
+        feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY
+        and numerical_semantics
+        in {SeqaxNumericalSemantics.TYPED_BF16_V1, SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2}
+        and feed_forward_vector_execution is not SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL
+    ):
+        raise ValueError(
+            "strict BF16 materialization for fused SiLU multiply requires full-local Pallas execution"
+        )
     norm_scale_sharding = (
         {} if norm_scale_placement is SeqaxNormScalePlacement.REPLICATED else {"M": ("t", "d")}
     )
@@ -863,12 +885,23 @@ def seqax_forward_schedule(
 
         gate = project(layer_wgate, 189)
         up = project(layer_wup, 191)
+        feed_forward_implementation = (
+            ElementwiseImplementation.PALLAS_FULL_LOCAL
+            if feed_forward_vector_execution is SeqaxFeedForwardVectorExecution.PALLAS_FULL_LOCAL
+            else None
+        )
         if feed_forward_fusion is SeqaxFeedForwardFusion.SILU_MULTIPLY:
             feed_forward_value = body.elementwise(
                 gate,
                 up,
                 result=projected_bf16,
                 function="silu_multiply",
+                materialization=(
+                    ElementwiseMaterialization.STRICT_TYPED
+                    if numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2
+                    else None
+                ),
+                implementation=feed_forward_implementation,
                 source=_source(193),
             )
         else:
@@ -885,6 +918,7 @@ def seqax_forward_schedule(
                     }
                     else None
                 ),
+                implementation=feed_forward_implementation,
                 source=_source(193),
             )
             feed_forward_value = body.elementwise(
@@ -897,6 +931,7 @@ def seqax_forward_schedule(
                     if numerical_semantics is SeqaxNumericalSemantics.TYPED_BF16_HIDDEN_V2
                     else None
                 ),
+                implementation=feed_forward_implementation,
                 source=_source(193),
             )
         layer_wdown = body.cast(

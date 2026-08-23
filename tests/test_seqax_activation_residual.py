@@ -12,7 +12,6 @@ from tpu_cake.compiler_analysis import (
     CompilerMemoryAnalysis,
 )
 from tpu_cake.cost_model import tpu7x_tensorcore_rates
-from tpu_cake.identity import json_sha256
 from tpu_cake.physical_cost_model import analyze_physical_kernel
 from tpu_cake.runner import _runtime_identity
 from tpu_cake.seqax_activation_residual import (
@@ -25,7 +24,6 @@ from tpu_cake.seqax_activation_residual_runner import (
     SeqaxActivationResidualCompilerCandidate,
     _compile_candidate,
     _compiler_environment,
-    _prepare_candidates,
     _require_safe_new_root,
     _validate_pallas_collectives,
     analyze_activation_residual_boundary,
@@ -101,8 +99,6 @@ def test_activation_residual_static_plans_replay() -> None:
 
         assert plan.distributed_schedule_sha256 == expected.distributed_schedule_sha256
         assert plan.physical_schedule_sha256 == expected.physical_schedule_sha256
-        assert plan.source_sha256() == expected.pallas_source_sha256
-        assert json_sha256(plan.manifest()) == expected.pallas_manifest_sha256
         assert plan.pallas_region_count == expected.expected_pallas_regions
         assert (
             report.devices[0].collective_ring_equivalent_bytes
@@ -112,6 +108,16 @@ def test_activation_residual_static_plans_replay() -> None:
             report.memory.peak_live_vmem_bytes_per_device
             == expected.expected_peak_vmem_bytes_per_device
         )
+
+
+def test_activation_residual_frozen_design_rejects_current_source_identity() -> None:
+    contract = default_seqax_activation_residual_design_contract(_runtime_identity())
+
+    with pytest.raises(
+        ValueError,
+        match="SEQAX_ACTIVATION_RESIDUAL_PLAN_IDENTITY_MISMATCH",
+    ):
+        activation_runner._prepare_candidates(contract)
 
 
 def test_failed_compiler_capture_is_canonical_and_terminal() -> None:
@@ -354,7 +360,21 @@ def test_compile_path_uses_abstract_inputs_and_has_shared_abi() -> None:
     source = inspect.getsource(_compile_candidate)
     module_source = Path("src/tpu_cake/seqax_activation_residual_runner.py").read_text()
     design = default_seqax_activation_residual_design_contract(_runtime_identity())
-    prepared = _prepare_candidates(design)
+    parameters = dict(design.parameters)
+    parameters["numerical_semantics"] = SeqaxNumericalSemantics(parameters["numerical_semantics"])
+    plans = tuple(
+        lower_seqax_physical_to_pallas(
+            distributed,
+            lower_seqax_forward_to_physical(distributed).module,
+        )
+        for candidate in design.candidates
+        for distributed in (
+            seqax_forward_schedule(
+                **parameters,
+                residual_norm_strategy=candidate.candidate,
+            ),
+        )
+    )
 
     assert "ShapeDtypeStruct" in module_source
     assert '"bool": jnp.bool_' in module_source
@@ -365,11 +385,11 @@ def test_compile_path_uses_abstract_inputs_and_has_shared_abi() -> None:
     assert "device_get(" not in module_source
     assert "pallas_executable(" not in source
     assert "control_executable(" not in source
-    assert len(prepared[0].plan.input_contracts) == 13
-    assert {contract.dtype for contract in prepared[0].plan.input_contracts} == {
+    assert len(plans[0].input_contracts) == 13
+    assert {contract.dtype for contract in plans[0].input_contracts} == {
         "bool",
         "float32",
         "uint32",
     }
-    assert prepared[0].plan.input_contracts == prepared[1].plan.input_contracts
-    assert prepared[0].plan.output_contracts == prepared[1].plan.output_contracts
+    assert plans[0].input_contracts == plans[1].input_contracts
+    assert plans[0].output_contracts == plans[1].output_contracts
