@@ -408,10 +408,16 @@ def _verify(
         arguments,
         cwd="/",
         env=environment,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "SEQAX_SILU_FUSION_CORRECTNESS_VERIFIER_FAILED "
+            f"returncode={completed.returncode} stdout={completed.stdout!r} "
+            f"stderr={completed.stderr!r}"
+        )
     return json.loads(completed.stdout)
 
 
@@ -445,10 +451,16 @@ def _verify_failure(root: Path, *, relocated: bool = False) -> dict[str, str]:
         arguments,
         cwd="/",
         env=environment,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "SEQAX_SILU_FUSION_CORRECTNESS_FAILURE_VERIFIER_FAILED "
+            f"returncode={completed.returncode} stdout={completed.stdout!r} "
+            f"stderr={completed.stderr!r}"
+        )
     return json.loads(completed.stdout)
 
 
