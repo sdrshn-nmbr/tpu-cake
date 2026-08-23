@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import sqlite3
 import subprocess
@@ -12,22 +13,28 @@ import pytest
 from pydantic import ValidationError
 
 from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis
-from tpu_cake.contracts import ArtifactReference, ArtifactRole
+from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity, SourceFileContract
 from tpu_cake.ledger import RunState
 from tpu_cake.seqax_contract_types import SeqaxFeedForwardFusion
+from tpu_cake.seqax_silu_fusion import default_seqax_silu_fusion_design_contract
 from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerAnalysis,
+    SeqaxSiluFusionCompilerAttemptClaim,
     SeqaxSiluFusionCompilerCandidate,
     SeqaxSiluFusionCompilerCapture,
     SeqaxSiluFusionCompilerPair,
     SeqaxSiluFusionCompilerPairMember,
     SeqaxSiluFusionCompilerReceipt,
+    SeqaxSiluFusionCompilerSourceAuthority,
+    SeqaxSiluFusionCompilerWorkerRequest,
+    SeqaxSiluFusionCompilerWorkerResult,
 )
 from tpu_cake.seqax_silu_fusion_compiler_pair import _safe_pair_path
 from tpu_cake.seqax_silu_fusion_compiler_runner import (
     _artifact_role as _runner_artifact_role,
 )
 from tpu_cake.seqax_silu_fusion_compiler_runner import (
+    _claim_capture,
     _require_prior_replay_seal,
     _require_safe_new_root,
 )
@@ -216,11 +223,84 @@ def test_ordinal_one_requires_completed_ordinal_zero_replay_seal(tmp_path: Path)
     design = SimpleNamespace(
         compiler_claim_registry_root=str(tmp_path / "claims"),
         compiler_claim_key="seqax-silu-fusion-design-v1",
+        design_id="a" * 64,
     )
     source = SimpleNamespace(source_commit="1" * 40, source_tree="2" * 40)
 
     with pytest.raises(ValueError, match="PRIOR_REPLAY_SEAL_MISSING"):
         _require_prior_replay_seal(design, source)
+
+
+def test_claim_is_permanent_for_one_full_design_identity(tmp_path: Path) -> None:
+    design = SimpleNamespace(
+        compiler_claim_registry_root=str(tmp_path / "claims"),
+        compiler_claim_key="seqax-silu-fusion-design-v1",
+        design_id="a" * 64,
+    )
+    source = SimpleNamespace(source_commit="1" * 40, source_tree="2" * 40)
+
+    claim_path, claim = _claim_capture(tmp_path / "capture", design, 0, source)
+
+    assert claim_path.name == f"seqax-silu-fusion-design-v1-{'a' * 64}-0.json"
+    assert claim.design_id == design.design_id
+    with pytest.raises(ValueError, match="CAPTURE_PERMANENTLY_CLAIMED"):
+        _claim_capture(tmp_path / "other-capture", design, 0, source)
+
+
+def test_worker_request_wire_payload_excludes_nested_computed_fields() -> None:
+    runtime = RuntimeIdentity(python="3.12.3")
+    design = default_seqax_silu_fusion_design_contract(runtime)
+    source = SeqaxSiluFusionCompilerSourceAuthority(
+        source_commit="1" * 40,
+        source_tree="2" * 40,
+        branch="main",
+        origin_main_commit="1" * 40,
+        remote_main_commit="1" * 40,
+        remote_url=design.source_remote_url,
+        source_root=design.compilation_source_root,
+        uv_lock_sha256="3" * 64,
+        cli_sha256="355040b20f7e48683811b009fc77f460652617fafcdc44c68a3d7309fd71f740",
+        design_file_sha256="4" * 64,
+        runner_source_sha256="5" * 64,
+        worker_source_sha256="6" * 64,
+        compiler_source_sha256="7" * 64,
+        pair_source_sha256="8" * 64,
+        source_manifest=(SourceFileContract(path="source.py", sha256="9" * 64),),
+        runtime=runtime,
+    )
+    claim = SeqaxSiluFusionCompilerAttemptClaim(
+        design_id=design.design_id,
+        capture_ordinal=0,
+        invocation_id="a" * 32,
+        source_commit=source.source_commit,
+        source_tree=source.source_tree,
+        output_root="/home/sudarshan/tpu-cake-evidence/capture",
+    )
+    request = SeqaxSiluFusionCompilerWorkerRequest(
+        claim=claim,
+        design=design,
+        source=source,
+    )
+
+    payload = request.wire_payload()
+
+    assert "claim_id" not in payload["claim"]
+    assert "design_id" not in payload["design"]
+    assert SeqaxSiluFusionCompilerWorkerRequest.model_validate_json(json.dumps(payload)) == request
+
+
+def test_worker_result_wire_payload_excludes_nested_computed_fields() -> None:
+    candidate = SeqaxSiluFusionCompilerCandidate.model_construct(
+        candidate=SeqaxFeedForwardFusion.SEPARATE
+    )
+    capture = SeqaxSiluFusionCompilerCapture.model_construct(candidates=(candidate, candidate))
+    result = SeqaxSiluFusionCompilerWorkerResult.model_construct(capture=capture)
+
+    payload = result.wire_payload()
+
+    assert "capture_id" not in payload["capture"]
+    assert "semantic_pair_id" not in payload["capture"]
+    assert all("semantic_id" not in value for value in payload["capture"]["candidates"])
 
 
 def test_artifact_roles_require_exact_candidate_paths() -> None:

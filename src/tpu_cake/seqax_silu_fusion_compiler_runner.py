@@ -224,7 +224,7 @@ def _claim_lock(design: SeqaxSiluFusionDesignContract, ordinal: int) -> Iterator
     if not stat.S_ISDIR(status.st_mode) or status.st_uid != os.getuid() or status.st_mode & 0o077:
         raise ValueError("SEQAX_SILU_FUSION_LOCK_ROOT_INVALID")
     descriptor = os.open(
-        lock_root / f"{design.compiler_claim_key}-{ordinal}.lock",
+        lock_root / f"{design.compiler_claim_key}-{design.design_id}-{ordinal}.lock",
         os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
         0o600,
     )
@@ -262,7 +262,7 @@ def _claim_capture(
         source_tree=source.source_tree,
         output_root=str(root),
     )
-    claim_path = registry / f"{design.compiler_claim_key}-{ordinal}.json"
+    claim_path = registry / (f"{design.compiler_claim_key}-{design.design_id}-{ordinal}.json")
     try:
         _write_json_exclusive(
             claim_path,
@@ -277,7 +277,7 @@ def _claim_capture(
 
 def _replay_seal_path(design: SeqaxSiluFusionDesignContract, ordinal: int) -> Path:
     return Path(design.compiler_claim_registry_root) / (
-        f"{design.compiler_claim_key}-{ordinal}.replay.json"
+        f"{design.compiler_claim_key}-{design.design_id}-{ordinal}.replay.json"
     )
 
 
@@ -310,8 +310,8 @@ def _require_prior_replay_seal(
     source: SeqaxSiluFusionCompilerSourceAuthority,
 ) -> None:
     registry = Path(design.compiler_claim_registry_root)
-    claim_name = f"{design.compiler_claim_key}-0.json"
-    seal_name = f"{design.compiler_claim_key}-0.replay.json"
+    claim_name = f"{design.compiler_claim_key}-{design.design_id}-0.json"
+    seal_name = f"{design.compiler_claim_key}-{design.design_id}-0.replay.json"
     if not (registry / claim_name).exists() or not (registry / seal_name).exists():
         raise ValueError("SEQAX_SILU_FUSION_PRIOR_REPLAY_SEAL_MISSING")
     claim_path = _private_registry_file(registry, claim_name)
@@ -502,7 +502,7 @@ def run_capture(
     _write_source_bundle(root, blobs)
     request = SeqaxSiluFusionCompilerWorkerRequest(claim=claim, design=design, source=source)
     request_path = root / "worker_request.json"
-    _write_json_exclusive(request_path, request.model_dump(mode="json"))
+    _write_json_exclusive(request_path, request.wire_payload())
     EvidenceRun(root / "ledger.sqlite", claim.claim_id).create(
         {
             "claim_id": claim.claim_id,

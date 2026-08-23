@@ -76,6 +76,7 @@ class SeqaxSiluFusionDesignContract(BaseModel):
     compiler_pair_record_required: Literal[True]
     compiler_claim_registry_root: str
     compiler_claim_key: Literal["seqax-silu-fusion-design-v1"]
+    compiler_claim_identity_scope: Literal["design-id-and-ordinal"]
     capture_ordinals: tuple[Literal[0], Literal[1]]
     ordinal_one_requires_ordinal_zero_replay_seal: Literal[True]
     allow_compile_retry: Literal[False]
@@ -267,6 +268,7 @@ def default_seqax_silu_fusion_design_contract(
         compiler_pair_record_required=True,
         compiler_claim_registry_root="/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-claims",
         compiler_claim_key="seqax-silu-fusion-design-v1",
+        compiler_claim_identity_scope="design-id-and-ordinal",
         capture_ordinals=(0, 1),
         ordinal_one_requires_ordinal_zero_replay_seal=True,
         allow_compile_retry=False,

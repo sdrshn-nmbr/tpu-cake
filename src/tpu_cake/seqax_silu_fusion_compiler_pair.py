@@ -70,7 +70,7 @@ def _replay_seal_path(
         or registry_info.st_mode & 0o077
     ):
         raise ValueError("SEQAX_SILU_FUSION_CLAIM_REGISTRY_INVALID")
-    path = registry / f"{design.compiler_claim_key}-{ordinal}.replay.json"
+    path = registry / (f"{design.compiler_claim_key}-{design.design_id}-{ordinal}.replay.json")
     if path.is_symlink() or not path.is_file():
         raise ValueError("SEQAX_SILU_FUSION_REPLAY_SEAL_FILE_INVALID")
     info = path.lstat()

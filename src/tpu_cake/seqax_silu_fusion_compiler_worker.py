@@ -446,10 +446,8 @@ def run_worker(root: Path, request: SeqaxSiluFusionCompilerWorkerRequest) -> Non
         timing_collected=False,
         profile_collected=False,
     )
-    _write_json_exclusive(
-        root / "worker-result.json",
-        SeqaxSiluFusionCompilerWorkerResult(capture=capture).model_dump(mode="json"),
-    )
+    result = SeqaxSiluFusionCompilerWorkerResult(capture=capture)
+    _write_json_exclusive(root / "worker-result.json", result.wire_payload())
     run.transition(
         RunState.COMPILED,
         {

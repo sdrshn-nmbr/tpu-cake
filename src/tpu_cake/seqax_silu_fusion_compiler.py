@@ -238,11 +238,17 @@ class SeqaxSiluFusionCompilerWorkerRequest(BaseModel):
     design: SeqaxSiluFusionDesignContract
     source: SeqaxSiluFusionCompilerSourceAuthority
 
+    def wire_payload(self) -> dict[str, object]:
+        return self.model_dump(mode="json", exclude_computed_fields=True)
+
 
 class SeqaxSiluFusionCompilerWorkerResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     capture: SeqaxSiluFusionCompilerCapture
+
+    def wire_payload(self) -> dict[str, object]:
+        return self.model_dump(mode="json", exclude_computed_fields=True)
 
 
 class SeqaxSiluFusionCompilerReceipt(BaseModel):

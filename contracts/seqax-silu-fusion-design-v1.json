@@ -26,6 +26,7 @@
   "compiler_pair_record_required": true,
   "compiler_claim_registry_root": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-claims",
   "compiler_claim_key": "seqax-silu-fusion-design-v1",
+  "compiler_claim_identity_scope": "design-id-and-ordinal",
   "capture_ordinals": [
     0,
     1

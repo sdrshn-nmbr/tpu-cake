@@ -198,7 +198,7 @@ def _ledger_state(
             "claim_id": claim.claim_id,
             "claim_path": str(
                 Path(design.compiler_claim_registry_root)
-                / f"{design.compiler_claim_key}-{claim.capture_ordinal}.json"
+                / (f"{design.compiler_claim_key}-{design.design_id}-{claim.capture_ordinal}.json")
             ),
             "design_id": design.design_id,
             "capture_ordinal": claim.capture_ordinal,
@@ -446,7 +446,7 @@ def verify_capture(root: Path, design_path: Path) -> SeqaxSiluFusionCompilerRece
         raise ValueError("SEQAX_SILU_FUSION_CAPTURE_LINKAGE_MISMATCH")
     external_claim_path = _registry_file(
         design,
-        f"{design.compiler_claim_key}-{claim.capture_ordinal}.json",
+        f"{design.compiler_claim_key}-{design.design_id}-{claim.capture_ordinal}.json",
     )
     if (
         SeqaxSiluFusionCompilerAttemptClaim.model_validate_json(external_claim_path.read_text())
@@ -501,7 +501,7 @@ def verify_pair(pair_path: Path, design_path: Path) -> SeqaxSiluFusionCompilerPa
         receipt = verify_capture(root, design_path)
         seal_path = _registry_file(
             design,
-            f"{design.compiler_claim_key}-{member.capture_ordinal}.replay.json",
+            f"{design.compiler_claim_key}-{design.design_id}-{member.capture_ordinal}.replay.json",
         )
         seal = SeqaxSiluFusionCompilerReplaySeal.model_validate_json(seal_path.read_text())
         if seqax_silu_fusion_compiler_pair_member(root, receipt, seal) != member:
