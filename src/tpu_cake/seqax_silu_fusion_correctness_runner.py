@@ -562,6 +562,23 @@ def _require_compiler_evidence_ready(
         raise ValueError("SEQAX_SILU_FUSION_CORRECTNESS_COMPILER_EVIDENCE_PENDING")
 
 
+def _validate_archive_members(
+    members: list[tarfile.TarInfo],
+    expected_root_name: str,
+    error_message: str,
+) -> None:
+    roots = {Path(member.name).parts[0] for member in members if member.name}
+    root_members = tuple(member for member in members if member.name == expected_root_name)
+    if (
+        roots != {expected_root_name}
+        or len(root_members) != 1
+        or not root_members[0].isdir()
+        or stat.S_IMODE(root_members[0].mode) != 0o700
+        or any(not (member.isdir() or member.isreg()) for member in members)
+    ):
+        raise ValueError(error_message)
+
+
 def _verify_extracted_archive(
     archive: Path,
     expected_root_name: str,
@@ -583,14 +600,16 @@ def _verify_extracted_archive(
         extraction.mkdir(mode=0o700)
         with tarfile.open(expanded, "r:") as archive_file:
             members = archive_file.getmembers()
-            roots = {Path(member.name).parts[0] for member in members if member.name}
-            if roots != {expected_root_name} or any(
-                member.issym() or member.islnk() for member in members
-            ):
-                raise ValueError("SEQAX_SILU_FUSION_CORRECTNESS_ARCHIVE_LAYOUT_INVALID")
+            _validate_archive_members(
+                members,
+                expected_root_name,
+                "SEQAX_SILU_FUSION_CORRECTNESS_ARCHIVE_LAYOUT_INVALID",
+            )
             archive_file.extractall(extraction, filter="data")
+        extracted_root = extraction / expected_root_name
+        extracted_root.chmod(0o700)
         return _verify(
-            extraction / expected_root_name,
+            extracted_root,
             final=True,
             relocated=True,
         )
@@ -619,14 +638,16 @@ def _verify_extracted_failure_archive(
         extraction.mkdir(mode=0o700)
         with tarfile.open(expanded, "r:") as archive_file:
             members = archive_file.getmembers()
-            roots = {Path(member.name).parts[0] for member in members if member.name}
-            if roots != {expected_root_name} or any(
-                member.issym() or member.islnk() for member in members
-            ):
-                raise ValueError("SEQAX_SILU_FUSION_CORRECTNESS_FAILURE_ARCHIVE_LAYOUT_INVALID")
+            _validate_archive_members(
+                members,
+                expected_root_name,
+                "SEQAX_SILU_FUSION_CORRECTNESS_FAILURE_ARCHIVE_LAYOUT_INVALID",
+            )
             archive_file.extractall(extraction, filter="data")
+        extracted_root = extraction / expected_root_name
+        extracted_root.chmod(0o700)
         return _verify_failure(
-            extraction / expected_root_name,
+            extracted_root,
             relocated=True,
         )
 

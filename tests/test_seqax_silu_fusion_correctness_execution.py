@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import stat
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -148,6 +149,59 @@ def test_correctness_run_accepts_verified_compiler_rebind() -> None:
     )
 
     correctness_runner._require_compiler_evidence_ready(contract)
+
+
+def test_archive_replay_restores_validated_private_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if correctness_runner.shutil.which("zstd") is None:
+        pytest.skip("zstd is required for archive replay")
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    (root / "artifact.json").write_text("{}\n")
+    archive, _sha256, _members = correctness_runner._create_archive(root)
+
+    def verify(path: Path, *, final: bool, relocated: bool) -> dict[str, str]:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+        assert final
+        assert relocated
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(correctness_runner, "_verify", verify)
+
+    def verify_failure(path: Path, *, relocated: bool) -> dict[str, str]:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+        assert relocated
+        return {"status": "failed"}
+
+    monkeypatch.setattr(correctness_runner, "_verify_failure", verify_failure)
+
+    assert correctness_runner._verify_extracted_archive(archive, root.name) == {
+        "status": "accepted"
+    }
+    assert correctness_runner._verify_extracted_failure_archive(archive, root.name) == {
+        "status": "failed"
+    }
+
+
+def test_archive_replay_rejects_nonprivate_recorded_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if correctness_runner.shutil.which("zstd") is None:
+        pytest.skip("zstd is required for archive replay")
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o755)
+    archive, _sha256, _members = correctness_runner._create_archive(root)
+    monkeypatch.setattr(
+        correctness_runner,
+        "_verify",
+        lambda *_args, **_kwargs: pytest.fail("invalid archive reached verifier"),
+    )
+
+    with pytest.raises(ValueError, match="ARCHIVE_LAYOUT_INVALID"):
+        correctness_runner._verify_extracted_archive(archive, root.name)
 
 
 def test_post_worker_empty_controller_failure_is_frozen(
