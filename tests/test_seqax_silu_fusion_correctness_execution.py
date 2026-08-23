@@ -42,10 +42,10 @@ def _source_authority() -> SeqaxSiluFusionCorrectnessSourceAuthority:
         uv_lock_sha256="03c153a4daf4f1bf2c77d89620824e4f6c11fa946a9166f0f512e195d1025ed9",
         cli_sha256="355040b20f7e48683811b009fc77f460652617fafcdc44c68a3d7309fd71f740",
         correctness_contract_sha256=(
-            "0cb2991be48cb74337cea892a7ee338e246acd34837953daf7667d81ae1208f4"
+            "ffd334ec7ed3449266a5e4229eae1439ba6eb12afedf395819ca1e3ef542ffdd"
         ),
-        compiler_design_sha256=("bff54167ee3aa491903cf97bfdf5d4851415f5a0673c1bf2bc210851bc5f4dd8"),
-        compiler_pair_sha256=("4241e7035e3d90b6a12c476fbbbfba870ef76db9f6e2ff9222be9e120997dfb4"),
+        compiler_design_sha256=("e6c7fd18da0edba925b2bc6e0725c25b51f233f06013a9147c5eca0c977d0bff"),
+        compiler_pair_sha256=("06ed3cc20bc6642a91f8dbddf7ae9ed56c705f73a57efe15b60d135c25626807"),
         correctness_schema_source_sha256="c" * 64,
         runner_source_sha256="d" * 64,
         worker_source_sha256="e" * 64,
@@ -142,13 +142,12 @@ def test_source_authority_persisted_form_round_trips_without_computed_id() -> No
     assert SeqaxSiluFusionCorrectnessSourceAuthority.model_validate_json(payload) == source
 
 
-def test_correctness_run_refuses_pending_compiler_rebind() -> None:
+def test_correctness_run_accepts_verified_compiler_rebind() -> None:
     contract = SeqaxSiluFusionCorrectnessContract.model_validate_json(
         (_ROOT / "contracts/seqax-silu-fusion-correctness-v1.json").read_text()
     )
 
-    with pytest.raises(ValueError, match="COMPILER_EVIDENCE_PENDING"):
-        correctness_runner._require_compiler_evidence_ready(contract)
+    correctness_runner._require_compiler_evidence_ready(contract)
 
 
 def test_post_worker_empty_controller_failure_is_frozen(

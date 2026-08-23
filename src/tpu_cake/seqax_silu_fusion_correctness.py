@@ -21,7 +21,7 @@ from tpu_cake.seqax_silu_fusion import (
 
 SEQAX_SILU_FUSION_CORRECTNESS_SCHEMA = "seqax-silu-fusion-correctness-v1"
 SEQAX_SILU_FUSION_CORRECTNESS_CONTRACT_SHA256 = (
-    "0cb2991be48cb74337cea892a7ee338e246acd34837953daf7667d81ae1208f4"
+    "ffd334ec7ed3449266a5e4229eae1439ba6eb12afedf395819ca1e3ef542ffdd"
 )
 SEQAX_SILU_FUSION_CORRECTNESS_CLAIM_SCHEMA = "seqax-silu-fusion-correctness-claim-v1"
 SEQAX_SILU_FUSION_CORRECTNESS_RESULT_SCHEMA = "seqax-silu-fusion-correctness-result-v1"
@@ -58,24 +58,24 @@ SEQAX_SILU_FUSION_CORRECTNESS_ARTIFACT_ROLES = frozenset(
     }
 )
 SEQAX_SILU_FUSION_COMPILER_DESIGN_ID = (
-    "f77778c8c49b090c0c8717f81c32a6269e07b5b9d2fd505e36b243e5bbfc143a"
+    "ec6ca7194ce8430035e94210d9fb2a75c99bf5749c50ab579dedf4fd1914996b"
 )
 SEQAX_SILU_FUSION_COMPILER_DESIGN_SHA256 = (
-    "bff54167ee3aa491903cf97bfdf5d4851415f5a0673c1bf2bc210851bc5f4dd8"
+    "e6c7fd18da0edba925b2bc6e0725c25b51f233f06013a9147c5eca0c977d0bff"
 )
 SEQAX_SILU_FUSION_COMPILER_PAIR_ID = (
-    "63266abcb56a719a891b2d09a8e9b9b5b93143bf751fd0c69d16e3880c44b021"
+    "afa1774255d9295ac30922b9bf851f85585fcb4c8267606085a3d851a2d89f9c"
 )
 SEQAX_SILU_FUSION_COMPILER_PAIR_SHA256 = (
-    "4241e7035e3d90b6a12c476fbbbfba870ef76db9f6e2ff9222be9e120997dfb4"
+    "06ed3cc20bc6642a91f8dbddf7ae9ed56c705f73a57efe15b60d135c25626807"
 )
 SEQAX_SILU_FUSION_COMPILER_CAPTURE_IDS = (
-    "e2b4fd712ff671e386707883f4d12bfc864e444487779d292a5d41752d6f8d49",
-    "9bd531b3b5f377598a91abf26b8fc890980fd1042c66d15b129d0f7ad1f0633e",
+    "a2f76b116da7b2f618b0f48dc4648677720c07669e96dcbae530ab09b2c0b5cb",
+    "2753d19222bfa3d2fb448a847c16de5c695170a6b973e74ed721ee385bd197b8",
 )
 SEQAX_SILU_FUSION_CANDIDATE_SEMANTIC_IDS = (
-    "5851109941f77d2781e3a66efbb8052064cad1551be32054f2d8d3263697c6ef",
-    "927de445547f6342fb558ba3c159f9dc99871b48604b4b5be9e729035781f9f9",
+    "77f35a299a8da1296a95c9caaa29e1b0ef3e538e5a125780a25097aa6f0cde04",
+    "9ba500002f0ae57e6e55aec1ec1b491e975f767489c89f2d7c50265bb999aeb0",
 )
 SEQAX_SILU_FUSION_CHECKPOINTS = (
     "rms_input",
@@ -162,7 +162,7 @@ class SeqaxSiluFusionCorrectnessContract(BaseModel):
     compiler_design_sha256: Literal[SEQAX_SILU_FUSION_COMPILER_DESIGN_SHA256]
     compiler_pair_record_path: Literal["contracts/seqax-silu-fusion-compiler-pair-v1.json"]
     compiler_pair_evidence_path: Literal[
-        "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-pair-f77778c-acde7301.json"
+        "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-pair-ec6ca71-d4e91b70.json"
     ]
     compiler_pair_id: Literal[SEQAX_SILU_FUSION_COMPILER_PAIR_ID]
     compiler_pair_sha256: Literal[SEQAX_SILU_FUSION_COMPILER_PAIR_SHA256]
@@ -716,14 +716,14 @@ def default_seqax_silu_fusion_correctness_contract(
     return SeqaxSiluFusionCorrectnessContract.model_construct(
         identity_schema=SEMANTIC_IDENTITY_SCHEMA,
         claim_scope=("fixed-seqax-silu-fusion-full-output-and-strict-mlp-checkpoint-equivalence"),
-        compiler_evidence_status="pending-rebind",
+        compiler_evidence_status="verified",
         compiler_design_path="contracts/seqax-silu-fusion-design-v1.json",
         compiler_design_id=SEQAX_SILU_FUSION_COMPILER_DESIGN_ID,
         compiler_design_sha256=SEQAX_SILU_FUSION_COMPILER_DESIGN_SHA256,
         compiler_pair_record_path="contracts/seqax-silu-fusion-compiler-pair-v1.json",
         compiler_pair_evidence_path=(
             "/home/sudarshan/tpu-cake-evidence/"
-            "seqax-silu-fusion-compiler-pair-f77778c-acde7301.json"
+            "seqax-silu-fusion-compiler-pair-ec6ca71-d4e91b70.json"
         ),
         compiler_pair_id=SEQAX_SILU_FUSION_COMPILER_PAIR_ID,
         compiler_pair_sha256=SEQAX_SILU_FUSION_COMPILER_PAIR_SHA256,

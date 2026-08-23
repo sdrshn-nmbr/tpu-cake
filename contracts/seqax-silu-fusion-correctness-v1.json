@@ -2,21 +2,21 @@
   "schema_version": "seqax-silu-fusion-correctness-v1",
   "identity_schema": "length-prefixed-v2",
   "claim_scope": "fixed-seqax-silu-fusion-full-output-and-strict-mlp-checkpoint-equivalence",
-  "compiler_evidence_status": "pending-rebind",
+  "compiler_evidence_status": "verified",
   "compiler_design_path": "contracts/seqax-silu-fusion-design-v1.json",
-  "compiler_design_id": "f77778c8c49b090c0c8717f81c32a6269e07b5b9d2fd505e36b243e5bbfc143a",
-  "compiler_design_sha256": "bff54167ee3aa491903cf97bfdf5d4851415f5a0673c1bf2bc210851bc5f4dd8",
+  "compiler_design_id": "ec6ca7194ce8430035e94210d9fb2a75c99bf5749c50ab579dedf4fd1914996b",
+  "compiler_design_sha256": "e6c7fd18da0edba925b2bc6e0725c25b51f233f06013a9147c5eca0c977d0bff",
   "compiler_pair_record_path": "contracts/seqax-silu-fusion-compiler-pair-v1.json",
-  "compiler_pair_evidence_path": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-pair-f77778c-acde7301.json",
-  "compiler_pair_id": "63266abcb56a719a891b2d09a8e9b9b5b93143bf751fd0c69d16e3880c44b021",
-  "compiler_pair_sha256": "4241e7035e3d90b6a12c476fbbbfba870ef76db9f6e2ff9222be9e120997dfb4",
+  "compiler_pair_evidence_path": "/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-compiler-pair-ec6ca71-d4e91b70.json",
+  "compiler_pair_id": "afa1774255d9295ac30922b9bf851f85585fcb4c8267606085a3d851a2d89f9c",
+  "compiler_pair_sha256": "06ed3cc20bc6642a91f8dbddf7ae9ed56c705f73a57efe15b60d135c25626807",
   "compiler_capture_ids": [
-    "e2b4fd712ff671e386707883f4d12bfc864e444487779d292a5d41752d6f8d49",
-    "9bd531b3b5f377598a91abf26b8fc890980fd1042c66d15b129d0f7ad1f0633e"
+    "a2f76b116da7b2f618b0f48dc4648677720c07669e96dcbae530ab09b2c0b5cb",
+    "2753d19222bfa3d2fb448a847c16de5c695170a6b973e74ed721ee385bd197b8"
   ],
   "candidate_semantic_ids": [
-    "5851109941f77d2781e3a66efbb8052064cad1551be32054f2d8d3263697c6ef",
-    "927de445547f6342fb558ba3c159f9dc99871b48604b4b5be9e729035781f9f9"
+    "77f35a299a8da1296a95c9caaa29e1b0ef3e538e5a125780a25097aa6f0cde04",
+    "9ba500002f0ae57e6e55aec1ec1b491e975f767489c89f2d7c50265bb999aeb0"
   ],
   "compilation_source_root": "/home/sudarshan/tpu-cake-main",
   "source_remote_url": "https://github.com/sdrshn-nmbr/tpu-cake.git",
