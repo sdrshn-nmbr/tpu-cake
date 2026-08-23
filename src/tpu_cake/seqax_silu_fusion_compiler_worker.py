@@ -17,6 +17,7 @@ from jax.sharding import NamedSharding
 
 from tpu_cake.canonical import canonical_text
 from tpu_cake.compiler_analysis import (
+    CompilerMemoryAnalysis,
     analyze_compiler_collectives,
     capture_compiler_analysis,
 )
@@ -65,6 +66,21 @@ class _CompiledCandidate:
     pre_optimization_hlo: str
     compiler_hlo: str
     resources: Any
+
+
+@dataclass(frozen=True)
+class _CompilerAnalysisExecutable:
+    executable: Any
+    memory: Any
+
+    def as_text(self) -> Any:
+        return self.executable.as_text()
+
+    def cost_analysis(self) -> Any:
+        return self.executable.cost_analysis()
+
+    def memory_analysis(self) -> Any:
+        return self.memory
 
 
 class _RejectMetadataRedirects(urllib.request.HTTPRedirectHandler):
@@ -172,6 +188,24 @@ def _write_json_exclusive(path: Path, value: object) -> None:
         path,
         (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(),
     )
+
+
+def _write_buffer_assignment_if_available(
+    candidate_root: Path,
+    memory: CompilerMemoryAnalysis,
+    value: object,
+) -> None:
+    if not isinstance(value, bytes):
+        raise TypeError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_INVALID")
+    if (
+        memory.buffer_assignment_available != bool(value)
+        or memory.buffer_assignment_size_bytes != len(value)
+        or memory.buffer_assignment_sha256
+        != (hashlib.sha256(value).hexdigest() if value else None)
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_OBSERVATION_MISMATCH")
+    if memory.buffer_assignment_available:
+        _write_bytes_exclusive(candidate_root / "buffer_assignment.pb", value)
 
 
 def _canonical_hlo(value: str) -> str:
@@ -365,8 +399,9 @@ def _qualify_compiled(
     pre_optimization_hlo = compiled.pre_optimization_hlo
     compiler_hlo = compiled.compiler_hlo
     resources = compiled.resources
+    runtime_memory = executable.memory_analysis()
     compiler_analysis = capture_compiler_analysis(
-        executable,
+        _CompilerAnalysisExecutable(executable, runtime_memory),
         stablehlo=stablehlo.rstrip("\n"),
         compiler_hlo=compiler_hlo.rstrip("\n"),
     )
@@ -391,11 +426,12 @@ def _qualify_compiled(
         candidate_root / "fusion_analysis.json",
         fusion_analysis.model_dump(mode="json", exclude_computed_fields=True),
     )
-    memory = executable.memory_analysis()
-    buffer_assignment = memory.serialized_buffer_assignment_proto
-    if not isinstance(buffer_assignment, bytes) or not buffer_assignment:
-        raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_UNAVAILABLE")
-    _write_bytes_exclusive(candidate_root / "buffer_assignment.pb", buffer_assignment)
+    memory = compiler_analysis.memory
+    _write_buffer_assignment_if_available(
+        candidate_root,
+        memory,
+        runtime_memory.serialized_buffer_assignment_proto,
+    )
     _validate_stablehlo(prepared, stablehlo)
     required_collectives = (
         expected.expected_all_gathers,
@@ -426,8 +462,8 @@ def _qualify_compiled(
         compiler_analysis=compiler_analysis,
         reachable_collectives=reachable_collectives,
         fusion_analysis=fusion_analysis,
-        buffer_assignment_size_bytes=len(buffer_assignment),
-        buffer_assignment_sha256=hashlib.sha256(buffer_assignment).hexdigest(),
+        buffer_assignment_size_bytes=memory.buffer_assignment_size_bytes,
+        buffer_assignment_sha256=memory.buffer_assignment_sha256,
         allocated_vmem_bytes_per_device=resources.memory.allocated_vmem_bytes_per_device,
         peak_live_vmem_bytes_per_device=resources.memory.peak_live_vmem_bytes_per_device,
         ring_equivalent_ici_bytes_per_device=(

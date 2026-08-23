@@ -148,8 +148,11 @@ class SeqaxSiluFusionCompilerCandidate(BaseModel):
     compiler_analysis: CompilerExecutableAnalysis
     reachable_collectives: CompilerCollectiveAnalysis
     fusion_analysis: SeqaxSiluFusionCompilerAnalysis
-    buffer_assignment_size_bytes: int = Field(gt=0)
-    buffer_assignment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    buffer_assignment_size_bytes: int = Field(ge=0)
+    buffer_assignment_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     allocated_vmem_bytes_per_device: int = Field(gt=0)
     peak_live_vmem_bytes_per_device: int = Field(gt=0)
     ring_equivalent_ici_bytes_per_device: int = Field(gt=0)
@@ -158,8 +161,7 @@ class SeqaxSiluFusionCompilerCandidate(BaseModel):
     def buffer_assignment_is_bound(self) -> SeqaxSiluFusionCompilerCandidate:
         memory = self.compiler_analysis.memory
         if (
-            not memory.buffer_assignment_available
-            or memory.buffer_assignment_size_bytes != self.buffer_assignment_size_bytes
+            memory.buffer_assignment_size_bytes != self.buffer_assignment_size_bytes
             or memory.buffer_assignment_sha256 != self.buffer_assignment_sha256
             or self.fusion_analysis.candidate is not self.candidate
         ):
@@ -178,7 +180,6 @@ class SeqaxSiluFusionCompilerCandidate(BaseModel):
                 "pallas_manifest_sha256": self.pallas_manifest_sha256,
                 "reachable_collectives": self.reachable_collectives.model_dump(mode="json"),
                 "fusion_semantic_id": self.fusion_analysis.semantic_id,
-                "buffer_assignment_size_bytes": self.buffer_assignment_size_bytes,
                 "allocated_vmem_bytes_per_device": self.allocated_vmem_bytes_per_device,
                 "peak_live_vmem_bytes_per_device": self.peak_live_vmem_bytes_per_device,
                 "ring_equivalent_ici_bytes_per_device": (self.ring_equivalent_ici_bytes_per_device),

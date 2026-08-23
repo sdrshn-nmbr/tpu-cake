@@ -82,6 +82,10 @@ class SeqaxSiluFusionDesignContract(BaseModel):
     compiler_failure_receipt_required: Literal[True]
     compiler_failure_independent_replay_required: Literal[True]
     compiler_collective_gate_error_includes_observed_values: Literal[True]
+    compiler_buffer_assignment_policy: Literal[
+        "record-when-backend-exposes-serialized-proto"
+    ]
+    compiler_buffer_assignment_affects_semantic_identity: Literal[False]
     capture_ordinals: tuple[Literal[0], Literal[1]]
     ordinal_one_requires_ordinal_zero_replay_seal: Literal[True]
     allow_compile_retry: Literal[False]
@@ -280,6 +284,8 @@ def default_seqax_silu_fusion_design_contract(
         compiler_failure_receipt_required=True,
         compiler_failure_independent_replay_required=True,
         compiler_collective_gate_error_includes_observed_values=True,
+        compiler_buffer_assignment_policy="record-when-backend-exposes-serialized-proto",
+        compiler_buffer_assignment_affects_semantic_identity=False,
         capture_ordinals=(0, 1),
         ordinal_one_requires_ordinal_zero_replay_seal=True,
         allow_compile_retry=False,

@@ -14,6 +14,7 @@ from tpu_cake.artifacts import file_sha256, validate_artifact_manifest
 from tpu_cake.canonical import canonical_text
 from tpu_cake.compiler_analysis import (
     CompilerCollectiveAnalysis,
+    CompilerMemoryAnalysis,
     analyze_compiler_collectives,
     validate_compiler_analysis,
 )
@@ -120,6 +121,29 @@ def _preflight_root(root: Path) -> None:
             raise ValueError("SEQAX_SILU_FUSION_ARTIFACT_NONREGULAR")
         if info.st_nlink != 1:
             raise ValueError("SEQAX_SILU_FUSION_ARTIFACT_HARDLINK")
+
+
+def _validate_buffer_assignment_artifact(
+    candidate_root: Path,
+    memory: CompilerMemoryAnalysis,
+    *,
+    required_if_available: bool,
+) -> None:
+    path = candidate_root / "buffer_assignment.pb"
+    if not memory.buffer_assignment_available:
+        if path.exists():
+            raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_UNEXPECTED")
+        return
+    if not path.is_file():
+        if required_if_available:
+            raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_MISSING")
+        return
+    value = path.read_bytes()
+    if (
+        memory.buffer_assignment_size_bytes != len(value)
+        or memory.buffer_assignment_sha256 != hashlib.sha256(value).hexdigest()
+    ):
+        raise ValueError("SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_MISMATCH")
 
 
 def _registry_file(design: SeqaxSiluFusionDesignContract, name: str) -> Path:
@@ -442,7 +466,12 @@ def _validate_candidate(
             "SEQAX_SILU_FUSION_COMPILER_COLLECTIVE_MISMATCH "
             f"required={required_collectives} observed={observed_collectives}"
         )
-    buffer_assignment = (candidate_root / "buffer_assignment.pb").read_bytes()
+    memory = compiler_analysis.memory
+    _validate_buffer_assignment_artifact(
+        candidate_root,
+        memory,
+        required_if_available=True,
+    )
     observed = SeqaxSiluFusionCompilerCandidate(
         candidate=expected.candidate,
         distributed_schedule_sha256=plan.distributed_schedule_sha256,
@@ -453,8 +482,8 @@ def _validate_candidate(
         compiler_analysis=compiler_analysis,
         reachable_collectives=reachable_collectives,
         fusion_analysis=replayed_fusion,
-        buffer_assignment_size_bytes=len(buffer_assignment),
-        buffer_assignment_sha256=hashlib.sha256(buffer_assignment).hexdigest(),
+        buffer_assignment_size_bytes=memory.buffer_assignment_size_bytes,
+        buffer_assignment_sha256=memory.buffer_assignment_sha256,
         allocated_vmem_bytes_per_device=resources.memory.allocated_vmem_bytes_per_device,
         peak_live_vmem_bytes_per_device=resources.memory.peak_live_vmem_bytes_per_device,
         ring_equivalent_ici_bytes_per_device=(
@@ -528,10 +557,11 @@ def _validate_failed_candidate(
         "compiler_analysis.json",
         "reachable_collectives.json",
         "fusion_analysis.json",
-        "buffer_assignment.pb",
     )
     presence = tuple((candidate_root / name).is_file() for name in analysis_names)
     if any(presence[index] and not presence[index - 1] for index in range(1, len(presence))):
+        raise ValueError("SEQAX_SILU_FUSION_FAILURE_ANALYSIS_PREFIX_MISMATCH")
+    if (candidate_root / "buffer_assignment.pb").exists() and not presence[-1]:
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_ANALYSIS_PREFIX_MISMATCH")
     if not compiler_hlo_path.is_file():
         if any(presence):
@@ -571,16 +601,11 @@ def _validate_failed_candidate(
     )
     if recorded_fusion != replayed_fusion:
         raise ValueError("SEQAX_SILU_FUSION_FAILURE_GRAPH_REPLAY_MISMATCH")
-    if not presence[3]:
-        return
-    buffer_assignment = (candidate_root / "buffer_assignment.pb").read_bytes()
-    memory = compiler_analysis.memory
-    if (
-        not memory.buffer_assignment_available
-        or memory.buffer_assignment_size_bytes != len(buffer_assignment)
-        or memory.buffer_assignment_sha256 != hashlib.sha256(buffer_assignment).hexdigest()
-    ):
-        raise ValueError("SEQAX_SILU_FUSION_FAILURE_BUFFER_ASSIGNMENT_MISMATCH")
+    _validate_buffer_assignment_artifact(
+        candidate_root,
+        compiler_analysis.memory,
+        required_if_available=False,
+    )
 
 
 def verify_capture(root: Path, design_path: Path) -> SeqaxSiluFusionCompilerReceipt:

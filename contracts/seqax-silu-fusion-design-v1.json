@@ -33,6 +33,8 @@
   "compiler_failure_receipt_required": true,
   "compiler_failure_independent_replay_required": true,
   "compiler_collective_gate_error_includes_observed_values": true,
+  "compiler_buffer_assignment_policy": "record-when-backend-exposes-serialized-proto",
+  "compiler_buffer_assignment_affects_semantic_identity": false,
   "capture_ordinals": [
     0,
     1

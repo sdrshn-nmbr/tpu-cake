@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import sqlite3
@@ -12,7 +13,12 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from tpu_cake.compiler_analysis import CompilerCollectiveAnalysis
+from tpu_cake.compiler_analysis import (
+    CompilerCollectiveAnalysis,
+    CompilerCostMetric,
+    CompilerExecutableAnalysis,
+    CompilerMemoryAnalysis,
+)
 from tpu_cake.contracts import ArtifactReference, ArtifactRole, RuntimeIdentity, SourceFileContract
 from tpu_cake.ledger import EvidenceRun, RunState
 from tpu_cake.seqax_contract_types import SeqaxFeedForwardFusion
@@ -20,6 +26,7 @@ from tpu_cake.seqax_silu_fusion import default_seqax_silu_fusion_design_contract
 from tpu_cake.seqax_silu_fusion_compiler import (
     SeqaxSiluFusionCompilerAnalysis,
     SeqaxSiluFusionCompilerAttemptClaim,
+    SeqaxSiluFusionCompilerCall,
     SeqaxSiluFusionCompilerCandidate,
     SeqaxSiluFusionCompilerCapture,
     SeqaxSiluFusionCompilerFailureReceipt,
@@ -53,7 +60,11 @@ from tpu_cake.seqax_silu_fusion_compiler_verifier import (
     _ledger_state,
     _preflight_root,
     _registry_file,
+    _validate_buffer_assignment_artifact,
     _validate_stablehlo,
+)
+from tpu_cake.seqax_silu_fusion_compiler_worker import (
+    _write_buffer_assignment_if_available,
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -130,10 +141,22 @@ def test_candidate_semantic_identity_excludes_raw_compiler_hashes() -> None:
         sparse_core_reduce_scatter_count=1,
         sparse_core_all_gather_count=15,
     )
-    fusion = SeqaxSiluFusionCompilerAnalysis.model_construct(
+    fusion = SeqaxSiluFusionCompilerAnalysis(
         candidate=SeqaxFeedForwardFusion.SILU_MULTIPLY,
         strict_vector_call_count=1,
-        calls=(),
+        calls=(
+            SeqaxSiluFusionCompilerCall(
+                ordinal=0,
+                kernel="seqax_strict_bf16_silu_multiply",
+                output_shape="bf16[128,1,1024]",
+                operand_count=2,
+                schedule_sha256="2" * 64,
+                vector_region_index=0,
+                implementation="pallas_full_local",
+                instruction_name="fusion",
+                operand_names=("gate", "up"),
+            ),
+        ),
         all_strict_vector_calls_are_live=True,
         gate_and_up_projection_lineages_are_distinct=True,
         silu_output_feeds_multiply=False,
@@ -160,11 +183,192 @@ def test_candidate_semantic_identity_excludes_raw_compiler_hashes() -> None:
         **{
             **fields,
             "pre_optimization_hlo_sha256": "7" * 64,
+            "buffer_assignment_size_bytes": 456,
             "buffer_assignment_sha256": "8" * 64,
         }
     )
 
     assert first.semantic_id == second.semantic_id
+
+
+def test_candidate_accepts_backend_without_serialized_buffer_assignment() -> None:
+    memory = CompilerMemoryAnalysis(
+        generated_code_size_in_bytes=1,
+        argument_size_in_bytes=2,
+        output_size_in_bytes=3,
+        alias_size_in_bytes=0,
+        temp_size_in_bytes=4,
+        host_generated_code_size_in_bytes=0,
+        host_argument_size_in_bytes=0,
+        host_output_size_in_bytes=0,
+        host_alias_size_in_bytes=0,
+        host_temp_size_in_bytes=0,
+        peak_memory_in_bytes=5,
+        buffer_assignment_available=False,
+        buffer_assignment_size_bytes=0,
+        buffer_assignment_sha256=None,
+    )
+    collectives = CompilerCollectiveAnalysis(
+        stablehlo_reduce_scatter_count=1,
+        stablehlo_all_gather_count=15,
+        compiler_reduce_scatter_count=1,
+        compiler_all_reduce_count=2,
+        compiler_all_gather_count=15,
+        sparse_core_reduce_scatter_count=1,
+        sparse_core_all_gather_count=15,
+    )
+    fusion = SeqaxSiluFusionCompilerAnalysis(
+        candidate=SeqaxFeedForwardFusion.SILU_MULTIPLY,
+        strict_vector_call_count=1,
+        calls=(
+            SeqaxSiluFusionCompilerCall(
+                ordinal=0,
+                kernel="seqax_strict_bf16_silu_multiply",
+                output_shape="bf16[128,1,1024]",
+                operand_count=2,
+                schedule_sha256="2" * 64,
+                vector_region_index=0,
+                implementation="pallas_full_local",
+                instruction_name="fusion",
+                operand_names=("gate", "up"),
+            ),
+        ),
+        all_strict_vector_calls_are_live=True,
+        gate_and_up_projection_lineages_are_distinct=True,
+        silu_output_feeds_multiply=False,
+        vector_output_feeds_one_down_projection=True,
+    )
+    compiler_analysis = CompilerExecutableAnalysis(
+        stablehlo_sha256="9" * 64,
+        compiler_hlo_sha256="a" * 64,
+        cost_metrics=(
+            CompilerCostMetric(name="flops", raw_value=1.0, value=1.0, available=True),
+        ),
+        memory=memory,
+        collectives=collectives,
+    )
+
+    candidate = SeqaxSiluFusionCompilerCandidate(
+        candidate=SeqaxFeedForwardFusion.SILU_MULTIPLY,
+        distributed_schedule_sha256="1" * 64,
+        physical_schedule_sha256="2" * 64,
+        pallas_source_sha256="3" * 64,
+        pallas_manifest_sha256="4" * 64,
+        pre_optimization_hlo_sha256="5" * 64,
+        compiler_analysis=compiler_analysis,
+        reachable_collectives=collectives,
+        fusion_analysis=fusion,
+        buffer_assignment_size_bytes=0,
+        buffer_assignment_sha256=None,
+        allocated_vmem_bytes_per_device=6,
+        peak_live_vmem_bytes_per_device=7,
+        ring_equivalent_ici_bytes_per_device=8,
+    )
+
+    assert candidate.buffer_assignment_size_bytes == 0
+    assert candidate.buffer_assignment_sha256 is None
+
+
+def test_verifier_matches_optional_buffer_assignment_artifact(tmp_path: Path) -> None:
+    fields = {
+        "generated_code_size_in_bytes": 1,
+        "argument_size_in_bytes": 2,
+        "output_size_in_bytes": 3,
+        "alias_size_in_bytes": 0,
+        "temp_size_in_bytes": 4,
+        "host_generated_code_size_in_bytes": 0,
+        "host_argument_size_in_bytes": 0,
+        "host_output_size_in_bytes": 0,
+        "host_alias_size_in_bytes": 0,
+        "host_temp_size_in_bytes": 0,
+        "peak_memory_in_bytes": 5,
+    }
+    unavailable = CompilerMemoryAnalysis(
+        **fields,
+        buffer_assignment_available=False,
+        buffer_assignment_size_bytes=0,
+        buffer_assignment_sha256=None,
+    )
+
+    _validate_buffer_assignment_artifact(
+        tmp_path,
+        unavailable,
+        required_if_available=True,
+    )
+    (tmp_path / "buffer_assignment.pb").write_bytes(b"unexpected")
+    with pytest.raises(ValueError, match="BUFFER_ASSIGNMENT_UNEXPECTED"):
+        _validate_buffer_assignment_artifact(
+            tmp_path,
+            unavailable,
+            required_if_available=True,
+        )
+
+    payload = b"available-buffer-assignment"
+    available = CompilerMemoryAnalysis(
+        **fields,
+        buffer_assignment_available=True,
+        buffer_assignment_size_bytes=len(payload),
+        buffer_assignment_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    (tmp_path / "buffer_assignment.pb").unlink()
+    with pytest.raises(ValueError, match="BUFFER_ASSIGNMENT_MISSING"):
+        _validate_buffer_assignment_artifact(
+            tmp_path,
+            available,
+            required_if_available=True,
+        )
+    _validate_buffer_assignment_artifact(
+        tmp_path,
+        available,
+        required_if_available=False,
+    )
+    (tmp_path / "buffer_assignment.pb").write_bytes(b"wrong")
+    with pytest.raises(ValueError, match="BUFFER_ASSIGNMENT_MISMATCH"):
+        _validate_buffer_assignment_artifact(
+            tmp_path,
+            available,
+            required_if_available=True,
+        )
+    (tmp_path / "buffer_assignment.pb").write_bytes(payload)
+    _validate_buffer_assignment_artifact(
+        tmp_path,
+        available,
+        required_if_available=True,
+    )
+
+
+def test_worker_writes_buffer_assignment_only_when_available(tmp_path: Path) -> None:
+    fields = {
+        "generated_code_size_in_bytes": 1,
+        "argument_size_in_bytes": 2,
+        "output_size_in_bytes": 3,
+        "alias_size_in_bytes": 0,
+        "temp_size_in_bytes": 4,
+        "host_generated_code_size_in_bytes": 0,
+        "host_argument_size_in_bytes": 0,
+        "host_output_size_in_bytes": 0,
+        "host_alias_size_in_bytes": 0,
+        "host_temp_size_in_bytes": 0,
+        "peak_memory_in_bytes": 5,
+    }
+    unavailable = CompilerMemoryAnalysis(
+        **fields,
+        buffer_assignment_available=False,
+        buffer_assignment_size_bytes=0,
+        buffer_assignment_sha256=None,
+    )
+    _write_buffer_assignment_if_available(tmp_path, unavailable, b"")
+    assert not (tmp_path / "buffer_assignment.pb").exists()
+
+    payload = b"available-buffer-assignment"
+    available = CompilerMemoryAnalysis(
+        **fields,
+        buffer_assignment_available=True,
+        buffer_assignment_size_bytes=len(payload),
+        buffer_assignment_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    _write_buffer_assignment_if_available(tmp_path, available, payload)
+    assert (tmp_path / "buffer_assignment.pb").read_bytes() == payload
 
 
 def test_receipt_rejects_noncompiler_artifact_roles() -> None:
@@ -629,9 +833,11 @@ def test_worker_persists_compiler_evidence_before_collective_gate() -> None:
     }
     compile_source = functions["_compile_raw"]
     qualify_source = functions["_qualify_compiled"]
+    buffer_source = functions["_write_buffer_assignment_if_available"]
     worker_source = functions["run_worker"]
     assert compile_source is not None
     assert qualify_source is not None
+    assert buffer_source is not None
     assert worker_source is not None
 
     for artifact in (
@@ -645,9 +851,14 @@ def test_worker_persists_compiler_evidence_before_collective_gate() -> None:
         'candidate_root / "compiler_analysis.json"',
         'candidate_root / "reachable_collectives.json"',
         'candidate_root / "fusion_analysis.json"',
-        'candidate_root / "buffer_assignment.pb"',
     ):
         assert qualify_source.index(artifact) < collective_gate
+    assert qualify_source.index("_write_buffer_assignment_if_available(") < collective_gate
+    buffer_policy = buffer_source.index("if memory.buffer_assignment_available:")
+    assert buffer_policy < buffer_source.index('candidate_root / "buffer_assignment.pb"')
+    assert "SEQAX_SILU_FUSION_BUFFER_ASSIGNMENT_UNAVAILABLE" not in buffer_source
+    assert qualify_source.count("executable.memory_analysis()") == 1
+    assert "_CompilerAnalysisExecutable(executable, runtime_memory)" in qualify_source
     assert "required={required_collectives} observed={observed_collectives}" in qualify_source
     assert worker_source.index("tuple(_compile_raw") < worker_source.index(
         "tuple(_qualify_compiled"
