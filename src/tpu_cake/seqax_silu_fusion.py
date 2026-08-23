@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 
 from tpu_cake.contracts import RuntimeIdentity
 from tpu_cake.identity import SEMANTIC_IDENTITY_SCHEMA, model_identity_sha256, semantic_seed
-from tpu_cake.workloads.seqax_forward import (
+from tpu_cake.seqax_contract_types import (
     SeqaxFeedForwardFusion,
     SeqaxFeedForwardVectorExecution,
     SeqaxResidualNormStrategy,
@@ -67,12 +67,19 @@ class SeqaxSiluFusionDesignContract(BaseModel):
     compilation_source_root: str
     source_remote_url: str
     source_branch: Literal["main"]
+    worker_environment: dict[str, str]
     compiler_environment: dict[str, str]
     compile_input_mode: Literal["abstract-only"]
     compiler_capture_status: Literal["pending"]
     compile_capture_count: Literal[2]
     compile_capture_processes: Literal[2]
+    compiler_pair_record_required: Literal[True]
+    compiler_claim_registry_root: str
+    compiler_claim_key: Literal["seqax-silu-fusion-design-v1"]
+    capture_ordinals: tuple[Literal[0], Literal[1]]
+    ordinal_one_requires_ordinal_zero_replay_seal: Literal[True]
     allow_compile_retry: Literal[False]
+    allow_compile_resume: Literal[False]
     model_outputs_executed_during_compile: Literal[False]
     correctness_policy_status: Literal["pending-dedicated-contract"]
     timing_authorized: Literal[False]
@@ -240,6 +247,15 @@ def default_seqax_silu_fusion_design_contract(
         compilation_source_root=SEQAX_SILU_FUSION_COMPILATION_ROOT,
         source_remote_url="https://github.com/sdrshn-nmbr/tpu-cake.git",
         source_branch="main",
+        worker_environment={
+            "HOME": "/nonexistent",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": "/usr/bin:/bin",
+            "PYTHONHASHSEED": "0",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        },
         compiler_environment={
             "LIBTPU_INIT_ARGS": " --xla_tpu_use_enhanced_launch_barrier=true",
             "TPU_LIBRARY_PATH": "/home/sudarshan/tpu-cake-main/.venv/lib/python3.12/site-packages/libtpu/libtpu.so",
@@ -248,7 +264,13 @@ def default_seqax_silu_fusion_design_contract(
         compiler_capture_status="pending",
         compile_capture_count=2,
         compile_capture_processes=2,
+        compiler_pair_record_required=True,
+        compiler_claim_registry_root="/home/sudarshan/tpu-cake-evidence/seqax-silu-fusion-claims",
+        compiler_claim_key="seqax-silu-fusion-design-v1",
+        capture_ordinals=(0, 1),
+        ordinal_one_requires_ordinal_zero_replay_seal=True,
         allow_compile_retry=False,
+        allow_compile_resume=False,
         model_outputs_executed_during_compile=False,
         correctness_policy_status="pending-dedicated-contract",
         timing_authorized=False,

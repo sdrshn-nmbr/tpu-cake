@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 from xdsl.dialects.builtin import IntegerType, ModuleOp, Signedness, bf16, f32, i1
 from xdsl.ir import SSAValue
@@ -28,6 +27,14 @@ from tpu_cake.distributed_frontend import (
     tensor,
 )
 from tpu_cake.jax_lowering import JaxDistributedMeshPlan, JaxTensorContract
+from tpu_cake.seqax_contract_types import (
+    SeqaxDataAxisPlacement,
+    SeqaxFeedForwardFusion,
+    SeqaxFeedForwardVectorExecution,
+    SeqaxNormScalePlacement,
+    SeqaxNumericalSemantics,
+    SeqaxResidualNormStrategy,
+)
 from tpu_cake.source import SourceLocation
 
 SEQAX_REVISION = "b418a2d9059a1bfcff801d22b7088cc444257703"
@@ -49,38 +56,6 @@ SEQAX_FORWARD_INPUT_NAMES = (
     "final_layer_norm",
     "unembedding",
 )
-
-
-class SeqaxNormScalePlacement(StrEnum):
-    SHARDED = "sharded"
-    REPLICATED = "replicated"
-
-
-class SeqaxDataAxisPlacement(StrEnum):
-    SHARDED = "sharded"
-    REPLICATED = "replicated"
-
-
-class SeqaxNumericalSemantics(StrEnum):
-    LEGACY_FUSED_V0 = "legacy_fused_v0"
-    TYPED_BF16_V1 = "typed_bf16_v1"
-    TYPED_BF16_HIDDEN_V2 = "typed_bf16_hidden_v2"
-
-
-class SeqaxFeedForwardFusion(StrEnum):
-    SEPARATE = "separate"
-    SILU_MULTIPLY = "silu_multiply"
-
-
-class SeqaxFeedForwardVectorExecution(StrEnum):
-    LEGACY_MIXED = "legacy_mixed"
-    PALLAS_FULL_LOCAL = "pallas_full_local"
-
-
-class SeqaxResidualNormStrategy(StrEnum):
-    STANDARD = "standard"
-    SHARDED_RMS = "sharded_rms"
-    RESIDUAL_ALL_REDUCE = "residual_all_reduce"
 
 
 @dataclass(frozen=True)

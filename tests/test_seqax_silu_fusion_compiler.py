@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from tpu_cake.seqax_contract_types import SeqaxFeedForwardFusion
 from tpu_cake.seqax_silu_fusion_compiler import (
     analyze_seqax_silu_fusion_compiler_hlo,
 )
-from tpu_cake.workloads.seqax_forward import SeqaxFeedForwardFusion
 
 _SCHEDULE = "1" * 64
 
@@ -18,10 +18,11 @@ def _call(
     region_index: int,
     vector_region_index: int | None = None,
     root: bool = False,
+    schedule_sha256: str = _SCHEDULE,
 ) -> str:
     metadata = [
         f'"region_index":{region_index}',
-        f'"schedule_sha256":"{_SCHEDULE}"',
+        f'"schedule_sha256":"{schedule_sha256}"',
     ]
     if vector_region_index is not None:
         metadata.extend(
@@ -228,7 +229,7 @@ def test_compiler_analysis_rejects_swapped_or_duplicate_fused_inputs(operands: s
         f"custom-call({operands})",
     )
 
-    with pytest.raises(ValueError, match="COMPILER_BOUNDARY_MISMATCH"):
+    with pytest.raises(ValueError, match="PROJECTION_METADATA_MISMATCH"):
         analyze_seqax_silu_fusion_compiler_hlo(
             hlo,
             SeqaxFeedForwardFusion.SILU_MULTIPLY,
@@ -237,9 +238,39 @@ def test_compiler_analysis_rejects_swapped_or_duplicate_fused_inputs(operands: s
 
 
 def test_compiler_analysis_rejects_vector_output_that_bypasses_down_projection() -> None:
-    with pytest.raises(ValueError, match="COMPILER_BOUNDARY_MISMATCH"):
+    with pytest.raises(ValueError, match="PROJECTION_METADATA_MISMATCH"):
         analyze_seqax_silu_fusion_compiler_hlo(
             _compiler_hlo(SeqaxFeedForwardFusion.SILU_MULTIPLY, down_root=False),
+            SeqaxFeedForwardFusion.SILU_MULTIPLY,
+            expected_schedule_sha256=_SCHEDULE,
+        )
+
+
+def test_compiler_analysis_ignores_metadata_reference_decoy() -> None:
+    original = _call(
+        "down_projection",
+        "seqax_named_einsum",
+        ("vector_boundary", "down_weight"),
+        region_index=7,
+        root=True,
+    )
+    mutant = _call(
+        "down_projection",
+        "seqax_named_einsum",
+        ("gate_projection", "down_weight"),
+        region_index=7,
+        root=False,
+    ).replace("seqax_named_einsum/pallas_call", "%vector_boundary/pallas_call")
+    hlo = _compiler_hlo(SeqaxFeedForwardFusion.SILU_MULTIPLY).replace(original, mutant)
+    hlo = hlo.replace(
+        "\n}\n",
+        "\n  ROOT %result = (f32[128,1,32], bf16[128,1,1024]) "
+        "tuple(%down_projection, %vector_boundary)\n}\n",
+    )
+
+    with pytest.raises(ValueError, match="PROJECTION_METADATA_MISMATCH"):
+        analyze_seqax_silu_fusion_compiler_hlo(
+            hlo,
             SeqaxFeedForwardFusion.SILU_MULTIPLY,
             expected_schedule_sha256=_SCHEDULE,
         )
@@ -256,6 +287,74 @@ def test_compiler_analysis_rejects_wrong_schedule_or_implementation_metadata() -
     with pytest.raises(ValueError, match="VECTOR_METADATA_MISMATCH"):
         analyze_seqax_silu_fusion_compiler_hlo(
             hlo.replace('"implementation":"pallas_full_local"', '"implementation":"xla"'),
+            SeqaxFeedForwardFusion.SILU_MULTIPLY,
+            expected_schedule_sha256=_SCHEDULE,
+        )
+
+
+def test_compiler_analysis_rejects_binary_silu_mutant() -> None:
+    hlo = _compiler_hlo(SeqaxFeedForwardFusion.SEPARATE).replace(
+        "custom-call(%gate_projection)",
+        "custom-call(%gate_projection, %up_projection)",
+    )
+
+    with pytest.raises(ValueError, match="VECTOR_ARITY_MISMATCH"):
+        analyze_seqax_silu_fusion_compiler_hlo(
+            hlo,
+            SeqaxFeedForwardFusion.SEPARATE,
+            expected_schedule_sha256=_SCHEDULE,
+        )
+
+
+def test_compiler_analysis_rejects_conflicting_duplicate_metadata() -> None:
+    hlo = _compiler_hlo(SeqaxFeedForwardFusion.SILU_MULTIPLY).replace(
+        '"implementation":"pallas_full_local"',
+        '"implementation":"pallas_full_local"\n"implementation":"xla"',
+        1,
+    )
+
+    with pytest.raises(ValueError, match="METADATA_AMBIGUOUS"):
+        analyze_seqax_silu_fusion_compiler_hlo(
+            hlo,
+            SeqaxFeedForwardFusion.SILU_MULTIPLY,
+            expected_schedule_sha256=_SCHEDULE,
+        )
+
+
+@pytest.mark.parametrize(
+    "name,kernel,operands,region_index,root",
+    (
+        ("gate_projection", "seqax_named_einsum", ("input", "gate_weight"), 5, False),
+        ("up_projection", "seqax_named_einsum", ("input", "up_weight"), 6, False),
+        (
+            "down_projection",
+            "seqax_named_einsum",
+            ("vector_boundary", "down_weight"),
+            7,
+            True,
+        ),
+    ),
+)
+def test_compiler_analysis_rejects_projection_schedule_mutants(
+    name: str,
+    kernel: str,
+    operands: tuple[str, ...],
+    region_index: int,
+    root: bool,
+) -> None:
+    original = _call(name, kernel, operands, region_index=region_index, root=root)
+    mutant = _call(
+        name,
+        kernel,
+        operands,
+        region_index=region_index,
+        root=root,
+        schedule_sha256="2" * 64,
+    )
+
+    with pytest.raises(ValueError, match="PROJECTION_METADATA_MISMATCH"):
+        analyze_seqax_silu_fusion_compiler_hlo(
+            _compiler_hlo(SeqaxFeedForwardFusion.SILU_MULTIPLY).replace(original, mutant),
             SeqaxFeedForwardFusion.SILU_MULTIPLY,
             expected_schedule_sha256=_SCHEDULE,
         )
