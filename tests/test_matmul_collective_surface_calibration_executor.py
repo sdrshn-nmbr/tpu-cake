@@ -10,16 +10,56 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from test_matmul_collective_surface_calibration_evidence import _evidence
 
+import tpu_cake.matmul_collective_surface_calibration_executor as executor
+from tpu_cake.contracts import SourceFileContract
+from tpu_cake.identity import model_identity_sha256
+from tpu_cake.matmul_collective_surface_calibration_archive import (
+    validate_and_extract_parent_archive,
+)
+from tpu_cake.matmul_collective_surface_calibration_evidence import (
+    MatmulCollectiveSurfaceCalibrationEvidence,
+    SurfaceCalibrationCallSample,
+    SurfaceCalibrationOutputGate,
+    SurfaceCalibrationWarmupExecution,
+)
 from tpu_cake.matmul_collective_surface_calibration_executor import (
+    SurfaceCalibrationManifest,
     SurfaceCalibrationPhaseReceipt,
     _artifact_set_sha256,
     _claim_attempt,
+    _file_sha256,
     _manifest_entries,
     _stage_and_verify_parent,
 )
 from tpu_cake.matmul_collective_surface_calibration_protocol import (
+    MatmulCollectiveSurfaceCalibrationProtocol,
     default_matmul_collective_surface_calibration_protocol,
+)
+from tpu_cake.matmul_collective_surface_calibration_seal import (
+    MatmulCollectiveSurfaceCalibrationSealedEvidence,
+)
+from tpu_cake.matmul_collective_surface_calibration_worker import (
+    CALIBRATION_EXECUTABLE_DEPENDENCIES,
+    CALIBRATION_EXECUTOR_SOURCE_PATH,
+    CALIBRATION_VERIFIER_SOURCE_PATH,
+    CALIBRATION_WORKER_SOURCE_PATH,
+    SurfaceCalibrationAttemptClaim,
+    SurfaceCalibrationDevice,
+    SurfaceCalibrationExecutionAuthority,
+    SurfaceCalibrationSourceAuthority,
+    SurfaceCalibrationWorkerRequest,
+    SurfaceCalibrationWorkerResult,
+)
+from tpu_cake.matmul_collective_surface_prediction import (
+    MatmulCollectiveSurfaceDesignContract,
+    default_matmul_collective_surface_design_contract,
+)
+from tpu_cake.matmul_collective_surface_runner import (
+    SurfacePhase,
+    SurfacePhaseLedger,
+    record_surface_phase,
 )
 
 
@@ -28,6 +68,168 @@ def _zstd() -> Path:
     if path is None:
         pytest.skip("zstd unavailable")
     return Path(path)
+
+
+def _synthetic_authority(
+    protocol: MatmulCollectiveSurfaceCalibrationProtocol,
+    design: MatmulCollectiveSurfaceDesignContract,
+) -> tuple[SurfaceCalibrationExecutionAuthority, dict[str, bytes]]:
+    source_blobs = {
+        path: f"synthetic lifecycle source: {path}\n".encode()
+        for path in CALIBRATION_EXECUTABLE_DEPENDENCIES
+    }
+    source_blobs["uv.lock"] = b"synthetic lifecycle lock\n"
+    source = SurfaceCalibrationSourceAuthority(
+        source_commit="1" * 40,
+        origin_main_commit="1" * 40,
+        remote_main_commit="1" * 40,
+        runtime={},
+        uv_lock_sha256=hashlib.sha256(source_blobs["uv.lock"]).hexdigest(),
+        dependencies=tuple(
+            SourceFileContract(path=path, sha256=hashlib.sha256(source_blobs[path]).hexdigest())
+            for path in CALIBRATION_EXECUTABLE_DEPENDENCIES
+        ),
+    )
+    authority = SurfaceCalibrationExecutionAuthority(
+        protocol_id=protocol.protocol_id,
+        protocol_file_sha256="2" * 64,
+        design_id=design.design_id,
+        design_file_sha256="3" * 64,
+        source=source,
+        executor_source_sha256=hashlib.sha256(
+            source_blobs[CALIBRATION_EXECUTOR_SOURCE_PATH.removeprefix("src/")]
+        ).hexdigest(),
+        worker_source_sha256=hashlib.sha256(
+            source_blobs[CALIBRATION_WORKER_SOURCE_PATH.removeprefix("src/")]
+        ).hexdigest(),
+        verifier_source_sha256=hashlib.sha256(
+            source_blobs[CALIBRATION_VERIFIER_SOURCE_PATH.removeprefix("src/")]
+        ).hexdigest(),
+        compiler_environment=design.compiler_environment,
+        devices=tuple(SurfaceCalibrationDevice(id=index) for index in range(8)),
+    )
+    return authority, source_blobs
+
+
+def _bind_synthetic_worker_result(
+    template: MatmulCollectiveSurfaceCalibrationEvidence,
+    protocol: MatmulCollectiveSurfaceCalibrationProtocol,
+    design: MatmulCollectiveSurfaceDesignContract,
+    authority: SurfaceCalibrationExecutionAuthority,
+    request: SurfaceCalibrationWorkerRequest,
+) -> SurfaceCalibrationWorkerResult:
+    nonce = request.invocation_nonce
+    worker_pid = 4242
+    pairs = tuple(
+        value.model_copy(update={"invocation_nonce": nonce, "worker_pid": worker_pid})
+        for value in template.resident_pairs
+    )
+    pair_hashes = {value.scenario_name: value.resident_pair_sha256 for value in pairs}
+
+    def bind_observation(
+        value: (
+            SurfaceCalibrationOutputGate
+            | SurfaceCalibrationWarmupExecution
+            | SurfaceCalibrationCallSample
+        ),
+    ) -> (
+        SurfaceCalibrationOutputGate
+        | SurfaceCalibrationWarmupExecution
+        | SurfaceCalibrationCallSample
+    ):
+        return value.model_copy(
+            update={
+                "resident_pair_sha256": pair_hashes[value.scenario_name],
+                "invocation_nonce": nonce,
+                "worker_pid": worker_pid,
+            }
+        )
+
+    evidence = template.model_copy(
+        update={
+            "protocol_id": protocol.protocol_id,
+            "protocol_file_sha256": authority.protocol_file_sha256,
+            "design_id": design.design_id,
+            "design_file_sha256": authority.design_file_sha256,
+            "calibration_execution_authority_sha256": authority.authority_sha256,
+            "invocation_nonce": nonce,
+            "worker_pid": worker_pid,
+            "resident_pairs": pairs,
+            "output_gates": tuple(bind_observation(value) for value in template.output_gates),
+            "warmups": tuple(bind_observation(value) for value in template.warmups),
+            "samples": tuple(bind_observation(value) for value in template.samples),
+        }
+    )
+    return SurfaceCalibrationWorkerResult(
+        attempt_id=request.attempt_id,
+        invocation_nonce=nonce,
+        worker_pid=worker_pid,
+        execution_authority_sha256=authority.authority_sha256,
+        evidence=evidence,
+    )
+
+
+def _replay_relocated_lifecycle(
+    root: Path,
+    temporary_root: Path,
+    protocol: MatmulCollectiveSurfaceCalibrationProtocol,
+) -> dict[str, object]:
+    raw_archive = temporary_root / "terminal.tar"
+    with tarfile.open(raw_archive, "w") as bundle:
+        bundle.add(root, arcname=root.name)
+    compressed_archive = temporary_root / "terminal.tar.zst"
+    subprocess.run(
+        [str(_zstd()), "-q", "-f", str(raw_archive), "-o", str(compressed_archive)],
+        check=True,
+    )
+    relocated = temporary_root / "relocated"
+    validate_and_extract_parent_archive(
+        compressed_archive,
+        relocated,
+        expected_root_name=root.name,
+        maximum_members=10_000,
+        maximum_member_size_bytes=1 << 30,
+        maximum_total_size_bytes=4 << 30,
+        zstd_path=_zstd(),
+    )
+    replay_root = relocated / root.name
+    manifest = SurfaceCalibrationManifest.model_validate_json(
+        (replay_root / "manifest.json").read_text()
+    )
+    assert tuple(value.path for value in manifest.artifacts) == tuple(
+        sorted(value.path for value in manifest.artifacts)
+    )
+    assert all(
+        _file_sha256(replay_root / value.path) == value.sha256
+        and (replay_root / value.path).stat().st_size == value.size_bytes
+        for value in manifest.artifacts
+    )
+    evidence = MatmulCollectiveSurfaceCalibrationEvidence.model_validate_json(
+        (replay_root / "evidence.json").read_text()
+    )
+    seal = MatmulCollectiveSurfaceCalibrationSealedEvidence.model_validate_json(
+        (replay_root / "calibration-seal.json").read_text()
+    )
+    receipt = SurfaceCalibrationPhaseReceipt.model_validate_json(
+        (replay_root / "receipt.json").read_text()
+    )
+    phase_ledger = SurfacePhaseLedger.model_validate_json(
+        (replay_root / "phase_ledger.json").read_text()
+    )
+    return {
+        "attempt_id": manifest.identity.attempt_id,
+        "protocol_id": manifest.identity.protocol_id,
+        "source_authority_sha256": manifest.identity.source_authority_sha256,
+        "execution_authority_sha256": manifest.identity.execution_authority_sha256,
+        "correctness_parent_receipt_sha256": protocol.correctness_parent.receipt_sha256,
+        "evidence_sha256": evidence.evidence_sha256,
+        "seal_sha256": seal.seal_sha256,
+        "ledger_sha256": _file_sha256(replay_root / "ledger.sqlite"),
+        "phase_ledger_sha256": model_identity_sha256(phase_ledger),
+        "receipt_sha256": receipt.receipt_sha256,
+        "sample_count": len(evidence.samples),
+        "holdout_authorization": seal.holdout_authorization,
+    }
 
 
 def test_permanent_claim_is_parent_bound_and_exclusive(tmp_path: Path) -> None:
@@ -183,3 +385,102 @@ def test_parent_is_staged_verified_then_moved_into_final_layout(tmp_path: Path) 
     assert (output / "parent" / archive.name).read_bytes() == archive.read_bytes()
     assert (extracted / "source/verifier.py").read_bytes() == script
     assert not (output / "parent-extraction").exists()
+
+
+def test_mock_lifecycle_replays_after_safe_archive_relocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    os.chmod(tmp_path, 0o700)
+    design = default_matmul_collective_surface_design_contract()
+    protocol = default_matmul_collective_surface_calibration_protocol()
+    protocol_path = tmp_path / "protocol.json"
+    design_path = tmp_path / "design.json"
+    protocol_path.write_text("{}\n")
+    design_path.write_text("{}\n")
+    authority, source_blobs = _synthetic_authority(protocol, design)
+    evidence_template = _evidence()
+
+    def stage_parent(
+        root: Path,
+        _protocol: MatmulCollectiveSurfaceCalibrationProtocol,
+        *,
+        zstd_path: Path,
+    ) -> Path:
+        assert zstd_path.is_file()
+        parent = root / "parent" / protocol.correctness_parent.archive_root_name
+        parent.mkdir(mode=0o700, parents=True)
+        ledger = SurfacePhaseLedger(attempt_id=protocol.correctness_parent.attempt_id)
+        ledger = record_surface_phase(ledger, SurfacePhase.COMPILE, "4" * 64)
+        ledger = record_surface_phase(ledger, SurfacePhase.CORRECTNESS, "5" * 64)
+        executor._write_model_exclusive(parent / "phase_ledger.json", ledger)
+        (parent / "parent-evidence-marker").write_bytes(b"parent\n")
+        return parent
+
+    def claim_attempt(
+        root: Path,
+        attempt_id: str,
+        _protocol: MatmulCollectiveSurfaceCalibrationProtocol,
+        source_commit: str,
+    ) -> tuple[Path, SurfaceCalibrationAttemptClaim]:
+        claim = SurfaceCalibrationAttemptClaim(
+            attempt_id=attempt_id,
+            protocol_id=protocol.protocol_id,
+            permanent_claim_key=protocol.permanent_claim_key,
+            correctness_parent_receipt_sha256=protocol.correctness_parent.receipt_sha256,
+            source_commit=source_commit,
+            output_root=str(root),
+        )
+        path = tmp_path / "registry" / f"{protocol.permanent_claim_key}.json"
+        executor._write_model_exclusive(path, claim)
+        return path, claim
+
+    def worker_result(
+        _root: Path,
+        request: SurfaceCalibrationWorkerRequest,
+        _authority: SurfaceCalibrationExecutionAuthority,
+    ) -> SurfaceCalibrationWorkerResult:
+        return _bind_synthetic_worker_result(
+            evidence_template,
+            protocol,
+            design,
+            authority,
+            request,
+        )
+
+    def relocated_replay(
+        root: Path,
+        _protocol_path: Path,
+        _design_path: Path,
+    ) -> dict[str, object]:
+        return _replay_relocated_lifecycle(root, tmp_path, protocol)
+
+    parent_schedules = executor._schedule_payload(evidence_template.continuity)
+    monkeypatch.setattr(executor, "_canonical_design", lambda _path: design)
+    monkeypatch.setattr(executor, "_canonical_protocol", lambda _path, _design: protocol)
+    monkeypatch.setattr(
+        executor,
+        "_probe_execution_authority",
+        lambda *_args: (authority, source_blobs),
+    )
+    monkeypatch.setattr(executor, "_stage_and_verify_parent", stage_parent)
+    monkeypatch.setattr(executor, "_claim_attempt", claim_attempt)
+    monkeypatch.setattr(executor, "_parent_schedule_payload", lambda *_args: parent_schedules)
+    monkeypatch.setattr(executor, "_launch_worker", lambda *_args: None)
+    monkeypatch.setattr(executor, "_validate_worker_result", worker_result)
+    monkeypatch.setattr(executor, "_run_archived_independent_verifier", relocated_replay)
+
+    root = tmp_path / "attempt"
+    manifest = executor.execute_surface_calibration(
+        root,
+        protocol_path,
+        design_path,
+        "6" * 64,
+        zstd_path=_zstd(),
+    )
+
+    assert manifest == SurfaceCalibrationManifest.model_validate_json(
+        (root / "manifest.json").read_text()
+    )
+    assert not (root / "failure.json").exists()
+    assert (tmp_path / "terminal.tar.zst").is_file()
