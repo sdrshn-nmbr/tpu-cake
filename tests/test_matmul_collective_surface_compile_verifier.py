@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import tpu_cake.matmul_collective_surface_compile_verifier as compile_verifier
 from tpu_cake.matmul_collective_surface_compile_verifier import (
     _EXPECTED_ARM_IDENTITIES,
     _EXPECTED_SOURCE_DEPENDENCIES,
@@ -26,6 +27,31 @@ from tpu_cake.matmul_collective_surface_prediction import (
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _bind_synthetic_archive_to_current_fixture_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    repository_root = Path(__file__).parents[1]
+    monkeypatch.setattr(
+        compile_verifier,
+        "_EXPECTED_SOURCE_HASHES",
+        {
+            relative: hashlib.sha256((repository_root / "src" / relative).read_bytes()).hexdigest()
+            for relative in _EXPECTED_SOURCE_DEPENDENCIES
+        },
+    )
+    for attribute, relative in (
+        ("_EXPECTED_EXECUTOR_SOURCE_SHA256", "tpu_cake/matmul_collective_surface_executor.py"),
+        (
+            "_EXPECTED_WORKER_SOURCE_SHA256",
+            "tpu_cake/matmul_collective_surface_compile_worker.py",
+        ),
+    ):
+        monkeypatch.setattr(
+            compile_verifier,
+            attribute,
+            hashlib.sha256((repository_root / "src" / relative).read_bytes()).hexdigest(),
+        )
 
 
 def _write_json(path: Path, value: object) -> None:
