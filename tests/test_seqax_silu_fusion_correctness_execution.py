@@ -13,12 +13,25 @@ import pytest
 from tpu_cake import seqax_silu_fusion_correctness_runner as correctness_runner
 from tpu_cake.contracts import RuntimeIdentity, SourceFileContract
 from tpu_cake.ledger import EvidenceRun, RunState, finalize_ledger
+from tpu_cake.seqax_contract_types import SeqaxFeedForwardFusion
 from tpu_cake.seqax_silu_fusion_correctness import (
+    SEQAX_SILU_FUSION_FUSED_CHECKPOINT_CAPTURE_MODES,
+    SEQAX_SILU_FUSION_SEPARATE_CHECKPOINT_CAPTURE_MODES,
+    SeqaxSiluFusionCandidateCorrectness,
+    SeqaxSiluFusionCheckpointMetrics,
     SeqaxSiluFusionCorrectnessAttemptClaim,
     SeqaxSiluFusionCorrectnessContract,
+    SeqaxSiluFusionCorrectnessDevice,
     SeqaxSiluFusionCorrectnessFailure,
     SeqaxSiluFusionCorrectnessFailureReceipt,
+    SeqaxSiluFusionCorrectnessHost,
+    SeqaxSiluFusionCorrectnessObservation,
+    SeqaxSiluFusionCorrectnessPlan,
+    SeqaxSiluFusionCorrectnessReceipt,
+    SeqaxSiluFusionCorrectnessResult,
     SeqaxSiluFusionCorrectnessSourceAuthority,
+    SeqaxSiluFusionCorrectnessWorkerResult,
+    SeqaxSiluFusionFinalOutputMetrics,
 )
 from tpu_cake.seqax_silu_fusion_correctness_runner import (
     _artifact_role as runner_artifact_role,
@@ -59,6 +72,137 @@ def _source_authority() -> SeqaxSiluFusionCorrectnessSourceAuthority:
             libtpu="0.0.44.1",
             xla=" --xla_tpu_use_enhanced_launch_barrier=true",
         ),
+    )
+
+
+def _synthetic_result(
+    contract: SeqaxSiluFusionCorrectnessContract,
+    claim: SeqaxSiluFusionCorrectnessAttemptClaim,
+    source: SeqaxSiluFusionCorrectnessSourceAuthority,
+) -> SeqaxSiluFusionCorrectnessResult:
+    output_metrics = SeqaxSiluFusionFinalOutputMetrics(
+        cpu_relative_l2=0.0,
+        cpu_row_scaled_max=0.0,
+        cpu_top1_match=True,
+        final_output_policy_passed=True,
+    )
+    checkpoint_metrics = SeqaxSiluFusionCheckpointMetrics(
+        rms_mean_square_max_bound_ratio=0.0,
+        rms_inverse_relative_error_units=0.0,
+        normalized_float32_max_bound_ratio=0.0,
+        gate_float32_max_bound_ratio=0.0,
+        silu_max_ulp_of_mathematical=0,
+        up_float32_max_bound_ratio=0.0,
+        hidden_matches_product=True,
+        down_float32_max_bound_ratio=0.0,
+        bfloat16_conversions_match=True,
+        checkpoint_values_consistent=True,
+        full_assessment_sha256="1" * 64,
+    )
+
+    def candidate(
+        fusion: SeqaxFeedForwardFusion,
+    ) -> SeqaxSiluFusionCandidateCorrectness:
+        modes = (
+            SEQAX_SILU_FUSION_SEPARATE_CHECKPOINT_CAPTURE_MODES
+            if fusion is SeqaxFeedForwardFusion.SEPARATE
+            else SEQAX_SILU_FUSION_FUSED_CHECKPOINT_CAPTURE_MODES
+        )
+        return SeqaxSiluFusionCandidateCorrectness(
+            candidate=fusion,
+            uninstrumented_output_sha256="2" * 64,
+            instrumented_output_sha256="2" * 64,
+            checkpoint_sha256=("3" * 64,) * 13,
+            checkpoint_capture_modes=modes,
+            uninstrumented_metrics=output_metrics,
+            instrumented_metrics=output_metrics,
+            checkpoint_metrics=checkpoint_metrics,
+            instrumentation_output_exact=True,
+        )
+
+    candidates = (
+        candidate(SeqaxFeedForwardFusion.SEPARATE),
+        candidate(SeqaxFeedForwardFusion.SILU_MULTIPLY),
+    )
+    seeds = (*contract.correctness_seeds, contract.boundary_seed)
+    observations = tuple(
+        SeqaxSiluFusionCorrectnessObservation(
+            seed=seed,
+            input_sha256=("4" * 64,) * 13,
+            cpu_reference_sha256="5" * 64,
+            candidates=candidates,
+            candidate_uninstrumented_outputs_exact=True,
+            candidate_instrumented_outputs_exact=True,
+            candidate_checkpoints_exact=True,
+            boundary_case=index == len(seeds) - 1,
+            boundary_strict_mutant_difference_count=(1 if index == len(seeds) - 1 else 0),
+            boundary_mutant_rejected=index == len(seeds) - 1,
+        )
+        for index, seed in enumerate(seeds)
+    )
+    plans = tuple(
+        SeqaxSiluFusionCorrectnessPlan(
+            candidate=fusion,
+            candidate_semantic_id=semantic_id,
+            distributed_schedule_sha256="6" * 64,
+            physical_schedule_sha256="7" * 64,
+            pallas_source_sha256="8" * 64,
+            pallas_manifest_sha256="9" * 64,
+            uninstrumented_stablehlo_sha256="a" * 64,
+            uninstrumented_pre_optimization_hlo_sha256="b" * 64,
+            uninstrumented_compiler_hlo_sha256="c" * 64,
+            instrumented_stablehlo_sha256="d" * 64,
+            instrumented_pre_optimization_hlo_sha256="e" * 64,
+            instrumented_compiler_hlo_sha256="f" * 64,
+        )
+        for fusion, semantic_id in zip(
+            (
+                SeqaxFeedForwardFusion.SEPARATE,
+                SeqaxFeedForwardFusion.SILU_MULTIPLY,
+            ),
+            contract.candidate_semantic_ids,
+            strict=True,
+        )
+    )
+    return SeqaxSiluFusionCorrectnessResult(
+        contract_id=contract.contract_id,
+        claim_id=claim.claim_id,
+        source=source,
+        host=SeqaxSiluFusionCorrectnessHost(
+            project="astral-medley-465922-b2",
+            numeric_project_id="541760035156",
+            zone="us-central1-c",
+            hostname="tpu-cake-v7x-rsag-wx7r",
+            instance_hostname=(
+                "tpu-cake-v7x-rsag-wx7r.us-central1-c.c.astral-medley-465922-b2.internal"
+            ),
+            machine_type="tpu7x-standard-4t",
+            instance_id="5064039476077763048",
+            cpu_platform="Intel Emerald Rapids",
+        ),
+        devices=tuple(
+            SeqaxSiluFusionCorrectnessDevice(
+                id=index,
+                process_index=0,
+                platform="tpu",
+                device_kind="TPU7x",
+            )
+            for index in range(8)
+        ),
+        plans=plans,
+        observations=observations,
+        model_outputs_executed=True,
+        full_inputs_persisted=True,
+        full_outputs_persisted=True,
+        full_checkpoints_persisted=True,
+        producer_passed=True,
+        timing_collected=False,
+        profile_collected=False,
+        worker_pid=1,
+        worker_nonce="0" * 32,
+        source_import_root="/isolated/source/committed/src",
+        worker_environment=contract.worker_environment,
+        compiler_environment=contract.compiler_environment,
     )
 
 
@@ -202,6 +346,95 @@ def test_archive_replay_rejects_nonprivate_recorded_root(
 
     with pytest.raises(ValueError, match="ARCHIVE_LAYOUT_INVALID"):
         correctness_runner._verify_extracted_archive(archive, root.name)
+
+
+def test_mock_success_lifecycle_replays_after_safe_archive_relocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if correctness_runner.shutil.which("zstd") is None:
+        pytest.skip("zstd is required for archive replay")
+    contract_path = _ROOT / "contracts/seqax-silu-fusion-correctness-v1.json"
+    contract = SeqaxSiluFusionCorrectnessContract.model_validate_json(contract_path.read_text())
+    source = _source_authority()
+    root = tmp_path / "run"
+    claim = SeqaxSiluFusionCorrectnessAttemptClaim(
+        contract_id=contract.contract_id,
+        invocation_id="1" * 32,
+        source_commit=source.source_commit,
+        source_tree=source.source_tree,
+        output_root=str(root),
+    )
+    result = _synthetic_result(contract, claim, source)
+    worker_result = SeqaxSiluFusionCorrectnessWorkerResult(result=result)
+    registry = tmp_path / "registry"
+    registry.mkdir(mode=0o700)
+    claim_path = registry / "claim.json"
+    blobs = {
+        "contracts/seqax-silu-fusion-correctness-v1.json": contract_path.read_bytes(),
+        "contracts/seqax-silu-fusion-compiler-pair-v1.json": (
+            _ROOT / "contracts/seqax-silu-fusion-compiler-pair-v1.json"
+        ).read_bytes(),
+        "uv.lock": b"synthetic lifecycle source\n",
+    }
+
+    def launch_worker(path: Path, *_args: object) -> subprocess.CompletedProcess[str]:
+        run = EvidenceRun(path / "ledger.sqlite", claim.claim_id)
+        for state in (
+            RunState.VERIFIED,
+            RunState.LOWERED,
+            RunState.COMPILED,
+            RunState.CORRECT,
+        ):
+            run.transition(state, {"state": state.value})
+        correctness_runner._write_json_exclusive(
+            path / "worker-result.json",
+            worker_result.model_dump(mode="json", exclude_computed_fields=True),
+        )
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    def verify(path: Path, *, final: bool, relocated: bool = False) -> dict[str, str]:
+        if not final:
+            assert not relocated
+            return {"result_id": result.result_id}
+        receipt = SeqaxSiluFusionCorrectnessReceipt.model_validate_json(
+            (path / "receipt.json").read_text()
+        )
+        if relocated:
+            assert path != root
+            assert stat.S_IMODE(path.stat().st_mode) == 0o700
+        return {
+            "result_id": receipt.result.result_id,
+            "receipt_id": receipt.receipt_id,
+        }
+
+    monkeypatch.setattr(correctness_runner, "_require_safe_new_root", lambda *_: root)
+    monkeypatch.setattr(correctness_runner, "_source_authority", lambda *_: (source, blobs))
+    monkeypatch.setattr(correctness_runner, "_claim_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(
+        correctness_runner,
+        "_prepare_claim",
+        lambda *_: (claim_path, claim),
+    )
+    monkeypatch.setattr(correctness_runner, "_launch_worker", launch_worker)
+    monkeypatch.setattr(correctness_runner, "_verify", verify)
+    monkeypatch.setattr(
+        correctness_runner,
+        "_registry_path",
+        lambda _contract, suffix: registry / f"{suffix}.json",
+    )
+
+    receipt, replay, archive = correctness_runner.run_correctness(root, contract_path)
+
+    assert receipt.result.result_id == result.result_id
+    assert replay.receipt_id == receipt.receipt_id
+    assert archive.replay_seal_id == replay.replay_seal_id
+    assert Path(archive.archive_path).is_file()
+    assert claim_path.is_file()
+    assert (
+        SeqaxSiluFusionCorrectnessReceipt.model_validate_json((root / "receipt.json").read_text())
+        == receipt
+    )
 
 
 def test_post_worker_empty_controller_failure_is_frozen(
