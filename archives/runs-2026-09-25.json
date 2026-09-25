@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "status": "verified",
+  "bucket": "tpu-cake-archives",
+  "prefix": "runs/2026-09-25",
+  "endpoint": "https://d1236c0762602db757c07d291cc3c4fa.r2.cloudflarestorage.com",
+  "source_repo": "https://github.com/sdrshn-nmbr/tpu-cake",
+  "source_relative_path": "runs",
+  "source_absolute_path": "/Users/sudarshan/Code/tpu-cake/runs",
+  "source_given_path": "/Users/sudarshan/Code/tpu-cake/runs",
+  "created_utc": "2026-09-25T04:52:55Z",
+  "regular_files": 16016,
+  "entries": 18449,
+  "source_file_bytes": 46303986191,
+  "archive_bytes": 15023779858,
+  "verification": "Every archive: local SHA-256 and independently computed multipart MD5 ETag; R2 HEAD size, ETag and SHA-256 metadata matched. Source path/size/mtime/mode inventory unchanged before and after packing.",
+  "file_index": {
+    "key": "runs/2026-09-25/files.jsonl.zst",
+    "bytes": 134351,
+    "sha256": "fd13ad3d41382c0dd12975cdf7cf719f73c7a6a45ee8586405507595dcfddf75",
+    "etag": "f9f8641c365612bd1bced6078f65b98c"
+  },
+  "archives": [
+    {
+      "key": "runs/2026-09-25/parts/part-0000.tar.zst",
+      "bytes": 307592550,
+      "sha256": "a2eb4fd530527e8bcdfd6f12b5927e1ec01db05d3ed903a9e81f6f21a984bc05",
+      "etag": "2805eabb9e3a9ffa6d075468bde4a5ad-5",
+      "entries": 2,
+      "source_file_bytes": 991969280
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0001.tar.zst",
+      "bytes": 367342648,
+      "sha256": "f939a2e145a6f3fddb8db433e08aba34c28f5dbef6f6df74fec994a718af35f0",
+      "etag": "65857cee4647a65d4602aa00ea934ec8-6",
+      "entries": 1,
+      "source_file_bytes": 1618401280
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0002.tar.zst",
+      "bytes": 3374997543,
+      "sha256": "aa1894432b67ad1a98145911960eb95d62b2478cc6d4456dc62250340d3616c2",
+      "etag": "0e8c49eca26922d6715ce81bf4ce3232-51",
+      "entries": 1,
+      "source_file_bytes": 7819534848
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0003.tar.zst",
+      "bytes": 3375003650,
+      "sha256": "6bd577a62a0aa8520639216ef10d1f3d1260a384106fa25b59d8789730a48f9a",
+      "etag": "fc965518a71d2e4ed05c4e2aac5c831b-51",
+      "entries": 1,
+      "source_file_bytes": 7818864640
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0004.tar.zst",
+      "bytes": 525023375,
+      "sha256": "1a4568c2411b85c632727e4c0354ce75fc718bafbf5780d0782b6f361b446030",
+      "etag": "8a4b93d17bcc82ddc3a2c80d03f0d589-8",
+      "entries": 154,
+      "source_file_bytes": 2119554059
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0005.tar.zst",
+      "bytes": 718292347,
+      "sha256": "a1dca2aeb5cd3cd7e86cab29e5a130e5a94e4c363691367e20e520eb660db4a3",
+      "etag": "e2d36b1ce63d0c5970b84ea311d57cb4-11",
+      "entries": 123,
+      "source_file_bytes": 2107970757
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0006.tar.zst",
+      "bytes": 890937898,
+      "sha256": "d7def9d3f1daedb63c62d3bf3036d742f61fcae69b2f2e401ca4068c05d0bf39",
+      "etag": "3bf452d1e7876e89b802b212173197e4-14",
+      "entries": 72,
+      "source_file_bytes": 1912895315
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0007.tar.zst",
+      "bytes": 883194166,
+      "sha256": "5a2079d2cbe7283205b066b38120d499a0ef84a09514a33842e912c7c0ff4206",
+      "etag": "ce3cd59092510d63882e391dddacfc55-14",
+      "entries": 79,
+      "source_file_bytes": 1904561765
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0008.tar.zst",
+      "bytes": 908166160,
+      "sha256": "5ec08000c1d17999add5625eb03ed0664dc70eee0166acfa368285737de15ab8",
+      "etag": "d18d8719666b128548b3b5004104c575-14",
+      "entries": 80,
+      "source_file_bytes": 2030135313
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0009.tar.zst",
+      "bytes": 609870800,
+      "sha256": "23f186d07608e1a4559371fe7d112b8c41a1399397e8355b8da8559518c9eee8",
+      "etag": "d66d1e7244991b13c1dadb5083671ad3-10",
+      "entries": 1714,
+      "source_file_bytes": 2126816965
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0010.tar.zst",
+      "bytes": 512044936,
+      "sha256": "d40fcacd68a6b6fb35eea58f5b49a3fa6724a3753882d9ab01b2e827c5b8c3f5",
+      "etag": "d2fa57b0eaaefa238ed94f3c310928bd-8",
+      "entries": 2204,
+      "source_file_bytes": 2129623981
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0011.tar.zst",
+      "bytes": 304296315,
+      "sha256": "0ffcbe60348588b672f2fa4d2b45a008e9cf019a4496080437766881d305094f",
+      "etag": "90c7ad2cc74b2da63fbae885740cce55-5",
+      "entries": 2601,
+      "source_file_bytes": 1989222197
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0012.tar.zst",
+      "bytes": 510730070,
+      "sha256": "64fdd351e508f693505eb505b06bc6b15e4cca268ac7c4adf5b0a6f793409337",
+      "etag": "b3de2b7a0544e515623b268a86639766-8",
+      "entries": 6716,
+      "source_file_bytes": 1972293952
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0013.tar.zst",
+      "bytes": 324937811,
+      "sha256": "9e5941792bc4a2a74ba3b6c124553e3c3fff78a13f84212769b8780af1c4e6d2",
+      "etag": "3799cbede71e8353f3cc9a3a0e6007b7-5",
+      "entries": 153,
+      "source_file_bytes": 1386250485
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0014.tar.zst",
+      "bytes": 174802545,
+      "sha256": "543298b8fd7ff2145374c1b55912ecf91080fa9640e8d50ec9fa63d27d6ca327",
+      "etag": "832e69db7bd77a5c21c2c34d2853b010-3",
+      "entries": 408,
+      "source_file_bytes": 2138500801
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0015.tar.zst",
+      "bytes": 434238091,
+      "sha256": "543c8338cf4ac710aef4c10d398e2f0d59789540e16735092782da3545e22419",
+      "etag": "9d0800bc6ba614d17f3e818ff68add20-7",
+      "entries": 1788,
+      "source_file_bytes": 2135677068
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0016.tar.zst",
+      "bytes": 493015497,
+      "sha256": "9f24a9a155d322cfe68b4f1c50c982f3bb8e4b146839494c56ec588ce01b9e36",
+      "etag": "e2326fb51f1c7e1580db99db5fa37882-8",
+      "entries": 1394,
+      "source_file_bytes": 2076412061
+    },
+    {
+      "key": "runs/2026-09-25/parts/part-0017.tar.zst",
+      "bytes": 309293456,
+      "sha256": "f881e92c6c3108efa19a772059a6095a3d12e0008b56a67447fa34eddc7bdffd",
+      "etag": "7c7193f181b6f575b348174a2b6fcaa5-5",
+      "entries": 958,
+      "source_file_bytes": 2025301424
+    }
+  ],
+  "local_cleanup": {
+    "deleted_at": "2026-09-25T05:00:33Z",
+    "source": "/Users/sudarshan/Code/tpu-cake/runs",
+    "removed_files_and_symlinks": 16016,
+    "remote_objects_reverified": 20,
+    "free_bytes_before": 277469872128,
+    "free_bytes_after": 323830091776
+  },
+  "archive_manifest": {
+    "key": "runs/2026-09-25/manifest.json",
+    "bytes": 6298,
+    "sha256": "6bcc20e6a8a5e13c55254abb94b45f70181fa3d7e9b5d5fb29669e46361fd0a8",
+    "etag": "13802ca1434a98fe52fcf82346118746"
+  },
+  "restore_smoke_test": {
+    "at": "2026-09-25T04:59:00Z",
+    "prefix": "tpu7x-matmul-20260817-0405/trace/xprof-exports/plugins/profile/2026_08_17_04_10_01/inkle-small-v7x-prof-9924.xplane/",
+    "restored_files": 7,
+    "result": "restored bytes identical to the local source (diff -r) before cleanup"
+  }
+}

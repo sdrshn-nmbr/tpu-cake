@@ -49,6 +49,27 @@ TPU-cake began by combining CAKE's search loop with this MatX discipline (as see
 
 xDSL is the canonical program and schedule format. Pydantic is used only for external contracts, normalized evidence, and receipts. The first complete searched Pallas target is a distributed BF16 matmul followed by reduce-scatter.
 
+## Archived run artifacts
+
+`runs/` is not tracked by Git. Its September 25, 2026 contents (16,016 files, 43.1 GiB) are in the private R2 bucket `tpu-cake-archives` under `runs/2026-09-25/`, stored as 18 independently restorable `tar.zst` parts (14.0 GiB). [archives/runs-2026-09-25.json](archives/runs-2026-09-25.json) records the endpoint, each part's SHA-256 and R2 ETag, a byte-identical restore check, and the local deletion receipt. The local copies were deleted after every object was re-verified. Check `archives/` before assuming a run is missing or collecting it again.
+
+Credentials come from `~/.config/axport/r2.env` on the owner's Mac; elsewhere pass `--credentials` with `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`. Restoring needs `zstd` and writes into a new directory using the original `runs/`-relative paths:
+
+```sh
+uv run scripts/r2_archive.py restore --reference archives/runs-2026-09-25.json --list --prefix imported/
+uv run scripts/r2_archive.py restore --reference archives/runs-2026-09-25.json \
+  --prefix imported/EXACT-RUN/ --destination /path/to/new-dir
+```
+
+New runs are not uploaded automatically. When `runs/` grows, archive it into a new dated prefix, commit the new reference, then remove the local copy:
+
+```sh
+uv run scripts/r2_archive.py upload --source runs --bucket tpu-cake-archives \
+  --prefix runs/YYYY-MM-DD --reference archives/runs-YYYY-MM-DD.json \
+  --repo https://github.com/sdrshn-nmbr/tpu-cake --relative-path runs
+uv run scripts/r2_archive.py cleanup --reference archives/runs-YYYY-MM-DD.json
+```
+
 ## Use
 
 ```bash
